@@ -14,30 +14,53 @@ final class RuntimeAssetController extends Controller
     {
         $lastModifiedAt = filemtime(volt_runtime_path());
         $version = volt_runtime_version();
-        $etag = '"volt-runtime-' . $version . '"';
+        $contents = volt_runtime_contents();
+        $acceptEncoding = strtolower(trim((string) $request->header('Accept-Encoding', '')));
+        $useGzip = false;
+        $body = $contents;
+
+        if (function_exists('gzencode') && str_contains($acceptEncoding, 'gzip')) {
+            $encoded = gzencode($contents, 6, ZLIB_ENCODING_GZIP);
+
+            if (is_string($encoded)) {
+                $body = $encoded;
+                $useGzip = true;
+            }
+        }
+
+        $etag = '"volt-runtime-' . $version . ($useGzip ? '-gzip' : '') . '"';
 
         if ($this->matchesConditionalRequest($request, $etag, $lastModifiedAt)) {
-            return $this->response('', 304, $this->headers($etag, $lastModifiedAt));
+            return $this->response('', 304, $this->headers($etag, $lastModifiedAt, $useGzip));
         }
 
         return $this->response(
-            volt_runtime_contents(),
+            $body,
             200,
-            $this->headers($etag, $lastModifiedAt),
+            $this->headers($etag, $lastModifiedAt, $useGzip, strlen($body)),
         );
     }
 
     /**
      * @return array<string, string>
      */
-    private function headers(string $etag, int|false $lastModifiedAt): array
+    private function headers(string $etag, int|false $lastModifiedAt, bool $useGzip, ?int $contentLength = null): array
     {
         $headers = [
             'Content-Type' => 'application/javascript; charset=UTF-8',
             'Cache-Control' => 'public, max-age=31536000, immutable',
             'ETag' => $etag,
             'X-Content-Type-Options' => 'nosniff',
+            'Vary' => 'Accept-Encoding',
         ];
+
+        if ($useGzip) {
+            $headers['Content-Encoding'] = 'gzip';
+        }
+
+        if (is_int($contentLength)) {
+            $headers['Content-Length'] = (string) $contentLength;
+        }
 
         if (is_int($lastModifiedAt)) {
             $headers['Last-Modified'] = gmdate('D, d M Y H:i:s', $lastModifiedAt) . ' GMT';

@@ -761,29 +761,26 @@ final class SkeletonSpaRoadmapTest extends TestCase
 
         self::assertSame(200, $runtimeAsset->statusCode(), $runtimeAsset->content());
         self::assertSame('application/javascript; charset=UTF-8', $runtimeAsset->headers()['Content-Type']);
-        self::assertStringContainsString('volt:request-finish', $runtimeAsset->content());
-        self::assertStringContainsString('volt:component-destroyed', $runtimeAsset->content());
-        self::assertStringContainsString('function cleanupRuntimeOrphans()', $runtimeAsset->content());
-        self::assertStringContainsString('navigationViewportTrackedElements: new Set(),', $runtimeAsset->content());
-        self::assertStringContainsString('busyState: {', $runtimeAsset->content());
-        self::assertStringContainsString('window.Volt.components = createPublicComponentsApi();', $runtimeAsset->content());
-        self::assertStringContainsString('window.Volt.telemetry = createPublicTelemetryApi();', $runtimeAsset->content());
-        self::assertStringContainsString('window.Volt.busy = createPublicBusyApi();', $runtimeAsset->content());
-        self::assertStringContainsString('function createPublicBusyApi() {', $runtimeAsset->content());
-        self::assertStringContainsString('emitRuntimeHook("volt:busy-change"', $runtimeAsset->content());
-        self::assertStringContainsString('emitRuntimeHook("volt:busy-start"', $runtimeAsset->content());
-        self::assertStringContainsString('emitRuntimeHook("volt:busy-end"', $runtimeAsset->content());
-        self::assertStringContainsString('data-volt-busy', $runtimeAsset->content());
-        self::assertStringContainsString('data-volt-runtime-busy-shell', $runtimeAsset->content());
-        self::assertStringContainsString('function createPublicTelemetryApi() {', $runtimeAsset->content());
-        self::assertStringContainsString('latest: function (options) {', $runtimeAsset->content());
-        self::assertStringContainsString('summary: telemetrySummary,', $runtimeAsset->content());
-        self::assertStringContainsString('snapshot: function (options) {', $runtimeAsset->content());
-        self::assertStringContainsString('reset: resetRuntimeTelemetry,', $runtimeAsset->content());
-        self::assertStringContainsString('function createPublicComponentsApi() {', $runtimeAsset->content());
-        self::assertStringContainsString('summary: activeComponentsSummary,', $runtimeAsset->content());
-        self::assertStringContainsString('snapshot: activeComponentsSnapshot,', $runtimeAsset->content());
-        self::assertStringContainsString('refresh: function (reason) {', $runtimeAsset->content());
+        $this->assertRuntimeAssetContains('volt:request-finish', $runtimeAsset);
+        $this->assertRuntimeAssetContains('volt:component-destroyed', $runtimeAsset);
+        $this->assertRuntimeAssetContains('function cleanupRuntimeOrphans()', $runtimeAsset);
+        $this->assertRuntimeAssetContains('navigationViewportTrackedElements:new Set', $runtimeAsset);
+        $this->assertRuntimeAssetContains('busyState: {', $runtimeAsset);
+        $this->assertRuntimeAssetContains('window.Volt.components={entries:activeComponentsEntries', $runtimeAsset);
+        $this->assertRuntimeAssetContains('window.Volt.telemetry={entries:filteredTelemetryEntries', $runtimeAsset);
+        $this->assertRuntimeAssetContains('window.Volt.busy={active:function(){return cloneBusyState(resolveGlobalBusyState()).active}', $runtimeAsset);
+        $this->assertRuntimeAssetContains('emitRuntimeHook("volt:busy-change"', $runtimeAsset);
+        $this->assertRuntimeAssetContains('emitRuntimeHook("volt:busy-start"', $runtimeAsset);
+        $this->assertRuntimeAssetContains('emitRuntimeHook("volt:busy-end"', $runtimeAsset);
+        $this->assertRuntimeAssetContains('data-volt-busy', $runtimeAsset);
+        $this->assertRuntimeAssetContains('data-volt-runtime-busy-shell', $runtimeAsset);
+        $this->assertRuntimeAssetContains('latest: function (options) {', $runtimeAsset);
+        $this->assertRuntimeAssetContains('summary: telemetrySummary,', $runtimeAsset);
+        $this->assertRuntimeAssetContains('snapshot: function (options) {', $runtimeAsset);
+        $this->assertRuntimeAssetContains('reset: resetRuntimeTelemetry,', $runtimeAsset);
+        $this->assertRuntimeAssetContains('summary: activeComponentsSummary,', $runtimeAsset);
+        $this->assertRuntimeAssetContains('snapshot: activeComponentsSnapshot,', $runtimeAsset);
+        $this->assertRuntimeAssetContains('refresh: function (reason) {', $runtimeAsset);
     }
 
     public function test_skeleton_html_resolves_built_manifest_assets_when_hot_reload_is_not_active(): void
@@ -822,8 +819,8 @@ final class SkeletonSpaRoadmapTest extends TestCase
         self::assertSame(200, $runtimeAsset->statusCode(), $runtimeAsset->content());
         self::assertStringContainsString('typeof doc.querySelector === "function"', $navigationSource);
         self::assertStringContainsString('? doc.querySelector(selector)', $navigationSource);
-        self::assertStringContainsString('typeof doc.querySelector === "function"', $runtimeAsset->content());
-        self::assertStringContainsString('? doc.querySelector(selector)', $runtimeAsset->content());
+        $this->assertRuntimeAssetContains('"function"==typeof doc.querySelector', $runtimeAsset);
+        $this->assertRuntimeAssetContains('? doc.querySelector(selector)', $runtimeAsset);
     }
 
     public function test_runtime_source_can_preload_stylesheets_and_modules_from_prefetched_documents(): void
@@ -847,9 +844,9 @@ final class SkeletonSpaRoadmapTest extends TestCase
         self::assertStringContainsString('key: "style:" + href,', $cacheSource);
         self::assertStringContainsString('rel: "preload",', $cacheSource);
         self::assertStringContainsString('as: "style",', $cacheSource);
-        self::assertStringContainsString('key: "style:" + href,', $runtimeAsset->content());
-        self::assertStringContainsString('rel: "preload",', $runtimeAsset->content());
-        self::assertStringContainsString('as: "style",', $runtimeAsset->content());
+        $this->assertRuntimeAssetContains('key: "style:" + href,', $runtimeAsset);
+        $this->assertRuntimeAssetContains('rel: "preload",', $runtimeAsset);
+        $this->assertRuntimeAssetContains('as: "style",', $runtimeAsset);
     }
 
     public function test_runtime_source_only_falls_back_for_layout_changes_when_both_documents_declare_layouts(): void
@@ -871,7 +868,7 @@ final class SkeletonSpaRoadmapTest extends TestCase
         self::assertIsString($navigationDocumentSource);
         self::assertSame(200, $runtimeAsset->statusCode(), $runtimeAsset->content());
         self::assertStringContainsString('if (!currentLayout || !nextLayout) {', $navigationDocumentSource);
-        self::assertStringContainsString('if (!currentLayout || !nextLayout) {', $runtimeAsset->content());
+        $this->assertRuntimeAssetContains('return!(!currentLayout||!nextLayout)&&currentLayout!==nextLayout', $runtimeAsset);
     }
 
     public function test_runtime_source_handles_popstate_with_a_spa_visit_and_reload_fallback(): void
@@ -899,9 +896,9 @@ final class SkeletonSpaRoadmapTest extends TestCase
         self::assertStringContainsString('preserveScroll: false,', $bootSource);
         self::assertStringContainsString('fallback: false,', $bootSource);
         self::assertStringContainsString('window.location.reload();', $bootSource);
-        self::assertStringContainsString('window.addEventListener("popstate", function () {', $runtimeAsset->content());
-        self::assertStringContainsString('visit(window.location.href, {', $runtimeAsset->content());
-        self::assertStringContainsString('window.location.reload();', $runtimeAsset->content());
+        $this->assertRuntimeAssetContains('window.addEventListener("popstate",function(){visit(window.location.href,{', $runtimeAsset);
+        $this->assertRuntimeAssetContains('visit(window.location.href, {', $runtimeAsset);
+        $this->assertRuntimeAssetContains('fallback:!1}).catch(function(error){console.error("VoltStack navigation error:",error),window.location.reload()', $runtimeAsset);
     }
 
     public function test_runtime_source_reconciles_managed_head_entries_without_duplicating_scripts(): void
@@ -929,9 +926,9 @@ final class SkeletonSpaRoadmapTest extends TestCase
         self::assertStringContainsString('syncManagedHeadNode(existing, entry.node);', $navigationDocumentSource);
         self::assertStringContainsString('const clone = entry.node.cloneNode(true);', $navigationDocumentSource);
         self::assertStringContainsString('document.head.appendChild(clone);', $navigationDocumentSource);
-        self::assertStringContainsString('return "script:" + (node.getAttribute("type") || "") + ":" + src;', $runtimeAsset->content());
-        self::assertStringContainsString('async function reconcileDocumentHead(nextHead) {', $runtimeAsset->content());
-        self::assertStringContainsString('syncManagedHeadNode(existing, entry.node);', $runtimeAsset->content());
+        $this->assertRuntimeAssetContains('return src?"script:"+(node.getAttribute("type")||"")+":"+src:null', $runtimeAsset);
+        $this->assertRuntimeAssetContains('async function reconcileDocumentHead(nextHead){', $runtimeAsset);
+        $this->assertRuntimeAssetContains('syncManagedHeadNode(existing,entry.node);', $runtimeAsset);
     }
 
     public function test_html_document_bootstrapper_source_hardens_inline_head_assets_with_stable_keys(): void
@@ -1015,10 +1012,10 @@ final class SkeletonSpaRoadmapTest extends TestCase
         self::assertStringContainsString('function fragmentControlForDocument(doc) {', $navigationStateSource);
         self::assertStringContainsString('control.mode = "reset";', $navigationStateSource);
         self::assertStringContainsString('const declaredMeta = firstDocumentMetaValue(', $navigationStateSource);
-        self::assertStringContainsString('function preservedFragmentAttribute(element) {', $runtimeAsset->content());
-        self::assertStringContainsString('"volt:fragment-preserve",', $runtimeAsset->content());
-        self::assertStringContainsString('"volt:fragment-discard",', $runtimeAsset->content());
-        self::assertStringContainsString('function fragmentControlForDocument(doc) {', $runtimeAsset->content());
+        $this->assertRuntimeAssetContains('"data-volt-preserve",', $runtimeAsset);
+        $this->assertRuntimeAssetContains('"volt:fragment-preserve",', $runtimeAsset);
+        $this->assertRuntimeAssetContains('"volt:fragment-discard",', $runtimeAsset);
+        $this->assertRuntimeAssetContains('restorePreservedFragments(', $runtimeAsset);
     }
 
     public function test_runtime_source_exposes_persistent_fragment_capture_and_restore_contract(): void
@@ -1048,10 +1045,10 @@ final class SkeletonSpaRoadmapTest extends TestCase
         self::assertStringContainsString('const targets = persistentFragmentTargets(root);', $navigationDocumentSource);
         self::assertStringContainsString('runtime.persistentFragments.delete(key);', $navigationDocumentSource);
         self::assertStringContainsString('persistentRegistrySize: runtime.persistentFragments.size,', $navigationDocumentSource);
-        self::assertStringContainsString('function persistedFragmentAttribute(element) {', $runtimeAsset->content());
-        self::assertStringContainsString('"volt:persist",', $runtimeAsset->content());
-        self::assertStringContainsString('runtime.persistentFragments.set(key, fragment);', $runtimeAsset->content());
-        self::assertStringContainsString('persistentRegistrySize: runtime.persistentFragments.size,', $runtimeAsset->content());
+        $this->assertRuntimeAssetContains('function persistedFragmentAttribute(element) {', $runtimeAsset);
+        $this->assertRuntimeAssetContains('directiveAttribute(element,["data-volt-persist","volt-persist","volt:persist"])', $runtimeAsset);
+        $this->assertRuntimeAssetContains('runtime.persistentFragments.set(key,{key:key,tagName:fragment.tagName,element:fragment.element})', $runtimeAsset);
+        $this->assertRuntimeAssetContains('persistentRegistrySize:runtime.persistentFragments.size', $runtimeAsset);
     }
 
     public function test_runtime_source_falls_back_to_full_reload_when_navigation_returns_http_errors(): void
@@ -1077,9 +1074,9 @@ final class SkeletonSpaRoadmapTest extends TestCase
         self::assertStringContainsString('emitRuntimeHook("volt:request-error", errorDetail, document);', $visitSource);
         self::assertStringContainsString('window.location.assign(finalUrl);', $visitSource);
         self::assertStringContainsString('window.location.assign(normalizedUrl);', $visitSource);
-        self::assertStringContainsString('if (payload && payload.error && typeof payload.error === "object") {', $runtimeAsset->content());
-        self::assertStringContainsString('emitRuntimeHook("volt:request-error", errorDetail, document);', $runtimeAsset->content());
-        self::assertStringContainsString('window.location.assign(finalUrl);', $runtimeAsset->content());
+        $this->assertRuntimeAssetContains('payload&&payload.error&&"object"==typeof payload.error', $runtimeAsset);
+        $this->assertRuntimeAssetContains('emitRuntimeHook("volt:request-error",errorDetail,document)', $runtimeAsset);
+        $this->assertRuntimeAssetContains('window.location.assign(finalUrl);', $runtimeAsset);
     }
 
     public function test_runtime_source_updates_snapshot_when_volt_model_inputs_change(): void
@@ -1106,8 +1103,8 @@ final class SkeletonSpaRoadmapTest extends TestCase
         self::assertStringContainsString('snapshot.state[key] =', $bootSource);
         self::assertStringContainsString('root.setAttribute("data-volt-snapshot", JSON.stringify(snapshot));', $bootSource);
         self::assertStringContainsString('updateModelSyncDirectiveFromElement(element, root, "directive:model.sync:input");', $bootSource);
-        self::assertStringContainsString('const snapshot = readSnapshot(root);', $runtimeAsset->content());
-        self::assertStringContainsString('root.setAttribute("data-volt-snapshot", JSON.stringify(snapshot));', $runtimeAsset->content());
+        $this->assertRuntimeAssetContains('snapshot&&snapshot.state&&key&&(snapshot.state[key]=', $runtimeAsset);
+        $this->assertRuntimeAssetContains('root.setAttribute("data-volt-snapshot",JSON.stringify(snapshot))', $runtimeAsset);
     }
 
     public function test_runtime_source_schedules_internal_sync_requests_for_volt_model_sync(): void
@@ -1133,9 +1130,8 @@ final class SkeletonSpaRoadmapTest extends TestCase
         self::assertStringContainsString('}, MODEL_SYNC_DEBOUNCE);', $modelDirectiveSource);
         self::assertStringContainsString('runtime.modelSyncDebounces.set(element, timeoutId);', $modelDirectiveSource);
         self::assertStringContainsString('runtime.modelSyncTrackedElements.add(element);', $modelDirectiveSource);
-        self::assertStringContainsString('function scheduleModelSyncDirectiveDispatch(root, element) {', $runtimeAsset->content());
-        self::assertStringContainsString('MODEL_SYNC_INTERNAL_ACTION,', $runtimeAsset->content());
-        self::assertStringContainsString('runtime.modelSyncTrackedElements.add(element);', $runtimeAsset->content());
+        $this->assertRuntimeAssetContains('dispatchAction(activeRoot,"__volt_sync__"', $runtimeAsset);
+        $this->assertRuntimeAssetContains('runtime.modelSyncDebounces.set(element,timeoutId),runtime.modelSyncTrackedElements.add(element)', $runtimeAsset);
     }
 
     public function test_runtime_source_updates_snapshot_after_action_responses_and_emits_stale_abort_hooks(): void
@@ -1163,9 +1159,9 @@ final class SkeletonSpaRoadmapTest extends TestCase
         self::assertStringContainsString('if (payload.snapshot && updatedRoot) {', $actionSource);
         self::assertStringContainsString('"data-volt-snapshot",', $actionSource);
         self::assertStringContainsString('JSON.stringify(payload.snapshot),', $actionSource);
-        self::assertStringContainsString('"volt:request-stale",', $runtimeAsset->content());
-        self::assertStringContainsString('"volt:request-abort",', $runtimeAsset->content());
-        self::assertStringContainsString('JSON.stringify(payload.snapshot),', $runtimeAsset->content());
+        $this->assertRuntimeAssetContains('"volt:request-stale",', $runtimeAsset);
+        $this->assertRuntimeAssetContains('"volt:request-abort",', $runtimeAsset);
+        $this->assertRuntimeAssetContains('payload.snapshot&&updatedRoot&&updatedRoot.setAttribute("data-volt-snapshot",JSON.stringify(payload.snapshot))', $runtimeAsset);
     }
 
     public function test_runtime_source_keeps_reactive_actions_without_automatic_retry(): void
@@ -1190,7 +1186,7 @@ final class SkeletonSpaRoadmapTest extends TestCase
         self::assertStringNotContainsString('resolveRequestRetryPolicy("action"', $actionSource);
         self::assertStringNotContainsString('"volt:request-retry"', $actionSource);
         self::assertStringNotContainsString('waitForRetryDelay(', $actionSource);
-        self::assertStringContainsString('const response = await withRequestTimeout(', $runtimeAsset->content());
+        $this->assertRuntimeAssetContains('const response = await withRequestTimeout(', $runtimeAsset);
     }
 
     public function test_runtime_source_keeps_spa_navigation_on_get_and_protocol_actions_on_post(): void
@@ -1254,9 +1250,8 @@ final class SkeletonSpaRoadmapTest extends TestCase
         self::assertStringContainsString('preserveScroll: preserveScroll,', $bootSource);
         self::assertStringContainsString('if (settings.preserveScroll !== true) {', $visitSource);
         self::assertStringContainsString('window.scrollTo(0, 0);', $visitSource);
-        self::assertStringContainsString('preserveScroll: preserveScroll,', $runtimeAsset->content());
-        self::assertStringContainsString('if (settings.preserveScroll !== true) {', $runtimeAsset->content());
-        self::assertStringContainsString('window.scrollTo(0, 0);', $runtimeAsset->content());
+        $this->assertRuntimeAssetContains('preserveScroll: preserveScroll,', $runtimeAsset);
+        $this->assertRuntimeAssetContains('!0!==settings.preserveScroll&&window.scrollTo(0,0)', $runtimeAsset);
     }
 
     public function test_runtime_source_exposes_redirect_as_an_explicit_navigation_payload_field(): void
@@ -1342,8 +1337,8 @@ final class SkeletonSpaRoadmapTest extends TestCase
         self::assertStringContainsString('shouldRetryNavigationRequest(', $visitSource);
         self::assertStringContainsString('"volt:request-retry",', $visitSource);
         self::assertStringContainsString('continue;', $visitSource);
-        self::assertStringContainsString('retryAttempt: attempt + 1,', $runtimeAsset->content());
-        self::assertStringContainsString('"volt:request-retry",', $runtimeAsset->content());
+        $this->assertRuntimeAssetContains('retryAttempt:attempt+1', $runtimeAsset);
+        $this->assertRuntimeAssetContains('"volt:request-retry",', $runtimeAsset);
     }
 
     public function test_runtime_source_exposes_target_as_an_explicit_navigation_payload_field(): void
@@ -1458,6 +1453,19 @@ final class SkeletonSpaRoadmapTest extends TestCase
             preg_match_all('/<style\b(?:(?!\bid=|\bdata-volt-head-key=)[^>])*>/i', $head),
             sprintf('Route %s emitted an inline <style> in <head> without id or data-volt-head-key.', $route),
         );
+    }
+
+    private function assertRuntimeAssetContains(string $needle, Response $runtimeAsset): void
+    {
+        self::assertStringContainsString(
+            $this->normalizeRuntimeAssetSource($needle),
+            $this->normalizeRuntimeAssetSource($runtimeAsset->content()),
+        );
+    }
+
+    private function normalizeRuntimeAssetSource(string $source): string
+    {
+        return preg_replace('/\s+/', '', $source) ?? $source;
     }
 
     private function extractHeadMarkup(string $html): string

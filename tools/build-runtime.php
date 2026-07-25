@@ -48,10 +48,32 @@ $banner = [
 ];
 
 $output = implode(PHP_EOL, $banner) . implode(PHP_EOL . PHP_EOL, $chunks) . PHP_EOL;
+$temporaryFile = tempnam(sys_get_temp_dir(), 'volt-runtime-');
 
-if (file_put_contents($outputFile, $output) === false) {
-    fwrite(STDERR, "Unable to write runtime bundle: {$outputFile}" . PHP_EOL);
+if ($temporaryFile === false) {
+    fwrite(STDERR, 'Unable to allocate temporary file for runtime bundle.' . PHP_EOL);
     exit(1);
 }
 
-fwrite(STDOUT, 'Runtime bundle generated: frontend/runtime/volt.js' . PHP_EOL);
+if (file_put_contents($temporaryFile, $output) === false) {
+    @unlink($temporaryFile);
+    fwrite(STDERR, 'Unable to write temporary runtime bundle.' . PHP_EOL);
+    exit(1);
+}
+
+$terserCommand = 'npx terser '
+    . escapeshellarg($temporaryFile)
+    . ' --compress --comments false --output '
+    . escapeshellarg($outputFile);
+
+$terserExitCode = 0;
+system($terserCommand, $terserExitCode);
+
+@unlink($temporaryFile);
+
+if ($terserExitCode !== 0) {
+    fwrite(STDERR, 'Unable to minify runtime bundle with terser.' . PHP_EOL);
+    exit(1);
+}
+
+fwrite(STDOUT, 'Runtime bundle generated and minified: frontend/runtime/volt.js' . PHP_EOL);

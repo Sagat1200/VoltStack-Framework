@@ -435,6 +435,77 @@ final class SkeletonSpaRoadmapTest extends TestCase
         self::assertStringContainsString('Active components summary', $response->content());
     }
 
+    public function test_runtime_matrix_screen_exposes_runner_context_coverage_and_budget_controls(): void
+    {
+        $response = $this->handleSkeletonRequest('/runtimeMatrix');
+
+        self::assertSame(200, $response->statusCode(), $response->content());
+        self::assertStringContainsString('Runtime Matrix', $response->content());
+        self::assertStringContainsString('data-runtime-matrix-page', $response->content());
+        self::assertStringContainsString('window.__spaLabRuntimeMatrixInstalled', $response->content());
+        self::assertStringContainsString('data-runtime-matrix="scenario"', $response->content());
+        self::assertStringContainsString('<option value="boot">boot</option>', $response->content());
+        self::assertStringContainsString('<option value="spa">navegacion-spa</option>', $response->content());
+        self::assertStringContainsString('<option value="action">action-reactiva</option>', $response->content());
+        self::assertStringContainsString('<option value="model.sync">volt-model-sync</option>', $response->content());
+        self::assertStringContainsString('<option value="large-list">listas-grandes</option>', $response->content());
+        self::assertStringContainsString('<option value="cache">cache</option>', $response->content());
+        self::assertStringContainsString('<option value="long-session">sesion-larga</option>', $response->content());
+        self::assertStringContainsString('data-runtime-matrix="condition"', $response->content());
+        self::assertStringContainsString('<option value="degradada">degradada</option>', $response->content());
+        self::assertStringContainsString('data-runtime-matrix="budget-payload-bytes"', $response->content());
+        self::assertStringContainsString('data-runtime-matrix="budget-navigation-payload-bytes"', $response->content());
+        self::assertStringContainsString('data-runtime-matrix="budget-large-list-patch-ms"', $response->content());
+        self::assertStringContainsString('data-runtime-matrix="budget-large-list-payload-bytes"', $response->content());
+        self::assertStringContainsString('data-runtime-matrix="budget-cache-hit-ratio-min"', $response->content());
+        self::assertStringContainsString('data-runtime-matrix="budget-cache-dup-misses-max"', $response->content());
+        self::assertStringContainsString('data-runtime-matrix="budget-heap-used-max-bytes"', $response->content());
+        self::assertStringContainsString('Exportar corridas (JSON)', $response->content());
+        self::assertStringContainsString('Limpiar historial', $response->content());
+        self::assertStringContainsString('data-runtime-matrix="coverage-summary"', $response->content());
+        self::assertStringContainsString('data-runtime-matrix="coverage-alerts"', $response->content());
+        self::assertStringContainsString('data-runtime-matrix="coverage-pending"', $response->content());
+        self::assertStringContainsString('data-runtime-matrix="coverage-body"', $response->content());
+        self::assertStringContainsString('Historial (últimas 30)', $response->content());
+        self::assertStringContainsString('data-runtime-matrix="runs-body"', $response->content());
+        self::assertStringContainsString('payload nav (bytes)', $response->content());
+        self::assertStringContainsString('harness reproducible del', $response->content());
+        self::assertStringContainsString('/runtimeRequestLab', $response->content());
+        self::assertStringContainsString('/runtimeModelSync', $response->content());
+        self::assertStringContainsString('/runtimeEvents', $response->content());
+        self::assertStringContainsString('/runtimeLargeList', $response->content());
+        self::assertStringContainsString('/runtimeMatrix', $response->content());
+    }
+
+    public function test_runtime_matrix_screen_persists_versioned_config_carryover_and_separated_payload_budgets(): void
+    {
+        $response = $this->handleSkeletonRequest('/runtimeMatrix');
+
+        self::assertSame(200, $response->statusCode(), $response->content());
+        self::assertStringContainsString('const CONFIG_VERSION = 2;', $response->content());
+        self::assertStringContainsString("const CONFIG_KEY = 'volt.runtimeMatrix.config';", $response->content());
+        self::assertStringContainsString("const CARRYOVER_KEY = 'volt.runtimeMatrix.carryover';", $response->content());
+        self::assertStringContainsString("const DEGRADATION_KEY = 'volt.runtimeMatrix.degradation';", $response->content());
+        self::assertStringContainsString('payloadActionBytes: 2 * 1024,', $response->content());
+        self::assertStringContainsString('navigationPayloadBytes: 50 * 1024,', $response->content());
+        self::assertStringContainsString('payloadLargeListBytes: 256 * 1024,', $response->content());
+        self::assertStringContainsString('cacheHitRatioMinPercent: 80,', $response->content());
+        self::assertStringContainsString('cacheDuplicateMissesMax: 0,', $response->content());
+        self::assertStringContainsString("spa: ['patch', 'navigationPayload', 'telemetry'],", $response->content());
+        self::assertStringContainsString("action: ['patch', 'payloadAction', 'telemetry'],", $response->content());
+        self::assertStringContainsString("'model.sync': ['patch', 'payloadAction', 'telemetry'],", $response->content());
+        self::assertStringContainsString("'large-list': ['largeListPatch', 'largeListPayload', 'telemetry'],", $response->content());
+        self::assertStringContainsString("cache: ['cacheHitRatio', 'cacheDupMisses'],", $response->content());
+        self::assertStringContainsString("'long-session': ['telemetry', 'heapUsed', 'cacheHitRatio', 'cacheDupMisses'],", $response->content());
+        self::assertStringContainsString('function normalizeConfig(saved) {', $response->content());
+        self::assertStringContainsString('const isLegacyConfig = normalized.version !== CONFIG_VERSION;', $response->content());
+        self::assertStringContainsString('function ensureConfigIsCurrent() {', $response->content());
+        self::assertStringContainsString("telemetrySource: useCarryover ? 'carryover' : 'current-page',", $response->content());
+        self::assertStringContainsString('thresholdBytes: budgetsConfig.navigationPayloadBytes,', $response->content());
+        self::assertStringContainsString('status: classify(navigationPayloadBytes, budgetsConfig.navigationPayloadBytes, \'lte\'),', $response->content());
+        self::assertStringContainsString('writeJsonStorage(CONFIG_KEY, config);', $response->content());
+    }
+
     public function test_runtime_state_routes_document_client_scope_reset_and_shared_scope_survival(): void
     {
         $origin = $this->handleSkeletonRequest('/runtimeState');
@@ -963,6 +1034,8 @@ final class SkeletonSpaRoadmapTest extends TestCase
             '/spaReactive',
             '/cacheExample',
             '/runtimeEvents',
+            '/runtimeMatrix',
+            '/runtimeLargeList',
             '/runtimeFocus',
             '/runtimeRequestLab',
         ];

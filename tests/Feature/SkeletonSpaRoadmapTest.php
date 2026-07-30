@@ -794,6 +794,71 @@ final class SkeletonSpaRoadmapTest extends TestCase
         self::assertTrue($payload['runtime']['hydrate'] ?? false);
     }
 
+    public function test_routes_manifest_exposes_reload_policy_for_export_route(): void
+    {
+        $response = $this->handleSkeletonRequest('/_volt/routes-manifest.json');
+
+        self::assertSame(200, $response->statusCode(), $response->content());
+
+        /** @var array<string, mixed> $manifest */
+        $manifest = json_decode($response->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertIsArray($manifest['routes'] ?? null);
+
+        $match = null;
+
+        foreach ((array) ($manifest['routes'] ?? []) as $route) {
+            if (! is_array($route)) {
+                continue;
+            }
+
+            if (($route['name'] ?? null) === 'routing.lab.reports.export') {
+                $match = $route;
+                break;
+            }
+        }
+
+        self::assertIsArray($match, 'Expected to find routing.lab.reports.export in the routes manifest.');
+        self::assertSame('reload', $match['policy']['document'] ?? null);
+        self::assertSame('reload', $match['policy']['navigation'] ?? null);
+        self::assertSame('routing-lab', $match['runtime']['layout'] ?? null);
+    }
+
+    public function test_routes_manifest_exposes_spa_policy_for_head_samples(): void
+    {
+        $response = $this->handleSkeletonRequest('/_volt/routes-manifest.json');
+
+        self::assertSame(200, $response->statusCode(), $response->content());
+
+        /** @var array<string, mixed> $manifest */
+        $manifest = json_decode($response->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertIsArray($manifest['routes'] ?? null);
+
+        $matches = [];
+
+        foreach ((array) ($manifest['routes'] ?? []) as $route) {
+            if (! is_array($route)) {
+                continue;
+            }
+
+            $name = $route['name'] ?? null;
+
+            if ($name === 'routing.lab.head.a' || $name === 'routing.lab.head.b') {
+                $matches[$name] = $route;
+            }
+        }
+
+        self::assertArrayHasKey('routing.lab.head.a', $matches);
+        self::assertArrayHasKey('routing.lab.head.b', $matches);
+
+        foreach (['routing.lab.head.a', 'routing.lab.head.b'] as $name) {
+            self::assertSame('spa', $matches[$name]['policy']['document'] ?? null, $name);
+            self::assertSame('auto', $matches[$name]['policy']['navigation'] ?? null, $name);
+            self::assertSame('routing-lab', $matches[$name]['runtime']['layout'] ?? null, $name);
+        }
+    }
+
     public function test_routing_lab_login_screen_documents_redirect_contract(): void
     {
         $response = $this->handleSkeletonRequest('/login');

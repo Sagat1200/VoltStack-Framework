@@ -54,6 +54,68 @@ final class PendingRouteGroup
         return $this->metadata($metadata);
     }
 
+    public function runtimeMeta(string|array $key, mixed $value = null): self
+    {
+        $metadata = $this->attributes['metadata'] ?? [];
+
+        if (! is_array($metadata)) {
+            $metadata = [];
+        }
+
+        $runtime = $metadata['runtime'] ?? [];
+
+        if (is_string($runtime) && trim($runtime) !== '') {
+            $runtime = ['mode' => trim($runtime)];
+        }
+
+        if (! is_array($runtime)) {
+            $runtime = [];
+        }
+
+        if (is_array($key)) {
+            $runtime = array_replace($runtime, $key);
+        } else {
+            $normalizedKey = trim($key);
+
+            if ($normalizedKey === '') {
+                throw new \InvalidArgumentException('Route group runtime metadata key cannot be empty.');
+            }
+
+            $runtime[$normalizedKey] = $value;
+        }
+
+        $metadata['runtime'] = $runtime;
+        $this->attributes['metadata'] = $metadata;
+
+        return $this;
+    }
+
+    public function documentContract(string $value): self
+    {
+        return $this->runtimeMeta('document', $value);
+    }
+
+    public function navigationMode(string $value): self
+    {
+        return $this->runtimeMeta('navigation', $value);
+    }
+
+    public function forceReload(): self
+    {
+        return $this->runtimeMeta([
+            'document' => 'reload',
+            'navigation' => 'reload',
+        ]);
+    }
+
+    public function forceSpa(): self
+    {
+        return $this->runtimeMeta([
+            'document' => 'spa',
+            'navigation' => 'auto',
+        ]);
+    }
+
     public function group(callable $callback): void
     {
         $this->router->group($this->attributes, $callback);

@@ -457,7 +457,16 @@ final class Router
         $metadata = $parent['metadata'];
 
         if (array_key_exists('metadata', $attributes) && is_array($attributes['metadata'])) {
-            $metadata = array_replace($metadata, $attributes['metadata']);
+            $incoming = $attributes['metadata'];
+
+            if (isset($incoming['runtime']) && is_array($incoming['runtime'])) {
+                $parentRuntime = isset($metadata['runtime']) && is_array($metadata['runtime'])
+                    ? $metadata['runtime']
+                    : [];
+                $incoming['runtime'] = array_replace($parentRuntime, $incoming['runtime']);
+            }
+
+            $metadata = array_replace($metadata, $incoming);
         }
 
         return [

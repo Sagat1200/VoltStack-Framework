@@ -313,6 +313,62 @@ final class Route extends CompiledRoute
         return $this->meta('runtime', $value);
     }
 
+    public function runtimeMeta(string|array $key, mixed $value = null): static
+    {
+        $metadata = $this->definition()->metadata();
+        $runtime = $metadata['runtime'] ?? [];
+
+        if (is_string($runtime) && trim($runtime) !== '') {
+            $runtime = ['mode' => trim($runtime)];
+        }
+
+        if (! is_array($runtime)) {
+            $runtime = [];
+        }
+
+        if (is_array($key)) {
+            $runtime = array_replace($runtime, $key);
+
+            return $this->meta('runtime', $runtime);
+        }
+
+        $normalizedKey = trim($key);
+
+        if ($normalizedKey === '') {
+            throw new \InvalidArgumentException('Route runtime metadata key cannot be empty.');
+        }
+
+        $runtime[$normalizedKey] = $value;
+
+        return $this->meta('runtime', $runtime);
+    }
+
+    public function documentContract(string $value): static
+    {
+        return $this->runtimeMeta('document', $value);
+    }
+
+    public function navigationMode(string $value): static
+    {
+        return $this->runtimeMeta('navigation', $value);
+    }
+
+    public function forceReload(): static
+    {
+        return $this->runtimeMeta([
+            'document' => 'reload',
+            'navigation' => 'reload',
+        ]);
+    }
+
+    public function forceSpa(): static
+    {
+        return $this->runtimeMeta([
+            'document' => 'spa',
+            'navigation' => 'auto',
+        ]);
+    }
+
     public function componentPage(): static
     {
         return $this->screen([

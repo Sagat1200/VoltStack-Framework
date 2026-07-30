@@ -713,20 +713,29 @@
       return [];
     }
 
-    const entries = [];
+    const order = [];
+    const map = new Map();
 
     Array.from(head.children).forEach(function (node) {
       const key = managedHeadNodeKey(node);
 
-      if (key) {
-        entries.push({
-          key: key,
-          node: node,
-        });
+      if (!key) {
+        return;
       }
+
+      if (!map.has(key)) {
+        order.push(key);
+      }
+
+      map.set(key, node);
     });
 
-    return entries;
+    return order.map(function (key) {
+      return {
+        key: key,
+        node: map.get(key),
+      };
+    });
   }
 
   function syncManagedHeadNode(currentNode, nextNode) {
@@ -787,9 +796,9 @@
     }
 
     const nextEntries = managedHeadEntries(nextHead);
-    const currentEntries = managedHeadEntries(document.head);
     const nextMap = new Map();
     const currentMap = new Map();
+    const currentEntries = [];
     const pendingLoads = [];
     const hasManagedHead = nextEntries.length > 0;
 
@@ -797,8 +806,23 @@
       nextMap.set(entry.key, entry.node);
     });
 
-    currentEntries.forEach(function (entry) {
-      currentMap.set(entry.key, entry.node);
+    Array.from(document.head.children).forEach(function (node) {
+      const key = managedHeadNodeKey(node);
+
+      if (!key) {
+        return;
+      }
+
+      if (currentMap.has(key)) {
+        node.remove();
+        return;
+      }
+
+      currentMap.set(key, node);
+      currentEntries.push({
+        key: key,
+        node: node,
+      });
     });
 
     if (hasManagedHead) {
@@ -819,6 +843,7 @@
 
       const clone = entry.node.cloneNode(true);
       document.head.appendChild(clone);
+      currentMap.set(entry.key, clone);
       pendingLoads.push(waitForManagedHeadNode(clone));
     });
 

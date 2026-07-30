@@ -735,34 +735,55 @@
     const href = descriptor.href;
 
     if (descriptor.as === "style") {
-      return (
-        !!document.head.querySelector(
-          'link[rel="stylesheet"][href="' + cssEscape(href) + '"]',
-        ) ||
-        !!document.head.querySelector(
-          'link[rel="preload"][as="style"][href="' + cssEscape(href) + '"]',
-        )
-      );
+      const styles = Array.from(
+        document.head.querySelectorAll('link[rel="stylesheet"]'),
+      ).some(function (node) {
+        return normalizeHeadAssetUrl(node.getAttribute("href") || "") === href;
+      });
+
+      if (styles) {
+        return true;
+      }
+
+      return Array.from(
+        document.head.querySelectorAll('link[rel="preload"][as="style"]'),
+      ).some(function (node) {
+        return normalizeHeadAssetUrl(node.getAttribute("href") || "") === href;
+      });
     }
 
     if (descriptor.rel === "modulepreload") {
-      return (
-        !!document.head.querySelector(
-          'link[rel="modulepreload"][href="' + cssEscape(href) + '"]',
-        ) ||
-        !!document.head.querySelector(
-          'script[type="module"][src="' + cssEscape(href) + '"]',
-        )
-      );
+      const preloads = Array.from(
+        document.head.querySelectorAll('link[rel="modulepreload"]'),
+      ).some(function (node) {
+        return normalizeHeadAssetUrl(node.getAttribute("href") || "") === href;
+      });
+
+      if (preloads) {
+        return true;
+      }
+
+      return Array.from(
+        document.head.querySelectorAll('script[type="module"][src]'),
+      ).some(function (node) {
+        return normalizeHeadAssetUrl(node.getAttribute("src") || "") === href;
+      });
     }
 
     if (descriptor.rel === "preload") {
-      return !!document.head.querySelector(
-        'link[rel="preload"][href="' +
-          cssEscape(href) +
-          '"][as="' +
-          cssEscape(descriptor.as || "") +
-          '"]',
+      const desiredAs = descriptor.as || "";
+
+      if (!desiredAs) {
+        return false;
+      }
+
+      return Array.from(document.head.querySelectorAll('link[rel="preload"]')).some(
+        function (node) {
+          return (
+            normalizeHeadAssetUrl(node.getAttribute("href") || "") === href &&
+            (node.getAttribute("as") || "").toLowerCase() === desiredAs
+          );
+        },
       );
     }
 

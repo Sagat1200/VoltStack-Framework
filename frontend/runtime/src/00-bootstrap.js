@@ -2169,6 +2169,156 @@
     };
   }
 
+  function createPublicOnFunction() {
+    function resolvePublicOnTarget(settings) {
+      if (settings && settings.target && typeof settings.target.addEventListener === "function") {
+        return settings.target;
+      }
+
+      return document;
+    }
+
+    function resolvePublicOnRoot(settings) {
+      if (!settings || typeof settings !== "object") {
+        return null;
+      }
+
+      if (
+        settings.root &&
+        typeof settings.root === "object" &&
+        settings.root.isConnected
+      ) {
+        return settings.root;
+      }
+
+      if (typeof settings.component === "string" && settings.component.trim() !== "") {
+        return findRootByComponent(settings.component.trim());
+      }
+
+      return null;
+    }
+
+    function normalizePublicOnOptions(settings) {
+      const resolved = settings && typeof settings === "object" ? settings : {};
+
+      return {
+        capture: resolved.capture === true,
+        once: resolved.once === true,
+        passive: resolved.passive === true,
+        selector:
+          typeof resolved.selector === "string" && resolved.selector.trim() !== ""
+            ? resolved.selector.trim()
+            : null,
+        component:
+          typeof resolved.component === "string" && resolved.component.trim() !== ""
+            ? resolved.component.trim()
+            : null,
+        root: resolvePublicOnRoot(resolved),
+        target: resolvePublicOnTarget(resolved),
+      };
+    }
+
+    function matchesPublicOnFilter(event, settings) {
+      if (!settings) {
+        return true;
+      }
+
+      const detail =
+        event && event.detail && typeof event.detail === "object"
+          ? event.detail
+          : {};
+      const target = event && event.target ? event.target : null;
+
+      if (settings.component) {
+        const component =
+          typeof detail.component === "string" && detail.component !== ""
+            ? detail.component
+            : null;
+
+        if (component && component !== settings.component) {
+          return false;
+        }
+      }
+
+      if (settings.root) {
+        if (target && settings.root === target) {
+          return true;
+        }
+
+        if (
+          target &&
+          typeof target === "object" &&
+          typeof target.nodeType === "number" &&
+          typeof settings.root.contains === "function" &&
+          settings.root.contains(target)
+        ) {
+          return true;
+        }
+
+        const componentName =
+          typeof detail.component === "string" && detail.component !== ""
+            ? detail.component
+            : null;
+
+        if (
+          componentName &&
+          settings.root.getAttribute &&
+          settings.root.getAttribute("data-volt-component") === componentName
+        ) {
+          return true;
+        }
+
+        return false;
+      }
+
+      if (settings.selector) {
+        if (!(target instanceof Element)) {
+          return false;
+        }
+
+        return !!target.closest(settings.selector);
+      }
+
+      return true;
+    }
+
+    return function (name, listener, options) {
+      if (typeof name !== "string" || name.trim() === "") {
+        return function () {
+          return false;
+        };
+      }
+
+      if (typeof listener !== "function") {
+        return function () {
+          return false;
+        };
+      }
+
+      const settings = normalizePublicOnOptions(options);
+      const eventName = name.trim();
+
+      function wrapper(event) {
+        if (!matchesPublicOnFilter(event, settings)) {
+          return;
+        }
+
+        listener(event);
+      }
+
+      settings.target.addEventListener(eventName, wrapper, {
+        capture: settings.capture,
+        passive: settings.passive,
+        once: settings.once,
+      });
+
+      return function () {
+        settings.target.removeEventListener(eventName, wrapper, settings.capture);
+        return true;
+      };
+    };
+  }
+
   function createPublicRuntimeContract() {
     return Object.freeze({
       version: VOLT_RUNTIME_PUBLIC_CONTRACT_VERSION,
@@ -2179,9 +2329,16 @@
         prefetch: Object.freeze({
           type: "function",
         }),
+        on: Object.freeze({
+          type: "function",
+        }),
         state: Object.freeze({
           type: "api",
           factory: "createPublicStateApi",
+        }),
+        directives: Object.freeze({
+          type: "api",
+          factory: "createPublicDirectivesApi",
         }),
         components: Object.freeze({
           type: "api",

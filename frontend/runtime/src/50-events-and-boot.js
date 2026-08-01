@@ -317,6 +317,7 @@
   window.Volt.prefetch = function (url, options) {
     return prefetchPage(url, options || {});
   };
+  window.Volt.on = createPublicOnFunction();
   window.Volt.busy = createPublicBusyApi();
   window.Volt.state = createPublicStateApi();
   window.Volt.directives = createPublicDirectivesApi();

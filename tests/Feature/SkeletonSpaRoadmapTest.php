@@ -905,6 +905,8 @@ final class SkeletonSpaRoadmapTest extends TestCase
         $this->assertRuntimeAssetContains('window.Volt.components={entries:activeComponentsEntries', $runtimeAsset);
         $this->assertRuntimeAssetContains('window.Volt.telemetry={entries:filteredTelemetryEntries', $runtimeAsset);
         $this->assertRuntimeAssetContains('window.Volt.busy={active:function(){return cloneBusyState(resolveGlobalBusyState()).active}', $runtimeAsset);
+        $this->assertRuntimeAssetContains('window.Volt.directives=', $runtimeAsset);
+        $this->assertRuntimeAssetContains('registerFrontendDirective', $runtimeAsset);
         $this->assertRuntimeAssetContains('emitRuntimeHook("volt:busy-change"', $runtimeAsset);
         $this->assertRuntimeAssetContains('emitRuntimeHook("volt:busy-start"', $runtimeAsset);
         $this->assertRuntimeAssetContains('emitRuntimeHook("volt:busy-end"', $runtimeAsset);
@@ -1508,6 +1510,64 @@ final class SkeletonSpaRoadmapTest extends TestCase
         self::assertStringContainsString('payload.target = normalizeNavigationUrl(spaNavigation.navigation.target);', $visitSource);
         self::assertStringContainsString('let navigationTarget = normalizedUrl;', $visitSource);
         self::assertStringContainsString('target: navigationTarget,', $visitSource);
+    }
+
+    public function test_runtime_source_exposes_frontend_directives_registry_contract(): void
+    {
+        $frameworkBasePath = self::$skeletonBasePath
+            . DIRECTORY_SEPARATOR . 'vendor'
+            . DIRECTORY_SEPARATOR . 'voltstack'
+            . DIRECTORY_SEPARATOR . 'framework';
+
+        $registrySource = file_get_contents(
+            $frameworkBasePath
+            . DIRECTORY_SEPARATOR . 'frontend'
+            . DIRECTORY_SEPARATOR . 'runtime'
+            . DIRECTORY_SEPARATOR . 'src'
+            . DIRECTORY_SEPARATOR . '11-directives-registry.js'
+        );
+        $bootSource = file_get_contents(
+            $frameworkBasePath
+            . DIRECTORY_SEPARATOR . 'frontend'
+            . DIRECTORY_SEPARATOR . 'runtime'
+            . DIRECTORY_SEPARATOR . 'src'
+            . DIRECTORY_SEPARATOR . '50-events-and-boot.js'
+        );
+
+        self::assertIsString($registrySource);
+        self::assertIsString($bootSource);
+        self::assertStringContainsString('function createPublicDirectivesApi()', $registrySource);
+        self::assertStringContainsString('resolveValue: function (expression)', $registrySource);
+        self::assertStringContainsString('resolveActive: function (expression)', $registrySource);
+        self::assertStringContainsString('window.Volt.directives = createPublicDirectivesApi();', $bootSource);
+    }
+
+    public function test_runtime_source_exposes_public_on_api_contract(): void
+    {
+        $frameworkBasePath = self::$skeletonBasePath
+            . DIRECTORY_SEPARATOR . 'vendor'
+            . DIRECTORY_SEPARATOR . 'voltstack'
+            . DIRECTORY_SEPARATOR . 'framework';
+
+        $bootstrapSource = file_get_contents(
+            $frameworkBasePath
+            . DIRECTORY_SEPARATOR . 'frontend'
+            . DIRECTORY_SEPARATOR . 'runtime'
+            . DIRECTORY_SEPARATOR . 'src'
+            . DIRECTORY_SEPARATOR . '00-bootstrap.js'
+        );
+        $bootSource = file_get_contents(
+            $frameworkBasePath
+            . DIRECTORY_SEPARATOR . 'frontend'
+            . DIRECTORY_SEPARATOR . 'runtime'
+            . DIRECTORY_SEPARATOR . 'src'
+            . DIRECTORY_SEPARATOR . '50-events-and-boot.js'
+        );
+
+        self::assertIsString($bootstrapSource);
+        self::assertIsString($bootSource);
+        self::assertStringContainsString('function createPublicOnFunction()', $bootstrapSource);
+        self::assertStringContainsString('window.Volt.on = createPublicOnFunction();', $bootSource);
     }
 
     private function handleSkeletonRequest(string $path): Response

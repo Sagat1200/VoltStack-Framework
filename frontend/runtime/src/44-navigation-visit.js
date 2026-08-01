@@ -81,6 +81,26 @@
       };
     }
 
+    const offlineMode =
+      typeof navigator !== "undefined" && navigator.onLine === false;
+    const offlineCachedPayload = offlineMode ? getCachedNavigation(normalizedUrl) : null;
+
+    if (offlineMode && !offlineCachedPayload) {
+      emitRuntimeHook(
+        "volt:navigate-offline",
+        {
+          url: normalizedUrl,
+          trigger: triggerDescriptor(settings.trigger || null),
+        },
+        document,
+      );
+
+      return {
+        offline: true,
+        url: normalizedUrl,
+      };
+    }
+
     return runRuntimeMiddleware(
       "runtime",
       {
@@ -174,12 +194,15 @@
     let payloadHydrate = null;
 
     try {
-      const manifestRoute = await resolveFrontendManifestRoute(normalizedUrl, "GET");
-      const manifestNavigationMode = frontendManifestRouteNavigationMode(
-        manifestRoute,
-      );
-      const manifestDocumentContract =
-        frontendManifestRouteDocumentContract(manifestRoute);
+      const manifestRoute = offlineMode
+        ? null
+        : await resolveFrontendManifestRoute(normalizedUrl, "GET");
+      const manifestNavigationMode = manifestRoute
+        ? frontendManifestRouteNavigationMode(manifestRoute)
+        : null;
+      const manifestDocumentContract = manifestRoute
+        ? frontendManifestRouteDocumentContract(manifestRoute)
+        : null;
 
       if (manifestDocumentContract && manifestDocumentContract.mode === "reload") {
         resolvedDocumentContract = manifestDocumentContract.mode;
@@ -212,29 +235,47 @@
         });
       }
 
-      const cachedPayload = shouldReadNavigationCache(cacheControl)
-        ? getCachedNavigation(normalizedUrl)
-        : null;
+      const cachedPayload =
+        offlineCachedPayload ||
+        (shouldReadNavigationCache(cacheControl)
+          ? getCachedNavigation(normalizedUrl)
+          : null);
 
       if (cachedPayload) {
         cacheHit = true;
         emitNavigationCacheEvent("volt:cache-hit", {
           url: normalizedUrl,
           finalUrl: cachedPayload.finalUrl,
-          source: "navigate",
+          source: offlineMode ? "offline" : "navigate",
           mode: cacheControl.mode,
         });
       } else {
         emitNavigationCacheEvent("volt:cache-miss", {
           url: normalizedUrl,
-          source: "navigate",
+          source: offlineMode ? "offline" : "navigate",
           mode: cacheControl.mode,
         });
       }
 
-      const payload =
-        cachedPayload ||
-        (await (async function () {
+      if (!cachedPayload && offlineMode) {
+        emitRuntimeHook(
+          "volt:navigate-offline",
+          {
+            url: normalizedUrl,
+            trigger: triggerDescriptor(settings.trigger || null),
+          },
+          document,
+        );
+
+        return {
+          offline: true,
+          url: normalizedUrl,
+        };
+      }
+
+      const payload = cachedPayload
+        ? cachedPayload
+        : await (async function () {
           let attempt = 0;
 
           while (true) {
@@ -374,7 +415,7 @@
               attempt += 1;
             }
           }
-        })());
+        })();
       navigationTarget =
         payload && typeof payload.target === "string" && payload.target !== ""
           ? payload.target

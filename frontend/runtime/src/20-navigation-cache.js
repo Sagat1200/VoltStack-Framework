@@ -524,11 +524,218 @@
     }
   }
 
+  function offlineNavigationCacheItemKey(url) {
+    const normalizedUrl = normalizeNavigationUrl(url);
+    return normalizedUrl ? "volt:offline:navigation:" + encodeURIComponent(normalizedUrl) : null;
+  }
+
+  function offlineNavigationIndexKey() {
+    return "volt:offline:navigation:index";
+  }
+
+  function readOfflineNavigationIndex(storage) {
+    if (!storage || typeof storage.getItem !== "function") {
+      return [];
+    }
+
+    try {
+      const raw = storage.getItem(offlineNavigationIndexKey());
+
+      if (!raw || typeof raw !== "string") {
+        return [];
+      }
+
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (error) {
+      return [];
+    }
+  }
+
+  function writeOfflineNavigationIndex(storage, entries) {
+    if (!storage || typeof storage.setItem !== "function") {
+      return false;
+    }
+
+    try {
+      storage.setItem(offlineNavigationIndexKey(), JSON.stringify(entries));
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function pruneOfflineNavigationCache(storage) {
+    if (!storage || typeof storage.removeItem !== "function") {
+      return;
+    }
+
+    const maxEntries = 8;
+    const index = readOfflineNavigationIndex(storage)
+      .filter(function (entry) {
+        return entry && typeof entry.key === "string" && entry.key !== "";
+      })
+      .sort(function (left, right) {
+        const leftStamp =
+          typeof left.lastAccessedAt === "number"
+            ? left.lastAccessedAt
+            : typeof left.storedAt === "number"
+              ? left.storedAt
+              : 0;
+        const rightStamp =
+          typeof right.lastAccessedAt === "number"
+            ? right.lastAccessedAt
+            : typeof right.storedAt === "number"
+              ? right.storedAt
+              : 0;
+        return leftStamp - rightStamp;
+      });
+
+    while (index.length > maxEntries) {
+      const oldest = index.shift();
+
+      if (!oldest) {
+        break;
+      }
+
+      try {
+        storage.removeItem(oldest.key);
+      } catch (error) {
+        break;
+      }
+    }
+
+    writeOfflineNavigationIndex(storage, index);
+  }
+
+  function persistOfflineNavigationCacheEntry(entry) {
+    const storage = safeLocalStorage();
+
+    if (!storage || typeof storage.setItem !== "function") {
+      return false;
+    }
+
+    if (!entry || typeof entry !== "object" || typeof entry.html !== "string") {
+      return false;
+    }
+
+    const now = Date.now();
+    const aliases = navigationCacheAliases(entry);
+    const index = readOfflineNavigationIndex(storage);
+
+    for (let indexOffset = 0; indexOffset < aliases.length; indexOffset += 1) {
+      const key = offlineNavigationCacheItemKey(aliases[indexOffset]);
+
+      if (!key) {
+        continue;
+      }
+
+      try {
+        storage.setItem(
+          key,
+          JSON.stringify(
+            Object.assign({}, entry, {
+              source: entry.source || "cache",
+              storedAt: now,
+            }),
+          ),
+        );
+      } catch (error) {
+        continue;
+      }
+
+      const existingIndex = index.findIndex(function (item) {
+        return item && item.key === key;
+      });
+
+      const record = {
+        key: key,
+        url: entry.url || null,
+        finalUrl: entry.finalUrl || null,
+        cacheKey: entry.cacheKey || null,
+        storedAt: now,
+        lastAccessedAt: now,
+      };
+
+      if (existingIndex === -1) {
+        index.push(record);
+      } else {
+        index[existingIndex] = Object.assign({}, index[existingIndex], record);
+      }
+    }
+
+    writeOfflineNavigationIndex(storage, index);
+    pruneOfflineNavigationCache(storage);
+    return true;
+  }
+
+  function readOfflineNavigationCacheEntry(url) {
+    const storage = safeLocalStorage();
+
+    if (!storage || typeof storage.getItem !== "function") {
+      return null;
+    }
+
+    const key = offlineNavigationCacheItemKey(url);
+
+    if (!key) {
+      return null;
+    }
+
+    let raw = null;
+
+    try {
+      raw = storage.getItem(key);
+    } catch (error) {
+      raw = null;
+    }
+
+    if (!raw || typeof raw !== "string") {
+      return null;
+    }
+
+    let parsed = null;
+
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      parsed = null;
+    }
+
+    if (!parsed || typeof parsed !== "object" || typeof parsed.html !== "string") {
+      return null;
+    }
+
+    const index = readOfflineNavigationIndex(storage);
+    const existingIndex = index.findIndex(function (item) {
+      return item && item.key === key;
+    });
+
+    if (existingIndex !== -1) {
+      index[existingIndex] = Object.assign({}, index[existingIndex], {
+        lastAccessedAt: Date.now(),
+      });
+      writeOfflineNavigationIndex(storage, index);
+    }
+
+    return parsed;
+  }
+
   function getCachedNavigation(url) {
     const normalizedUrl = normalizeNavigationUrl(url);
     const entry = runtime.navigationCache.get(normalizedUrl);
 
     if (!entry) {
+      if (runtime.networkOnline === false) {
+        const offlineEntry = readOfflineNavigationCacheEntry(normalizedUrl);
+
+        if (offlineEntry) {
+          offlineEntry.lastAccessedAt = Date.now();
+          offlineEntry.source = "offline-cache";
+          return cloneNavigationPayload(offlineEntry);
+        }
+      }
+
       return null;
     }
 
@@ -651,6 +858,8 @@
       ttl: ttl,
       mode: cacheControl.mode,
     });
+
+    persistOfflineNavigationCacheEntry(entry);
 
     return cloneNavigationPayload(entry);
   }

@@ -2319,6 +2319,340 @@
     };
   }
 
+  function safeLocalStorage() {
+    try {
+      return typeof window !== "undefined" ? window.localStorage : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function offlineSnapshotStorageKey(component) {
+    const key = typeof component === "string" ? component.trim() : "";
+    return key !== "" ? "volt:offline:snapshot:" + key : null;
+  }
+
+  function persistOfflineSnapshot(root) {
+    if (!root || typeof root.getAttribute !== "function") {
+      return false;
+    }
+
+    const component = root.getAttribute("data-volt-component") || "";
+    const key = offlineSnapshotStorageKey(component);
+
+    if (!key) {
+      return false;
+    }
+
+    const snapshot = root.getAttribute("data-volt-snapshot");
+
+    if (!snapshot || typeof snapshot !== "string" || snapshot.trim() === "") {
+      return false;
+    }
+
+    const storage = safeLocalStorage();
+
+    if (!storage || typeof storage.setItem !== "function") {
+      return false;
+    }
+
+    try {
+      storage.setItem(
+        key,
+        JSON.stringify({
+          component: component,
+          snapshot: snapshot,
+          url:
+            typeof window !== "undefined" && window.location
+              ? String(window.location.href)
+              : null,
+          storedAt: new Date().toISOString(),
+        }),
+      );
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function readOfflineSnapshot(component) {
+    const key = offlineSnapshotStorageKey(component);
+
+    if (!key) {
+      return null;
+    }
+
+    const storage = safeLocalStorage();
+
+    if (!storage || typeof storage.getItem !== "function") {
+      return null;
+    }
+
+    try {
+      const raw = storage.getItem(key);
+
+      if (!raw || typeof raw !== "string") {
+        return null;
+      }
+
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === "object" ? parsed : null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function clearOfflineSnapshot(component) {
+    const key = offlineSnapshotStorageKey(component);
+
+    if (!key) {
+      return false;
+    }
+
+    const storage = safeLocalStorage();
+
+    if (!storage || typeof storage.removeItem !== "function") {
+      return false;
+    }
+
+    try {
+      storage.removeItem(key);
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  function ensureQueuedActions() {
+    if (Array.isArray(runtime.queuedActions)) {
+      return;
+    }
+
+    runtime.queuedActions = [];
+    runtime.queuedActionsFlushInProgress = false;
+  }
+
+  function enqueueOfflineAction(component, action, params, updates, trigger) {
+    ensureQueuedActions();
+
+    const componentName = typeof component === "string" ? component.trim() : "";
+    const actionName = typeof action === "string" ? action.trim() : "";
+
+    if (componentName === "" || actionName === "") {
+      return false;
+    }
+
+    runtime.queuedActions.push({
+      component: componentName,
+      action: actionName,
+      params: params && typeof params === "object" ? params : {},
+      updates: updates && typeof updates === "object" ? updates : {},
+      trigger: trigger && typeof trigger === "object" ? trigger : null,
+      queuedAt: new Date().toISOString(),
+    });
+
+    emitRuntimeHook(
+      "volt:action-queued",
+      {
+        component: componentName,
+        action: actionName,
+        trigger: trigger && typeof trigger === "object" ? trigger : null,
+        queueSize: runtime.queuedActions.length,
+      },
+      document,
+    );
+
+    return true;
+  }
+
+  async function flushQueuedActions(options) {
+    ensureQueuedActions();
+
+    const settings = options && typeof options === "object" ? options : {};
+    const max = typeof settings.max === "number" && settings.max > 0 ? settings.max : null;
+
+    if (runtime.queuedActionsFlushInProgress === true) {
+      return {
+        flushed: 0,
+        remaining: runtime.queuedActions.length,
+        busy: true,
+      };
+    }
+
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      return {
+        flushed: 0,
+        remaining: runtime.queuedActions.length,
+        offline: true,
+      };
+    }
+
+    runtime.queuedActionsFlushInProgress = true;
+
+    emitRuntimeHook(
+      "volt:queue-flush-start",
+      {
+        queueSize: runtime.queuedActions.length,
+      },
+      document,
+    );
+
+    let flushed = 0;
+
+    try {
+      while (runtime.queuedActions.length > 0) {
+        if (max !== null && flushed >= max) {
+          break;
+        }
+
+        const entry = runtime.queuedActions.shift();
+
+        if (!entry) {
+          continue;
+        }
+
+        const root = findRootByComponent(entry.component);
+
+        if (!root) {
+          continue;
+        }
+
+        try {
+          await dispatchAction(
+            root,
+            entry.action,
+            entry.params || {},
+            entry.updates || {},
+            null,
+          );
+          flushed += 1;
+        } catch (error) {
+          runtime.queuedActions.unshift(entry);
+          break;
+        }
+      }
+    } finally {
+      runtime.queuedActionsFlushInProgress = false;
+
+      emitRuntimeHook(
+        "volt:queue-flush-finish",
+        {
+          flushed: flushed,
+          remaining: runtime.queuedActions.length,
+        },
+        document,
+      );
+    }
+
+    return {
+      flushed: flushed,
+      remaining: runtime.queuedActions.length,
+    };
+  }
+
+  function createPublicQueueApi() {
+    return {
+      list: function () {
+        ensureQueuedActions();
+        return runtime.queuedActions.slice();
+      },
+      flush: function (options) {
+        return flushQueuedActions(options || {});
+      },
+      clear: function () {
+        ensureQueuedActions();
+        const size = runtime.queuedActions.length;
+        runtime.queuedActions = [];
+        return {
+          cleared: size,
+        };
+      },
+    };
+  }
+
+  function createPublicSnapshotsApi() {
+    return {
+      get: function (component) {
+        return readOfflineSnapshot(component);
+      },
+      clear: function (component) {
+        return clearOfflineSnapshot(component);
+      },
+    };
+  }
+
+  function runtimeOnlineValue() {
+    return typeof navigator === "undefined" ? true : navigator.onLine !== false;
+  }
+
+  function setRuntimeOnlineState(online, meta) {
+    const active = online === true;
+    const previous = runtime.networkOnline !== false;
+    runtime.networkOnline = active;
+
+    if (document && document.documentElement && document.documentElement.setAttribute) {
+      document.documentElement.setAttribute(
+        "data-volt-offline",
+        active ? "false" : "true",
+      );
+      document.documentElement.setAttribute(
+        "data-volt-online",
+        active ? "true" : "false",
+      );
+    }
+
+    if (previous !== active) {
+      emitRuntimeHook(active ? "volt:online" : "volt:offline", meta || {}, document);
+    }
+  }
+
+  function ensureRuntimeNetworkBindings() {
+    if (runtime.networkBindingsInstalled === true) {
+      return;
+    }
+
+    runtime.networkBindingsInstalled = true;
+
+    if (typeof window !== "undefined" && window.addEventListener) {
+      setRuntimeOnlineState(runtimeOnlineValue(), {
+        source: "boot",
+      });
+
+      window.addEventListener("online", function () {
+        setRuntimeOnlineState(true, {
+          source: "browser",
+        });
+        flushQueuedActions({
+          max: null,
+        }).catch(function () {
+          return null;
+        });
+      });
+
+      window.addEventListener("offline", function () {
+        setRuntimeOnlineState(false, {
+          source: "browser",
+        });
+      });
+    }
+  }
+
+  function createPublicNetworkApi() {
+    return {
+      online: function () {
+        return runtime.networkOnline !== false;
+      },
+      offline: function () {
+        return runtime.networkOnline === false;
+      },
+      current: function () {
+        return {
+          online: runtime.networkOnline !== false,
+        };
+      },
+    };
+  }
+
   function createPublicRuntimeContract() {
     return Object.freeze({
       version: VOLT_RUNTIME_PUBLIC_CONTRACT_VERSION,
@@ -2351,6 +2685,18 @@
         middleware: Object.freeze({
           type: "api",
           factory: "createPublicMiddlewareApi",
+        }),
+        queue: Object.freeze({
+          type: "api",
+          factory: "createPublicQueueApi",
+        }),
+        snapshots: Object.freeze({
+          type: "api",
+          factory: "createPublicSnapshotsApi",
+        }),
+        network: Object.freeze({
+          type: "api",
+          factory: "createPublicNetworkApi",
         }),
         components: Object.freeze({
           type: "api",

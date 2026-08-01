@@ -1698,6 +1698,69 @@ final class SkeletonSpaRoadmapTest extends TestCase
         self::assertStringContainsString('function shouldRetryActionRequest', $requestStateSource);
     }
 
+    public function test_runtime_source_exposes_offline_queue_and_snapshots_contracts(): void
+    {
+        $frameworkBasePath = self::$skeletonBasePath
+            . DIRECTORY_SEPARATOR . 'vendor'
+            . DIRECTORY_SEPARATOR . 'voltstack'
+            . DIRECTORY_SEPARATOR . 'framework';
+
+        $bootstrapSource = file_get_contents(
+            $frameworkBasePath
+            . DIRECTORY_SEPARATOR . 'frontend'
+            . DIRECTORY_SEPARATOR . 'runtime'
+            . DIRECTORY_SEPARATOR . 'src'
+            . DIRECTORY_SEPARATOR . '00-bootstrap.js'
+        );
+        $visitSource = file_get_contents(
+            $frameworkBasePath
+            . DIRECTORY_SEPARATOR . 'frontend'
+            . DIRECTORY_SEPARATOR . 'runtime'
+            . DIRECTORY_SEPARATOR . 'src'
+            . DIRECTORY_SEPARATOR . '44-navigation-visit.js'
+        );
+        $actionSource = file_get_contents(
+            $frameworkBasePath
+            . DIRECTORY_SEPARATOR . 'frontend'
+            . DIRECTORY_SEPARATOR . 'runtime'
+            . DIRECTORY_SEPARATOR . 'src'
+            . DIRECTORY_SEPARATOR . '45-action-dispatch.js'
+        );
+        $navigationCacheSource = file_get_contents(
+            $frameworkBasePath
+            . DIRECTORY_SEPARATOR . 'frontend'
+            . DIRECTORY_SEPARATOR . 'runtime'
+            . DIRECTORY_SEPARATOR . 'src'
+            . DIRECTORY_SEPARATOR . '20-navigation-cache.js'
+        );
+        $bootSource = file_get_contents(
+            $frameworkBasePath
+            . DIRECTORY_SEPARATOR . 'frontend'
+            . DIRECTORY_SEPARATOR . 'runtime'
+            . DIRECTORY_SEPARATOR . 'src'
+            . DIRECTORY_SEPARATOR . '50-events-and-boot.js'
+        );
+
+        self::assertIsString($bootstrapSource);
+        self::assertIsString($visitSource);
+        self::assertIsString($actionSource);
+        self::assertIsString($navigationCacheSource);
+        self::assertIsString($bootSource);
+        self::assertStringContainsString('function createPublicQueueApi()', $bootstrapSource);
+        self::assertStringContainsString('function createPublicSnapshotsApi()', $bootstrapSource);
+        self::assertStringContainsString('function createPublicNetworkApi()', $bootstrapSource);
+        self::assertStringContainsString('ensureRuntimeNetworkBindings()', $bootSource);
+        self::assertStringContainsString('window.Volt.queue = createPublicQueueApi();', $bootSource);
+        self::assertStringContainsString('window.Volt.snapshots = createPublicSnapshotsApi();', $bootSource);
+        self::assertStringContainsString('window.Volt.network = createPublicNetworkApi();', $bootSource);
+        self::assertStringContainsString('enqueueOfflineAction(', $actionSource);
+        self::assertStringContainsString('"volt:navigate-offline"', $visitSource);
+        self::assertStringContainsString('volt:offline:navigation:', $navigationCacheSource);
+        self::assertStringContainsString('persistOfflineNavigationCacheEntry', $navigationCacheSource);
+        self::assertStringContainsString('readOfflineNavigationCacheEntry', $navigationCacheSource);
+        self::assertStringContainsString('offlineCachedPayload', $visitSource);
+    }
+
     private function handleSkeletonRequest(string $path): Response
     {
         $app = new Application(self::$skeletonBasePath);

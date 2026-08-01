@@ -8,6 +8,17 @@
       return;
     }
 
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      enqueueOfflineAction(
+        component,
+        action,
+        params || {},
+        updates || {},
+        triggerDescriptor(trigger),
+      );
+      return;
+    }
+
     return runRuntimeMiddleware(
       "runtime",
       {
@@ -389,6 +400,7 @@
               "data-volt-snapshot",
               JSON.stringify(payload.snapshot),
             );
+            persistOfflineSnapshot(updatedRoot);
           }
 
           return result;

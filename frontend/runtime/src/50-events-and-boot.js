@@ -324,11 +324,24 @@
   window.Volt.effects = createPublicEffectsApi();
   window.Volt.plugins = createPublicPluginsApi();
   window.Volt.middleware = createPublicMiddlewareApi();
+  window.Volt.queue = createPublicQueueApi();
+  window.Volt.snapshots = createPublicSnapshotsApi();
+  window.Volt.network = createPublicNetworkApi();
   window.Volt.use = function (plugin, options) {
     return window.Volt.plugins.use(plugin, options || {});
   };
   window.Volt.components = createPublicComponentsApi();
   window.Volt.telemetry = createPublicTelemetryApi();
+
+  ensureRuntimeNetworkBindings();
+
+  if (document && typeof document.querySelectorAll === "function") {
+    const roots = document.querySelectorAll('[data-volt-root="true"]');
+
+    for (let index = 0; index < roots.length; index += 1) {
+      persistOfflineSnapshot(roots[index]);
+    }
+  }
 
   function bootRuntimeDocumentFeatures() {
     const measureNow =

@@ -321,6 +321,11 @@
   window.Volt.busy = createPublicBusyApi();
   window.Volt.state = createPublicStateApi();
   window.Volt.directives = createPublicDirectivesApi();
+  window.Volt.effects = createPublicEffectsApi();
+  window.Volt.plugins = createPublicPluginsApi();
+  window.Volt.use = function (plugin, options) {
+    return window.Volt.plugins.use(plugin, options || {});
+  };
   window.Volt.components = createPublicComponentsApi();
   window.Volt.telemetry = createPublicTelemetryApi();
 

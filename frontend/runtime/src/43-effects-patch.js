@@ -252,6 +252,158 @@
     });
   }
 
+  function ensureRuntimeCustomEffectsRegistry() {
+    if (runtime.customEffects && runtime.customEffectsIndex) {
+      return;
+    }
+
+    runtime.customEffects = new Map();
+    runtime.customEffectsIndex = [];
+  }
+
+  function rebuildRuntimeCustomEffectsIndex() {
+    ensureRuntimeCustomEffectsRegistry();
+
+    runtime.customEffectsIndex = Array.from(runtime.customEffects.entries())
+      .map(function (entry) {
+        return entry[1];
+      })
+      .sort(function (left, right) {
+        if (left.priority !== right.priority) {
+          return left.priority - right.priority;
+        }
+
+        return String(left.type).localeCompare(String(right.type));
+      });
+  }
+
+  function normalizeCustomEffectPriority(value) {
+    if (typeof value === "number") {
+      return Number.isFinite(value) ? value : 0;
+    }
+
+    if (typeof value !== "string") {
+      return 0;
+    }
+
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function registerCustomEffect(type, handler, options) {
+    ensureRuntimeCustomEffectsRegistry();
+
+    const settings = options && typeof options === "object" ? options : {};
+    const key = typeof type === "string" ? type.trim() : "";
+
+    if (key === "" || typeof handler !== "function") {
+      return false;
+    }
+
+    if (runtime.customEffects.has(key) && settings.replace !== true) {
+      return false;
+    }
+
+    runtime.customEffects.set(key, {
+      type: key,
+      handler: handler,
+      priority: normalizeCustomEffectPriority(settings.priority),
+    });
+    rebuildRuntimeCustomEffectsIndex();
+    return true;
+  }
+
+  function unregisterCustomEffect(type) {
+    ensureRuntimeCustomEffectsRegistry();
+
+    const key = typeof type === "string" ? type.trim() : "";
+
+    if (key === "") {
+      return false;
+    }
+
+    const deleted = runtime.customEffects.delete(key);
+    rebuildRuntimeCustomEffectsIndex();
+    return deleted;
+  }
+
+  function listCustomEffects() {
+    ensureRuntimeCustomEffectsRegistry();
+
+    return runtime.customEffectsIndex.map(function (entry) {
+      return {
+        type: entry.type,
+        priority: entry.priority,
+      };
+    });
+  }
+
+  function normalizeCustomEffectResult(value) {
+    if (value === true) {
+      return {
+        handled: true,
+        preventsHtmlFallback: true,
+      };
+    }
+
+    if (value === false || value === null || typeof value === "undefined") {
+      return null;
+    }
+
+    if (typeof value !== "object") {
+      return null;
+    }
+
+    return {
+      handled: value.handled === true,
+      preventsHtmlFallback: value.preventsHtmlFallback !== false,
+      target:
+        value.target && typeof value.target === "object" && value.target.isConnected
+          ? value.target
+          : null,
+      detail: value.detail && typeof value.detail === "object" ? value.detail : null,
+    };
+  }
+
+  async function applyCustomEffect(root, effect, target) {
+    ensureRuntimeCustomEffectsRegistry();
+
+    const entry = runtime.customEffects.get(effect.type);
+
+    if (!entry || typeof entry.handler !== "function") {
+      return null;
+    }
+
+    let rawResult = null;
+
+    try {
+      rawResult = await entry.handler({
+        root: root,
+        effect: effect,
+        target: target,
+      });
+    } catch (error) {
+      console.error("VoltStack runtime custom effect error:", effect.type, error);
+      rawResult = null;
+    }
+
+    return normalizeCustomEffectResult(rawResult);
+  }
+
+  function createPublicEffectsApi() {
+    return {
+      register: function (type, handler, options) {
+        return registerCustomEffect(type, handler, options || {});
+      },
+      unregister: function (type) {
+        return unregisterCustomEffect(type);
+      },
+      list: function () {
+        return listCustomEffects();
+      },
+    };
+  }
+
   async function applyEffect(root, effect) {
     if (!effect || typeof effect.type !== "string") {
       return {
@@ -266,6 +418,20 @@
       effectHookDetail(root, effect, target),
       target || root || document,
     );
+
+    const customResult = await applyCustomEffect(root, effect, target);
+
+    if (customResult && customResult.handled === true) {
+      const resolvedTarget = customResult.target || target;
+      return createEffectResult(
+        root,
+        effect,
+        resolvedTarget,
+        true,
+        customResult.preventsHtmlFallback !== false,
+        customResult.detail || null,
+      );
+    }
 
     switch (effect.type) {
       case "text.update":

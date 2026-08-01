@@ -2340,6 +2340,14 @@
           type: "api",
           factory: "createPublicDirectivesApi",
         }),
+        effects: Object.freeze({
+          type: "api",
+          factory: "createPublicEffectsApi",
+        }),
+        plugins: Object.freeze({
+          type: "api",
+          factory: "createPublicPluginsApi",
+        }),
         components: Object.freeze({
           type: "api",
           factory: "createPublicComponentsApi",

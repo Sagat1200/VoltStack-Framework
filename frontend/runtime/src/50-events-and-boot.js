@@ -323,6 +323,7 @@
   window.Volt.directives = createPublicDirectivesApi();
   window.Volt.effects = createPublicEffectsApi();
   window.Volt.plugins = createPublicPluginsApi();
+  window.Volt.middleware = createPublicMiddlewareApi();
   window.Volt.use = function (plugin, options) {
     return window.Volt.plugins.use(plugin, options || {});
   };

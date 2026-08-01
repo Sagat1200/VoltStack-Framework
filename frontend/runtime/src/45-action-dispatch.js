@@ -8,6 +8,15 @@
       return;
     }
 
+    return runRuntimeMiddleware(
+      "runtime",
+      {
+        kind: "action",
+        component: component,
+        action: action,
+        trigger: triggerDescriptor(trigger),
+      },
+      async function () {
     const state = componentRequestState(component);
     const previousController =
       state && state.controller ? state.controller : null;
@@ -335,5 +344,7 @@
         resolveRuntimeRoot(root, component) || document,
       );
     }
+      },
+    );
   }
 

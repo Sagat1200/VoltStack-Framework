@@ -81,6 +81,21 @@
       };
     }
 
+    return runRuntimeMiddleware(
+      "runtime",
+      {
+        kind: "navigation",
+        url: normalizedUrl,
+        trigger: triggerDescriptor(settings.trigger || null),
+      },
+      function () {
+        return runRuntimeMiddleware(
+          "navigation",
+          {
+            url: normalizedUrl,
+            options: Object.assign({}, settings),
+          },
+          async function () {
     const cacheControl = navigationVisitCacheControl(settings);
     const requestedNavigationMode =
       settings.navigationMode && typeof settings.navigationMode === "object"
@@ -826,5 +841,9 @@
         }
       }
     }
+          },
+        );
+      },
+    );
   }
 

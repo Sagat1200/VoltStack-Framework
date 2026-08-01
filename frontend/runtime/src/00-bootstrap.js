@@ -2348,6 +2348,10 @@
           type: "api",
           factory: "createPublicPluginsApi",
         }),
+        middleware: Object.freeze({
+          type: "api",
+          factory: "createPublicMiddlewareApi",
+        }),
         components: Object.freeze({
           type: "api",
           factory: "createPublicComponentsApi",

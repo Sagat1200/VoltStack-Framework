@@ -1609,6 +1609,70 @@ final class SkeletonSpaRoadmapTest extends TestCase
         self::assertStringContainsString('window.Volt.use = function (plugin, options)', $bootSource);
     }
 
+    public function test_runtime_source_exposes_public_middleware_contract(): void
+    {
+        $frameworkBasePath = self::$skeletonBasePath
+            . DIRECTORY_SEPARATOR . 'vendor'
+            . DIRECTORY_SEPARATOR . 'voltstack'
+            . DIRECTORY_SEPARATOR . 'framework';
+
+        $middlewareSource = file_get_contents(
+            $frameworkBasePath
+            . DIRECTORY_SEPARATOR . 'frontend'
+            . DIRECTORY_SEPARATOR . 'runtime'
+            . DIRECTORY_SEPARATOR . 'src'
+            . DIRECTORY_SEPARATOR . '15-middleware-registry.js'
+        );
+        $visitSource = file_get_contents(
+            $frameworkBasePath
+            . DIRECTORY_SEPARATOR . 'frontend'
+            . DIRECTORY_SEPARATOR . 'runtime'
+            . DIRECTORY_SEPARATOR . 'src'
+            . DIRECTORY_SEPARATOR . '44-navigation-visit.js'
+        );
+        $dispatchSource = file_get_contents(
+            $frameworkBasePath
+            . DIRECTORY_SEPARATOR . 'frontend'
+            . DIRECTORY_SEPARATOR . 'runtime'
+            . DIRECTORY_SEPARATOR . 'src'
+            . DIRECTORY_SEPARATOR . '45-action-dispatch.js'
+        );
+        $patchSource = file_get_contents(
+            $frameworkBasePath
+            . DIRECTORY_SEPARATOR . 'frontend'
+            . DIRECTORY_SEPARATOR . 'runtime'
+            . DIRECTORY_SEPARATOR . 'src'
+            . DIRECTORY_SEPARATOR . '40-patch-transitions.js'
+        );
+        $effectsSource = file_get_contents(
+            $frameworkBasePath
+            . DIRECTORY_SEPARATOR . 'frontend'
+            . DIRECTORY_SEPARATOR . 'runtime'
+            . DIRECTORY_SEPARATOR . 'src'
+            . DIRECTORY_SEPARATOR . '43-effects-patch.js'
+        );
+        $bootSource = file_get_contents(
+            $frameworkBasePath
+            . DIRECTORY_SEPARATOR . 'frontend'
+            . DIRECTORY_SEPARATOR . 'runtime'
+            . DIRECTORY_SEPARATOR . 'src'
+            . DIRECTORY_SEPARATOR . '50-events-and-boot.js'
+        );
+
+        self::assertIsString($middlewareSource);
+        self::assertIsString($visitSource);
+        self::assertIsString($dispatchSource);
+        self::assertIsString($patchSource);
+        self::assertIsString($effectsSource);
+        self::assertIsString($bootSource);
+        self::assertStringContainsString('function createPublicMiddlewareApi()', $middlewareSource);
+        self::assertStringContainsString('window.Volt.middleware = createPublicMiddlewareApi();', $bootSource);
+        self::assertStringContainsString('runRuntimeMiddleware(', $visitSource);
+        self::assertStringContainsString('runRuntimeMiddleware(', $dispatchSource);
+        self::assertStringContainsString('runRuntimeMiddleware(', $patchSource);
+        self::assertStringContainsString('runRuntimeMiddleware(', $effectsSource);
+    }
+
     private function handleSkeletonRequest(string $path): Response
     {
         $app = new Application(self::$skeletonBasePath);

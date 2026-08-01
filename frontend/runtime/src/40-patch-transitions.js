@@ -1,4 +1,4 @@
-﻿  function wait(duration) {
+  function wait(duration) {
     return new Promise(function (resolve) {
       window.setTimeout(resolve, duration);
     });
@@ -349,7 +349,16 @@
       }),
       root,
     );
-    const result = await callback();
+    const result = await runRuntimeMiddleware(
+      "hydration",
+      {
+        root: root,
+        meta: Object.assign({}, detail),
+      },
+      function () {
+        return callback();
+      },
+    );
     const updatedRoot =
       root && root.isConnected
         ? root

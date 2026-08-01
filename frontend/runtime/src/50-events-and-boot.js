@@ -319,6 +319,7 @@
   };
   window.Volt.busy = createPublicBusyApi();
   window.Volt.state = createPublicStateApi();
+  window.Volt.directives = createPublicDirectivesApi();
   window.Volt.components = createPublicComponentsApi();
   window.Volt.telemetry = createPublicTelemetryApi();
 

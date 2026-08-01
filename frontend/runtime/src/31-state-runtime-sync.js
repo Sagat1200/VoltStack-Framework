@@ -1,4 +1,4 @@
-﻿  function matchingStateDirectiveElements(
+  function matchingStateDirectiveElements(
     root,
     state,
     suffix,
@@ -441,13 +441,7 @@
       return;
     }
 
-    syncForDirectives(root);
-
-    let iterations = 0;
-
-    while (syncIfDirectives(root) && iterations < 5) {
-      iterations += 1;
-    }
+    syncFrontendDirectiveGroup(root, "before-state");
 
     syncRuntimeStateDirective(
       root,
@@ -469,31 +463,10 @@
       "success",
       root.getAttribute("data-volt-success") === "true",
     );
-    syncPortalDirectives(root);
-    let htmlIterations = 0;
-
-    while (syncHtmlDirectives(root) && htmlIterations < 5) {
-      htmlIterations += 1;
-      syncForDirectives(root);
-
-      let htmlIfIterations = 0;
-
-      while (syncIfDirectives(root) && htmlIfIterations < 5) {
-        htmlIfIterations += 1;
-      }
-
-      syncPortalDirectives(root);
-    }
-
-    syncTextDirectives(root);
-    syncModelLocalDirectives(root);
-    syncModelSyncDirectives(root);
-    syncBindDirectives(root);
-    syncClassDirectives(root);
-    syncAttrDirectives(root);
-    syncStyleDirectives(root);
-    syncShowDirectives(root);
-    syncFocusDirectives(root);
+    syncFrontendDirectiveGroup(root, "after-state", {
+      rerunGroups: ["before-state"],
+    });
+    syncFrontendDirectiveGroup(root, "render");
     cleanupRuntimeOrphans();
   }
 

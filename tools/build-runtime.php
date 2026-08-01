@@ -63,15 +63,50 @@ if (file_put_contents($temporaryFile, $output) === false) {
 
 $terserCommand = 'npx terser '
     . escapeshellarg($temporaryFile)
-    . ' --compress --comments false --output '
-    . escapeshellarg($outputFile);
+    . ' --compress --comments false';
 
-$terserExitCode = 0;
-system($terserCommand, $terserExitCode);
+$descriptorSpec = [
+    0 => ['pipe', 'r'],
+    1 => ['pipe', 'w'],
+    2 => ['pipe', 'w'],
+];
+
+$process = proc_open($terserCommand, $descriptorSpec, $pipes);
+
+if (! is_resource($process)) {
+    @unlink($temporaryFile);
+    fwrite(STDERR, 'Unable to execute terser.' . PHP_EOL);
+    exit(1);
+}
+
+fclose($pipes[0]);
+
+$outputHandle = fopen($outputFile, 'wb');
+
+if ($outputHandle === false) {
+    fclose($pipes[1]);
+    fclose($pipes[2]);
+    proc_close($process);
+    @unlink($temporaryFile);
+    fwrite(STDERR, 'Unable to open runtime output file.' . PHP_EOL);
+    exit(1);
+}
+
+stream_copy_to_stream($pipes[1], $outputHandle);
+fclose($outputHandle);
+
+$stderr = stream_get_contents($pipes[2]);
+fclose($pipes[1]);
+fclose($pipes[2]);
+
+$terserExitCode = proc_close($process);
 
 @unlink($temporaryFile);
 
 if ($terserExitCode !== 0) {
+    if (is_string($stderr) && $stderr !== '') {
+        fwrite(STDERR, $stderr . PHP_EOL);
+    }
     fwrite(STDERR, 'Unable to minify runtime bundle with terser.' . PHP_EOL);
     exit(1);
 }

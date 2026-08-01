@@ -1304,7 +1304,7 @@ final class SkeletonSpaRoadmapTest extends TestCase
         $this->assertRuntimeAssetContains('payload.snapshot&&updatedRoot&&updatedRoot.setAttribute("data-volt-snapshot",JSON.stringify(payload.snapshot))', $runtimeAsset);
     }
 
-    public function test_runtime_source_keeps_reactive_actions_without_automatic_retry(): void
+    public function test_runtime_source_supports_reactive_actions_retry_policy_opt_in(): void
     {
         $frameworkBasePath = self::$skeletonBasePath
             . DIRECTORY_SEPARATOR . 'vendor'
@@ -1318,15 +1318,11 @@ final class SkeletonSpaRoadmapTest extends TestCase
             . DIRECTORY_SEPARATOR . 'src'
             . DIRECTORY_SEPARATOR . '45-action-dispatch.js'
         );
-        $runtimeAsset = $this->handleSkeletonRequest('/_volt/runtime.js');
 
         self::assertIsString($actionSource);
-        self::assertSame(200, $runtimeAsset->statusCode(), $runtimeAsset->content());
-        self::assertStringContainsString('const response = await withRequestTimeout(', $actionSource);
-        self::assertStringNotContainsString('resolveRequestRetryPolicy("action"', $actionSource);
-        self::assertStringNotContainsString('"volt:request-retry"', $actionSource);
-        self::assertStringNotContainsString('waitForRetryDelay(', $actionSource);
-        $this->assertRuntimeAssetContains('const response = await withRequestTimeout(', $runtimeAsset);
+        self::assertStringContainsString('resolveRequestRetryPolicy("action"', $actionSource);
+        self::assertStringContainsString('"volt:request-retry"', $actionSource);
+        self::assertStringContainsString('waitForRetryDelay(', $actionSource);
     }
 
     public function test_runtime_source_keeps_spa_navigation_on_get_and_protocol_actions_on_post(): void
@@ -1671,6 +1667,35 @@ final class SkeletonSpaRoadmapTest extends TestCase
         self::assertStringContainsString('runRuntimeMiddleware(', $dispatchSource);
         self::assertStringContainsString('runRuntimeMiddleware(', $patchSource);
         self::assertStringContainsString('runRuntimeMiddleware(', $effectsSource);
+    }
+
+    public function test_runtime_source_supports_action_retry_policy(): void
+    {
+        $frameworkBasePath = self::$skeletonBasePath
+            . DIRECTORY_SEPARATOR . 'vendor'
+            . DIRECTORY_SEPARATOR . 'voltstack'
+            . DIRECTORY_SEPARATOR . 'framework';
+
+        $dispatchSource = file_get_contents(
+            $frameworkBasePath
+            . DIRECTORY_SEPARATOR . 'frontend'
+            . DIRECTORY_SEPARATOR . 'runtime'
+            . DIRECTORY_SEPARATOR . 'src'
+            . DIRECTORY_SEPARATOR . '45-action-dispatch.js'
+        );
+        $requestStateSource = file_get_contents(
+            $frameworkBasePath
+            . DIRECTORY_SEPARATOR . 'frontend'
+            . DIRECTORY_SEPARATOR . 'runtime'
+            . DIRECTORY_SEPARATOR . 'src'
+            . DIRECTORY_SEPARATOR . '41-request-state.js'
+        );
+
+        self::assertIsString($dispatchSource);
+        self::assertIsString($requestStateSource);
+        self::assertStringContainsString('resolveRequestRetryPolicy("action"', $dispatchSource);
+        self::assertStringContainsString('"volt:request-retry"', $dispatchSource);
+        self::assertStringContainsString('function shouldRetryActionRequest', $requestStateSource);
     }
 
     private function handleSkeletonRequest(string $path): Response

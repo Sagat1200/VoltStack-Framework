@@ -41,6 +41,11 @@
       trigger || null,
       root,
     ]);
+    const retryPolicy = resolveRequestRetryPolicy("action", null, [
+      trigger || null,
+      root,
+    ]);
+    let retryCount = 0;
     let errorKind = null;
     let errorMessage = null;
     let responseStatus = null;
@@ -103,6 +108,8 @@
           ? syncedPayload.skipped.length
           : 0,
         timeoutMs: timeoutMs,
+        retryAttempts: retryPolicy.attempts,
+        retryDelayMs: retryPolicy.delayMs,
       }),
       resolveRuntimeRoot(root, component) || document,
     );
@@ -119,74 +126,221 @@
       };
       const serializedRequestBody = JSON.stringify(requestBody);
       requestPayloadBytes = serializedPayloadBytes(serializedRequestBody);
-      const response = await withRequestTimeout(
-        fetch(endpoint, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Requested-With": "VoltStack",
-            "X-CSRF-TOKEN": csrf || "",
-          },
-          credentials: "same-origin",
-          signal: controller ? controller.signal : undefined,
-          body: serializedRequestBody,
-        }),
-        controller,
-        timeoutMs,
-        {
-          message: "Action request timed out after " + timeoutMs + "ms.",
-        },
-      );
-
+      let attempt = 0;
+      let response = null;
       let payload = null;
 
-      try {
-        payload = await response.json();
-      } catch (error) {
-        payload = null;
-      }
+      while (true) {
+        try {
+          response = await withRequestTimeout(
+            fetch(endpoint, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-Requested-With": "VoltStack",
+                "X-CSRF-TOKEN": csrf || "",
+              },
+              credentials: "same-origin",
+              signal: controller ? controller.signal : undefined,
+              body: serializedRequestBody,
+            }),
+            controller,
+            timeoutMs,
+            {
+              message: "Action request timed out after " + timeoutMs + "ms.",
+            },
+          );
+        } catch (error) {
+          if (isAbortError(error)) {
+            const abortDetail = requestAbortDetail(
+              "action",
+              requestMeta,
+              controller ? controller.signal : null,
+            );
 
-      responsePayloadBytes = serializedPayloadBytes(payload);
-      htmlBytes = serializedPayloadBytes(payload && payload.html ? payload.html : "");
-      snapshotBytes = serializedPayloadBytes(
-        payload && payload.snapshot ? payload.snapshot : null,
-      );
-      effectCount = Array.isArray(payload && payload.effects)
-        ? payload.effects.length
-        : 0;
+            if (abortDetail.errorKind === "timeout") {
+              const timeoutDetail = timeoutErrorDetail(
+                "action",
+                requestMeta,
+                controller ? controller.signal : null,
+                {
+                  retryAttempt: attempt + 1,
+                },
+              );
 
-      if (state && state.requestId !== requestId) {
-        outcome = "stale";
-        errorKind = "stale";
-        emitRuntimeHook(
-          "volt:request-stale",
-          requestHookDetail("action", requestMeta, {
-            status: response.status,
-            outcome: outcome,
-          }),
-          resolveRuntimeRoot(root, component) || document,
-        );
-        return;
-      }
+              if (
+                shouldRetryActionRequest(timeoutDetail, retryPolicy, attempt)
+              ) {
+                retryCount = attempt + 1;
+                emitRuntimeHook(
+                  "volt:request-retry",
+                  requestHookDetail("action", requestMeta, {
+                    retryAttempt: retryCount,
+                    retryAttempts: retryPolicy.attempts,
+                    retryDelayMs: retryPolicy.delayMs,
+                    errorKind: timeoutDetail.errorKind,
+                    message: timeoutDetail.message,
+                    status: null,
+                  }),
+                  resolveRuntimeRoot(root, component) || document,
+                );
 
-      if (!response.ok) {
-        const errorDetail = responseErrorDetail(
-          "action",
-          response,
-          payload,
-          requestMeta,
+                await waitForRetryDelay(
+                  retryPolicy.delayMs,
+                  controller ? controller.signal : null,
+                );
+                attempt += 1;
+                continue;
+              }
+
+              outcome = "timeout";
+              errorKind = timeoutDetail.errorKind;
+              errorMessage = timeoutDetail.message;
+              setErrorState(component, true, timeoutDetail);
+              emitRuntimeHook(
+                "volt:request-error",
+                timeoutDetail,
+                resolveRuntimeRoot(root, component) || document,
+              );
+              return;
+            }
+
+            outcome = "aborted";
+            errorKind = abortDetail.errorKind;
+            errorMessage = abortDetail.message;
+            emitRuntimeHook(
+              "volt:request-abort",
+              abortDetail,
+              resolveRuntimeRoot(root, component) || document,
+            );
+            return;
+          }
+
+          const exceptionDetail = exceptionErrorDetail(
+            "action",
+            error,
+            requestMeta,
+            {
+              retryAttempt: attempt + 1,
+            },
+          );
+
+          if (
+            shouldRetryActionRequest(exceptionDetail, retryPolicy, attempt)
+          ) {
+            retryCount = attempt + 1;
+            emitRuntimeHook(
+              "volt:request-retry",
+              requestHookDetail("action", requestMeta, {
+                retryAttempt: retryCount,
+                retryAttempts: retryPolicy.attempts,
+                retryDelayMs: retryPolicy.delayMs,
+                errorKind: exceptionDetail.errorKind,
+                message: exceptionDetail.message,
+                status:
+                  typeof exceptionDetail.status === "number"
+                    ? exceptionDetail.status
+                    : null,
+              }),
+              resolveRuntimeRoot(root, component) || document,
+            );
+
+            await waitForRetryDelay(
+              retryPolicy.delayMs,
+              controller ? controller.signal : null,
+            );
+            attempt += 1;
+            continue;
+          }
+
+          outcome = exceptionDetail.errorKind;
+          errorKind = exceptionDetail.errorKind;
+          errorMessage = exceptionDetail.message;
+          responseStatus =
+            error && typeof error.status === "number" ? error.status : null;
+          setErrorState(component, true, exceptionDetail);
+          emitRuntimeHook(
+            "volt:request-error",
+            exceptionDetail,
+            resolveRuntimeRoot(root, component) || document,
+          );
+          throw error;
+        }
+
+        try {
+          payload = await response.json();
+        } catch (error) {
+          payload = null;
+        }
+
+        responsePayloadBytes = serializedPayloadBytes(payload);
+        htmlBytes = serializedPayloadBytes(payload && payload.html ? payload.html : "");
+        snapshotBytes = serializedPayloadBytes(
+          payload && payload.snapshot ? payload.snapshot : null,
         );
-        outcome = errorDetail.errorKind;
-        errorKind = errorDetail.errorKind;
-        errorMessage = errorDetail.message;
-        responseStatus = response.status;
-        setErrorState(component, true, errorDetail);
-        emitRuntimeHook(
-          "volt:request-error",
-          errorDetail,
-          resolveRuntimeRoot(root, component) || document,
-        );
-        return;
+        effectCount = Array.isArray(payload && payload.effects)
+          ? payload.effects.length
+          : 0;
+
+        if (state && state.requestId !== requestId) {
+          outcome = "stale";
+          errorKind = "stale";
+          emitRuntimeHook(
+            "volt:request-stale",
+            requestHookDetail("action", requestMeta, {
+              status: response.status,
+              outcome: outcome,
+            }),
+            resolveRuntimeRoot(root, component) || document,
+          );
+          return;
+        }
+
+        if (!response.ok) {
+          const errorDetail = responseErrorDetail(
+            "action",
+            response,
+            payload,
+            requestMeta,
+          );
+          responseStatus = response.status;
+
+          if (shouldRetryActionRequest(errorDetail, retryPolicy, attempt)) {
+            retryCount = attempt + 1;
+            emitRuntimeHook(
+              "volt:request-retry",
+              requestHookDetail("action", requestMeta, {
+                status: responseStatus,
+                retryAttempt: retryCount,
+                retryAttempts: retryPolicy.attempts,
+                retryDelayMs: retryPolicy.delayMs,
+                errorKind: errorDetail.errorKind,
+                message: errorDetail.message,
+              }),
+              resolveRuntimeRoot(root, component) || document,
+            );
+
+            await waitForRetryDelay(
+              retryPolicy.delayMs,
+              controller ? controller.signal : null,
+            );
+            attempt += 1;
+            continue;
+          }
+
+          outcome = errorDetail.errorKind;
+          errorKind = errorDetail.errorKind;
+          errorMessage = errorDetail.message;
+          setErrorState(component, true, errorDetail);
+          emitRuntimeHook(
+            "volt:request-error",
+            errorDetail,
+            resolveRuntimeRoot(root, component) || document,
+          );
+          return;
+        }
+
+        break;
       }
 
       const patchMeta = {
@@ -246,56 +400,6 @@
 
       setDirtyState(component, false, requestMeta);
       setSuccessState(component, true, requestMeta);
-    } catch (error) {
-      if (isAbortError(error)) {
-        const abortDetail = requestAbortDetail(
-          "action",
-          requestMeta,
-          controller ? controller.signal : null,
-        );
-
-        if (abortDetail.errorKind === "timeout") {
-          const errorDetail = timeoutErrorDetail(
-            "action",
-            requestMeta,
-            controller ? controller.signal : null,
-          );
-          outcome = "timeout";
-          errorKind = errorDetail.errorKind;
-          errorMessage = errorDetail.message;
-          setErrorState(component, true, errorDetail);
-          emitRuntimeHook(
-            "volt:request-error",
-            errorDetail,
-            resolveRuntimeRoot(root, component) || document,
-          );
-          return;
-        }
-
-        outcome = "aborted";
-        errorKind = abortDetail.errorKind;
-        errorMessage = abortDetail.message;
-        emitRuntimeHook(
-          "volt:request-abort",
-          abortDetail,
-          resolveRuntimeRoot(root, component) || document,
-        );
-        return;
-      }
-
-      const errorDetail = exceptionErrorDetail("action", error, requestMeta);
-      outcome = errorDetail.errorKind;
-      errorKind = errorDetail.errorKind;
-      errorMessage = errorDetail.message;
-      responseStatus =
-        error && typeof error.status === "number" ? error.status : null;
-      setErrorState(component, true, errorDetail);
-      emitRuntimeHook(
-        "volt:request-error",
-        errorDetail,
-        resolveRuntimeRoot(root, component) || document,
-      );
-      throw error;
     } finally {
       if (state && state.requestId === requestId) {
         state.controller = null;
@@ -325,6 +429,9 @@
         snapshotBytes: snapshotBytes,
         patchDurationMs: patchDurationMs,
         totalDurationMs: roundedMetricValue(runtimeNow() - requestStartedAt),
+        retryCount: retryCount,
+        retryAttempts: retryPolicy.attempts,
+        retryDelayMs: retryPolicy.delayMs,
         effectCount: effectCount,
         usedHtmlFallback: usedHtmlFallback,
         selectiveSyncAppliedCount: Array.isArray(syncedPayload.applied)

@@ -286,6 +286,10 @@
     );
   }
 
+  function shouldRetryActionRequest(errorDetail, policy, attemptIndex) {
+    return shouldRetryNavigationRequest(errorDetail, policy, attemptIndex);
+  }
+
   function waitForRetryDelay(delayMs, signal) {
     if (!delayMs || delayMs <= 0) {
       return Promise.resolve();

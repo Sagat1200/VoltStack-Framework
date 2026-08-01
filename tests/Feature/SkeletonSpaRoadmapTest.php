@@ -87,6 +87,7 @@ final class SkeletonSpaRoadmapTest extends TestCase
         self::assertStringContainsString('href="/cacheExample"', $response->content());
         self::assertStringContainsString('href="/fragmentCache"', $response->content());
         self::assertStringContainsString('href="/runtimeFocus"', $response->content());
+        self::assertStringContainsString('href="/runtimeEffectsD2"', $response->content());
         self::assertStringContainsString('href="/runtimeState"', $response->content());
         self::assertStringContainsString('href="/runtimePersist"', $response->content());
         self::assertStringContainsString('href="/runtimeRequestLab"', $response->content());
@@ -105,6 +106,7 @@ final class SkeletonSpaRoadmapTest extends TestCase
             '/navigationTransition',
             '/runtimeAdvancedDirectives',
             '/runtimeFocus',
+            '/runtimeEffectsD2',
             '/runtimeRequestLab',
             '/runtimePersist',
             '/runtimeState',
@@ -115,6 +117,22 @@ final class SkeletonSpaRoadmapTest extends TestCase
 
             self::assertSame(200, $response->statusCode(), sprintf('Route %s did not return 200.', $route));
         }
+    }
+
+    public function test_runtime_effects_d2_screen_exposes_contract_markers_for_manual_qa(): void
+    {
+        $response = $this->handleSkeletonRequest('/runtimeEffectsD2');
+
+        self::assertSame(200, $response->statusCode(), $response->content());
+        self::assertStringContainsString('Runtime Effects D2', $response->content());
+        self::assertStringContainsString('data-runtime-effects-d2="true"', $response->content());
+        self::assertStringContainsString('volt-click="applyAttributeSet"', $response->content());
+        self::assertStringContainsString('volt-click="applyAttributeRemove"', $response->content());
+        self::assertStringContainsString('volt-click="applyClientStateSet"', $response->content());
+        self::assertStringContainsString('volt-click="applySharedStateSet"', $response->content());
+        self::assertStringContainsString('data-volt-target="effects-d2-attr-box"', $response->content());
+        self::assertStringContainsString('data-volt-target="effects-d2-blur-input"', $response->content());
+        self::assertStringContainsString('data-volt-hook-log', $response->content());
     }
 
     public function test_cache_example_screen_renders_declared_navigation_and_invalidation_sections(): void
@@ -1603,6 +1621,90 @@ final class SkeletonSpaRoadmapTest extends TestCase
         self::assertStringContainsString('window.Volt.effects = createPublicEffectsApi();', $bootSource);
         self::assertStringContainsString('window.Volt.plugins = createPublicPluginsApi();', $bootSource);
         self::assertStringContainsString('window.Volt.use = function (plugin, options)', $bootSource);
+    }
+
+    public function test_runtime_source_supports_core_dom_effects_contract(): void
+    {
+        $frameworkBasePath = self::$skeletonBasePath
+            . DIRECTORY_SEPARATOR . 'vendor'
+            . DIRECTORY_SEPARATOR . 'voltstack'
+            . DIRECTORY_SEPARATOR . 'framework';
+
+        $effectsSource = file_get_contents(
+            $frameworkBasePath
+            . DIRECTORY_SEPARATOR . 'frontend'
+            . DIRECTORY_SEPARATOR . 'runtime'
+            . DIRECTORY_SEPARATOR . 'src'
+            . DIRECTORY_SEPARATOR . '43-effects-patch.js'
+        );
+        $runtimeAsset = $this->handleSkeletonRequest('/_volt/runtime.js');
+
+        self::assertIsString($effectsSource);
+        self::assertSame(200, $runtimeAsset->statusCode(), $runtimeAsset->content());
+
+        self::assertStringContainsString('case "text.update":', $effectsSource);
+        self::assertStringContainsString('case "html.replace":', $effectsSource);
+        self::assertStringContainsString('case "dom.append":', $effectsSource);
+        self::assertStringContainsString('case "dom.insert":', $effectsSource);
+        self::assertStringContainsString('case "dom.remove":', $effectsSource);
+        self::assertStringContainsString('case "dom.move":', $effectsSource);
+        self::assertStringContainsString('case "class.toggle":', $effectsSource);
+        self::assertStringContainsString('case "style.set":', $effectsSource);
+        self::assertStringContainsString('case "focus":', $effectsSource);
+        self::assertStringContainsString('case "scroll":', $effectsSource);
+        self::assertStringContainsString('case "dispatch.event":', $effectsSource);
+        self::assertStringContainsString('case "navigate":', $effectsSource);
+
+        $this->assertRuntimeAssetContains('case"text.update"', $runtimeAsset);
+        $this->assertRuntimeAssetContains('case"html.replace"', $runtimeAsset);
+        $this->assertRuntimeAssetContains('case"dom.append"', $runtimeAsset);
+        $this->assertRuntimeAssetContains('case"dom.insert"', $runtimeAsset);
+        $this->assertRuntimeAssetContains('case"dom.remove"', $runtimeAsset);
+        $this->assertRuntimeAssetContains('case"dom.move"', $runtimeAsset);
+        $this->assertRuntimeAssetContains('case"class.toggle"', $runtimeAsset);
+        $this->assertRuntimeAssetContains('case"style.set"', $runtimeAsset);
+        $this->assertRuntimeAssetContains('case"focus"', $runtimeAsset);
+        $this->assertRuntimeAssetContains('case"scroll"', $runtimeAsset);
+        $this->assertRuntimeAssetContains('case"dispatch.event"', $runtimeAsset);
+        $this->assertRuntimeAssetContains('case"navigate"', $runtimeAsset);
+    }
+
+    public function test_runtime_source_supports_runtime_effects_contract(): void
+    {
+        $frameworkBasePath = self::$skeletonBasePath
+            . DIRECTORY_SEPARATOR . 'vendor'
+            . DIRECTORY_SEPARATOR . 'voltstack'
+            . DIRECTORY_SEPARATOR . 'framework';
+
+        $effectsSource = file_get_contents(
+            $frameworkBasePath
+            . DIRECTORY_SEPARATOR . 'frontend'
+            . DIRECTORY_SEPARATOR . 'runtime'
+            . DIRECTORY_SEPARATOR . 'src'
+            . DIRECTORY_SEPARATOR . '43-effects-patch.js'
+        );
+        $runtimeAsset = $this->handleSkeletonRequest('/_volt/runtime.js');
+
+        self::assertIsString($effectsSource);
+        self::assertSame(200, $runtimeAsset->statusCode(), $runtimeAsset->content());
+
+        self::assertStringContainsString('case "attribute.set":', $effectsSource);
+        self::assertStringContainsString('case "attribute.remove":', $effectsSource);
+        self::assertStringContainsString('case "blur":', $effectsSource);
+        self::assertStringContainsString('case "runtime.policy":', $effectsSource);
+        self::assertStringContainsString('case "state.set":', $effectsSource);
+        self::assertStringContainsString('case "state.merge":', $effectsSource);
+        self::assertStringContainsString('case "state.delete":', $effectsSource);
+        self::assertStringContainsString('case "state.clear":', $effectsSource);
+
+        $this->assertRuntimeAssetContains('case"attribute.set"', $runtimeAsset);
+        $this->assertRuntimeAssetContains('case"attribute.remove"', $runtimeAsset);
+        $this->assertRuntimeAssetContains('case"blur"', $runtimeAsset);
+        $this->assertRuntimeAssetContains('case"runtime.policy"', $runtimeAsset);
+        $this->assertRuntimeAssetContains('case"state.set"', $runtimeAsset);
+        $this->assertRuntimeAssetContains('case"state.merge"', $runtimeAsset);
+        $this->assertRuntimeAssetContains('case"state.delete"', $runtimeAsset);
+        $this->assertRuntimeAssetContains('case"state.clear"', $runtimeAsset);
     }
 
     public function test_runtime_source_exposes_public_middleware_contract(): void

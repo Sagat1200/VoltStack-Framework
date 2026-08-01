@@ -16,10 +16,11 @@
     }
 
     const escapedTarget = cssEscape(effect.target);
-    const scopedTarget = root
-      ? root.querySelector("#" + escapedTarget) ||
-        root.querySelector('[data-volt-target="' + effect.target + '"]')
-      : null;
+    const scopedTarget =
+      root && root.isConnected
+        ? root.querySelector("#" + escapedTarget) ||
+          root.querySelector('[data-volt-target="' + effect.target + '"]')
+        : null;
 
     if (scopedTarget) {
       return scopedTarget;

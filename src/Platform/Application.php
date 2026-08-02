@@ -8,6 +8,12 @@ use Quantum\Config\ConfigRepository;
 use Quantum\Auth\AuthManager;
 use Quantum\Cache\CacheManager;
 use Quantum\Cache\Repository as CacheRepository;
+use Quantum\Controllers\Interceptors\ControllerInterceptorRegistry;
+use Quantum\Controllers\Interceptors\Conditions\EnvironmentInterceptorCondition;
+use Quantum\Controllers\Interceptors\Conditions\HttpMethodInterceptorCondition;
+use Quantum\Controllers\Interceptors\Conditions\InterceptorConditionRegistry;
+use Quantum\Controllers\Interceptors\Conditions\RouteNameInterceptorCondition;
+use Quantum\Controllers\Interceptors\Contracts\ControllerInterceptorRegistryInterface;
 use Quantum\Container\Container;
 use Quantum\Container\Contracts\ContainerInterface;
 use Quantum\Http\HtmlDocumentBootstrapper;
@@ -217,6 +223,28 @@ class Application extends Container
                 $registry = new MiddlewareAliasRegistry();
                 $registry->alias('csrf', CsrfMiddleware::class);
                 $registry->alias('signed', ValidateSignatureMiddleware::class);
+
+                return $registry;
+            });
+        }
+
+        if (! isset($this->bindings[ControllerInterceptorRegistry::class])) {
+            $this->singleton(ControllerInterceptorRegistry::class);
+        }
+
+        if (! isset($this->bindings[ControllerInterceptorRegistryInterface::class])) {
+            $this->singleton(
+                ControllerInterceptorRegistryInterface::class,
+                fn(Application $app) => $app->make(ControllerInterceptorRegistry::class),
+            );
+        }
+
+        if (! isset($this->bindings[InterceptorConditionRegistry::class])) {
+            $this->singleton(InterceptorConditionRegistry::class, function (Application $app): InterceptorConditionRegistry {
+                $registry = new InterceptorConditionRegistry($app);
+                $registry->register('environment', EnvironmentInterceptorCondition::class);
+                $registry->register('http_method', HttpMethodInterceptorCondition::class);
+                $registry->register('route_name', RouteNameInterceptorCondition::class);
 
                 return $registry;
             });

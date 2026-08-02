@@ -88,6 +88,7 @@ final class SkeletonSpaRoadmapTest extends TestCase
         self::assertStringContainsString('href="/fragmentCache"', $response->content());
         self::assertStringContainsString('href="/runtimeFocus"', $response->content());
         self::assertStringContainsString('href="/runtimeEffectsD2"', $response->content());
+        self::assertStringContainsString('href="/runtimeHead"', $response->content());
         self::assertStringContainsString('href="/runtimeState"', $response->content());
         self::assertStringContainsString('href="/runtimePersist"', $response->content());
         self::assertStringContainsString('href="/runtimeRequestLab"', $response->content());
@@ -107,6 +108,9 @@ final class SkeletonSpaRoadmapTest extends TestCase
             '/runtimeAdvancedDirectives',
             '/runtimeFocus',
             '/runtimeEffectsD2',
+            '/runtimeHead',
+            '/runtimeHeadAlt',
+            '/runtimeHeadApp',
             '/runtimeRequestLab',
             '/runtimePersist',
             '/runtimeState',
@@ -133,6 +137,37 @@ final class SkeletonSpaRoadmapTest extends TestCase
         self::assertStringContainsString('data-volt-target="effects-d2-attr-box"', $response->content());
         self::assertStringContainsString('data-volt-target="effects-d2-blur-input"', $response->content());
         self::assertStringContainsString('data-volt-hook-log', $response->content());
+    }
+
+    public function test_runtime_head_lab_screens_expose_head_contract_markers(): void
+    {
+        $spa = $this->handleSkeletonRequest('/runtimeHead');
+        $spaAlt = $this->handleSkeletonRequest('/runtimeHeadAlt');
+        $app = $this->handleSkeletonRequest('/runtimeHeadApp');
+
+        self::assertSame(200, $spa->statusCode(), $spa->content());
+        self::assertSame(200, $spaAlt->statusCode(), $spaAlt->content());
+        self::assertSame(200, $app->statusCode(), $app->content());
+
+        self::assertStringContainsString('data-volt-layout="spa"', $spa->content());
+        self::assertStringContainsString('data-volt-layout="spa"', $spaAlt->content());
+        self::assertStringContainsString('data-volt-layout="app"', $app->content());
+
+        self::assertStringContainsString('data-volt-head-key="document-charset"', $spa->content());
+        self::assertStringContainsString('data-volt-head-key="document-viewport"', $spa->content());
+        self::assertStringContainsString('data-volt-head-key="document-charset"', $app->content());
+        self::assertStringContainsString('data-volt-head-key="document-viewport"', $app->content());
+
+        self::assertSame(1, substr_count($app->content(), 'data-volt-head-key="runtime-busy-session-bridge"'));
+
+        self::assertMatchesRegularExpression(
+            '/data-volt-head-key="(vite-client|script:[a-f0-9]{40})"/',
+            $app->content(),
+        );
+        self::assertMatchesRegularExpression(
+            '/data-volt-head-key="(style:[a-f0-9]{40})"/',
+            $app->content(),
+        );
     }
 
     public function test_cache_example_screen_renders_declared_navigation_and_invalidation_sections(): void

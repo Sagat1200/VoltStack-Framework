@@ -131,6 +131,17 @@ final class ExceptionHandlingTest extends TestCase
         self::assertStringContainsString('Page Not Found', $response->content());
     }
 
+    public function test_it_exposes_a_controller_error_code_when_controller_dispatch_fails(): void
+    {
+        $router = $this->app->make(Router::class);
+        $router->get('/broken-controller', TestBrokenController::class);
+
+        $response = $this->app->make(HttpKernel::class)->handle(Request::create('/broken-controller'));
+
+        self::assertSame(500, $response->statusCode());
+        self::assertSame('controller.method_not_found', $response->headers()['X-Volt-Error-Code'] ?? null);
+    }
+
     private function removeDirectory(string $directory): void
     {
         if (! is_dir($directory)) {
@@ -160,4 +171,8 @@ final class ExceptionHandlingTest extends TestCase
 
         @rmdir($directory);
     }
+}
+
+final class TestBrokenController
+{
 }

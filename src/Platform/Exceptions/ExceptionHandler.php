@@ -7,6 +7,7 @@ namespace VoltStack\Framework\Exceptions;
 use Quantum\Http\JsonResponse;
 use Quantum\Http\Request;
 use Quantum\Http\Response;
+use Quantum\Controllers\Exceptions\ControllerException;
 use Quantum\Routing\Exceptions\MethodNotAllowedException;
 use Quantum\Routing\Exceptions\MissingRouteBindingException;
 use Quantum\Routing\Exceptions\RouteNotFoundException;
@@ -52,6 +53,7 @@ final class ExceptionHandler implements ExceptionHandlerContract
             $exception instanceof InvalidSnapshotException => 422,
             $exception instanceof ValidationException => 422,
             $exception instanceof InvalidComponentActionException => 422,
+            $exception instanceof ControllerException => 500,
             $exception instanceof ComponentMountException => 500,
             $exception instanceof ComponentRenderException => 500,
             default => 500,
@@ -182,6 +184,7 @@ final class ExceptionHandler implements ExceptionHandlerContract
             $exception instanceof InvalidSnapshotException => 'runtime.invalid_snapshot',
             $exception instanceof ValidationException => 'runtime.validation_failed',
             $exception instanceof InvalidComponentActionException => 'runtime.action_not_allowed',
+            $exception instanceof ControllerException => $exception->errorCode(),
             $exception instanceof ComponentMountException => 'runtime.component_mount_failed',
             $exception instanceof ComponentRenderException => 'runtime.component_render_failed',
             $status === 500 => 'server.error',

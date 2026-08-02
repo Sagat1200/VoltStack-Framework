@@ -245,6 +245,11 @@ class Application extends Container
                 $registry->register('environment', EnvironmentInterceptorCondition::class);
                 $registry->register('http_method', HttpMethodInterceptorCondition::class);
                 $registry->register('route_name', RouteNameInterceptorCondition::class);
+                $registry->alias('get', 'http_method', 'GET');
+                $registry->alias('post', 'http_method', 'POST');
+                $registry->alias('put', 'http_method', 'PUT');
+                $registry->alias('patch', 'http_method', 'PATCH');
+                $registry->alias('delete', 'http_method', 'DELETE');
 
                 return $registry;
             });

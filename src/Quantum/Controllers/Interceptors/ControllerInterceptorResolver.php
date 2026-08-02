@@ -105,7 +105,9 @@ final class ControllerInterceptorResolver
             }
         }
 
-        if (! is_array($conditions)) {
+        if (is_string($conditions)) {
+            $conditions = [trim($conditions)];
+        } elseif (! is_array($conditions)) {
             $conditions = [];
         }
 
@@ -130,6 +132,7 @@ final class ControllerInterceptorResolver
             $this->assertValidInterceptor($descriptor->interceptor);
 
             return new ResolvedInterceptorDefinition(
+                id: $descriptor->id,
                 interceptorClass: $descriptor->interceptor,
                 arguments: $definition->arguments,
                 priority: $definition->priority ?? $descriptor->defaultPriority,
@@ -145,6 +148,7 @@ final class ControllerInterceptorResolver
             $this->assertValidInterceptor($candidate);
 
             return new ResolvedInterceptorDefinition(
+                id: $candidate,
                 interceptorClass: $candidate,
                 arguments: $definition->arguments,
                 priority: $definition->priority ?? 0,
@@ -170,18 +174,65 @@ final class ControllerInterceptorResolver
     {
         $resolved = [];
 
-        foreach ($conditions as $condition) {
-            if (! is_array($condition)) {
-                throw new InvalidInterceptorConditionException();
+        foreach ($conditions as $key => $condition) {
+            if (! is_int($key)) {
+                $resolved[] = $this->conditions->makeFrom((string) $key, $condition);
+                continue;
             }
 
+            foreach ($this->resolveConditionItem($condition) as $item) {
+                $resolved[] = $item;
+            }
+        }
+
+        return $resolved;
+    }
+
+    private function resolveConditionItem(mixed $condition): array
+    {
+        if (is_string($condition)) {
+            $condition = trim($condition);
+
+            if ($condition === '') {
+                return [];
+            }
+
+            if (str_contains($condition, ':')) {
+                [$type, $value] = explode(':', $condition, 2);
+                $type = trim($type);
+
+                if ($type === '') {
+                    throw new InvalidInterceptorConditionException();
+                }
+
+                return [$this->conditions->makeFrom($type, $value)];
+            }
+
+            return [$this->conditions->makeFrom($condition)];
+        }
+
+        if (! is_array($condition)) {
+            throw new InvalidInterceptorConditionException();
+        }
+
+        if (array_key_exists('type', $condition)) {
             $type = $condition['type'] ?? null;
 
             if (! is_string($type) || trim($type) === '') {
                 throw new InvalidInterceptorConditionException();
             }
 
-            $resolved[] = $this->conditions->make(trim($type), $condition['value'] ?? null);
+            return [$this->conditions->makeFrom(trim($type), $condition['value'] ?? null)];
+        }
+
+        $resolved = [];
+
+        foreach ($condition as $k => $v) {
+            if (! is_string($k) || trim($k) === '') {
+                throw new InvalidInterceptorConditionException();
+            }
+
+            $resolved[] = $this->conditions->makeFrom(trim($k), $v);
         }
 
         return $resolved;
@@ -189,17 +240,29 @@ final class ControllerInterceptorResolver
 
     private function deduplicate(array $definitions): array
     {
-        $seen = [];
-        $result = [];
+        $byId = [];
 
         foreach ($definitions as $definition) {
-            $key = $definition->interceptorClass;
+            $key = $definition->id;
 
-            if (isset($seen[$key]) && ! $definition->repeatable) {
+            if ($definition->repeatable) {
+                $byId[] = $definition;
                 continue;
             }
 
-            $seen[$key] = true;
+            if (! isset($byId[$key])) {
+                $byId[$key] = $definition;
+                continue;
+            }
+
+            if ($definition->priority > $byId[$key]->priority) {
+                $byId[$key] = $definition;
+            }
+        }
+
+        $result = [];
+
+        foreach ($byId as $definition) {
             $result[] = $definition;
         }
 

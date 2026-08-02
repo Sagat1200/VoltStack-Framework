@@ -220,6 +220,115 @@ final class ControllerInterceptorSystemTest extends TestCase
         self::assertSame('conditional', $response->content());
         self::assertTrue(TestConditionalController::$invoked);
     }
+
+    public function test_it_supports_interceptor_definition_conditions_as_string_alias(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $route = new Route(RouteDefinition::make(['GET'], '/conditional-alias', TestConditionalController::class));
+        $route->meta('controller.interceptors', [
+            [
+                'interceptor' => TestShortCircuitInterceptor::class,
+                'conditions' => 'post',
+            ],
+        ]);
+        $match = new RouteMatch($route, [], 'GET');
+
+        $response = $dispatcher->dispatch($match, Request::create('/conditional-alias', 'GET'));
+
+        self::assertSame('conditional', $response->content());
+        self::assertTrue(TestConditionalController::$invoked);
+    }
+
+    public function test_it_supports_interceptor_definition_conditions_as_type_value_string(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $route = new Route(RouteDefinition::make(['GET'], '/conditional-type-value', TestConditionalController::class));
+        $route->meta('controller.interceptors', [
+            [
+                'interceptor' => TestShortCircuitInterceptor::class,
+                'conditions' => 'http_method:POST',
+            ],
+        ]);
+        $match = new RouteMatch($route, [], 'GET');
+
+        $response = $dispatcher->dispatch($match, Request::create('/conditional-type-value', 'GET'));
+
+        self::assertSame('conditional', $response->content());
+        self::assertTrue(TestConditionalController::$invoked);
+    }
+
+    public function test_it_supports_interceptor_definition_conditions_as_associative_array(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $route = new Route(RouteDefinition::make(['GET'], '/conditional-associative', TestConditionalController::class));
+        $route->meta('controller.interceptors', [
+            [
+                'interceptor' => TestShortCircuitInterceptor::class,
+                'conditions' => [
+                    'http_method' => 'POST',
+                ],
+            ],
+        ]);
+        $match = new RouteMatch($route, [], 'GET');
+
+        $response = $dispatcher->dispatch($match, Request::create('/conditional-associative', 'GET'));
+
+        self::assertSame('conditional', $response->content());
+        self::assertTrue(TestConditionalController::$invoked);
+    }
+
+    public function test_it_deduplicates_non_repeatable_interceptors_by_id_keeping_highest_priority(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+
+        $registry = $app->make(ControllerInterceptorRegistryInterface::class);
+        $registry->register(new InterceptorDescriptor(
+            id: 'a',
+            interceptor: TestRecordingInterceptorA::class,
+            scope: InterceptorScope::Execution,
+            defaultPriority: 0,
+            defaultPhase: InterceptorPhase::Around,
+        ));
+        $registry->register(new InterceptorDescriptor(
+            id: 'b',
+            interceptor: TestRecordingInterceptorB::class,
+            scope: InterceptorScope::Execution,
+            defaultPriority: 0,
+            defaultPhase: InterceptorPhase::Around,
+        ));
+
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $request = Request::create('/dedupe', 'GET');
+        $route = new Route(RouteDefinition::make(['GET'], '/dedupe', TestRecordingController::class));
+        $route->meta('controller.interceptors', [
+            [
+                'interceptor' => 'a',
+                'priority' => 0,
+            ],
+            [
+                'interceptor' => 'a',
+                'priority' => 100,
+            ],
+            [
+                'interceptor' => 'b',
+                'priority' => 50,
+            ],
+        ]);
+        $match = new RouteMatch($route, [], 'GET');
+
+        $dispatcher->dispatch($match, $request);
+
+        self::assertSame([
+            'A.before',
+            'B.before',
+            'controller',
+            'B.after',
+            'A.after',
+        ], TestRecordingInterceptor::$events);
+    }
 }
 
 abstract class TestRecordingInterceptor implements ControllerInterceptorInterface

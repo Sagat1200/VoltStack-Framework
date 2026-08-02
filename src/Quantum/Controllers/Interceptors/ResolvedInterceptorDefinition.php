@@ -12,6 +12,7 @@ use Quantum\Controllers\Interceptors\InterceptorScope;
 final readonly class ResolvedInterceptorDefinition
 {
     public function __construct(
+        public string $id,
         public string $interceptorClass,
         public array $arguments,
         public int $priority,
@@ -20,7 +21,8 @@ final readonly class ResolvedInterceptorDefinition
         public int $orderIndex,
         public array $conditions = [],
         public bool $repeatable = false,
-    ) {}
+    ) {
+    }
 
     public function matches(ControllerExecution $execution): bool
     {

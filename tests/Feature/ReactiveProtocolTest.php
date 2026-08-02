@@ -54,8 +54,8 @@ final class ReactiveProtocolTest extends TestCase
         self::assertSame('html.replace', $payload['effects'][0]['type']);
         self::assertSame('root', $payload['effects'][0]['target']);
         self::assertStringContainsString('Count: 3', $payload['effects'][0]['html']);
-        self::assertStringContainsString('<button type="button" volt-click="increment">Count: 3</button>', $payload['html']);
-        self::assertStringContainsString('data-volt-root="true"', $payload['html']);
+        self::assertStringContainsString('<button type="button" volt-click="increment">Count: 3</button>', $this->payloadHtml($payload));
+        self::assertStringContainsString('data-volt-root="true"', $this->payloadHtml($payload));
     }
 
     public function test_it_preserves_route_scope_metadata_when_a_component_action_originates_from_a_route(): void
@@ -373,8 +373,8 @@ final class ReactiveProtocolTest extends TestCase
         self::assertSame('VoltStack Title', $payload['snapshot']['state']['title']);
         self::assertSame('saved-from-submit', $payload['snapshot']['state']['savedNote']);
         self::assertSame('html.replace', $payload['effects'][0]['type']);
-        self::assertStringContainsString('value="VoltStack Title"', $payload['html']);
-        self::assertStringContainsString('Saved: saved-from-submit', $payload['html']);
+        self::assertStringContainsString('value="VoltStack Title"', $this->payloadHtml($payload));
+        self::assertStringContainsString('Saved: saved-from-submit', $this->payloadHtml($payload));
     }
 
     public function test_it_returns_semantic_validation_errors_when_a_reactive_form_submit_fails(): void
@@ -533,10 +533,10 @@ final class ReactiveProtocolTest extends TestCase
         self::assertSame('Synced alias mirror', $payload['snapshot']['state']['serverAliasMirror']);
         self::assertSame('client-alias-from-state', $payload['snapshot']['state']['savedAlias']);
         self::assertSame('review', $payload['snapshot']['state']['savedCategory']);
-        self::assertStringContainsString('Title: Synced title', $payload['html']);
-        self::assertStringContainsString('Alias mirror: Synced alias mirror', $payload['html']);
-        self::assertStringContainsString('Saved alias: client-alias-from-state', $payload['html']);
-        self::assertStringContainsString('Saved category: review', $payload['html']);
+        self::assertStringContainsString('Title: Synced title', $this->payloadHtml($payload));
+        self::assertStringContainsString('Alias mirror: Synced alias mirror', $this->payloadHtml($payload));
+        self::assertStringContainsString('Saved alias: client-alias-from-state', $this->payloadHtml($payload));
+        self::assertStringContainsString('Saved category: review', $this->payloadHtml($payload));
     }
 
     public function test_it_combines_boolean_and_text_updates_with_selectively_synced_params_in_the_same_request(): void
@@ -582,9 +582,9 @@ final class ReactiveProtocolTest extends TestCase
         self::assertSame('second-alias', $payload['snapshot']['state']['savedAlias']);
         self::assertSame('done', $payload['snapshot']['state']['savedCategory']);
         self::assertSame('queued-from-client', $payload['snapshot']['state']['savedNote']);
-        self::assertStringContainsString('Body: Second synced body', $payload['html']);
-        self::assertStringContainsString('Enabled: true', $payload['html']);
-        self::assertStringContainsString('Saved note: queued-from-client', $payload['html']);
+        self::assertStringContainsString('Body: Second synced body', $this->payloadHtml($payload));
+        self::assertStringContainsString('Enabled: true', $this->payloadHtml($payload));
+        self::assertStringContainsString('Saved note: queued-from-client', $this->payloadHtml($payload));
     }
 
     public function test_it_returns_a_navigation_effect_when_the_action_redirects(): void
@@ -849,8 +849,7 @@ final class ReactiveProtocolTest extends TestCase
         self::assertSame('title-input', $payload['effects'][3]['target']);
         self::assertSame('demo.saved', $payload['effects'][3]['event']);
         self::assertSame(['count' => 1], $payload['effects'][3]['detail']);
-        self::assertIsString($payload['html']);
-        self::assertStringContainsString('Saved', $payload['html']);
+        self::assertStringContainsString('Saved', $this->payloadHtml($payload));
     }
 
     public function test_it_allows_runtime_state_policies_to_be_emitted_from_a_policies_callback(): void
@@ -1166,6 +1165,29 @@ final class ReactiveProtocolTest extends TestCase
         $snapshot = json_decode(html_entity_decode($matches[1], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'), true, 512, JSON_THROW_ON_ERROR);
 
         return $snapshot;
+    }
+
+    private function payloadHtml(array $payload): string
+    {
+        $effects = $payload['effects'] ?? null;
+
+        if (is_array($effects)) {
+            foreach ($effects as $effect) {
+                if (! is_array($effect)) {
+                    continue;
+                }
+
+                if (($effect['type'] ?? null) !== 'html.replace') {
+                    continue;
+                }
+
+                if (is_string($effect['html'] ?? null)) {
+                    return $effect['html'];
+                }
+            }
+        }
+
+        return is_string($payload['html'] ?? null) ? $payload['html'] : '';
     }
 }
 

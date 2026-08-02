@@ -9,6 +9,7 @@ use Quantum\Controllers\Contracts\ControllerExecutionContextAwareInterface;
 use Quantum\Controllers\ControllerExecutionContext;
 use Quantum\Http\Request;
 use Quantum\Http\Response;
+use Quantum\Routing\Contracts\RouteBindableInterface;
 use Quantum\Routing\Dispatching\ControllerDispatcher;
 use Quantum\Routing\Route;
 use Quantum\Routing\RouteDefinition;
@@ -99,6 +100,51 @@ final class ControllerEngineTest extends TestCase
 
         self::assertTrue(TestContextAwareExceptionController::$released);
     }
+
+    public function test_it_applies_parameter_aliases_when_resolving_arguments(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $request = Request::create('/alias/42', 'GET');
+        $route = new Route(RouteDefinition::make(['GET'], '/alias/{userId}', TestParameterAliasController::class . '@show'));
+        $route->meta('parameter_aliases', [
+            'user' => 'userId',
+        ]);
+        $match = new RouteMatch(
+            $route,
+            [
+                'userId' => '42',
+            ],
+            'GET',
+        );
+
+        $response = $dispatcher->dispatch($match, $request);
+
+        self::assertSame('42', $response->content());
+    }
+
+    public function test_it_uses_the_missing_route_handler_when_a_binding_is_missing(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $request = Request::create('/binding/404', 'GET');
+        $route = new Route(RouteDefinition::make(['GET'], '/binding/{user}', TestMissingBindingController::class . '@show'));
+        $route->meta('missing', [
+            'type' => 'status',
+            'status' => 404,
+        ]);
+        $match = new RouteMatch(
+            $route,
+            [
+                'user' => '404',
+            ],
+            'GET',
+        );
+
+        $response = $dispatcher->dispatch($match, $request);
+
+        self::assertSame(404, $response->statusCode());
+    }
 }
 
 final class TestInvokableController
@@ -114,6 +160,30 @@ final class TestMethodController
     public function show(Request $request): string
     {
         return $request->path();
+    }
+}
+
+final class TestParameterAliasController
+{
+    public function show(string $user): string
+    {
+        return $user;
+    }
+}
+
+final class TestMissingBindingController
+{
+    public function show(TestMissingBindingUser $user): string
+    {
+        return 'should-not-run';
+    }
+}
+
+final class TestMissingBindingUser implements RouteBindableInterface
+{
+    public static function resolveRouteBinding(string $value, string $parameter, Request $request): mixed
+    {
+        return null;
     }
 }
 
@@ -162,4 +232,3 @@ final class TestContextAwareExceptionController implements ControllerExecutionCo
         throw new RuntimeException('boom');
     }
 }
-

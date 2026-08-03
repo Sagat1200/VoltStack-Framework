@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
+use Quantum\Config\ConfigRepository;
 use Quantum\Metadata\Contracts\MetadataEngineInterface;
 use Quantum\Metadata\Contracts\MetadataProviderInterface;
 use Quantum\Metadata\Attributes\Meta;
@@ -154,6 +155,51 @@ final class MetadataEngineTest extends TestCase
         self::assertSame(['from-friendly', 'from-route'], $bag->get('controller.interceptors'));
         self::assertSame(['user' => 'userId'], $bag->get('parameter_aliases'));
     }
+
+    public function test_it_provides_controller_defaults_from_config(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $config = $app->make(ConfigRepository::class);
+        $config->set('controller_lifecycle', [
+            'mode' => 'auto',
+        ]);
+        $config->set('controller_compilation', [
+            'enabled' => true,
+            'artifacts' => [
+                'format' => 'php',
+            ],
+        ]);
+
+        $engine = $app->make(MetadataEngineInterface::class);
+
+        $route = new Route(RouteDefinition::make(['GET'], '/meta-config', TestMetadataController::class));
+        $match = new RouteMatch($route, [], 'GET');
+        $routeSubject = new RouteMatchSubject($match);
+        $classSubject = new ControllerClassSubject(TestMetadataController::class, $routeSubject);
+        $methodSubject = new ControllerMethodSubject(TestMetadataController::class, '__invoke', $classSubject);
+
+        $bag = $engine->resolve(new MetadataRequest(subject: $methodSubject));
+
+        self::assertSame('auto', $bag->get('controller.lifecycle.mode'));
+        self::assertTrue($bag->get('controller.compilation.enabled'));
+        self::assertSame('php', $bag->get('controller.compilation.artifacts.format'));
+    }
+
+    public function test_it_provides_convention_defaults_for_admin_controllers(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $engine = $app->make(MetadataEngineInterface::class);
+
+        $route = new Route(RouteDefinition::make(['GET'], '/meta-convention', \App\Controllers\Admin\TestConventionController::class));
+        $match = new RouteMatch($route, [], 'GET');
+        $routeSubject = new RouteMatchSubject($match);
+        $classSubject = new ControllerClassSubject(\App\Controllers\Admin\TestConventionController::class, $routeSubject);
+        $methodSubject = new ControllerMethodSubject(\App\Controllers\Admin\TestConventionController::class, '__invoke', $classSubject);
+
+        $bag = $engine->resolve(new MetadataRequest(subject: $methodSubject));
+
+        self::assertSame(['auth'], $bag->get('controller.interceptors'));
+    }
 }
 
 #[Meta('custom.class', 'class-value')]
@@ -170,6 +216,16 @@ final class TestMetadataController
 #[Interceptors(['from-friendly'])]
 #[ParameterAliases(['user' => 'userId'])]
 final class TestFriendlyAttributeController
+{
+    public function __invoke(): string
+    {
+        return 'ok';
+    }
+}
+
+namespace App\Controllers\Admin;
+
+final class TestConventionController
 {
     public function __invoke(): string
     {

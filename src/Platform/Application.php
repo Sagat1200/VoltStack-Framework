@@ -38,6 +38,8 @@ use Quantum\Metadata\MetadataProviderPipeline;
 use Quantum\Metadata\MetadataProviderRegistry;
 use Quantum\Metadata\MetadataValueType;
 use Quantum\Metadata\Providers\AttributeMetadataProvider;
+use Quantum\Metadata\Providers\ConfigMetadataProvider;
+use Quantum\Metadata\Providers\ConventionMetadataProvider;
 use Quantum\Metadata\Providers\ReflectionMetadataProvider;
 use Quantum\Metadata\Providers\RouteMetadataProvider;
 use Quantum\Metadata\Schema\MetadataSchema;
@@ -285,17 +287,37 @@ class Application extends Container
                     merge: MetadataMergeStrategy::Replace,
                     defaultValue: [],
                 ));
+                $registry->register(new MetadataSchema(
+                    key: 'controller.lifecycle.mode',
+                    type: MetadataValueType::String,
+                    merge: MetadataMergeStrategy::Replace,
+                    defaultValue: 'auto',
+                ));
+                $registry->register(new MetadataSchema(
+                    key: 'controller.compilation.enabled',
+                    type: MetadataValueType::Bool,
+                    merge: MetadataMergeStrategy::Replace,
+                    defaultValue: false,
+                ));
+                $registry->register(new MetadataSchema(
+                    key: 'controller.compilation.artifacts.format',
+                    type: MetadataValueType::String,
+                    merge: MetadataMergeStrategy::Replace,
+                    defaultValue: 'php',
+                ));
 
                 return $registry;
             });
         }
 
         if (! isset($this->bindings[MetadataProviderRegistry::class])) {
-            $this->singleton(MetadataProviderRegistry::class, function (): MetadataProviderRegistry {
+            $this->singleton(MetadataProviderRegistry::class, function (Application $app): MetadataProviderRegistry {
                 $registry = new MetadataProviderRegistry();
                 $registry->register(new RouteMetadataProvider());
+                $registry->register(new ConfigMetadataProvider($app));
                 $registry->register(new AttributeMetadataProvider());
                 $registry->register(new ReflectionMetadataProvider());
+                $registry->register(new ConventionMetadataProvider());
 
                 return $registry;
             });

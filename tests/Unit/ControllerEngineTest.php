@@ -9,10 +9,12 @@ use Quantum\Config\ConfigRepository;
 use Quantum\Controllers\Contracts\ControllerExecutionContextAwareInterface;
 use Quantum\Controllers\ControllerExecutionContext;
 use Quantum\Controllers\Execution\ControllerExecution;
+use Quantum\Controllers\Exceptions\ControllerAlreadyInvokedException;
 use Quantum\Controllers\Interceptors\Contracts\ControllerInterceptorChainInterface;
 use Quantum\Controllers\Interceptors\Contracts\ControllerInterceptorInterface;
 use Quantum\Controllers\Runtime\ControllerExecutionState;
 use Quantum\Controllers\Runtime\ControllerRuntimeOptions;
+use Quantum\Controllers\Runtime\ControllerShortCircuitOrigin;
 use Quantum\Http\JsonResponse;
 use Quantum\Http\Request;
 use Quantum\Http\Response;
@@ -35,6 +37,9 @@ final class ControllerEngineTest extends TestCase
         TestArrayCallableController::$invoked = false;
         TestRuntimeCaptureInterceptor::$capturedRuntime = null;
         TestExecutionCaptureInterceptor::$execution = null;
+        TestLifecycleShortCircuitController::$invoked = false;
+        TestLifecycleShortCircuitCaptureInterceptor::$execution = null;
+        TestDoubleProceedController::$invocationCount = 0;
 
         parent::tearDown();
     }
@@ -340,6 +345,53 @@ final class ControllerEngineTest extends TestCase
         self::assertSame(ControllerExecutionState::Failed, TestExecutionCaptureInterceptor::$execution->state());
         self::assertInstanceOf(RuntimeException::class, TestExecutionCaptureInterceptor::$execution->getAttribute('exception'));
     }
+
+    public function test_it_marks_short_circuit_when_controller_is_not_invoked(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $request = Request::create('/lifecycle-short-circuit', 'GET');
+        $route = new Route(RouteDefinition::make(['GET'], '/lifecycle-short-circuit', TestLifecycleShortCircuitController::class));
+        $route->meta('controller.interceptors', [
+            TestLifecycleShortCircuitCaptureInterceptor::class,
+        ]);
+        $match = new RouteMatch($route, [], 'GET');
+
+        $response = $dispatcher->dispatch($match, $request);
+
+        self::assertSame('short', $response->content());
+        self::assertNotNull(TestLifecycleShortCircuitCaptureInterceptor::$execution);
+        self::assertFalse(TestLifecycleShortCircuitCaptureInterceptor::$execution->wasInvoked());
+        self::assertTrue(TestLifecycleShortCircuitCaptureInterceptor::$execution->wasShortCircuited());
+        self::assertSame(ControllerExecutionState::Succeeded, TestLifecycleShortCircuitCaptureInterceptor::$execution->state());
+        self::assertSame(ControllerShortCircuitOrigin::Interceptor, TestLifecycleShortCircuitCaptureInterceptor::$execution->shortCircuitOrigin());
+        self::assertInstanceOf(Response::class, TestLifecycleShortCircuitCaptureInterceptor::$execution->shortCircuitResult());
+        self::assertSame('short', TestLifecycleShortCircuitCaptureInterceptor::$execution->shortCircuitResult()->content());
+        self::assertSame('test_short_circuit', TestLifecycleShortCircuitCaptureInterceptor::$execution->shortCircuitReason());
+        self::assertSame(['source' => 'unit-test'], TestLifecycleShortCircuitCaptureInterceptor::$execution->shortCircuitMetadata());
+        self::assertFalse(TestLifecycleShortCircuitController::$invoked);
+    }
+
+    public function test_it_prevents_double_invocation_via_interceptor_chain(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $request = Request::create('/lifecycle-double', 'GET');
+        $route = new Route(RouteDefinition::make(['GET'], '/lifecycle-double', TestDoubleProceedController::class));
+        $route->meta('controller.interceptors', [
+            TestDoubleProceedInterceptor::class,
+        ]);
+        $match = new RouteMatch($route, [], 'GET');
+
+        try {
+            $dispatcher->dispatch($match, $request);
+            self::fail('Expected exception was not thrown.');
+        } catch (ControllerAlreadyInvokedException $exception) {
+            self::assertSame('controller.already_invoked', $exception->errorCode());
+        }
+
+        self::assertSame(1, TestDoubleProceedController::$invocationCount);
+    }
 }
 
 final class TestInvokableController
@@ -456,6 +508,30 @@ final class TestRuntimeExceptionController
     }
 }
 
+final class TestLifecycleShortCircuitController
+{
+    public static bool $invoked = false;
+
+    public function __invoke(): string
+    {
+        self::$invoked = true;
+
+        return 'should-not-run';
+    }
+}
+
+final class TestDoubleProceedController
+{
+    public static int $invocationCount = 0;
+
+    public function __invoke(): string
+    {
+        self::$invocationCount++;
+
+        return 'ok';
+    }
+}
+
 final class TestRuntimeCaptureInterceptor implements ControllerInterceptorInterface
 {
     public static ?ControllerRuntimeOptions $capturedRuntime = null;
@@ -479,6 +555,33 @@ final class TestExecutionCaptureInterceptor implements ControllerInterceptorInte
     public function intercept(ControllerExecution $execution, ControllerInterceptorChainInterface $chain): mixed
     {
         self::$execution = $execution;
+
+        return $chain->proceed($execution);
+    }
+}
+
+final class TestLifecycleShortCircuitCaptureInterceptor implements ControllerInterceptorInterface
+{
+    public static ?ControllerExecution $execution = null;
+
+    public function intercept(ControllerExecution $execution, ControllerInterceptorChainInterface $chain): mixed
+    {
+        self::$execution = $execution;
+
+        $response = new Response('short');
+        $execution->markShortCircuited($response, ControllerShortCircuitOrigin::Interceptor, 'test_short_circuit', [
+            'source' => 'unit-test',
+        ]);
+
+        return $response;
+    }
+}
+
+final class TestDoubleProceedInterceptor implements ControllerInterceptorInterface
+{
+    public function intercept(ControllerExecution $execution, ControllerInterceptorChainInterface $chain): mixed
+    {
+        $chain->proceed($execution);
 
         return $chain->proceed($execution);
     }

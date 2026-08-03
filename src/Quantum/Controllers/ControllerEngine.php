@@ -8,6 +8,7 @@ use Quantum\Controllers\Execution\ControllerExecution;
 use Quantum\Controllers\Interceptors\ControllerInterceptorPipeline;
 use Quantum\Controllers\Runtime\ControllerExecutionState;
 use Quantum\Controllers\Runtime\ControllerRuntimeResolverInterface;
+use Quantum\Controllers\Runtime\ControllerShortCircuitOrigin;
 use Quantum\Http\Request;
 use Quantum\Http\Response;
 use Quantum\Routing\Dispatching\MissingRouteHandler;
@@ -58,6 +59,8 @@ final class ControllerEngine
 
         try {
             $result = $this->interceptors->handle($execution, function (ControllerExecution $execution): mixed {
+                $execution->markInvoked();
+
                 return $this->invoker->invoke(
                     $execution->controller(),
                     $execution->arguments(),
@@ -68,6 +71,10 @@ final class ControllerEngine
             $execution->recordException($exception);
             $execution->setState(ControllerExecutionState::Failed);
             throw $exception;
+        }
+
+        if (! $execution->wasInvoked()) {
+            $execution->markShortCircuited($result, ControllerShortCircuitOrigin::Interceptor);
         }
 
         $execution->setState(ControllerExecutionState::Succeeded);

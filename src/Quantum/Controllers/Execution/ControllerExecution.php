@@ -7,9 +7,11 @@ namespace Quantum\Controllers\Execution;
 use Quantum\Controllers\ControllerContext;
 use Quantum\Controllers\ControllerDefinition;
 use Quantum\Controllers\ControllerExecutionContext;
+use Quantum\Controllers\Exceptions\ControllerAlreadyInvokedException;
 use Quantum\Controllers\ResolvedController;
 use Quantum\Controllers\Runtime\ControllerExecutionState;
 use Quantum\Controllers\Runtime\ControllerRuntimeOptions;
+use Quantum\Controllers\Runtime\ControllerShortCircuitOrigin;
 use Throwable;
 
 final class ControllerExecution
@@ -95,5 +97,75 @@ final class ControllerExecution
     public function setState(ControllerExecutionState $state): void
     {
         $this->setAttribute('controller.lifecycle.state', $state);
+    }
+
+    public function wasInvoked(): bool
+    {
+        return $this->getAttribute('controller.lifecycle.invoked', false) === true;
+    }
+
+    public function markInvoked(): void
+    {
+        if ($this->wasInvoked()) {
+            throw new ControllerAlreadyInvokedException();
+        }
+
+        $this->setAttribute('controller.lifecycle.invoked', true);
+    }
+
+    public function wasShortCircuited(): bool
+    {
+        return $this->getAttribute('controller.lifecycle.short_circuited', false) === true;
+    }
+
+    public function markShortCircuited(
+        mixed $result = null,
+        ?ControllerShortCircuitOrigin $origin = null,
+        ?string $reason = null,
+        array $metadata = [],
+    ): void {
+        $this->setAttribute('controller.lifecycle.short_circuited', true);
+
+        if ($origin !== null) {
+            $this->setAttribute('controller.lifecycle.short_circuit_origin', $origin);
+        }
+
+        if (func_num_args() >= 1) {
+            $this->setAttribute('controller.lifecycle.short_circuit_result', $result);
+        }
+
+        if (func_num_args() >= 3) {
+            $this->setAttribute('controller.lifecycle.short_circuit_reason', $reason);
+        }
+
+        if (func_num_args() >= 4) {
+            $this->setAttribute('controller.lifecycle.short_circuit_metadata', $metadata);
+        }
+    }
+
+    public function shortCircuitOrigin(): ?ControllerShortCircuitOrigin
+    {
+        $value = $this->getAttribute('controller.lifecycle.short_circuit_origin');
+
+        return $value instanceof ControllerShortCircuitOrigin ? $value : null;
+    }
+
+    public function shortCircuitResult(): mixed
+    {
+        return $this->getAttribute('controller.lifecycle.short_circuit_result');
+    }
+
+    public function shortCircuitReason(): ?string
+    {
+        $value = $this->getAttribute('controller.lifecycle.short_circuit_reason');
+
+        return is_string($value) ? $value : null;
+    }
+
+    public function shortCircuitMetadata(): array
+    {
+        $value = $this->getAttribute('controller.lifecycle.short_circuit_metadata', []);
+
+        return is_array($value) ? $value : [];
     }
 }

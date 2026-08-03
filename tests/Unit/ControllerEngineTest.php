@@ -11,6 +11,7 @@ use Quantum\Controllers\ControllerExecutionContext;
 use Quantum\Controllers\Execution\ControllerExecution;
 use Quantum\Controllers\Interceptors\Contracts\ControllerInterceptorChainInterface;
 use Quantum\Controllers\Interceptors\Contracts\ControllerInterceptorInterface;
+use Quantum\Controllers\Runtime\ControllerExecutionState;
 use Quantum\Controllers\Runtime\ControllerRuntimeOptions;
 use Quantum\Http\JsonResponse;
 use Quantum\Http\Request;
@@ -33,6 +34,7 @@ final class ControllerEngineTest extends TestCase
         TestContextAwareController::$capturedPath = null;
         TestArrayCallableController::$invoked = false;
         TestRuntimeCaptureInterceptor::$capturedRuntime = null;
+        TestExecutionCaptureInterceptor::$execution = null;
 
         parent::tearDown();
     }
@@ -297,6 +299,47 @@ final class ControllerEngineTest extends TestCase
         self::assertTrue(TestRuntimeCaptureInterceptor::$capturedRuntime->compilationEnabled);
         self::assertSame('php', TestRuntimeCaptureInterceptor::$capturedRuntime->compilationArtifactsFormat);
     }
+
+    public function test_it_tracks_execution_state_on_success(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $request = Request::create('/lifecycle-success', 'GET');
+        $route = new Route(RouteDefinition::make(['GET'], '/lifecycle-success', TestRuntimeController::class));
+        $route->meta('controller.interceptors', [
+            TestExecutionCaptureInterceptor::class,
+        ]);
+        $match = new RouteMatch($route, [], 'GET');
+
+        $response = $dispatcher->dispatch($match, $request);
+
+        self::assertSame('runtime', $response->content());
+        self::assertNotNull(TestExecutionCaptureInterceptor::$execution);
+        self::assertSame(ControllerExecutionState::Succeeded, TestExecutionCaptureInterceptor::$execution->state());
+    }
+
+    public function test_it_tracks_execution_state_on_exception(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $request = Request::create('/lifecycle-failed', 'GET');
+        $route = new Route(RouteDefinition::make(['GET'], '/lifecycle-failed', TestRuntimeExceptionController::class));
+        $route->meta('controller.interceptors', [
+            TestExecutionCaptureInterceptor::class,
+        ]);
+        $match = new RouteMatch($route, [], 'GET');
+
+        try {
+            $dispatcher->dispatch($match, $request);
+            self::fail('Expected exception was not thrown.');
+        } catch (RuntimeException $exception) {
+            self::assertSame('boom', $exception->getMessage());
+        }
+
+        self::assertNotNull(TestExecutionCaptureInterceptor::$execution);
+        self::assertSame(ControllerExecutionState::Failed, TestExecutionCaptureInterceptor::$execution->state());
+        self::assertInstanceOf(RuntimeException::class, TestExecutionCaptureInterceptor::$execution->getAttribute('exception'));
+    }
 }
 
 final class TestInvokableController
@@ -405,6 +448,14 @@ final class TestRuntimeController
     }
 }
 
+final class TestRuntimeExceptionController
+{
+    public function __invoke(): string
+    {
+        throw new RuntimeException('boom');
+    }
+}
+
 final class TestRuntimeCaptureInterceptor implements ControllerInterceptorInterface
 {
     public static ?ControllerRuntimeOptions $capturedRuntime = null;
@@ -416,6 +467,18 @@ final class TestRuntimeCaptureInterceptor implements ControllerInterceptorInterf
         if ($value instanceof ControllerRuntimeOptions) {
             self::$capturedRuntime = $value;
         }
+
+        return $chain->proceed($execution);
+    }
+}
+
+final class TestExecutionCaptureInterceptor implements ControllerInterceptorInterface
+{
+    public static ?ControllerExecution $execution = null;
+
+    public function intercept(ControllerExecution $execution, ControllerInterceptorChainInterface $chain): mixed
+    {
+        self::$execution = $execution;
 
         return $chain->proceed($execution);
     }

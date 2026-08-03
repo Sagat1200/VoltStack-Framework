@@ -6,6 +6,7 @@ namespace Quantum\Controllers;
 
 use Quantum\Controllers\Execution\ControllerExecution;
 use Quantum\Controllers\Interceptors\ControllerInterceptorPipeline;
+use Quantum\Controllers\Runtime\ControllerExecutionState;
 use Quantum\Controllers\Runtime\ControllerRuntimeResolverInterface;
 use Quantum\Http\Request;
 use Quantum\Http\Response;
@@ -13,6 +14,7 @@ use Quantum\Routing\Dispatching\MissingRouteHandler;
 use Quantum\Routing\Dispatching\ResponseNormalizer;
 use Quantum\Routing\Exceptions\MissingRouteBindingException;
 use Quantum\Routing\RouteMatch;
+use Throwable;
 use VoltStack\Framework\Application;
 
 final class ControllerEngine
@@ -50,14 +52,25 @@ final class ControllerEngine
         );
 
         $execution->setAttribute('controller.runtime', $this->runtime->resolve($execution));
+        $execution->setState(ControllerExecutionState::Created);
 
-        $result = $this->interceptors->handle($execution, function (ControllerExecution $execution): mixed {
-            return $this->invoker->invoke(
-                $execution->controller(),
-                $execution->arguments(),
-                $execution->executionContext(),
-            );
-        });
+        $execution->setState(ControllerExecutionState::Running);
+
+        try {
+            $result = $this->interceptors->handle($execution, function (ControllerExecution $execution): mixed {
+                return $this->invoker->invoke(
+                    $execution->controller(),
+                    $execution->arguments(),
+                    $execution->executionContext(),
+                );
+            });
+        } catch (Throwable $exception) {
+            $execution->recordException($exception);
+            $execution->setState(ControllerExecutionState::Failed);
+            throw $exception;
+        }
+
+        $execution->setState(ControllerExecutionState::Succeeded);
 
         return $this->normalizer->normalize($result);
     }

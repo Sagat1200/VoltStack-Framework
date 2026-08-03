@@ -11,9 +11,6 @@ use Quantum\Metadata\Schema\MetadataSchemaRegistry;
 
 final class MetadataEngine implements MetadataEngineInterface
 {
-    /**
-     * @var array<string, MetadataBag>
-     */
     private array $cache = [];
 
     public function __construct(
@@ -74,9 +71,6 @@ final class MetadataEngine implements MetadataEngineInterface
         return $bag;
     }
 
-    /**
-     * @return array<int, MetadataFragment>
-     */
     private function collectWithInheritance(MetadataSubjectInterface $subject, MetadataRequest $request, int $depth): array
     {
         $fragments = [];

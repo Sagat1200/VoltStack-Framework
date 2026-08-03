@@ -8,9 +8,6 @@ use Quantum\Metadata\Contracts\MetadataProviderInterface;
 
 final class MetadataProviderRegistry
 {
-    /**
-     * @var array<int, MetadataProviderInterface>
-     */
     private array $providers = [];
 
     public function register(MetadataProviderInterface $provider): void
@@ -18,9 +15,6 @@ final class MetadataProviderRegistry
         $this->providers[] = $provider;
     }
 
-    /**
-     * @return array<int, MetadataProviderInterface>
-     */
     public function all(): array
     {
         $indexed = [];

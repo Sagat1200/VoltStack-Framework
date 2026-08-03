@@ -11,9 +11,6 @@ final class MetadataProviderPipeline
 {
     public function __construct(private readonly MetadataProviderRegistry $registry) {}
 
-    /**
-     * @return array<int, MetadataFragment>
-     */
     public function collect(MetadataRequest $request): array
     {
         $fragments = [];

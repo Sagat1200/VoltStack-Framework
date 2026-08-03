@@ -37,6 +37,8 @@ use Quantum\Metadata\MetadataNormalizer as MetadataValueNormalizer;
 use Quantum\Metadata\MetadataProviderPipeline;
 use Quantum\Metadata\MetadataProviderRegistry;
 use Quantum\Metadata\MetadataValueType;
+use Quantum\Metadata\Providers\AttributeMetadataProvider;
+use Quantum\Metadata\Providers\ReflectionMetadataProvider;
 use Quantum\Metadata\Providers\RouteMetadataProvider;
 use Quantum\Metadata\Schema\MetadataSchema;
 use Quantum\Metadata\Schema\MetadataSchemaRegistry;
@@ -276,14 +278,12 @@ class Application extends Container
                     type: MetadataValueType::Array,
                     merge: MetadataMergeStrategy::Append,
                     defaultValue: [],
-                    inheritable: false,
                 ));
                 $registry->register(new MetadataSchema(
                     key: 'parameter_aliases',
                     type: MetadataValueType::Array,
                     merge: MetadataMergeStrategy::Replace,
                     defaultValue: [],
-                    inheritable: false,
                 ));
 
                 return $registry;
@@ -294,6 +294,8 @@ class Application extends Container
             $this->singleton(MetadataProviderRegistry::class, function (): MetadataProviderRegistry {
                 $registry = new MetadataProviderRegistry();
                 $registry->register(new RouteMetadataProvider());
+                $registry->register(new AttributeMetadataProvider());
+                $registry->register(new ReflectionMetadataProvider());
 
                 return $registry;
             });

@@ -8,10 +8,6 @@ use Quantum\Metadata\Schema\MetadataSchema;
 
 final class MetadataMerger
 {
-    /**
-     * @param array<int, MetadataFragment> $fragments
-     * @return array<string, mixed>
-     */
     public function merge(array $fragments, callable $schemaResolver): array
     {
         $grouped = [];
@@ -32,9 +28,6 @@ final class MetadataMerger
         return $result;
     }
 
-    /**
-     * @param array<int, MetadataFragment> $fragments
-     */
     private function mergeKey(array $fragments, ?MetadataSchema $schema): mixed
     {
         if ($schema !== null && $schema->final) {
@@ -73,4 +66,3 @@ final class MetadataMerger
         return $value;
     }
 }
-

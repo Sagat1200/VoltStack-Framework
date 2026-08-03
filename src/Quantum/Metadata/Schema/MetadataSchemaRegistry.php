@@ -6,9 +6,6 @@ namespace Quantum\Metadata\Schema;
 
 final class MetadataSchemaRegistry
 {
-    /**
-     * @var array<string, MetadataSchema>
-     */
     private array $schemas = [];
 
     public function register(MetadataSchema $schema): void
@@ -21,4 +18,3 @@ final class MetadataSchemaRegistry
         return $this->schemas[$key] ?? null;
     }
 }
-

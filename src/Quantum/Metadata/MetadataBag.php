@@ -6,16 +6,8 @@ namespace Quantum\Metadata;
 
 final readonly class MetadataBag
 {
-    /**
-     * @param array<string, mixed> $items
-     */
-    public function __construct(private array $items)
-    {
-    }
+    public function __construct(private array $items) {}
 
-    /**
-     * @return array<string, mixed>
-     */
     public function all(): array
     {
         return $this->items;
@@ -31,4 +23,3 @@ final readonly class MetadataBag
         return array_key_exists($key, $this->items);
     }
 }
-

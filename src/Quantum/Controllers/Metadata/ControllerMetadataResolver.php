@@ -7,6 +7,8 @@ namespace Quantum\Controllers\Metadata;
 use Quantum\Controllers\Execution\ControllerExecution;
 use Quantum\Metadata\Contracts\MetadataEngineInterface;
 use Quantum\Metadata\MetadataRequest;
+use Quantum\Metadata\Subjects\ControllerClassSubject;
+use Quantum\Metadata\Subjects\ControllerMethodSubject;
 use Quantum\Metadata\Subjects\RouteMatchSubject;
 
 final readonly class ControllerMetadataResolver implements ControllerMetadataResolverInterface
@@ -17,7 +19,11 @@ final readonly class ControllerMetadataResolver implements ControllerMetadataRes
 
     public function resolve(ControllerExecution $execution): ControllerMetadata
     {
-        $subject = new RouteMatchSubject($execution->context()->match());
+        $routeSubject = new RouteMatchSubject($execution->context()->match());
+        $controllerClass = $execution->controller()->instance()::class;
+        $method = $execution->controller()->method();
+        $classSubject = new ControllerClassSubject($controllerClass, $routeSubject);
+        $subject = new ControllerMethodSubject($controllerClass, $method, $classSubject);
 
         $bag = $this->engine->resolve(new MetadataRequest(
             subject: $subject,
@@ -26,4 +32,3 @@ final readonly class ControllerMetadataResolver implements ControllerMetadataRes
         return new ControllerMetadata($bag);
     }
 }
-

@@ -15,9 +15,5 @@ interface MetadataProviderInterface
 
     public function supports(MetadataRequest $request): bool;
 
-    /**
-     * @return array<int, MetadataFragment>
-     */
     public function provide(MetadataRequest $request): array;
 }
-

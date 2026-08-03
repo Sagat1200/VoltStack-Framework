@@ -9,9 +9,6 @@ use Quantum\Metadata\MetadataValueType;
 
 final readonly class MetadataSchema
 {
-    /**
-     * @param array<int, string> $scopes
-     */
     public function __construct(
         public string $key,
         public MetadataValueType $type = MetadataValueType::Mixed,
@@ -24,4 +21,3 @@ final readonly class MetadataSchema
     ) {
     }
 }
-

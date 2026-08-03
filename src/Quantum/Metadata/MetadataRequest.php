@@ -8,10 +8,6 @@ use Quantum\Metadata\Contracts\MetadataSubjectInterface;
 
 final readonly class MetadataRequest
 {
-    /**
-     * @param array<int, string> $keys
-     * @param array<int, string> $scopes
-     */
     public function __construct(
         public MetadataSubjectInterface $subject,
         public array $keys = [],
@@ -20,4 +16,3 @@ final readonly class MetadataRequest
     ) {
     }
 }
-

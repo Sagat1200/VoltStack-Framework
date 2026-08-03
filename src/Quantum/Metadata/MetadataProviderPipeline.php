@@ -5,12 +5,11 @@ declare(strict_types=1);
 namespace Quantum\Metadata;
 
 use Quantum\Metadata\Contracts\MetadataProviderInterface;
+use Quantum\Metadata\MetadataProviderRegistry;
 
 final class MetadataProviderPipeline
 {
-    public function __construct(private readonly MetadataProviderRegistry $registry)
-    {
-    }
+    public function __construct(private readonly MetadataProviderRegistry $registry) {}
 
     /**
      * @return array<int, MetadataFragment>
@@ -32,4 +31,3 @@ final class MetadataProviderPipeline
         return $fragments;
     }
 }
-

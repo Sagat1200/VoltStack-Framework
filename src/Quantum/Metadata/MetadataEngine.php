@@ -6,6 +6,7 @@ namespace Quantum\Metadata;
 
 use Quantum\Metadata\Contracts\MetadataEngineInterface;
 use Quantum\Metadata\Contracts\MetadataSubjectInterface;
+use Quantum\Metadata\MetadataMerger;
 use Quantum\Metadata\Schema\MetadataSchemaRegistry;
 
 final class MetadataEngine implements MetadataEngineInterface

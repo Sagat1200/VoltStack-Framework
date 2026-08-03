@@ -1,0 +1,35 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Quantum\Metadata;
+
+use Quantum\Metadata\Contracts\MetadataProviderInterface;
+
+final class MetadataProviderPipeline
+{
+    public function __construct(private readonly MetadataProviderRegistry $registry)
+    {
+    }
+
+    /**
+     * @return array<int, MetadataFragment>
+     */
+    public function collect(MetadataRequest $request): array
+    {
+        $fragments = [];
+
+        foreach ($this->registry->all() as $provider) {
+            if (! $provider->supports($request)) {
+                continue;
+            }
+
+            foreach ($provider->provide($request) as $fragment) {
+                $fragments[] = $fragment;
+            }
+        }
+
+        return $fragments;
+    }
+}
+

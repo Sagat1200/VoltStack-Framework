@@ -14,6 +14,8 @@ use Quantum\Controllers\Interceptors\Conditions\HttpMethodInterceptorCondition;
 use Quantum\Controllers\Interceptors\Conditions\InterceptorConditionRegistry;
 use Quantum\Controllers\Interceptors\Conditions\RouteNameInterceptorCondition;
 use Quantum\Controllers\Interceptors\Contracts\ControllerInterceptorRegistryInterface;
+use Quantum\Controllers\Metadata\ControllerMetadataResolver;
+use Quantum\Controllers\Metadata\ControllerMetadataResolverInterface;
 use Quantum\Container\Container;
 use Quantum\Container\Contracts\ContainerInterface;
 use Quantum\Http\HtmlDocumentBootstrapper;
@@ -27,6 +29,17 @@ use Quantum\Routing\CollectionArtifactStore;
 use Quantum\Routing\MetadataArtifactStore;
 use Quantum\Routing\FrontendRouteManifestStore;
 use Quantum\Routing\SpaNavigationPayloadFactory;
+use Quantum\Metadata\Contracts\MetadataEngineInterface;
+use Quantum\Metadata\MetadataEngine;
+use Quantum\Metadata\MetadataMerger;
+use Quantum\Metadata\MetadataMergeStrategy;
+use Quantum\Metadata\MetadataNormalizer as MetadataValueNormalizer;
+use Quantum\Metadata\MetadataProviderPipeline;
+use Quantum\Metadata\MetadataProviderRegistry;
+use Quantum\Metadata\MetadataValueType;
+use Quantum\Metadata\Providers\RouteMetadataProvider;
+use Quantum\Metadata\Schema\MetadataSchema;
+use Quantum\Metadata\Schema\MetadataSchemaRegistry;
 use Quantum\Middlewares\CsrfMiddleware;
 use Quantum\Routing\PipelineArtifactStore;
 use Quantum\Routing\Router;
@@ -253,6 +266,75 @@ class Application extends Container
 
                 return $registry;
             });
+        }
+
+        if (! isset($this->bindings[MetadataSchemaRegistry::class])) {
+            $this->singleton(MetadataSchemaRegistry::class, function (): MetadataSchemaRegistry {
+                $registry = new MetadataSchemaRegistry();
+                $registry->register(new MetadataSchema(
+                    key: 'controller.interceptors',
+                    type: MetadataValueType::Array,
+                    merge: MetadataMergeStrategy::Append,
+                    defaultValue: [],
+                    inheritable: false,
+                ));
+                $registry->register(new MetadataSchema(
+                    key: 'parameter_aliases',
+                    type: MetadataValueType::Array,
+                    merge: MetadataMergeStrategy::Replace,
+                    defaultValue: [],
+                    inheritable: false,
+                ));
+
+                return $registry;
+            });
+        }
+
+        if (! isset($this->bindings[MetadataProviderRegistry::class])) {
+            $this->singleton(MetadataProviderRegistry::class, function (): MetadataProviderRegistry {
+                $registry = new MetadataProviderRegistry();
+                $registry->register(new RouteMetadataProvider());
+
+                return $registry;
+            });
+        }
+
+        if (! isset($this->bindings[MetadataProviderPipeline::class])) {
+            $this->singleton(MetadataProviderPipeline::class, fn(Application $app) => new MetadataProviderPipeline(
+                $app->make(MetadataProviderRegistry::class),
+            ));
+        }
+
+        if (! isset($this->bindings[MetadataValueNormalizer::class])) {
+            $this->singleton(MetadataValueNormalizer::class);
+        }
+
+        if (! isset($this->bindings[MetadataMerger::class])) {
+            $this->singleton(MetadataMerger::class);
+        }
+
+        if (! isset($this->bindings[MetadataEngine::class])) {
+            $this->singleton(MetadataEngine::class, fn(Application $app) => new MetadataEngine(
+                $app->make(MetadataProviderPipeline::class),
+                $app->make(MetadataSchemaRegistry::class),
+                $app->make(MetadataValueNormalizer::class),
+                $app->make(MetadataMerger::class),
+            ));
+        }
+
+        if (! isset($this->bindings[MetadataEngineInterface::class])) {
+            $this->singleton(MetadataEngineInterface::class, fn(Application $app) => $app->make(MetadataEngine::class));
+        }
+
+        if (! isset($this->bindings[ControllerMetadataResolver::class])) {
+            $this->singleton(ControllerMetadataResolver::class);
+        }
+
+        if (! isset($this->bindings[ControllerMetadataResolverInterface::class])) {
+            $this->singleton(
+                ControllerMetadataResolverInterface::class,
+                fn(Application $app) => $app->make(ControllerMetadataResolver::class),
+            );
         }
 
         if (! isset($this->bindings[Checksum::class])) {

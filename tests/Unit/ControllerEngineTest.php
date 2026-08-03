@@ -7,6 +7,7 @@ namespace VoltStack\Test\Unit;
 use PHPUnit\Framework\TestCase;
 use Quantum\Controllers\Contracts\ControllerExecutionContextAwareInterface;
 use Quantum\Controllers\ControllerExecutionContext;
+use Quantum\Http\JsonResponse;
 use Quantum\Http\Request;
 use Quantum\Http\Response;
 use Quantum\Routing\Contracts\RouteBindableInterface;
@@ -14,6 +15,7 @@ use Quantum\Routing\Dispatching\ControllerDispatcher;
 use Quantum\Routing\Route;
 use Quantum\Routing\RouteDefinition;
 use Quantum\Routing\RouteMatch;
+use Quantum\View\ViewFactory;
 use RuntimeException;
 use VoltStack\Framework\Application;
 
@@ -24,6 +26,7 @@ final class ControllerEngineTest extends TestCase
         TestContextAwareController::$injected = false;
         TestContextAwareController::$released = false;
         TestContextAwareController::$capturedPath = null;
+        TestArrayCallableController::$invoked = false;
 
         parent::tearDown();
     }
@@ -59,6 +62,23 @@ final class ControllerEngineTest extends TestCase
         $response = $dispatcher->dispatch($match, $request);
 
         self::assertSame('/method', $response->content());
+    }
+
+    public function test_it_dispatches_array_callable_controllers_through_the_engine(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $request = Request::create('/callable', 'GET');
+        $match = new RouteMatch(
+            new Route(RouteDefinition::make(['GET'], '/callable', [TestArrayCallableController::class, 'show'])),
+            [],
+            'GET',
+        );
+
+        $response = $dispatcher->dispatch($match, $request);
+
+        self::assertSame('callable', $response->content());
+        self::assertTrue(TestArrayCallableController::$invoked);
     }
 
     public function test_it_injects_and_releases_execution_context_on_success(): void
@@ -145,6 +165,101 @@ final class ControllerEngineTest extends TestCase
 
         self::assertSame(404, $response->statusCode());
     }
+
+    public function test_it_normalizes_array_results_to_json_response(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $request = Request::create('/json', 'GET');
+        $match = new RouteMatch(
+            new Route(RouteDefinition::make(['GET'], '/json', TestArrayResultController::class)),
+            [],
+            'GET',
+        );
+
+        $response = $dispatcher->dispatch($match, $request);
+
+        self::assertInstanceOf(JsonResponse::class, $response);
+        self::assertSame('{"ok":true}', $response->content());
+    }
+
+    public function test_it_normalizes_string_results_to_response(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $request = Request::create('/string', 'GET');
+        $match = new RouteMatch(
+            new Route(RouteDefinition::make(['GET'], '/string', TestStringResultController::class)),
+            [],
+            'GET',
+        );
+
+        $response = $dispatcher->dispatch($match, $request);
+
+        self::assertInstanceOf(Response::class, $response);
+        self::assertSame('hello', $response->content());
+    }
+
+    public function test_it_normalizes_null_results_to_empty_response(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $request = Request::create('/null', 'GET');
+        $match = new RouteMatch(
+            new Route(RouteDefinition::make(['GET'], '/null', TestNullResultController::class)),
+            [],
+            'GET',
+        );
+
+        $response = $dispatcher->dispatch($match, $request);
+
+        self::assertInstanceOf(Response::class, $response);
+        self::assertSame('', $response->content());
+    }
+
+    public function test_it_passes_through_response_results_unchanged(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $request = Request::create('/raw', 'GET');
+        $match = new RouteMatch(
+            new Route(RouteDefinition::make(['GET'], '/raw', TestResponseResultController::class)),
+            [],
+            'GET',
+        );
+
+        $response = $dispatcher->dispatch($match, $request);
+
+        self::assertInstanceOf(Response::class, $response);
+        self::assertSame('raw', $response->content());
+    }
+
+    public function test_it_normalizes_view_results_to_response(): void
+    {
+        $basePath = rtrim(sys_get_temp_dir(), '\\/') . DIRECTORY_SEPARATOR . uniqid('voltstack-view-result-', true);
+        $viewsPath = $basePath . DIRECTORY_SEPARATOR . 'resources' . DIRECTORY_SEPARATOR . 'views';
+        $viewFile = $viewsPath . DIRECTORY_SEPARATOR . 'hello.php';
+
+        if (! is_dir($viewsPath)) {
+            mkdir($viewsPath, 0777, true);
+        }
+
+        file_put_contents($viewFile, '<?php echo "view:" . ($title ?? "");');
+
+        $app = new Application($basePath);
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $request = Request::create('/view', 'GET');
+        $match = new RouteMatch(
+            new Route(RouteDefinition::make(['GET'], '/view', TestViewResultController::class)),
+            [],
+            'GET',
+        );
+
+        $response = $dispatcher->dispatch($match, $request);
+
+        self::assertInstanceOf(Response::class, $response);
+        self::assertSame('view:hello', $response->content());
+    }
 }
 
 final class TestInvokableController
@@ -160,6 +275,18 @@ final class TestMethodController
     public function show(Request $request): string
     {
         return $request->path();
+    }
+}
+
+final class TestArrayCallableController
+{
+    public static bool $invoked = false;
+
+    public function show(): string
+    {
+        self::$invoked = true;
+
+        return 'callable';
     }
 }
 
@@ -184,6 +311,52 @@ final class TestMissingBindingUser implements RouteBindableInterface
     public static function resolveRouteBinding(string $value, string $parameter, Request $request): mixed
     {
         return null;
+    }
+}
+
+final class TestArrayResultController
+{
+    public function __invoke(): array
+    {
+        return [
+            'ok' => true,
+        ];
+    }
+}
+
+final class TestStringResultController
+{
+    public function __invoke(): string
+    {
+        return 'hello';
+    }
+}
+
+final class TestNullResultController
+{
+    public function __invoke(): mixed
+    {
+        return null;
+    }
+}
+
+final class TestResponseResultController
+{
+    public function __invoke(): Response
+    {
+        return new Response('raw');
+    }
+}
+
+final class TestViewResultController
+{
+    public function __construct(private readonly ViewFactory $views) {}
+
+    public function __invoke(): mixed
+    {
+        return $this->views->make('hello', [
+            'title' => 'hello',
+        ]);
     }
 }
 

@@ -8,6 +8,7 @@ use Quantum\Controllers\Exceptions\InvalidInterceptorConditionException;
 use Quantum\Controllers\Exceptions\InvalidInterceptorException;
 use Quantum\Controllers\Exceptions\UnknownInterceptorException;
 use Quantum\Controllers\Execution\ControllerExecution;
+use Quantum\Controllers\Metadata\ControllerMetadataResolverInterface;
 use Quantum\Controllers\Interceptors\Conditions\InterceptorConditionRegistry;
 use Quantum\Controllers\Interceptors\Contracts\ControllerInterceptorInterface;
 use Quantum\Controllers\Interceptors\Contracts\ControllerInterceptorRegistryInterface;
@@ -20,15 +21,14 @@ final class ControllerInterceptorResolver
         private readonly ControllerInterceptorRegistryInterface $registry,
         private readonly InterceptorConditionRegistry $conditions,
         private readonly ControllerInterceptorPlanBuilder $builder,
+        private readonly ControllerMetadataResolverInterface $metadata,
     ) {}
 
     public function resolve(ControllerExecution $execution): ControllerInterceptorPlan
     {
-        $raw = $execution->context()
-            ->match()
-            ->route()
-            ->routeMetadata()
-            ->get('controller.interceptors', []);
+        $raw = $this->metadata
+            ->resolve($execution)
+            ->interceptors();
 
         if (! is_array($raw)) {
             $raw = [];

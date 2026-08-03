@@ -16,6 +16,8 @@ use Quantum\Controllers\Interceptors\Conditions\RouteNameInterceptorCondition;
 use Quantum\Controllers\Interceptors\Contracts\ControllerInterceptorRegistryInterface;
 use Quantum\Controllers\Metadata\ControllerMetadataResolver;
 use Quantum\Controllers\Metadata\ControllerMetadataResolverInterface;
+use Quantum\Controllers\Runtime\ControllerRuntimeResolver;
+use Quantum\Controllers\Runtime\ControllerRuntimeResolverInterface;
 use Quantum\Container\Container;
 use Quantum\Container\Contracts\ContainerInterface;
 use Quantum\Http\HtmlDocumentBootstrapper;
@@ -358,6 +360,17 @@ class Application extends Container
             $this->singleton(
                 ControllerMetadataResolverInterface::class,
                 fn(Application $app) => $app->make(ControllerMetadataResolver::class),
+            );
+        }
+
+        if (! isset($this->bindings[ControllerRuntimeResolver::class])) {
+            $this->singleton(ControllerRuntimeResolver::class);
+        }
+
+        if (! isset($this->bindings[ControllerRuntimeResolverInterface::class])) {
+            $this->singleton(
+                ControllerRuntimeResolverInterface::class,
+                fn(Application $app) => $app->make(ControllerRuntimeResolver::class),
             );
         }
 

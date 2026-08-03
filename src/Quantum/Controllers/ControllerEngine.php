@@ -6,6 +6,7 @@ namespace Quantum\Controllers;
 
 use Quantum\Controllers\Execution\ControllerExecution;
 use Quantum\Controllers\Interceptors\ControllerInterceptorPipeline;
+use Quantum\Controllers\Runtime\ControllerRuntimeResolverInterface;
 use Quantum\Http\Request;
 use Quantum\Http\Response;
 use Quantum\Routing\Dispatching\MissingRouteHandler;
@@ -23,6 +24,7 @@ final class ControllerEngine
         private readonly MissingRouteHandler $missing,
         private readonly ControllerInvoker $invoker,
         private readonly ControllerInterceptorPipeline $interceptors,
+        private readonly ControllerRuntimeResolverInterface $runtime,
         private readonly ResponseNormalizer $normalizer,
     ) {}
 
@@ -46,6 +48,8 @@ final class ControllerEngine
             $arguments,
             $executionContext,
         );
+
+        $execution->setAttribute('controller.runtime', $this->runtime->resolve($execution));
 
         $result = $this->interceptors->handle($execution, function (ControllerExecution $execution): mixed {
             return $this->invoker->invoke(

@@ -5,8 +5,13 @@ declare(strict_types=1);
 namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
+use Quantum\Config\ConfigRepository;
 use Quantum\Controllers\Contracts\ControllerExecutionContextAwareInterface;
 use Quantum\Controllers\ControllerExecutionContext;
+use Quantum\Controllers\Execution\ControllerExecution;
+use Quantum\Controllers\Interceptors\Contracts\ControllerInterceptorChainInterface;
+use Quantum\Controllers\Interceptors\Contracts\ControllerInterceptorInterface;
+use Quantum\Controllers\Runtime\ControllerRuntimeOptions;
 use Quantum\Http\JsonResponse;
 use Quantum\Http\Request;
 use Quantum\Http\Response;
@@ -27,6 +32,7 @@ final class ControllerEngineTest extends TestCase
         TestContextAwareController::$released = false;
         TestContextAwareController::$capturedPath = null;
         TestArrayCallableController::$invoked = false;
+        TestRuntimeCaptureInterceptor::$capturedRuntime = null;
 
         parent::tearDown();
     }
@@ -260,6 +266,37 @@ final class ControllerEngineTest extends TestCase
         self::assertInstanceOf(Response::class, $response);
         self::assertSame('view:hello', $response->content());
     }
+
+    public function test_it_exposes_controller_runtime_options_on_execution(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $config = $app->make(ConfigRepository::class);
+        $config->set('controller_lifecycle', [
+            'mode' => 'development',
+        ]);
+        $config->set('controller_compilation', [
+            'enabled' => true,
+            'artifacts' => [
+                'format' => 'php',
+            ],
+        ]);
+
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $request = Request::create('/runtime', 'GET');
+        $route = new Route(RouteDefinition::make(['GET'], '/runtime', TestRuntimeController::class));
+        $route->meta('controller.interceptors', [
+            TestRuntimeCaptureInterceptor::class,
+        ]);
+        $match = new RouteMatch($route, [], 'GET');
+
+        $response = $dispatcher->dispatch($match, $request);
+
+        self::assertSame('runtime', $response->content());
+        self::assertInstanceOf(ControllerRuntimeOptions::class, TestRuntimeCaptureInterceptor::$capturedRuntime);
+        self::assertSame('development', TestRuntimeCaptureInterceptor::$capturedRuntime->lifecycleMode);
+        self::assertTrue(TestRuntimeCaptureInterceptor::$capturedRuntime->compilationEnabled);
+        self::assertSame('php', TestRuntimeCaptureInterceptor::$capturedRuntime->compilationArtifactsFormat);
+    }
 }
 
 final class TestInvokableController
@@ -357,6 +394,30 @@ final class TestViewResultController
         return $this->views->make('hello', [
             'title' => 'hello',
         ]);
+    }
+}
+
+final class TestRuntimeController
+{
+    public function __invoke(): string
+    {
+        return 'runtime';
+    }
+}
+
+final class TestRuntimeCaptureInterceptor implements ControllerInterceptorInterface
+{
+    public static ?ControllerRuntimeOptions $capturedRuntime = null;
+
+    public function intercept(ControllerExecution $execution, ControllerInterceptorChainInterface $chain): mixed
+    {
+        $value = $execution->getAttribute('controller.runtime');
+
+        if ($value instanceof ControllerRuntimeOptions) {
+            self::$capturedRuntime = $value;
+        }
+
+        return $chain->proceed($execution);
     }
 }
 

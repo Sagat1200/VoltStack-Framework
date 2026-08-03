@@ -77,6 +77,7 @@ final class ControllerExecution
 
     public function recordException(Throwable $exception): void
     {
+        $this->recordTimeline('exception');
         $this->setAttribute('exception', $exception);
     }
 
@@ -97,6 +98,7 @@ final class ControllerExecution
     public function setState(ControllerExecutionState $state): void
     {
         $this->setAttribute('controller.lifecycle.state', $state);
+        $this->recordTimeline($state->value);
     }
 
     public function wasInvoked(): bool
@@ -111,6 +113,7 @@ final class ControllerExecution
         }
 
         $this->setAttribute('controller.lifecycle.invoked', true);
+        $this->recordTimeline('invoked');
     }
 
     public function wasShortCircuited(): bool
@@ -125,6 +128,7 @@ final class ControllerExecution
         array $metadata = [],
     ): void {
         $this->setAttribute('controller.lifecycle.short_circuited', true);
+        $this->recordTimeline('short_circuited');
 
         if ($origin !== null) {
             $this->setAttribute('controller.lifecycle.short_circuit_origin', $origin);
@@ -167,5 +171,57 @@ final class ControllerExecution
         $value = $this->getAttribute('controller.lifecycle.short_circuit_metadata', []);
 
         return is_array($value) ? $value : [];
+    }
+
+    public function timeline(): array
+    {
+        $value = $this->getAttribute('controller.lifecycle.timeline', []);
+
+        return is_array($value) ? $value : [];
+    }
+
+    public function timelineAt(string $event): ?float
+    {
+        $timeline = $this->timeline();
+
+        $value = $timeline[$event] ?? null;
+
+        return is_float($value) || is_int($value) ? (float) $value : null;
+    }
+
+    public function durationBetween(string $fromEvent, string $toEvent): ?float
+    {
+        $from = $this->timelineAt($fromEvent);
+        $to = $this->timelineAt($toEvent);
+
+        if ($from === null || $to === null) {
+            return null;
+        }
+
+        return $to - $from;
+    }
+
+    public function totalDuration(): ?float
+    {
+        $start = $this->timelineAt('created');
+        $end = $this->timelineAt('succeeded') ?? $this->timelineAt('failed');
+
+        if ($start === null || $end === null) {
+            return null;
+        }
+
+        return $end - $start;
+    }
+
+    private function recordTimeline(string $event): void
+    {
+        $timeline = $this->timeline();
+
+        if (array_key_exists($event, $timeline)) {
+            return;
+        }
+
+        $timeline[$event] = microtime(true);
+        $this->setAttribute('controller.lifecycle.timeline', $timeline);
     }
 }

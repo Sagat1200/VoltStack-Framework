@@ -321,6 +321,17 @@ final class ControllerEngineTest extends TestCase
         self::assertSame('runtime', $response->content());
         self::assertNotNull(TestExecutionCaptureInterceptor::$execution);
         self::assertSame(ControllerExecutionState::Succeeded, TestExecutionCaptureInterceptor::$execution->state());
+        $timeline = TestExecutionCaptureInterceptor::$execution->timeline();
+        self::assertArrayHasKey('created', $timeline);
+        self::assertArrayHasKey('running', $timeline);
+        self::assertArrayHasKey('invoked', $timeline);
+        self::assertArrayHasKey('succeeded', $timeline);
+        self::assertGreaterThanOrEqual($timeline['running'], $timeline['invoked']);
+        self::assertGreaterThanOrEqual($timeline['invoked'], $timeline['succeeded']);
+        self::assertNotNull(TestExecutionCaptureInterceptor::$execution->timelineAt('created'));
+        self::assertNotNull(TestExecutionCaptureInterceptor::$execution->durationBetween('created', 'running'));
+        self::assertNotNull(TestExecutionCaptureInterceptor::$execution->durationBetween('running', 'invoked'));
+        self::assertNotNull(TestExecutionCaptureInterceptor::$execution->totalDuration());
     }
 
     public function test_it_tracks_execution_state_on_exception(): void
@@ -344,6 +355,15 @@ final class ControllerEngineTest extends TestCase
         self::assertNotNull(TestExecutionCaptureInterceptor::$execution);
         self::assertSame(ControllerExecutionState::Failed, TestExecutionCaptureInterceptor::$execution->state());
         self::assertInstanceOf(RuntimeException::class, TestExecutionCaptureInterceptor::$execution->getAttribute('exception'));
+        $timeline = TestExecutionCaptureInterceptor::$execution->timeline();
+        self::assertArrayHasKey('created', $timeline);
+        self::assertArrayHasKey('running', $timeline);
+        self::assertArrayHasKey('invoked', $timeline);
+        self::assertArrayHasKey('failed', $timeline);
+        self::assertGreaterThanOrEqual($timeline['running'], $timeline['invoked']);
+        self::assertGreaterThanOrEqual($timeline['invoked'], $timeline['failed']);
+        self::assertNotNull(TestExecutionCaptureInterceptor::$execution->durationBetween('created', 'failed'));
+        self::assertNotNull(TestExecutionCaptureInterceptor::$execution->totalDuration());
     }
 
     public function test_it_marks_short_circuit_when_controller_is_not_invoked(): void
@@ -369,6 +389,16 @@ final class ControllerEngineTest extends TestCase
         self::assertSame('short', TestLifecycleShortCircuitCaptureInterceptor::$execution->shortCircuitResult()->content());
         self::assertSame('test_short_circuit', TestLifecycleShortCircuitCaptureInterceptor::$execution->shortCircuitReason());
         self::assertSame(['source' => 'unit-test'], TestLifecycleShortCircuitCaptureInterceptor::$execution->shortCircuitMetadata());
+        $timeline = TestLifecycleShortCircuitCaptureInterceptor::$execution->timeline();
+        self::assertArrayHasKey('created', $timeline);
+        self::assertArrayHasKey('running', $timeline);
+        self::assertArrayHasKey('short_circuited', $timeline);
+        self::assertArrayHasKey('succeeded', $timeline);
+        self::assertArrayNotHasKey('invoked', $timeline);
+        self::assertGreaterThanOrEqual($timeline['running'], $timeline['short_circuited']);
+        self::assertGreaterThanOrEqual($timeline['short_circuited'], $timeline['succeeded']);
+        self::assertNull(TestLifecycleShortCircuitCaptureInterceptor::$execution->durationBetween('running', 'invoked'));
+        self::assertNotNull(TestLifecycleShortCircuitCaptureInterceptor::$execution->durationBetween('running', 'short_circuited'));
         self::assertFalse(TestLifecycleShortCircuitController::$invoked);
     }
 

@@ -15,6 +15,7 @@ use Quantum\Metadata\MetadataBag;
 use Throwable;
 use VoltStack\Framework\Contracts\ExceptionHandler as ExceptionHandlerContract;
 use VoltStack\Framework\Application;
+use VoltStack\Runtime\Context\WorkerLifecycle;
 
 final class ExceptionHandler implements ExceptionHandlerContract
 {
@@ -38,6 +39,8 @@ final class ExceptionHandler implements ExceptionHandlerContract
         );
 
         $result = $this->handler->handle($exception, $context);
+
+        $this->app->make(WorkerLifecycle::class)->request($result->workerDisposition);
 
         if ($result->response instanceof Response) {
             return $result->response;

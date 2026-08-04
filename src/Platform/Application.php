@@ -79,6 +79,7 @@ use VoltStack\Runtime\Component\ComponentManager;
 use VoltStack\Runtime\Component\InlinePageLoader;
 use VoltStack\Runtime\Context\RuntimeContext;
 use VoltStack\Runtime\Context\ScopeManager;
+use VoltStack\Runtime\Context\WorkerLifecycle;
 use VoltStack\Runtime\Hydration\Dehydrator;
 use VoltStack\Runtime\Hydration\Hydrator;
 use VoltStack\Runtime\Protocol\Checksum;
@@ -473,6 +474,10 @@ class Application extends Container
 
         if (! isset($this->bindings[ScopeManager::class])) {
             $this->singleton(ScopeManager::class, fn(Application $app) => new ScopeManager($app));
+        }
+
+        if (! isset($this->bindings[WorkerLifecycle::class])) {
+            $this->singleton(WorkerLifecycle::class);
         }
 
         if (! isset($this->bindings[QuantumExceptionHandlerInterface::class])) {

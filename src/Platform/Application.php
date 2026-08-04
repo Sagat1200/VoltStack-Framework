@@ -24,6 +24,8 @@ use Quantum\Controllers\Runtime\ControllerRuntimeResolver;
 use Quantum\Controllers\Runtime\ControllerRuntimeResolverInterface;
 use Quantum\Container\Container;
 use Quantum\Container\Contracts\ContainerInterface;
+use Quantum\Exceptions\Contracts\ExceptionHandlerInterface as QuantumExceptionHandlerInterface;
+use Quantum\Exceptions\ExceptionHandler as QuantumExceptionHandler;
 use Quantum\Http\HtmlDocumentBootstrapper;
 use Quantum\Http\Request;
 use Quantum\Http\ResponseFactory;
@@ -471,6 +473,10 @@ class Application extends Container
 
         if (! isset($this->bindings[ScopeManager::class])) {
             $this->singleton(ScopeManager::class, fn(Application $app) => new ScopeManager($app));
+        }
+
+        if (! isset($this->bindings[QuantumExceptionHandlerInterface::class])) {
+            $this->singleton(QuantumExceptionHandlerInterface::class, QuantumExceptionHandler::class);
         }
 
         if (! isset($this->bindings[ExceptionHandler::class])) {

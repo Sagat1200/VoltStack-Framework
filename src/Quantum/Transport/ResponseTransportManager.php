@@ -20,8 +20,7 @@ final class ResponseTransportManager implements ResponseTransportManagerInterfac
     public function __construct(
         private readonly TransportAdapterInterface $adapter,
         private readonly TransportEmitterInterface $emitter,
-    ) {
-    }
+    ) {}
 
     public function send(ResponseInterface $response, TransportContext $context): TransportResult
     {
@@ -38,10 +37,18 @@ final class ResponseTransportManager implements ResponseTransportManagerInterfac
             $execution->status = TransportStatus::Prepared;
 
             $execution->status = TransportStatus::Emitting;
+            $execution->emissionStarted = true;
             $execution->result = $this->emitter->emit($execution->prepared, $context);
             $execution->status = $execution->result->status;
 
-            return $execution->result;
+            return new TransportResult(
+                status: $execution->result->status,
+                bytesEmitted: $execution->result->bytesEmitted,
+                completed: $execution->result->completed,
+                connectionClosed: $execution->result->connectionClosed,
+                emissionStarted: true,
+                exception: $execution->result->exception,
+            );
         } catch (Throwable $exception) {
             $execution->exception = $exception;
             $execution->status = TransportStatus::Failed;
@@ -50,6 +57,7 @@ final class ResponseTransportManager implements ResponseTransportManagerInterfac
                 bytesEmitted: 0,
                 completed: false,
                 connectionClosed: false,
+                emissionStarted: $execution->emissionStarted,
                 exception: $exception,
             );
 
@@ -57,4 +65,3 @@ final class ResponseTransportManager implements ResponseTransportManagerInterfac
         }
     }
 }
-

@@ -14,8 +14,7 @@ final readonly class TransportResult
         public int $bytesEmitted,
         public bool $completed,
         public bool $connectionClosed,
+        public bool $emissionStarted = false,
         public ?Throwable $exception = null,
-    ) {
-    }
+    ) {}
 }
-

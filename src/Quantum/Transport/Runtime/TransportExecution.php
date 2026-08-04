@@ -15,6 +15,7 @@ final class TransportExecution
     public ?PreparedTransportResponseInterface $prepared = null;
     public ?TransportResult $result = null;
     public ?Throwable $exception = null;
+    public bool $emissionStarted = false;
 
     public function __construct(
         public ResponseInterface $response,
@@ -23,4 +24,3 @@ final class TransportExecution
         $this->status = TransportStatus::Pending;
     }
 }
-

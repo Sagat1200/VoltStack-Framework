@@ -70,6 +70,13 @@ final class ControllerExecution
         $this->attributes[$key] = $value;
     }
 
+    public function executionId(): ?string
+    {
+        $value = $this->getAttribute('controller.execution.id');
+
+        return is_string($value) ? $value : null;
+    }
+
     public function forgetAttribute(string $key): void
     {
         unset($this->attributes[$key]);

@@ -18,9 +18,9 @@ final class MetadataNormalizer
             MetadataValueType::Array => is_array($value) ? $value : [],
             MetadataValueType::String => is_string($value) ? $value : (is_numeric($value) ? (string) $value : ''),
             MetadataValueType::Int => is_int($value) ? $value : (is_numeric($value) ? (int) $value : 0),
+            MetadataValueType::Float => is_float($value) ? $value : (is_numeric($value) ? (float) $value : 0.0),
             MetadataValueType::Bool => is_bool($value) ? $value : (bool) $value,
             default => $value,
         };
     }
 }
-

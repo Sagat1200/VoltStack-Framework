@@ -17,4 +17,9 @@ final class MetadataSchemaRegistry
     {
         return $this->schemas[$key] ?? null;
     }
+
+    public function all(): array
+    {
+        return $this->schemas;
+    }
 }

@@ -162,6 +162,9 @@ final class MetadataEngineTest extends TestCase
         $config = $app->make(ConfigRepository::class);
         $config->set('controller_lifecycle', [
             'mode' => 'auto',
+            'timeouts' => [
+                'default' => '0.5',
+            ],
         ]);
         $config->set('controller_compilation', [
             'enabled' => true,
@@ -181,6 +184,8 @@ final class MetadataEngineTest extends TestCase
         $bag = $engine->resolve(new MetadataRequest(subject: $methodSubject));
 
         self::assertSame('auto', $bag->get('controller.lifecycle.mode'));
+        self::assertTrue($bag->get('controller.lifecycle.timeouts.enabled'));
+        self::assertSame(0.5, $bag->get('controller.lifecycle.timeouts.default'));
         self::assertTrue($bag->get('controller.compilation.enabled'));
         self::assertSame('php', $bag->get('controller.compilation.artifacts.format'));
     }

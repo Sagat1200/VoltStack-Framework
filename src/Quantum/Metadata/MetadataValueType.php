@@ -10,6 +10,6 @@ enum MetadataValueType: string
     case Array = 'array';
     case String = 'string';
     case Int = 'int';
+    case Float = 'float';
     case Bool = 'bool';
 }
-

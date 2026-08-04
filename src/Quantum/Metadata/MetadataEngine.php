@@ -33,7 +33,7 @@ final class MetadataEngine implements MetadataEngineInterface
         if ($request->keys !== []) {
             $fragments = array_values(array_filter(
                 $fragments,
-                static fn (MetadataFragment $fragment): bool => in_array($fragment->key, $request->keys, true),
+                static fn(MetadataFragment $fragment): bool => in_array($fragment->key, $request->keys, true),
             ));
         }
 
@@ -62,6 +62,14 @@ final class MetadataEngine implements MetadataEngineInterface
                 if ($schema !== null) {
                     $items[$key] = $schema->defaultValue;
                 }
+            }
+        } else {
+            foreach ($this->schemas->all() as $key => $schema) {
+                if (array_key_exists($key, $items)) {
+                    continue;
+                }
+
+                $items[$key] = $schema->defaultValue;
             }
         }
 

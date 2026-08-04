@@ -12,6 +12,8 @@ use Quantum\Controllers\Execution\ControllerExecution;
 use Quantum\Controllers\Exceptions\ControllerAlreadyInvokedException;
 use Quantum\Controllers\Interceptors\Contracts\ControllerInterceptorChainInterface;
 use Quantum\Controllers\Interceptors\Contracts\ControllerInterceptorInterface;
+use Quantum\Controllers\Observability\Contracts\ControllerEventDispatcherInterface;
+use Quantum\Controllers\Observability\Contracts\ControllerEventInterface;
 use Quantum\Controllers\Runtime\ControllerExecutionState;
 use Quantum\Controllers\Runtime\ControllerRuntimeOptions;
 use Quantum\Controllers\Runtime\ControllerShortCircuitOrigin;
@@ -41,6 +43,7 @@ final class ControllerEngineTest extends TestCase
         TestLifecycleShortCircuitCaptureInterceptor::$execution = null;
         TestDoubleProceedController::$invocationCount = 0;
         TestTimeoutCaptureInterceptor::$execution = null;
+        TestEventDispatcher::$events = [];
 
         parent::tearDown();
     }
@@ -306,6 +309,43 @@ final class ControllerEngineTest extends TestCase
         self::assertSame('php', TestRuntimeCaptureInterceptor::$capturedRuntime->compilationArtifactsFormat);
         self::assertTrue(TestRuntimeCaptureInterceptor::$capturedRuntime->timeoutsEnabled);
         self::assertNull(TestRuntimeCaptureInterceptor::$capturedRuntime->timeoutDefaultSeconds);
+    }
+
+    public function test_it_emits_observability_events_during_execution(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->instance(ControllerEventDispatcherInterface::class, new TestEventDispatcher());
+
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $request = Request::create('/observability', 'GET');
+        $match = new RouteMatch(
+            new Route(RouteDefinition::make(['GET'], '/observability', TestInvokableController::class)),
+            [],
+            'GET',
+        );
+
+        $response = $dispatcher->dispatch($match, $request);
+
+        self::assertSame('invokable', $response->content());
+        self::assertNotEmpty(TestEventDispatcher::$events);
+
+        $names = array_map(static fn (ControllerEventInterface $event): string => $event->name(), TestEventDispatcher::$events);
+
+        self::assertSame('controllers.execution.created', $names[0]);
+        self::assertContains('controllers.execution.started', $names);
+        self::assertContains('controllers.invocation.started', $names);
+        self::assertContains('controllers.invocation.completed', $names);
+        self::assertSame('controllers.execution.completed', $names[array_key_last($names)]);
+
+        $executionIds = array_values(array_unique(array_map(
+            static fn (ControllerEventInterface $event): string => $event->executionId(),
+            TestEventDispatcher::$events,
+        )));
+        self::assertCount(1, $executionIds);
+        self::assertNotSame('', $executionIds[0]);
+
+        $sequences = array_map(static fn (ControllerEventInterface $event): int => $event->sequence(), TestEventDispatcher::$events);
+        self::assertSame(range(1, count($sequences)), $sequences);
     }
 
     public function test_it_tracks_execution_state_on_success(): void
@@ -756,5 +796,15 @@ final class TestContextAwareExceptionController implements ControllerExecutionCo
     public function __invoke(): string
     {
         throw new RuntimeException('boom');
+    }
+}
+
+final class TestEventDispatcher implements ControllerEventDispatcherInterface
+{
+    public static array $events = [];
+
+    public function dispatch(ControllerEventInterface $event): void
+    {
+        self::$events[] = $event;
     }
 }

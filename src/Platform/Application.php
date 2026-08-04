@@ -16,6 +16,10 @@ use Quantum\Controllers\Interceptors\Conditions\RouteNameInterceptorCondition;
 use Quantum\Controllers\Interceptors\Contracts\ControllerInterceptorRegistryInterface;
 use Quantum\Controllers\Metadata\ControllerMetadataResolver;
 use Quantum\Controllers\Metadata\ControllerMetadataResolverInterface;
+use Quantum\Controllers\Observability\Contracts\ControllerEventDispatcherInterface;
+use Quantum\Controllers\Observability\Contracts\ControllerObservabilityManagerInterface;
+use Quantum\Controllers\Observability\Engine\ControllerObservabilityManager;
+use Quantum\Controllers\Observability\Engine\NullControllerEventDispatcher;
 use Quantum\Controllers\Runtime\ControllerRuntimeResolver;
 use Quantum\Controllers\Runtime\ControllerRuntimeResolverInterface;
 use Quantum\Container\Container;
@@ -296,6 +300,18 @@ class Application extends Container
                     defaultValue: 'auto',
                 ));
                 $registry->register(new MetadataSchema(
+                    key: 'controller.lifecycle.timeouts.enabled',
+                    type: MetadataValueType::Bool,
+                    merge: MetadataMergeStrategy::Replace,
+                    defaultValue: true,
+                ));
+                $registry->register(new MetadataSchema(
+                    key: 'controller.lifecycle.timeouts.default',
+                    type: MetadataValueType::Float,
+                    merge: MetadataMergeStrategy::Replace,
+                    defaultValue: null,
+                ));
+                $registry->register(new MetadataSchema(
                     key: 'controller.compilation.enabled',
                     type: MetadataValueType::Bool,
                     merge: MetadataMergeStrategy::Replace,
@@ -371,6 +387,21 @@ class Application extends Container
             $this->singleton(
                 ControllerRuntimeResolverInterface::class,
                 fn(Application $app) => $app->make(ControllerRuntimeResolver::class),
+            );
+        }
+
+        if (! isset($this->bindings[ControllerEventDispatcherInterface::class])) {
+            $this->singleton(ControllerEventDispatcherInterface::class, NullControllerEventDispatcher::class);
+        }
+
+        if (! isset($this->bindings[ControllerObservabilityManager::class])) {
+            $this->singleton(ControllerObservabilityManager::class);
+        }
+
+        if (! isset($this->bindings[ControllerObservabilityManagerInterface::class])) {
+            $this->singleton(
+                ControllerObservabilityManagerInterface::class,
+                fn(Application $app) => $app->make(ControllerObservabilityManager::class),
             );
         }
 

@@ -186,6 +186,25 @@ final class ControllerExecution
         return is_array($value) ? $value : [];
     }
 
+    public function durationSeconds(): ?float
+    {
+        $value = $this->getAttribute('controller.lifecycle.duration_seconds');
+
+        return is_float($value) || is_int($value) ? (float) $value : null;
+    }
+
+    public function timeoutSeconds(): ?float
+    {
+        $value = $this->getAttribute('controller.lifecycle.timeout_seconds');
+
+        return is_float($value) || is_int($value) ? (float) $value : null;
+    }
+
+    public function timeoutExceeded(): bool
+    {
+        return $this->getAttribute('controller.lifecycle.timeout_exceeded', false) === true;
+    }
+
     public function timeline(): array
     {
         if (! $this->diagnosticsEnabled()) {

@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Quantum\Controllers\Metadata;
 
 use Quantum\Controllers\Execution\ControllerExecution;
+use Quantum\Controllers\Metadata\ControllerMetadata;
+use Quantum\Controllers\Metadata\ControllerMetadataResolverInterface;
 use Quantum\Metadata\Contracts\MetadataEngineInterface;
 use Quantum\Metadata\MetadataRequest;
 use Quantum\Metadata\Subjects\ControllerClassSubject;
@@ -13,9 +15,7 @@ use Quantum\Metadata\Subjects\RouteMatchSubject;
 
 final readonly class ControllerMetadataResolver implements ControllerMetadataResolverInterface
 {
-    public function __construct(private MetadataEngineInterface $engine)
-    {
-    }
+    public function __construct(private MetadataEngineInterface $engine) {}
 
     public function resolve(ControllerExecution $execution): ControllerMetadata
     {

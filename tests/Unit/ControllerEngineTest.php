@@ -40,6 +40,7 @@ final class ControllerEngineTest extends TestCase
         TestLifecycleShortCircuitController::$invoked = false;
         TestLifecycleShortCircuitCaptureInterceptor::$execution = null;
         TestDoubleProceedController::$invocationCount = 0;
+        TestTimeoutCaptureInterceptor::$execution = null;
 
         parent::tearDown();
     }
@@ -303,6 +304,8 @@ final class ControllerEngineTest extends TestCase
         self::assertSame('development', TestRuntimeCaptureInterceptor::$capturedRuntime->lifecycleMode);
         self::assertTrue(TestRuntimeCaptureInterceptor::$capturedRuntime->compilationEnabled);
         self::assertSame('php', TestRuntimeCaptureInterceptor::$capturedRuntime->compilationArtifactsFormat);
+        self::assertTrue(TestRuntimeCaptureInterceptor::$capturedRuntime->timeoutsEnabled);
+        self::assertNull(TestRuntimeCaptureInterceptor::$capturedRuntime->timeoutDefaultSeconds);
     }
 
     public function test_it_tracks_execution_state_on_success(): void
@@ -442,6 +445,35 @@ final class ControllerEngineTest extends TestCase
         self::assertNull(TestExecutionCaptureInterceptor::$execution->getAttribute('exception'));
         self::assertSame(RuntimeException::class, TestExecutionCaptureInterceptor::$execution->getAttribute('exception_class'));
         self::assertSame([], TestExecutionCaptureInterceptor::$execution->timeline());
+    }
+
+    public function test_it_marks_timeout_exceeded_when_duration_is_over_default(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $config = $app->make(ConfigRepository::class);
+        $config->set('controller_lifecycle', [
+            'mode' => 'development',
+            'timeouts' => [
+                'enabled' => true,
+                'default' => 0.001,
+            ],
+        ]);
+
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $request = Request::create('/lifecycle-timeout', 'GET');
+        $route = new Route(RouteDefinition::make(['GET'], '/lifecycle-timeout', TestTimeoutController::class));
+        $route->meta('controller.interceptors', [
+            TestTimeoutCaptureInterceptor::class,
+        ]);
+        $match = new RouteMatch($route, [], 'GET');
+
+        $response = $dispatcher->dispatch($match, $request);
+
+        self::assertSame('timeout', $response->content());
+        self::assertNotNull(TestTimeoutCaptureInterceptor::$execution);
+        self::assertTrue(TestTimeoutCaptureInterceptor::$execution->timeoutExceeded());
+        self::assertSame(0.001, TestTimeoutCaptureInterceptor::$execution->timeoutSeconds());
+        self::assertNotNull(TestTimeoutCaptureInterceptor::$execution->durationSeconds());
     }
 
     public function test_it_prevents_double_invocation_via_interceptor_chain(): void
@@ -604,6 +636,16 @@ final class TestDoubleProceedController
     }
 }
 
+final class TestTimeoutController
+{
+    public function __invoke(): string
+    {
+        usleep(5000);
+
+        return 'timeout';
+    }
+}
+
 final class TestRuntimeCaptureInterceptor implements ControllerInterceptorInterface
 {
     public static ?ControllerRuntimeOptions $capturedRuntime = null;
@@ -621,6 +663,18 @@ final class TestRuntimeCaptureInterceptor implements ControllerInterceptorInterf
 }
 
 final class TestExecutionCaptureInterceptor implements ControllerInterceptorInterface
+{
+    public static ?ControllerExecution $execution = null;
+
+    public function intercept(ControllerExecution $execution, ControllerInterceptorChainInterface $chain): mixed
+    {
+        self::$execution = $execution;
+
+        return $chain->proceed($execution);
+    }
+}
+
+final class TestTimeoutCaptureInterceptor implements ControllerInterceptorInterface
 {
     public static ?ControllerExecution $execution = null;
 

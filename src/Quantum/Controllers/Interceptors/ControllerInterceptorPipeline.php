@@ -6,6 +6,7 @@ namespace Quantum\Controllers\Interceptors;
 
 use Closure;
 use Quantum\Controllers\Execution\ControllerExecution;
+use Quantum\Controllers\Interceptors\ControllerInterceptorChain;
 use Quantum\Controllers\Interceptors\ControllerInterceptorResolver;
 use VoltStack\Framework\Application;
 

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quantum\Controllers;
 
 use Quantum\Controllers\Contracts\ControllerExecutionContextAwareInterface;
+use Quantum\Controllers\ControllerExecutionContext;
 
 final class ControllerContextInjector
 {

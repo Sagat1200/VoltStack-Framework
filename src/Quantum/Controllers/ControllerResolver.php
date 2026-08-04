@@ -4,11 +4,14 @@ declare(strict_types=1);
 
 namespace Quantum\Controllers;
 
+use Quantum\Controllers\ControllerContext;
+use Quantum\Controllers\ControllerDefinition;
 use Quantum\Controllers\Exceptions\ControllerMethodNotAllowedException;
 use Quantum\Controllers\Exceptions\ControllerMethodNotFoundException;
 use Quantum\Controllers\Exceptions\ControllerMethodNotPublicException;
 use Quantum\Controllers\Exceptions\InvalidControllerMethodException;
 use Quantum\Controllers\Exceptions\UnsupportedControllerActionException;
+use Quantum\Controllers\ResolvedController;
 use ReflectionMethod;
 
 final class ControllerResolver

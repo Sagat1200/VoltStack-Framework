@@ -21,4 +21,3 @@ final class ResolvedController
         return $this->method;
     }
 }
-

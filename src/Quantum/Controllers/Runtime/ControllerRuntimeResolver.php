@@ -6,12 +6,12 @@ namespace Quantum\Controllers\Runtime;
 
 use Quantum\Controllers\Execution\ControllerExecution;
 use Quantum\Controllers\Metadata\ControllerMetadataResolverInterface;
+use Quantum\Controllers\Runtime\ControllerRuntimeOptions;
+use Quantum\Controllers\Runtime\ControllerRuntimeResolverInterface;
 
 final readonly class ControllerRuntimeResolver implements ControllerRuntimeResolverInterface
 {
-    public function __construct(private ControllerMetadataResolverInterface $metadata)
-    {
-    }
+    public function __construct(private ControllerMetadataResolverInterface $metadata) {}
 
     public function resolve(ControllerExecution $execution): ControllerRuntimeOptions
     {
@@ -35,11 +35,32 @@ final readonly class ControllerRuntimeResolver implements ControllerRuntimeResol
             $format = 'php';
         }
 
+        $timeoutsEnabled = $bag->get('controller.lifecycle.timeouts.enabled', true);
+
+        if (! is_bool($timeoutsEnabled)) {
+            $timeoutsEnabled = (bool) $timeoutsEnabled;
+        }
+
+        $timeoutDefaultSeconds = $bag->get('controller.lifecycle.timeouts.default');
+
+        if ($timeoutDefaultSeconds === null) {
+            $timeoutDefaultSeconds = null;
+        } elseif (is_numeric($timeoutDefaultSeconds)) {
+            $timeoutDefaultSeconds = (float) $timeoutDefaultSeconds;
+        } else {
+            $timeoutDefaultSeconds = null;
+        }
+
+        if (is_float($timeoutDefaultSeconds) && $timeoutDefaultSeconds <= 0) {
+            $timeoutDefaultSeconds = null;
+        }
+
         return new ControllerRuntimeOptions(
             lifecycleMode: strtolower(trim($lifecycleMode)),
             compilationEnabled: $compilationEnabled,
             compilationArtifactsFormat: strtolower(trim($format)),
+            timeoutsEnabled: $timeoutsEnabled,
+            timeoutDefaultSeconds: $timeoutDefaultSeconds,
         );
     }
 }
-

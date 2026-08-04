@@ -7,8 +7,6 @@ namespace Quantum\Controllers\Interceptors;
 use Closure;
 use Quantum\Controllers\Execution\ControllerExecution;
 use Quantum\Controllers\Interceptors\Contracts\ControllerInterceptorChainInterface;
-use Quantum\Controllers\Interceptors\Contracts\ControllerInterceptorInterface;
-use Quantum\Controllers\Interceptors\ResolvedInterceptorDefinition;
 use VoltStack\Framework\Application;
 
 final class ControllerInterceptorChain implements ControllerInterceptorChainInterface

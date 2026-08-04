@@ -4,8 +4,14 @@ declare(strict_types=1);
 
 namespace Quantum\Controllers;
 
+use Quantum\Controllers\ControllerContext;
+use Quantum\Controllers\ControllerDefinition;
+use Quantum\Controllers\ControllerExecutionContext;
+use Quantum\Controllers\ControllerInvoker;
+use Quantum\Controllers\ControllerResolver;
 use Quantum\Controllers\Execution\ControllerExecution;
 use Quantum\Controllers\Interceptors\ControllerInterceptorPipeline;
+use Quantum\Controllers\ParameterResolutionEngine;
 use Quantum\Controllers\Runtime\ControllerExecutionState;
 use Quantum\Controllers\Runtime\ControllerRuntimeResolverInterface;
 use Quantum\Controllers\Runtime\ControllerShortCircuitOrigin;
@@ -54,6 +60,7 @@ final class ControllerEngine
 
         $execution->setAttribute('controller.runtime', $this->runtime->resolve($execution));
         $execution->setState(ControllerExecutionState::Created);
+        $execution->setAttribute('controller.lifecycle.started_at', microtime(true));
 
         $execution->setState(ControllerExecutionState::Running);
 
@@ -68,6 +75,7 @@ final class ControllerEngine
                 );
             });
         } catch (Throwable $exception) {
+            $this->evaluateTimeout($execution);
             $execution->recordException($exception);
             $execution->setState(ControllerExecutionState::Failed);
             throw $exception;
@@ -77,8 +85,39 @@ final class ControllerEngine
             $execution->markShortCircuited($result, ControllerShortCircuitOrigin::Interceptor);
         }
 
+        $this->evaluateTimeout($execution);
         $execution->setState(ControllerExecutionState::Succeeded);
 
         return $this->normalizer->normalize($result);
+    }
+
+    private function evaluateTimeout(ControllerExecution $execution): void
+    {
+        $options = $execution->runtimeOptions();
+
+        if (! $options?->timeoutsEnabled) {
+            return;
+        }
+
+        $timeoutSeconds = $options->timeoutDefaultSeconds;
+
+        if ($timeoutSeconds === null) {
+            return;
+        }
+
+        $startedAt = $execution->getAttribute('controller.lifecycle.started_at');
+
+        if (! is_float($startedAt) && ! is_int($startedAt)) {
+            return;
+        }
+
+        $elapsedSeconds = microtime(true) - (float) $startedAt;
+
+        $execution->setAttribute('controller.lifecycle.duration_seconds', $elapsedSeconds);
+        $execution->setAttribute('controller.lifecycle.timeout_seconds', $timeoutSeconds);
+
+        if ($elapsedSeconds > $timeoutSeconds) {
+            $execution->setAttribute('controller.lifecycle.timeout_exceeded', true);
+        }
     }
 }

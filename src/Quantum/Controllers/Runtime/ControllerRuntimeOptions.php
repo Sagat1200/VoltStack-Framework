@@ -10,5 +10,7 @@ final readonly class ControllerRuntimeOptions
         public string $lifecycleMode,
         public bool $compilationEnabled,
         public string $compilationArtifactsFormat,
+        public bool $timeoutsEnabled,
+        public ?float $timeoutDefaultSeconds,
     ) {}
 }

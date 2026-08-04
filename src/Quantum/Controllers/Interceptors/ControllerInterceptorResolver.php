@@ -8,12 +8,16 @@ use Quantum\Controllers\Exceptions\InvalidInterceptorConditionException;
 use Quantum\Controllers\Exceptions\InvalidInterceptorException;
 use Quantum\Controllers\Exceptions\UnknownInterceptorException;
 use Quantum\Controllers\Execution\ControllerExecution;
-use Quantum\Controllers\Metadata\ControllerMetadataResolverInterface;
 use Quantum\Controllers\Interceptors\Conditions\InterceptorConditionRegistry;
 use Quantum\Controllers\Interceptors\Contracts\ControllerInterceptorInterface;
 use Quantum\Controllers\Interceptors\Contracts\ControllerInterceptorRegistryInterface;
+use Quantum\Controllers\Interceptors\ControllerInterceptorPlan;
+use Quantum\Controllers\Interceptors\ControllerInterceptorPlanBuilder;
+use Quantum\Controllers\Interceptors\InterceptorDefinition;
 use Quantum\Controllers\Interceptors\InterceptorPhase;
 use Quantum\Controllers\Interceptors\InterceptorScope;
+use Quantum\Controllers\Interceptors\ResolvedInterceptorDefinition;
+use Quantum\Controllers\Metadata\ControllerMetadataResolverInterface;
 
 final class ControllerInterceptorResolver
 {

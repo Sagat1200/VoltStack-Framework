@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 namespace Quantum\Controllers;
 
+use Quantum\Controllers\ControllerContextInjector;
+use Quantum\Controllers\ControllerExecutionContext;
+use Quantum\Controllers\ResolvedController;
+
 final class ControllerInvoker
 {
     public function __construct(private readonly ControllerContextInjector $injector) {}
@@ -22,4 +26,3 @@ final class ControllerInvoker
         }
     }
 }
-

@@ -52,9 +52,11 @@ use Quantum\Metadata\Schema\MetadataSchema;
 use Quantum\Metadata\Schema\MetadataSchemaRegistry;
 use Quantum\Middlewares\CsrfMiddleware;
 use Quantum\Transport\Adapters\HttpTransportAdapter;
+use Quantum\Transport\Bridges\Http\HttpResponseTransformer;
 use Quantum\Transport\Contracts\ResponseTransportManagerInterface;
 use Quantum\Transport\Contracts\TransportAdapterInterface;
 use Quantum\Transport\Contracts\TransportEmitterInterface;
+use Quantum\Transport\Emitters\HttpSapiEmitter;
 use Quantum\Transport\Emitters\NullTransportEmitter;
 use Quantum\Transport\ResponseTransportManager;
 use Quantum\Routing\PipelineArtifactStore;
@@ -416,7 +418,11 @@ class Application extends Container
         }
 
         if (! isset($this->bindings[TransportEmitterInterface::class])) {
-            $this->singleton(TransportEmitterInterface::class, NullTransportEmitter::class);
+            $this->singleton(TransportEmitterInterface::class, HttpSapiEmitter::class);
+        }
+
+        if (! isset($this->bindings[HttpResponseTransformer::class])) {
+            $this->singleton(HttpResponseTransformer::class);
         }
 
         if (! isset($this->bindings[ResponseTransportManager::class])) {

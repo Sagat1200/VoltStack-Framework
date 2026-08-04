@@ -36,6 +36,8 @@ final class ResponseTransportManagerTest extends TestCase
         self::assertSame(2, $result->bytesEmitted);
         self::assertTrue($result->completed);
         self::assertFalse($result->connectionClosed);
+        self::assertNotNull($result->execution);
+        self::assertTrue($result->execution->emissionStarted);
 
         $emitted = $emitter->emitted();
         self::assertCount(1, $emitted);
@@ -77,6 +79,7 @@ final class ResponseTransportManagerTest extends TestCase
         self::assertFalse($result->completed);
         self::assertInstanceOf(Exception::class, $result->exception);
         self::assertSame('boom', $result->exception->getMessage());
+        self::assertNotNull($result->execution);
+        self::assertFalse($result->execution->emissionStarted);
     }
 }
-

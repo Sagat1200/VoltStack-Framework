@@ -30,6 +30,18 @@ final class ExceptionHandler implements ExceptionHandlerInterface
         $context->state->attempts++;
         $context->state->status = ExceptionHandlingStatus::Mapping;
 
+        $emissionStarted = $context->transportExecution?->emissionStarted ?? false;
+
+        if ($emissionStarted) {
+            $context->state->status = ExceptionHandlingStatus::Aborted;
+
+            return new ExceptionHandlingResult(
+                response: null,
+                workerDisposition: WorkerDisposition::Terminate,
+                emissionStarted: true,
+            );
+        }
+
         $request = $context->request;
         $status = $this->statusCode($throwable);
         $headers = $this->responseHeaders($throwable);
@@ -39,8 +51,6 @@ final class ExceptionHandler implements ExceptionHandlerInterface
         $response = $this->renderResponse($request, $throwable, $status, $headers);
 
         $context->state->status = ExceptionHandlingStatus::Handled;
-
-        $emissionStarted = $context->transportExecution?->emissionStarted ?? false;
 
         return new ExceptionHandlingResult(
             response: $response,
@@ -245,4 +255,3 @@ final class ExceptionHandler implements ExceptionHandlerInterface
         return $errorCode !== 'server.error' && $errorCode !== 'runtime.error';
     }
 }
-

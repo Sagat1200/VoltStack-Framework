@@ -47,6 +47,7 @@ final class ResponseTransportManager implements ResponseTransportManagerInterfac
                 completed: $execution->result->completed,
                 connectionClosed: $execution->result->connectionClosed,
                 emissionStarted: true,
+                execution: $execution,
                 exception: $execution->result->exception,
             );
         } catch (Throwable $exception) {
@@ -58,6 +59,7 @@ final class ResponseTransportManager implements ResponseTransportManagerInterfac
                 completed: false,
                 connectionClosed: false,
                 emissionStarted: $execution->emissionStarted,
+                execution: $execution,
                 exception: $exception,
             );
 

@@ -51,6 +51,12 @@ use Quantum\Metadata\Providers\RouteMetadataProvider;
 use Quantum\Metadata\Schema\MetadataSchema;
 use Quantum\Metadata\Schema\MetadataSchemaRegistry;
 use Quantum\Middlewares\CsrfMiddleware;
+use Quantum\Transport\Adapters\HttpTransportAdapter;
+use Quantum\Transport\Contracts\ResponseTransportManagerInterface;
+use Quantum\Transport\Contracts\TransportAdapterInterface;
+use Quantum\Transport\Contracts\TransportEmitterInterface;
+use Quantum\Transport\Emitters\NullTransportEmitter;
+use Quantum\Transport\ResponseTransportManager;
 use Quantum\Routing\PipelineArtifactStore;
 use Quantum\Routing\Router;
 use Quantum\Routing\TreeArtifactStore;
@@ -402,6 +408,25 @@ class Application extends Container
             $this->singleton(
                 ControllerObservabilityManagerInterface::class,
                 fn(Application $app) => $app->make(ControllerObservabilityManager::class),
+            );
+        }
+
+        if (! isset($this->bindings[TransportAdapterInterface::class])) {
+            $this->singleton(TransportAdapterInterface::class, HttpTransportAdapter::class);
+        }
+
+        if (! isset($this->bindings[TransportEmitterInterface::class])) {
+            $this->singleton(TransportEmitterInterface::class, NullTransportEmitter::class);
+        }
+
+        if (! isset($this->bindings[ResponseTransportManager::class])) {
+            $this->singleton(ResponseTransportManager::class);
+        }
+
+        if (! isset($this->bindings[ResponseTransportManagerInterface::class])) {
+            $this->singleton(
+                ResponseTransportManagerInterface::class,
+                fn(Application $app) => $app->make(ResponseTransportManager::class),
             );
         }
 

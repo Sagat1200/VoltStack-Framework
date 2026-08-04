@@ -308,6 +308,10 @@ final class ControllerEngineTest extends TestCase
     public function test_it_tracks_execution_state_on_success(): void
     {
         $app = new Application(sys_get_temp_dir());
+        $config = $app->make(ConfigRepository::class);
+        $config->set('controller_lifecycle', [
+            'mode' => 'development',
+        ]);
         $dispatcher = $app->make(ControllerDispatcher::class);
         $request = Request::create('/lifecycle-success', 'GET');
         $route = new Route(RouteDefinition::make(['GET'], '/lifecycle-success', TestRuntimeController::class));
@@ -337,6 +341,10 @@ final class ControllerEngineTest extends TestCase
     public function test_it_tracks_execution_state_on_exception(): void
     {
         $app = new Application(sys_get_temp_dir());
+        $config = $app->make(ConfigRepository::class);
+        $config->set('controller_lifecycle', [
+            'mode' => 'development',
+        ]);
         $dispatcher = $app->make(ControllerDispatcher::class);
         $request = Request::create('/lifecycle-failed', 'GET');
         $route = new Route(RouteDefinition::make(['GET'], '/lifecycle-failed', TestRuntimeExceptionController::class));
@@ -369,6 +377,10 @@ final class ControllerEngineTest extends TestCase
     public function test_it_marks_short_circuit_when_controller_is_not_invoked(): void
     {
         $app = new Application(sys_get_temp_dir());
+        $config = $app->make(ConfigRepository::class);
+        $config->set('controller_lifecycle', [
+            'mode' => 'development',
+        ]);
         $dispatcher = $app->make(ControllerDispatcher::class);
         $request = Request::create('/lifecycle-short-circuit', 'GET');
         $route = new Route(RouteDefinition::make(['GET'], '/lifecycle-short-circuit', TestLifecycleShortCircuitController::class));
@@ -400,6 +412,36 @@ final class ControllerEngineTest extends TestCase
         self::assertNull(TestLifecycleShortCircuitCaptureInterceptor::$execution->durationBetween('running', 'invoked'));
         self::assertNotNull(TestLifecycleShortCircuitCaptureInterceptor::$execution->durationBetween('running', 'short_circuited'));
         self::assertFalse(TestLifecycleShortCircuitController::$invoked);
+    }
+
+    public function test_production_mode_disables_diagnostics_payloads(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $config = $app->make(ConfigRepository::class);
+        $config->set('controller_lifecycle', [
+            'mode' => 'production',
+        ]);
+
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $request = Request::create('/lifecycle-production-failed', 'GET');
+        $route = new Route(RouteDefinition::make(['GET'], '/lifecycle-production-failed', TestRuntimeExceptionController::class));
+        $route->meta('controller.interceptors', [
+            TestExecutionCaptureInterceptor::class,
+        ]);
+        $match = new RouteMatch($route, [], 'GET');
+
+        try {
+            $dispatcher->dispatch($match, $request);
+            self::fail('Expected exception was not thrown.');
+        } catch (RuntimeException $exception) {
+            self::assertSame('boom', $exception->getMessage());
+        }
+
+        self::assertNotNull(TestExecutionCaptureInterceptor::$execution);
+        self::assertSame(ControllerExecutionState::Failed, TestExecutionCaptureInterceptor::$execution->state());
+        self::assertNull(TestExecutionCaptureInterceptor::$execution->getAttribute('exception'));
+        self::assertSame(RuntimeException::class, TestExecutionCaptureInterceptor::$execution->getAttribute('exception_class'));
+        self::assertSame([], TestExecutionCaptureInterceptor::$execution->timeline());
     }
 
     public function test_it_prevents_double_invocation_via_interceptor_chain(): void

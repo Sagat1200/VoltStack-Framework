@@ -77,8 +77,12 @@ final class ControllerExecution
 
     public function recordException(Throwable $exception): void
     {
-        $this->recordTimeline('exception');
-        $this->setAttribute('exception', $exception);
+        if ($this->diagnosticsEnabled()) {
+            $this->recordTimeline('exception');
+            $this->setAttribute('exception', $exception);
+        }
+
+        $this->setAttribute('exception_class', $exception::class);
     }
 
     public function runtimeOptions(): ?ControllerRuntimeOptions
@@ -98,7 +102,10 @@ final class ControllerExecution
     public function setState(ControllerExecutionState $state): void
     {
         $this->setAttribute('controller.lifecycle.state', $state);
-        $this->recordTimeline($state->value);
+
+        if ($this->diagnosticsEnabled()) {
+            $this->recordTimeline($state->value);
+        }
     }
 
     public function wasInvoked(): bool
@@ -113,7 +120,10 @@ final class ControllerExecution
         }
 
         $this->setAttribute('controller.lifecycle.invoked', true);
-        $this->recordTimeline('invoked');
+
+        if ($this->diagnosticsEnabled()) {
+            $this->recordTimeline('invoked');
+        }
     }
 
     public function wasShortCircuited(): bool
@@ -128,21 +138,24 @@ final class ControllerExecution
         array $metadata = [],
     ): void {
         $this->setAttribute('controller.lifecycle.short_circuited', true);
-        $this->recordTimeline('short_circuited');
+
+        if ($this->diagnosticsEnabled()) {
+            $this->recordTimeline('short_circuited');
+        }
 
         if ($origin !== null) {
             $this->setAttribute('controller.lifecycle.short_circuit_origin', $origin);
         }
 
-        if (func_num_args() >= 1) {
+        if (func_num_args() >= 1 && $this->diagnosticsEnabled()) {
             $this->setAttribute('controller.lifecycle.short_circuit_result', $result);
         }
 
-        if (func_num_args() >= 3) {
+        if (func_num_args() >= 3 && $this->diagnosticsEnabled()) {
             $this->setAttribute('controller.lifecycle.short_circuit_reason', $reason);
         }
 
-        if (func_num_args() >= 4) {
+        if (func_num_args() >= 4 && $this->diagnosticsEnabled()) {
             $this->setAttribute('controller.lifecycle.short_circuit_metadata', $metadata);
         }
     }
@@ -175,6 +188,10 @@ final class ControllerExecution
 
     public function timeline(): array
     {
+        if (! $this->diagnosticsEnabled()) {
+            return [];
+        }
+
         $value = $this->getAttribute('controller.lifecycle.timeline', []);
 
         return is_array($value) ? $value : [];
@@ -223,5 +240,22 @@ final class ControllerExecution
 
         $timeline[$event] = microtime(true);
         $this->setAttribute('controller.lifecycle.timeline', $timeline);
+    }
+
+    private function diagnosticsEnabled(): bool
+    {
+        $mode = $this->runtimeOptions()?->lifecycleMode;
+
+        if ($mode === 'production') {
+            return false;
+        }
+
+        if ($mode === 'development') {
+            return true;
+        }
+
+        $environment = $this->context->app()->environment();
+
+        return $environment !== 'production' && $environment !== 'prod';
     }
 }

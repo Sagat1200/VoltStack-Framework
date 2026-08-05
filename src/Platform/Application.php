@@ -19,6 +19,8 @@ use Quantum\Controllers\Metadata\ControllerMetadataResolverInterface;
 use Quantum\Controllers\Observability\Contracts\ControllerEventDispatcherInterface;
 use Quantum\Controllers\Observability\Contracts\ControllerObservabilityManagerInterface;
 use Quantum\Controllers\Observability\Engine\ControllerObservabilityManager;
+use Quantum\Controllers\Observability\Engine\InMemoryControllerEventDispatcher;
+use Quantum\Controllers\Observability\Engine\JsonLineControllerEventDispatcher;
 use Quantum\Controllers\Observability\Engine\NullControllerEventDispatcher;
 use Quantum\Controllers\Runtime\ControllerRuntimeResolver;
 use Quantum\Controllers\Runtime\ControllerRuntimeResolverInterface;
@@ -54,10 +56,12 @@ use Quantum\Metadata\Schema\MetadataSchema;
 use Quantum\Metadata\Schema\MetadataSchemaRegistry;
 use Quantum\Middlewares\CsrfMiddleware;
 use Quantum\Transport\Adapters\HttpTransportAdapter;
+use Quantum\Transport\Bridges\Http\HttpKernelTransportKernel;
 use Quantum\Transport\Bridges\Http\HttpResponseTransformer;
 use Quantum\Transport\Contracts\ResponseTransportManagerInterface;
 use Quantum\Transport\Contracts\TransportAdapterInterface;
 use Quantum\Transport\Contracts\TransportEmitterInterface;
+use Quantum\Transport\Contracts\TransportKernelInterface;
 use Quantum\Transport\Emitters\HttpSapiEmitter;
 use Quantum\Transport\Emitters\NullTransportEmitter;
 use Quantum\Transport\ResponseTransportManager;
@@ -402,7 +406,37 @@ class Application extends Container
         }
 
         if (! isset($this->bindings[ControllerEventDispatcherInterface::class])) {
-            $this->singleton(ControllerEventDispatcherInterface::class, NullControllerEventDispatcher::class);
+            $this->singleton(ControllerEventDispatcherInterface::class, function (Application $app): ControllerEventDispatcherInterface {
+                $mode = $app->config('controller_observability.dispatcher', 'auto');
+
+                if ($mode === 'null') {
+                    return new NullControllerEventDispatcher();
+                }
+
+                if ($mode === 'in_memory') {
+                    return new InMemoryControllerEventDispatcher();
+                }
+
+                if ($mode === 'jsonl') {
+                    $path = $app->config('controller_observability.jsonl_path');
+
+                    if (is_string($path) && trim($path) !== '') {
+                        return new JsonLineControllerEventDispatcher(trim($path));
+                    }
+
+                    return new JsonLineControllerEventDispatcher(
+                        $app->joinPath($app->storagePath('framework/logs'), 'controller-events.jsonl'),
+                    );
+                }
+
+                if ($app->isProduction()) {
+                    return new JsonLineControllerEventDispatcher(
+                        $app->joinPath($app->storagePath('framework/logs'), 'controller-events.jsonl'),
+                    );
+                }
+
+                return new InMemoryControllerEventDispatcher();
+            });
         }
 
         if (! isset($this->bindings[ControllerObservabilityManager::class])) {
@@ -436,6 +470,13 @@ class Application extends Container
             $this->singleton(
                 ResponseTransportManagerInterface::class,
                 fn(Application $app) => $app->make(ResponseTransportManager::class),
+            );
+        }
+
+        if (! isset($this->bindings[TransportKernelInterface::class])) {
+            $this->singleton(
+                TransportKernelInterface::class,
+                fn(Application $app) => $app->make(HttpKernelTransportKernel::class),
             );
         }
 

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Quantum\Controllers;
 
+use Quantum\Compilation\CompiledControllerFactory;
+use Quantum\Compilation\Contracts\CompiledControllerFactoryInterface;
 use Quantum\Controllers\ControllerContext;
 use Quantum\Controllers\ControllerDefinition;
 use Quantum\Controllers\ControllerExecutionContext;
@@ -27,6 +29,12 @@ use VoltStack\Framework\Application;
 
 final class ControllerEngine
 {
+    private readonly bool $compilationGloballyEnabled;
+
+    private readonly bool $pinBuildPerExecution;
+
+    private bool $pinActive = false;
+
     public function __construct(
         private readonly Application $app,
         private readonly ControllerResolver $resolver,
@@ -37,88 +45,183 @@ final class ControllerEngine
         private readonly ControllerRuntimeResolverInterface $runtime,
         private readonly ControllerObservabilityManagerInterface $observability,
         private readonly ResponseNormalizer $normalizer,
-    ) {}
+        private readonly ?CompiledControllerFactoryInterface $compiledFactory = null,
+    ) {
+        $enabled = $this->app->config('controller_compilation.enabled', false);
+        $this->compilationGloballyEnabled = is_bool($enabled) ? $enabled : (bool) $enabled;
+
+        $pin = $this->app->config('controller_compilation.deployment.pin_build_per_execution', false);
+        $this->pinBuildPerExecution = is_bool($pin) ? $pin : (bool) $pin;
+    }
 
     public function handle(RouteMatch $match, Request $request): Response
     {
         $definition = new ControllerDefinition($match->route()->action());
         $context = new ControllerContext($this->app, $match, $request);
-        $resolved = $this->resolver->resolve($definition, $context);
+
+        $resolved = null;
+        $compiled = null;
+        $compilationSource = 'dynamic';
+        $compilationMissKey = null;
+        $compilationHitContext = null;
+        $compilationMaterializeError = null;
+
+        try {
+            if ($this->compilationGloballyEnabled && $this->compiledFactory !== null) {
+                $this->beginPinIfNeeded();
+
+                $key = $this->compiledFactory->makeKey($definition);
+                $compiled = $this->compiledFactory->load($key);
+
+                if ($compiled !== null) {
+                    try {
+                        $resolved = $this->compiledFactory->materialize($compiled, $this->app);
+                        $compilationSource = 'compiled';
+                        $compilationHitContext = [
+                            'artifact_key' => $key,
+                            'build_id' => $compiled->buildId,
+                            'class' => $compiled->class,
+                            'method' => $compiled->method,
+                        ];
+                    } catch (Throwable $e) {
+                        $compilationMaterializeError = [
+                            'artifact_key' => $key,
+                            'error_class' => $e::class,
+                            'error_message' => $e->getMessage(),
+                        ];
+                        $resolved = null;
+                        $compiled = null;
+                    }
+                } else {
+                    $reportMiss = $this->app->config('controller_compilation.fallback.report_miss', true);
+                    if ($reportMiss) {
+                        $compilationMissKey = $key;
+                    }
+                }
+            }
+
+            if ($resolved === null) {
+                $fallbackMode = $this->app->config('controller_compilation.fallback.mode', 'dynamic');
+                if ($fallbackMode === 'fail' && $this->compilationGloballyEnabled) {
+                    $failClosed = $this->app->config(
+                        'controller_compilation_security.environment.fail_closed',
+                        false,
+                    );
+                    if ($failClosed) {
+                        throw new \Quantum\Controllers\Exceptions\UnsupportedControllerActionException(sprintf(
+                            'Compiled artifact not found and fail-closed mode is enabled. Action: %s',
+                            is_string($definition->action()) ? $definition->action() : json_encode($definition->action()),
+                        ));
+                    }
+                }
+
+                $resolved = $this->resolver->resolve($definition, $context);
+                $compilationSource = 'dynamic';
+            }
+        } catch (Throwable $resolveError) {
+            $this->endPinIfNeeded();
+            throw $resolveError;
+        }
 
         try {
             $arguments = $this->parameters->resolve($resolved, $context);
         } catch (MissingRouteBindingException $exception) {
+            $this->endPinIfNeeded();
             return $this->normalizer->normalize($this->missing->handle($match, $request, $exception));
         }
 
-        $executionContext = new ControllerExecutionContext($request, $match);
-        $execution = new ControllerExecution(
-            $definition,
-            $context,
-            $resolved,
-            $arguments,
-            $executionContext,
-        );
-
-        $execution->setAttribute('controller.execution.id', $this->generateExecutionId());
-        $execution->setAttribute('controller.runtime', $this->runtime->resolve($execution));
-        $execution->setState(ControllerExecutionState::Created);
-        $execution->setAttribute('controller.lifecycle.started_at', microtime(true));
-        $this->observability->emit('controllers.execution.created', $execution);
-
-        $execution->setState(ControllerExecutionState::Running);
-        $this->observability->emit('controllers.execution.started', $execution);
-
         try {
-            $result = $this->interceptors->handle($execution, function (ControllerExecution $execution): mixed {
-                $this->observability->emit('controllers.invocation.started', $execution);
-                $execution->markInvoked();
+            $executionContext = new ControllerExecutionContext($request, $match);
+            $execution = new ControllerExecution(
+                $definition,
+                $context,
+                $resolved,
+                $arguments,
+                $executionContext,
+            );
 
-                try {
-                    $result = $this->invoker->invoke(
-                        $execution->controller(),
-                        $execution->arguments(),
-                        $execution->executionContext(),
-                    );
-                } catch (Throwable $exception) {
-                    $this->observability->emit('controllers.invocation.failed', $execution, [
-                        'exception_class' => $exception::class,
-                    ]);
-                    throw $exception;
-                }
+            $execution->setAttribute('controller.execution.id', $this->generateExecutionId());
+            $execution->setAttribute('controller.runtime', $this->runtime->resolve($execution));
+            $execution->setAttribute('controller.compilation.source', $compilationSource);
+            $execution->setAttribute('controller.compilation.artifact', $compiled);
+            if ($compiled !== null) {
+                $execution->setAttribute('controller.compilation.build_id', $compiled->buildId);
+                $execution->setAttribute('controller.compilation.artifact_key', $compiled->key);
+            }
+            $execution->setState(ControllerExecutionState::Created);
+            $execution->setAttribute('controller.lifecycle.started_at', microtime(true));
+            $this->observability->emit('controllers.execution.created', $execution);
 
-                $this->observability->emit('controllers.invocation.completed', $execution);
+            if ($compilationHitContext !== null) {
+                $this->observability->emit('controllers.compilation.hit', $execution, $compilationHitContext);
+            }
+            if ($compilationMissKey !== null) {
+                $this->observability->emit('controllers.compilation.miss', $execution, [
+                    'artifact_key' => $compilationMissKey,
+                ]);
+            }
+            if ($compilationMaterializeError !== null) {
+                $this->observability->emit('controllers.compilation.materialize_failed', $execution, $compilationMaterializeError);
+            }
 
-                return $result;
-            });
-        } catch (Throwable $exception) {
+            $execution->setState(ControllerExecutionState::Running);
+            $this->observability->emit('controllers.execution.started', $execution);
+
+            try {
+                $result = $this->interceptors->handle($execution, function (ControllerExecution $execution): mixed {
+                    $this->observability->emit('controllers.invocation.started', $execution);
+                    $execution->markInvoked();
+
+                    try {
+                        $result = $this->invoker->invoke(
+                            $execution->controller(),
+                            $execution->arguments(),
+                            $execution->executionContext(),
+                        );
+                    } catch (Throwable $exception) {
+                        $this->observability->emit('controllers.invocation.failed', $execution, [
+                            'exception_class' => $exception::class,
+                        ]);
+                        throw $exception;
+                    }
+
+                    $this->observability->emit('controllers.invocation.completed', $execution);
+
+                    return $result;
+                });
+            } catch (Throwable $exception) {
+                $this->evaluateTimeout($execution);
+                $execution->recordException($exception);
+                $execution->setState(ControllerExecutionState::Failed);
+                $this->observability->emit('controllers.execution.completed', $execution, [
+                    'status' => 'failed',
+                    'exception_class' => $exception::class,
+                    'compilation_source' => $compilationSource,
+                ]);
+                throw $exception;
+            }
+
+            if (! $execution->wasInvoked()) {
+                $execution->markShortCircuited($result, ControllerShortCircuitOrigin::Interceptor);
+                $this->observability->emit('controllers.invocation.skipped', $execution);
+                $this->observability->emit('controllers.execution.short_circuited', $execution, [
+                    'origin' => $execution->shortCircuitOrigin()?->value,
+                ]);
+            }
+
             $this->evaluateTimeout($execution);
-            $execution->recordException($exception);
-            $execution->setState(ControllerExecutionState::Failed);
+            $execution->setState(ControllerExecutionState::Succeeded);
             $this->observability->emit('controllers.execution.completed', $execution, [
-                'status' => 'failed',
-                'exception_class' => $exception::class,
+                'status' => 'succeeded',
+                'short_circuited' => $execution->wasShortCircuited(),
+                'timeout_exceeded' => $execution->timeoutExceeded(),
+                'compilation_source' => $compilationSource,
             ]);
-            throw $exception;
+
+            return $this->normalizer->normalize($result);
+        } finally {
+            $this->endPinIfNeeded();
         }
-
-        if (! $execution->wasInvoked()) {
-            $execution->markShortCircuited($result, ControllerShortCircuitOrigin::Interceptor);
-            $this->observability->emit('controllers.invocation.skipped', $execution);
-            $this->observability->emit('controllers.execution.short_circuited', $execution, [
-                'origin' => $execution->shortCircuitOrigin()?->value,
-            ]);
-        }
-
-        $this->evaluateTimeout($execution);
-        $execution->setState(ControllerExecutionState::Succeeded);
-        $this->observability->emit('controllers.execution.completed', $execution, [
-            'status' => 'succeeded',
-            'short_circuited' => $execution->wasShortCircuited(),
-            'timeout_exceeded' => $execution->timeoutExceeded(),
-        ]);
-
-        return $this->normalizer->normalize($result);
     }
 
     private function evaluateTimeout(ControllerExecution $execution): void
@@ -158,5 +261,30 @@ final class ControllerEngine
         } catch (Throwable) {
             return uniqid('exec_', true);
         }
+    }
+
+    private function beginPinIfNeeded(): void
+    {
+        if (! $this->pinBuildPerExecution || $this->pinActive) {
+            return;
+        }
+
+        if ($this->compiledFactory instanceof CompiledControllerFactory) {
+            $this->compiledFactory->beginPinnedExecution();
+            $this->pinActive = true;
+        }
+    }
+
+    private function endPinIfNeeded(): void
+    {
+        if (! $this->pinActive) {
+            return;
+        }
+
+        if ($this->compiledFactory instanceof CompiledControllerFactory) {
+            $this->compiledFactory->endPinnedExecution();
+        }
+
+        $this->pinActive = false;
     }
 }

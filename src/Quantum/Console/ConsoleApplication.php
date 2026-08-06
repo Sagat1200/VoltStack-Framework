@@ -5,17 +5,20 @@ declare(strict_types=1);
 namespace Quantum\Console;
 
 use Quantum\Bootstrap\Bootstrapper;
-use Quantum\Console\Commands\RouteCacheCommand;
-use Quantum\Console\Commands\RouteClearCommand;
-use Quantum\Console\Commands\ServeCommand;
-use Quantum\Console\Commands\RouteListCommand;
-use Quantum\Console\Commands\MakeControllerCommand;
+use Quantum\Console\Commands\CacheClearCommand;
+use Quantum\Console\Commands\CompileClearCommand;
+use Quantum\Console\Commands\CompileCommand;
+use Quantum\Console\Commands\CompileWarmupCommand;
+use Quantum\Console\Commands\MakeActionCommand;
 use Quantum\Console\Commands\MakeComponentCommand;
+use Quantum\Console\Commands\MakeControllerCommand;
 use Quantum\Console\Commands\MakeLayoutCommand;
 use Quantum\Console\Commands\MakePageCommand;
 use Quantum\Console\Commands\MakeViewCommand;
-use Quantum\Console\Commands\MakeActionCommand;
-use Quantum\Console\Commands\CacheClearCommand;
+use Quantum\Console\Commands\RouteCacheCommand;
+use Quantum\Console\Commands\RouteClearCommand;
+use Quantum\Console\Commands\RouteListCommand;
+use Quantum\Console\Commands\ServeCommand;
 use Quantum\Console\Commands\ViewCacheCommand;
 use Quantum\Console\Commands\ViewClearCommand;
 use Quantum\Console\Exceptions\CommandNotFoundException;
@@ -66,6 +69,9 @@ final class ConsoleApplication
             $this->add(new CacheClearCommand($basePath));
             $this->add(new ViewCacheCommand($basePath));
             $this->add(new ViewClearCommand($basePath));
+            $this->add(new CompileCommand($basePath));
+            $this->add(new CompileClearCommand($basePath));
+            $this->add(new CompileWarmupCommand($basePath));
             $this->registerConfiguredCommands();
         }
     }

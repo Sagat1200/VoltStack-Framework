@@ -8,6 +8,14 @@ use Quantum\Config\ConfigRepository;
 use Quantum\Auth\AuthManager;
 use Quantum\Cache\CacheManager;
 use Quantum\Cache\Repository as CacheRepository;
+use Quantum\Compilation\ArtifactStore;
+use Quantum\Compilation\BuildManifest;
+use Quantum\Compilation\CompiledControllerFactory;
+use Quantum\Compilation\Compiler;
+use Quantum\Compilation\Contracts\ArtifactStoreInterface;
+use Quantum\Compilation\Contracts\BuildManifestInterface;
+use Quantum\Compilation\Contracts\CompiledControllerFactoryInterface;
+use Quantum\Compilation\Contracts\CompilerInterface;
 use Quantum\Controllers\Interceptors\ControllerInterceptorRegistry;
 use Quantum\Controllers\Interceptors\Conditions\EnvironmentInterceptorCondition;
 use Quantum\Controllers\Interceptors\Conditions\HttpMethodInterceptorCondition;
@@ -448,6 +456,62 @@ class Application extends Container
                 ControllerObservabilityManagerInterface::class,
                 fn(Application $app) => $app->make(ControllerObservabilityManager::class),
             );
+        }
+
+        if (! isset($this->bindings[BuildManifestInterface::class])) {
+            $this->singleton(BuildManifestInterface::class, function (Application $app): BuildManifestInterface {
+                $paths = $app->config('controller_compilation.paths', []);
+                $root = is_array($paths) && isset($paths['root']) && is_string($paths['root'])
+                    ? $paths['root']
+                    : $app->joinPath($app->storagePath('framework'), 'controllers');
+
+                return new BuildManifest(rtrim($root, '\\/'));
+            });
+        }
+
+        if (! isset($this->bindings[ArtifactStoreInterface::class])) {
+            $this->singleton(ArtifactStoreInterface::class, function (Application $app): ArtifactStoreInterface {
+                $paths = $app->config('controller_compilation.paths', []);
+                $root = is_array($paths) && isset($paths['root']) && is_string($paths['root'])
+                    ? $paths['root']
+                    : $app->joinPath($app->storagePath('framework'), 'controllers');
+
+                $format = $app->config('controller_compilation.artifacts.format', 'php');
+
+                return new ArtifactStore(
+                    manifest: $app->make(BuildManifestInterface::class),
+                    storageRoot: rtrim($root, '\\/'),
+                    format: is_string($format) && trim($format) !== '' ? $format : 'php',
+                );
+            });
+        }
+
+        if (! isset($this->bindings[CompilerInterface::class])) {
+            $this->singleton(CompilerInterface::class, Compiler::class);
+        }
+
+        if (! isset($this->bindings[CompiledControllerFactoryInterface::class])) {
+            $this->singleton(CompiledControllerFactoryInterface::class, function (Application $app): CompiledControllerFactoryInterface {
+                $cache = $app->config('controller_compilation.cache', []);
+                $workerMax = 2048;
+
+                if (
+                    is_array($cache)
+                    && isset($cache['worker'])
+                    && is_array($cache['worker'])
+                    && isset($cache['worker']['max_artifacts'])
+                ) {
+                    $configured = $cache['worker']['max_artifacts'];
+                    if (is_int($configured) && $configured > 0) {
+                        $workerMax = $configured;
+                    }
+                }
+
+                return new CompiledControllerFactory(
+                    store: $app->make(ArtifactStoreInterface::class),
+                    maxWorkerArtifacts: $workerMax,
+                );
+            });
         }
 
         if (! isset($this->bindings[TransportAdapterInterface::class])) {

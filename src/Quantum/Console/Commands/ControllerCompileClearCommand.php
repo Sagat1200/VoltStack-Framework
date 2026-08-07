@@ -10,11 +10,11 @@ use Quantum\Console\Command;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
 
-final class CompileClearCommand extends Command
+final class ControllerCompileClearCommand extends Command
 {
     public function name(): string
     {
-        return 'compile:clear';
+        return 'controller-compiler:clear';
     }
 
     public function description(): string
@@ -24,7 +24,7 @@ final class CompileClearCommand extends Command
 
     public function usage(): string
     {
-        return 'compile:clear [--verbose]';
+        return 'controller-compiler:clear [--verbose]';
     }
 
     public function category(): string
@@ -34,7 +34,7 @@ final class CompileClearCommand extends Command
 
     public function aliases(): array
     {
-        return ['controller:clear', 'controllers:clear', 'compile:clear-all'];
+        return ['compile:clear', 'controller:clear', 'controllers:clear', 'compile:clear-all'];
     }
 
     public function optionsHelp(): array

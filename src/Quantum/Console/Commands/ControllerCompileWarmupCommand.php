@@ -12,11 +12,11 @@ use Quantum\Console\Command;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
 
-final class CompileWarmupCommand extends Command
+final class ControllerCompileWarmupCommand extends Command
 {
     public function name(): string
     {
-        return 'compile:warmup';
+        return 'controller-compiler:warmup';
     }
 
     public function description(): string
@@ -26,7 +26,7 @@ final class CompileWarmupCommand extends Command
 
     public function usage(): string
     {
-        return 'compile:warmup [--verbose] [--rebuild-current]';
+        return 'controller-compiler:warmup [--verbose] [--rebuild-current]';
     }
 
     public function category(): string
@@ -36,7 +36,7 @@ final class CompileWarmupCommand extends Command
 
     public function aliases(): array
     {
-        return ['controller:warmup', 'controllers:warmup'];
+        return ['compile:warmup', 'controller:warmup', 'controllers:warmup'];
     }
 
     public function optionsHelp(): array

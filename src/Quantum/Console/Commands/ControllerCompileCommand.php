@@ -16,11 +16,11 @@ use Quantum\Console\Output;
 use Quantum\Routing\Router;
 use VoltStack\Framework\Application;
 
-final class CompileCommand extends Command
+final class ControllerCompileCommand extends Command
 {
     public function name(): string
     {
-        return 'compile';
+        return 'controller-compiler';
     }
 
     public function description(): string
@@ -30,7 +30,7 @@ final class CompileCommand extends Command
 
     public function usage(): string
     {
-        return 'compile [--verbose] [--no-activate] [--retain=3]';
+        return 'controller-compiler [--verbose] [--no-activate] [--retain=3]';
     }
 
     public function category(): string
@@ -40,7 +40,7 @@ final class CompileCommand extends Command
 
     public function aliases(): array
     {
-        return ['controller:compile', 'controllers:compile'];
+        return ['compile', 'controller:compile', 'controllers:compile'];
     }
 
     public function optionsHelp(): array
@@ -58,7 +58,7 @@ final class CompileCommand extends Command
         $app = $this->bootstrapApplication();
         $verbose = $input->hasOption('verbose');
         $noActivate = $input->hasOption('no-activate');
-        $retainOption = $input->getOption('retain');
+        $retainOption = $input->option('retain');
         $retain = is_numeric($retainOption) ? max(1, (int) $retainOption) : 3;
         $incremental = $input->hasOption('incremental');
 
@@ -183,7 +183,7 @@ final class CompileCommand extends Command
             ));
             $store->pruneStaleBuilds($retain);
 
-            return 0;
+            return $failCount > 0 ? 1 : 0;
         }
 
         $activated = $store->activateBuild($build->id);
@@ -207,6 +207,11 @@ final class CompileCommand extends Command
         }
 
         $output->writeln('');
+        if ($failCount > 0) {
+            $output->writeln('Compilación de controladores completada con advertencias (algunos controladores fallaron, revisa los [FAIL] arriba).');
+
+            return 1;
+        }
         $output->writeln('¡Compilación de controladores completada con éxito!');
 
         return 0;
@@ -255,6 +260,11 @@ final class CompileCommand extends Command
                 $key = $action . '::__invoke';
 
                 if (isset($seen[$key])) {
+                    continue;
+                }
+
+                $r = new \ReflectionClass($action);
+                if (! $r->hasMethod('__invoke') || ! $r->getMethod('__invoke')->isPublic()) {
                     continue;
                 }
 

@@ -37,24 +37,22 @@ final class Compiler implements CompilerInterface
             $methodReflection = $this->resolveMethod($reflection, $method);
 
             $controllerDefinitionForMeta = new ControllerDefinition($class . '@' . $method);
+            $routeDefinition = \Quantum\Routing\RouteDefinition::make(['GET'], '/', $controllerDefinitionForMeta->action());
+            $fakeRoute = new \Quantum\Routing\Route($routeDefinition);
+            $fakeRouteMatch = new \Quantum\Routing\RouteMatch($fakeRoute, [], 'GET');
+
             $fakeContext = new \Quantum\Controllers\Execution\ControllerExecution(
                 $controllerDefinitionForMeta,
                 new \Quantum\Controllers\ControllerContext(
                     \VoltStack\Framework\Application::getInstance() ?? new \VoltStack\Framework\Application(sys_get_temp_dir()),
-                    new \Quantum\Routing\RouteMatch(
-                        new \Quantum\Routing\Route('/', $controllerDefinitionForMeta->action()),
-                        [],
-                    ),
+                    $fakeRouteMatch,
                     new \Quantum\Http\Request([], [], [], [], []),
                 ),
                 new \Quantum\Controllers\ResolvedController($reflection->newInstanceWithoutConstructor(), $method),
                 [],
                 new \Quantum\Controllers\ControllerExecutionContext(
                     new \Quantum\Http\Request([], [], [], [], []),
-                    new \Quantum\Routing\RouteMatch(
-                        new \Quantum\Routing\Route('/', $controllerDefinitionForMeta->action()),
-                        [],
-                    ),
+                    $fakeRouteMatch,
                 ),
             );
 
@@ -118,17 +116,6 @@ final class Compiler implements CompilerInterface
                 error: null,
             );
         } catch (Throwable $e) {
-            if (
-                $e instanceof UnsupportedControllerActionException
-                || $e instanceof InvalidControllerMethodException
-                || $e instanceof ControllerMethodNotAllowedException
-                || $e instanceof ControllerMethodNotFoundException
-                || $e instanceof ControllerMethodNotPublicException
-                || $e instanceof CompilationException
-            ) {
-                throw $e;
-            }
-
             return new CompilationResult(
                 definition: $definition,
                 artifactKey: $this->fallbackKey($definition),

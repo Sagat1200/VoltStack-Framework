@@ -13,7 +13,8 @@ return [
     ],
 
     'controllers' => [
-        'explicit_exposure' => true,
+        'explicit_exposure' => false,
+        'allowlist' => [],
         'allow_static_methods' => false,
         'allow_dynamic_targets' => false,
         'allow_non_public_methods' => false,

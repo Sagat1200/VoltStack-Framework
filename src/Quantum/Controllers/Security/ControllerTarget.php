@@ -12,12 +12,12 @@ final readonly class ControllerTarget
         public ControllerTargetType $type,
         public string $identifier,
         public ?string $method,
-        public bool $exposed,
+        public ?bool $exposed,
         public string $source,
         public string $signature,
     ) {}
 
-    public static function fromDefinition(ControllerDefinition $definition, bool $exposed = true, string $source = 'route'): self
+    public static function fromDefinition(ControllerDefinition $definition, ?bool $exposed = null, string $source = 'route'): self
     {
         $action = $definition->action();
         if (is_string($action) && str_contains($action, '@')) {
@@ -47,6 +47,18 @@ final readonly class ControllerTarget
             exposed: $exposed,
             source: $source,
             signature: $signature,
+        );
+    }
+
+    public function withExposed(?bool $exposed): self
+    {
+        return new self(
+            type: $this->type,
+            identifier: $this->identifier,
+            method: $this->method,
+            exposed: $exposed,
+            source: $this->source,
+            signature: $this->signature,
         );
     }
 }

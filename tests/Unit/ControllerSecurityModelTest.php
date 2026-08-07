@@ -27,6 +27,7 @@ use Quantum\Controllers\Security\Policy\ControllerSecurityPolicyRegistry;
 use Quantum\Controllers\Security\Engine\ControllerSecurityManager;
 use Quantum\Controllers\Security\Exceptions\AuthenticationRequiredException;
 use Quantum\Controllers\Security\Exceptions\AuthorizationDeniedException;
+use Quantum\Controllers\Security\Exceptions\ControllerExposureViolationException;
 use Quantum\Controllers\Security\Exceptions\SecurityInfrastructureFailureException;
 use Quantum\Controllers\ControllerDefinition;
 use Quantum\Controllers\ControllerExecutionContext;
@@ -113,7 +114,7 @@ final class ControllerSecurityModelTest extends TestCase
         self::assertSame(ControllerTargetType::ControllerMethod, $target->type);
         self::assertSame(\Vendor\Package\MyController::class, $target->identifier);
         self::assertSame('update', $target->method);
-        self::assertTrue($target->exposed);
+        self::assertNull($target->exposed, 'Exposed defaults to null (unset tri-state)');
         self::assertSame(\Vendor\Package\MyController::class . '::update', $target->signature);
     }
 
@@ -435,6 +436,180 @@ final class ControllerSecurityModelTest extends TestCase
         self::assertSame(200, $response->statusCode());
         self::assertSame('pong', $response->content());
     }
+
+    public function test_explicit_exposure_disabled_bypasses_allowlist_even_when_missing(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('controller_security', [
+            'enabled' => true,
+            'controllers' => [
+                'explicit_exposure' => false,
+                'allowlist' => [],
+            ],
+            'defaults' => ['deny_by_default' => false, 'fail_closed' => false],
+            'authorization' => ['abstain_as_deny' => false],
+            'policies' => [],
+        ]);
+        $app->make(ConfigRepository::class)->set('controller_compilation', ['enabled' => false]);
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $match = new RouteMatch(
+            new Route(RouteDefinition::make(['GET'], '/t', SecurityOpenStubController::class . '@ping')),
+            [],
+            'GET',
+        );
+
+        $response = $dispatcher->dispatch($match, Request::create('/t', 'GET'));
+
+        self::assertSame(200, $response->statusCode());
+        self::assertSame('pong', $response->content());
+    }
+
+    public function test_explicit_exposure_enabled_throws_when_controller_missing_from_allowlist_and_no_metadata(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('controller_security', [
+            'enabled' => true,
+            'controllers' => [
+                'explicit_exposure' => true,
+                'allowlist' => [],
+            ],
+            'defaults' => ['deny_by_default' => false, 'fail_closed' => false],
+            'authorization' => ['abstain_as_deny' => false],
+            'policies' => [],
+        ]);
+        $app->make(ConfigRepository::class)->set('controller_compilation', ['enabled' => false]);
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $match = new RouteMatch(
+            new Route(RouteDefinition::make(['GET'], '/t', SecurityOpenStubController::class . '@ping')),
+            [],
+            'GET',
+        );
+
+        $this->expectException(ControllerExposureViolationException::class);
+        $dispatcher->dispatch($match, Request::create('/t', 'GET'));
+    }
+
+    public function test_explicit_exposure_allows_controller_when_its_signature_is_in_allowlist(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('controller_security', [
+            'enabled' => true,
+            'controllers' => [
+                'explicit_exposure' => true,
+                'allowlist' => [
+                    SecurityOpenStubController::class . '@ping',
+                ],
+            ],
+            'defaults' => ['deny_by_default' => false, 'fail_closed' => false],
+            'authorization' => ['abstain_as_deny' => false],
+            'policies' => [],
+        ]);
+        $app->make(ConfigRepository::class)->set('controller_compilation', ['enabled' => false]);
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $match = new RouteMatch(
+            new Route(RouteDefinition::make(['GET'], '/t', SecurityOpenStubController::class . '@ping')),
+            [],
+            'GET',
+        );
+
+        $response = $dispatcher->dispatch($match, Request::create('/t', 'GET'));
+
+        self::assertSame(200, $response->statusCode());
+        self::assertSame('pong', $response->content());
+    }
+
+    public function test_explicit_exposure_target_exposed_true_bypasses_allowlist_directly(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('controller_security', [
+            'enabled' => true,
+            'controllers' => [
+                'explicit_exposure' => true,
+                'allowlist' => [],
+            ],
+            'defaults' => ['deny_by_default' => false, 'fail_closed' => false],
+            'authorization' => ['abstain_as_deny' => false],
+            'policies' => [],
+        ]);
+        $app->make(ConfigRepository::class)->set('controller_compilation', ['enabled' => false]);
+        $engine = $app->make(\Quantum\Controllers\ControllerEngine::class);
+        $target = ControllerTarget::fromDefinition(new ControllerDefinition(SecurityOpenStubController::class . '@ping'))
+            ->withExposed(true);
+
+        $reflection = new \ReflectionMethod($engine, 'assertExposure');
+        $reflection->setAccessible(true);
+        $exception = null;
+        try {
+            $reflection->invoke($engine, $target, []);
+        } catch (\Throwable $e) {
+            $exception = $e;
+        }
+        self::assertNull($exception, 'Expected no exposure exception when target.exposed=true bypasses allowlist');
+    }
+
+    public function test_explicit_exposure_target_exposed_false_throws_even_when_controller_in_allowlist(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('controller_security', [
+            'enabled' => true,
+            'controllers' => [
+                'explicit_exposure' => true,
+                'allowlist' => [
+                    SecurityOpenStubController::class . '@ping',
+                ],
+            ],
+            'defaults' => ['deny_by_default' => false, 'fail_closed' => false],
+            'authorization' => ['abstain_as_deny' => false],
+            'policies' => [],
+        ]);
+        $app->make(ConfigRepository::class)->set('controller_compilation', ['enabled' => false]);
+        $engine = $app->make(\Quantum\Controllers\ControllerEngine::class);
+        $target = ControllerTarget::fromDefinition(new ControllerDefinition(SecurityOpenStubController::class . '@ping'))
+            ->withExposed(false);
+
+        $reflection = new \ReflectionMethod($engine, 'assertExposure');
+        $reflection->setAccessible(true);
+        $caught = null;
+        try {
+            $reflection->invoke($engine, $target, []);
+        } catch (ControllerExposureViolationException $e) {
+            $caught = $e;
+        }
+        self::assertNotNull($caught, 'Expected ControllerExposureViolationException for target.explicit=false even in allowlist');
+        self::assertSame('metadata_explicit_unexposed', $caught->reasonCode);
+        self::assertSame(SecurityOpenStubController::class . '::ping', $caught->targetSignature);
+        self::assertSame('route_metadata_exposed_false', $caught->safeContext['exposure_source'] ?? '');
+    }
+
+    public function test_explicit_exposure_allowlist_accepts_invokable_class_name_without_method(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('controller_security', [
+            'enabled' => true,
+            'controllers' => [
+                'explicit_exposure' => true,
+                'allowlist' => [
+                    SecurityInvokableStub::class,
+                ],
+            ],
+            'defaults' => ['deny_by_default' => false, 'fail_closed' => false],
+            'authorization' => ['abstain_as_deny' => false],
+            'policies' => [],
+        ]);
+        $app->make(ConfigRepository::class)->set('controller_compilation', ['enabled' => false]);
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $route = new Route(RouteDefinition::make(
+            ['GET'],
+            '/t',
+            SecurityInvokableStub::class,
+        ));
+        $match = new RouteMatch($route, [], 'GET');
+
+        $response = $dispatcher->dispatch($match, Request::create('/t', 'GET'));
+
+        self::assertSame(200, $response->statusCode());
+        self::assertSame('hi', $response->content());
+    }
 }
 
 final class SecurityOpenStubController
@@ -442,5 +617,13 @@ final class SecurityOpenStubController
     public function ping(): string
     {
         return 'pong';
+    }
+}
+
+final class SecurityInvokableStub
+{
+    public function __invoke(): string
+    {
+        return 'hi';
     }
 }

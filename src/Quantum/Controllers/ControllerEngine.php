@@ -21,6 +21,7 @@ use Quantum\Controllers\Runtime\ControllerShortCircuitOrigin;
 use Quantum\Controllers\Security\Contracts\ControllerSecurityManagerInterface;
 use Quantum\Controllers\Security\ControllerTarget;
 use Quantum\Controllers\Security\Decision\SecurityEvaluationRequest;
+use Quantum\Controllers\Security\Exceptions\ControllerExposureViolationException;
 use Quantum\Http\Request;
 use Quantum\Http\Response;
 use Quantum\Routing\Dispatching\MissingRouteHandler;
@@ -187,10 +188,15 @@ final class ControllerEngine
                     'execution_id' => $securityContext->executionId,
                 ]);
 
+                $securityMetadata = $this->extractSecurityMetadata($match);
                 $target = ControllerTarget::fromDefinition($definition);
+                if (array_key_exists('exposed', $securityMetadata)) {
+                    $exposedRaw = $securityMetadata['exposed'];
+                    $exposedBool = $exposedRaw === true || $exposedRaw === 'true' || $exposedRaw === 1 || $exposedRaw === '1';
+                    $target = $target->withExposed($exposedBool);
+                }
                 $action = $target->method ?? '__invoke';
                 $resource = ['definition' => $target->signature, 'compilation_source' => $compilationSource];
-                $securityMetadata = $this->extractSecurityMetadata($match);
                 $secRequest = new SecurityEvaluationRequest(
                     security: $securityContext,
                     target: $target,
@@ -207,11 +213,21 @@ final class ControllerEngine
                 ]);
 
                 try {
+                    $this->assertExposure($target, $securityMetadata);
                     $this->securityManager->assertAuthorized($secRequest);
                     $this->observability->emit('controllers.security.authorization.allowed', $execution, [
                         'target_signature' => $target->signature,
                         'action' => $action,
                     ]);
+                } catch (ControllerExposureViolationException $expE) {
+                    $this->observability->emit('controllers.security.authorization.denied', $execution, [
+                        'target_signature' => $target->signature,
+                        'reason_code' => $expE->getMessage(),
+                        'policy_context' => [
+                            'exposure_source' => $expE->safeContext['exposure_source'] ?? 'unknown',
+                        ],
+                    ]);
+                    throw $expE;
                 } catch (\Quantum\Controllers\Security\Exceptions\AuthenticationRequiredException $authE) {
                     $this->observability->emit('controllers.security.authentication.failed', $execution, [
                         'target_signature' => $target->signature,
@@ -311,14 +327,14 @@ final class ControllerEngine
                 return $meta;
             }
 
-            foreach (['policies', 'permissions', 'authentication_required', 'tenant_required'] as $key) {
+            foreach (['policies', 'permissions', 'authentication_required', 'tenant_required', 'exposed'] as $key) {
                 if (array_key_exists($key, $raw)) {
                     $meta[$key] = $raw[$key];
                 }
             }
 
             if (isset($raw['security']) && is_array($raw['security'])) {
-                foreach (['policies', 'permissions', 'authentication_required', 'tenant_required'] as $key) {
+                foreach (['policies', 'permissions', 'authentication_required', 'tenant_required', 'exposed'] as $key) {
                     if (array_key_exists($key, $raw['security'])) {
                         $meta[$key] = $raw['security'][$key];
                     }
@@ -328,7 +344,7 @@ final class ControllerEngine
             if (isset($raw['attributes']) && is_array($raw['attributes'])) {
                 foreach ($raw['attributes'] as $attr) {
                     if (is_array($attr) && isset($attr['security']) && is_array($attr['security'])) {
-                        foreach (['policies', 'permissions', 'authentication_required', 'tenant_required'] as $key) {
+                        foreach (['policies', 'permissions', 'authentication_required', 'tenant_required', 'exposed'] as $key) {
                             if (array_key_exists($key, $attr['security'])) {
                                 $meta[$key] = $attr['security'][$key];
                             }
@@ -404,5 +420,86 @@ final class ControllerEngine
         }
 
         $this->pinActive = false;
+    }
+
+    private function assertExposure(ControllerTarget $target, array $securityMetadata): void
+    {
+        $explicitExposure = $this->app->config('controller_security.controllers.explicit_exposure', false);
+        if (! $explicitExposure) {
+            return;
+        }
+
+        if ($target->exposed === true) {
+            return;
+        }
+
+        if ($target->exposed === false) {
+            throw new ControllerExposureViolationException(
+                reasonCode: 'metadata_explicit_unexposed',
+                targetSignature: $target->signature,
+                safeContext: [
+                    'target_signature' => $target->signature,
+                    'target_identifier' => $target->identifier,
+                    'target_type' => $target->type->value,
+                    'target_method' => $target->method,
+                    'exposure_source' => 'route_metadata_exposed_false',
+                ],
+                message: 'Controller [' . $target->signature . '] is explicitly marked non-exposed via route metadata `security.exposed=false`.',
+            );
+        }
+
+        $allowlist = $this->app->config('controller_security.controllers.allowlist', []);
+        if (! is_array($allowlist)) {
+            $allowlist = [];
+        }
+
+        $normalized = [];
+        foreach ($allowlist as $entry) {
+            if (! is_string($entry)) {
+                continue;
+            }
+            $trimmed = trim($entry);
+            if ($trimmed === '') {
+                continue;
+            }
+            if (str_contains($trimmed, '@') !== false) {
+                $normalized[] = str_replace('@', '::', $trimmed);
+            } else {
+                $normalized[] = $trimmed;
+            }
+            if (str_contains($trimmed, '@') === false && str_contains($trimmed, '::') === false) {
+                $normalized[] = $trimmed . '::__invoke';
+            }
+        }
+
+        $checks = [$target->signature];
+        if ($target->identifier !== '' && $target->identifier !== '0') {
+            $checks[] = $target->identifier;
+            if (str_contains($target->identifier, '@') === false && str_contains($target->identifier, '::') === false) {
+                $checks[] = $target->identifier . '::__invoke';
+            }
+        }
+
+        foreach ($checks as $check) {
+            if (in_array($check, $normalized, true)) {
+                return;
+            }
+        }
+
+        throw new ControllerExposureViolationException(
+            reasonCode: 'not_in_allowlist_metadata_missing',
+            targetSignature: $target->signature,
+            safeContext: [
+                'target_signature' => $target->signature,
+                'target_identifier' => $target->identifier,
+                'target_type' => $target->type->value,
+                'target_method' => $target->method,
+                'target_exposed_flag' => var_export($target->exposed, true),
+                'exposure_source' => 'not_in_allowlist',
+                'allowlist_size' => count($normalized),
+                'checked_signatures' => $checks,
+            ],
+            message: 'Controller [' . $target->signature . '] is not present in security allowlist and does not have route metadata `security.exposed=true`. Enable allowlist bypass by adding the controller signature to `controller_security.controllers.allowlist` or set `security.exposed=true` in route definition metadata.',
+        );
     }
 }

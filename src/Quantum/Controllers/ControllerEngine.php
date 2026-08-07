@@ -18,6 +18,9 @@ use Quantum\Controllers\ParameterResolutionEngine;
 use Quantum\Controllers\Runtime\ControllerExecutionState;
 use Quantum\Controllers\Runtime\ControllerRuntimeResolverInterface;
 use Quantum\Controllers\Runtime\ControllerShortCircuitOrigin;
+use Quantum\Controllers\Security\Contracts\ControllerSecurityManagerInterface;
+use Quantum\Controllers\Security\ControllerTarget;
+use Quantum\Controllers\Security\Decision\SecurityEvaluationRequest;
 use Quantum\Http\Request;
 use Quantum\Http\Response;
 use Quantum\Routing\Dispatching\MissingRouteHandler;
@@ -33,6 +36,8 @@ final class ControllerEngine
 
     private readonly bool $pinBuildPerExecution;
 
+    private readonly bool $securityGloballyEnabled;
+
     private bool $pinActive = false;
 
     public function __construct(
@@ -46,12 +51,16 @@ final class ControllerEngine
         private readonly ControllerObservabilityManagerInterface $observability,
         private readonly ResponseNormalizer $normalizer,
         private readonly ?CompiledControllerFactoryInterface $compiledFactory = null,
+        private readonly ?ControllerSecurityManagerInterface $securityManager = null,
     ) {
         $enabled = $this->app->config('controller_compilation.enabled', false);
         $this->compilationGloballyEnabled = is_bool($enabled) ? $enabled : (bool) $enabled;
 
         $pin = $this->app->config('controller_compilation.deployment.pin_build_per_execution', false);
         $this->pinBuildPerExecution = is_bool($pin) ? $pin : (bool) $pin;
+
+        $sec = $this->app->config('controller_security.enabled', false);
+        $this->securityGloballyEnabled = is_bool($sec) ? $sec : (bool) $sec;
     }
 
     public function handle(RouteMatch $match, Request $request): Response
@@ -65,6 +74,7 @@ final class ControllerEngine
         $compilationMissKey = null;
         $compilationHitContext = null;
         $compilationMaterializeError = null;
+        $securityContext = null;
 
         try {
             if ($this->compilationGloballyEnabled && $this->compiledFactory !== null) {
@@ -164,6 +174,60 @@ final class ControllerEngine
                 $this->observability->emit('controllers.compilation.materialize_failed', $execution, $compilationMaterializeError);
             }
 
+            if ($this->securityGloballyEnabled && $this->securityManager !== null) {
+                $securityContext = $this->securityManager->initialize($request, $executionContext);
+                $executionContext->setSecurityContext($securityContext);
+                $execution->setAttribute('controller.security.context', $securityContext);
+                $execution->setAttribute('controller.security.principal_type', $securityContext->principal->type()->value);
+                $execution->setAttribute('controller.security.tenant', $securityContext->tenant?->id);
+                $this->observability->emit('controllers.security.context.created', $execution, [
+                    'principal_type' => $securityContext->principal->type()->value,
+                    'authenticated' => $securityContext->principal->authenticated(),
+                    'has_tenant' => $securityContext->hasTenant(),
+                    'execution_id' => $securityContext->executionId,
+                ]);
+
+                $target = ControllerTarget::fromDefinition($definition);
+                $action = $target->method ?? '__invoke';
+                $resource = ['definition' => $target->signature, 'compilation_source' => $compilationSource];
+                $securityMetadata = $this->extractSecurityMetadata($match);
+                $secRequest = new SecurityEvaluationRequest(
+                    security: $securityContext,
+                    target: $target,
+                    action: $action,
+                    resource: $resource,
+                    metadata: $securityMetadata,
+                );
+
+                $this->observability->emit('controllers.security.authorization.evaluating', $execution, [
+                    'target_signature' => $target->signature,
+                    'action' => $action,
+                    'policies' => $securityMetadata['policies'] ?? [],
+                    'permissions' => $securityMetadata['permissions'] ?? [],
+                ]);
+
+                try {
+                    $this->securityManager->assertAuthorized($secRequest);
+                    $this->observability->emit('controllers.security.authorization.allowed', $execution, [
+                        'target_signature' => $target->signature,
+                        'action' => $action,
+                    ]);
+                } catch (\Quantum\Controllers\Security\Exceptions\AuthenticationRequiredException $authE) {
+                    $this->observability->emit('controllers.security.authentication.failed', $execution, [
+                        'target_signature' => $target->signature,
+                        'reason_code' => $authE->errorCode(),
+                    ]);
+                    throw $authE;
+                } catch (\Quantum\Controllers\Security\Exceptions\AuthorizationDeniedException $denyE) {
+                    $this->observability->emit('controllers.security.authorization.denied', $execution, [
+                        'target_signature' => $target->signature,
+                        'reason_code' => $denyE->reasonCode,
+                        'policy_context' => $denyE->safeContext,
+                    ]);
+                    throw $denyE;
+                }
+            }
+
             $execution->setState(ControllerExecutionState::Running);
             $this->observability->emit('controllers.execution.started', $execution);
 
@@ -220,8 +284,62 @@ final class ControllerEngine
 
             return $this->normalizer->normalize($result);
         } finally {
+            if ($securityContext !== null && $this->securityManager !== null) {
+                try {
+                    $this->securityManager->finalize($securityContext);
+                } catch (Throwable) {
+                }
+            }
             $this->endPinIfNeeded();
         }
+    }
+
+    /** @return array{policies?: string[], permissions?: string[], authentication_required?: bool, tenant_required?: bool} */
+    private function extractSecurityMetadata(RouteMatch $match): array
+    {
+        $meta = [];
+        try {
+            $routeMeta = $match->route()->metadata();
+            if (method_exists($routeMeta, 'raw')) {
+                $raw = $routeMeta->raw();
+            } elseif (method_exists($routeMeta, 'all')) {
+                $raw = $routeMeta->all();
+            } else {
+                $raw = [];
+            }
+            if (! is_array($raw)) {
+                return $meta;
+            }
+
+            foreach (['policies', 'permissions', 'authentication_required', 'tenant_required'] as $key) {
+                if (array_key_exists($key, $raw)) {
+                    $meta[$key] = $raw[$key];
+                }
+            }
+
+            if (isset($raw['security']) && is_array($raw['security'])) {
+                foreach (['policies', 'permissions', 'authentication_required', 'tenant_required'] as $key) {
+                    if (array_key_exists($key, $raw['security'])) {
+                        $meta[$key] = $raw['security'][$key];
+                    }
+                }
+            }
+
+            if (isset($raw['attributes']) && is_array($raw['attributes'])) {
+                foreach ($raw['attributes'] as $attr) {
+                    if (is_array($attr) && isset($attr['security']) && is_array($attr['security'])) {
+                        foreach (['policies', 'permissions', 'authentication_required', 'tenant_required'] as $key) {
+                            if (array_key_exists($key, $attr['security'])) {
+                                $meta[$key] = $attr['security'][$key];
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Throwable) {
+        }
+
+        return $meta;
     }
 
     private function evaluateTimeout(ControllerExecution $execution): void

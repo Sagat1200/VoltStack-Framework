@@ -78,6 +78,14 @@ use Quantum\Routing\Router;
 use Quantum\Routing\TreeArtifactStore;
 use Quantum\Routing\VersionArtifactStore;
 use Quantum\Security\CsrfTokenManager;
+use Quantum\Controllers\Security\Context\ControllerSecurityContextFactory;
+use Quantum\Controllers\Security\Contracts\ControllerSecurityContextFactoryInterface;
+use Quantum\Controllers\Security\Contracts\ControllerSecurityDecisionEngineInterface;
+use Quantum\Controllers\Security\Contracts\ControllerSecurityManagerInterface;
+use Quantum\Controllers\Security\Contracts\ControllerSecurityPolicyRegistryInterface;
+use Quantum\Controllers\Security\Engine\ControllerSecurityManager;
+use Quantum\Controllers\Security\Policy\ControllerSecurityDecisionEngine;
+use Quantum\Controllers\Security\Policy\ControllerSecurityPolicyRegistry;
 use Quantum\Validation\Validator;
 use Quantum\View\Cache\CompiledViewStore;
 use Quantum\View\Compilers\ViewCompiler;
@@ -665,6 +673,56 @@ class Application extends Container
 
         if (! isset($this->bindings[KernelContract::class])) {
             $this->singleton(KernelContract::class, fn(Application $app) => $app->make(HttpKernel::class));
+        }
+
+        if (! isset($this->bindings[ControllerSecurityPolicyRegistryInterface::class])) {
+            $this->singleton(ControllerSecurityPolicyRegistryInterface::class, function (Application $app): ControllerSecurityPolicyRegistryInterface {
+                $registry = new ControllerSecurityPolicyRegistry();
+                $policiesConfig = $app->config('controller_security.policies', null);
+                if (is_array($policiesConfig)) {
+                    foreach ($policiesConfig as $policyClassOrInstance) {
+                        if (is_string($policyClassOrInstance) && class_exists($policyClassOrInstance)) {
+                            $instance = $app->make($policyClassOrInstance);
+                        } elseif (is_object($policyClassOrInstance)) {
+                            $instance = $policyClassOrInstance;
+                        } else {
+                            continue;
+                        }
+                        if ($instance instanceof \Quantum\Controllers\Security\Contracts\ControllerSecurityPolicyInterface) {
+                            $registry->register($instance);
+                        }
+                    }
+                }
+
+                return $registry;
+            });
+        }
+
+        if (! isset($this->bindings[ControllerSecurityContextFactoryInterface::class])) {
+            $this->singleton(ControllerSecurityContextFactoryInterface::class, function (Application $app): ControllerSecurityContextFactoryInterface {
+                $max = $app->config('controller_security.authorization.max_policy_evaluations', 64);
+                $max = is_numeric($max) ? (int) $max : 64;
+
+                return new ControllerSecurityContextFactory(max(1, $max));
+            });
+        }
+
+        if (! isset($this->bindings[ControllerSecurityDecisionEngineInterface::class])) {
+            $this->singleton(ControllerSecurityDecisionEngineInterface::class, function (Application $app): ControllerSecurityDecisionEngineInterface {
+                return new ControllerSecurityDecisionEngine(
+                    registry: $app->make(ControllerSecurityPolicyRegistryInterface::class),
+                    app: $app,
+                );
+            });
+        }
+
+        if (! isset($this->bindings[ControllerSecurityManagerInterface::class])) {
+            $this->singleton(ControllerSecurityManagerInterface::class, function (Application $app): ControllerSecurityManagerInterface {
+                return new ControllerSecurityManager(
+                    contextFactory: $app->make(ControllerSecurityContextFactoryInterface::class),
+                    decisionEngine: $app->make(ControllerSecurityDecisionEngineInterface::class),
+                );
+            });
         }
 
         $this->make(InlinePageLoader::class);

@@ -7,9 +7,9 @@ namespace VoltStack\Test\Unit;
 use PHPUnit\Framework\TestCase;
 use Quantum\Compilation\Contracts\ArtifactStoreInterface;
 use Quantum\Compilation\Contracts\CompiledControllerFactoryInterface;
-use Quantum\Console\Commands\CompileClearCommand;
-use Quantum\Console\Commands\CompileCommand;
-use Quantum\Console\Commands\CompileWarmupCommand;
+use Quantum\Console\Commands\ControllerCompileClearCommand;
+use Quantum\Console\Commands\ControllerCompileCommand;
+use Quantum\Console\Commands\ControllerCompileWarmupCommand;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
 use Quantum\Controllers\ControllerDefinition;
@@ -127,7 +127,7 @@ PHP
 
     public function test_compile_command_discovers_and_compiles_routes_into_build(): void
     {
-        $command = new CompileCommand($this->basePath);
+        $command = new ControllerCompileCommand($this->basePath);
         $output = new Output();
 
         $exit = $command->handle(
@@ -173,7 +173,7 @@ PHP
     public function test_compile_command_no_routes_exits_cleanly_with_suggestion(): void
     {
         $emptyPath = $this->createEmptySkeleton();
-        $command = new CompileCommand($emptyPath);
+        $command = new ControllerCompileCommand($emptyPath);
         $output = new Output();
 
         $exit = $command->handle(
@@ -193,7 +193,7 @@ PHP
 
     public function test_compile_command_no_activate_leaves_build_inactive(): void
     {
-        $command = new CompileCommand($this->basePath);
+        $command = new ControllerCompileCommand($this->basePath);
         $output = new Output();
 
         $exit = $command->handle(
@@ -217,7 +217,7 @@ PHP
 
     public function test_compile_clear_command_removes_builds_and_worker_cache(): void
     {
-        $compile = new CompileCommand($this->basePath);
+        $compile = new ControllerCompileCommand($this->basePath);
         $compileOutput = new Output();
         $compile->handle(
             Input::fromArgv(['volt', 'controller-compiler']),
@@ -228,7 +228,7 @@ PHP
         $store = $app->make(ArtifactStoreInterface::class);
         self::assertNotNull($store->currentBuild());
 
-        $clear = new CompileClearCommand($this->basePath);
+        $clear = new ControllerCompileClearCommand($this->basePath);
         $clearOutput = new Output();
         $exit = $clear->handle(
             Input::fromArgv([
@@ -252,7 +252,7 @@ PHP
 
     public function test_compile_warmup_command_compiles_hot_routes_from_config(): void
     {
-        $command = new CompileWarmupCommand($this->basePath);
+        $command = new ControllerCompileWarmupCommand($this->basePath);
         $output = new Output();
 
         $exit = $command->handle(
@@ -284,7 +284,7 @@ PHP
     public function test_warmup_command_reports_missing_hot_routes(): void
     {
         $emptyPath = $this->createEmptySkeleton();
-        $command = new CompileWarmupCommand($emptyPath);
+        $command = new ControllerCompileWarmupCommand($emptyPath);
         $output = new Output();
 
         $exit = $command->handle(

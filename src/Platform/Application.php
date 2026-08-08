@@ -86,6 +86,9 @@ use Quantum\Controllers\Security\Contracts\ControllerSecurityPolicyRegistryInter
 use Quantum\Controllers\Security\Engine\ControllerSecurityManager;
 use Quantum\Controllers\Security\Policy\ControllerSecurityDecisionEngine;
 use Quantum\Controllers\Security\Policy\ControllerSecurityPolicyRegistry;
+use Quantum\Controllers\Security\Worker\ControllerWorkerDisposition;
+use Quantum\Controllers\Security\Worker\HardenedControllerSecurityDecisionEngine;
+use Quantum\Controllers\Security\Worker\PolicyEvaluationSandbox;
 use Quantum\Validation\Validator;
 use Quantum\View\Cache\CompiledViewStore;
 use Quantum\View\Compilers\ViewCompiler;
@@ -723,8 +726,47 @@ class Application extends Container
 
         if (! isset($this->bindings[ControllerSecurityDecisionEngineInterface::class])) {
             $this->singleton(ControllerSecurityDecisionEngineInterface::class, function (Application $app): ControllerSecurityDecisionEngineInterface {
-                return new ControllerSecurityDecisionEngine(
-                    registry: $app->make(ControllerSecurityPolicyRegistryInterface::class),
+                try {
+                    $workerConfig = $app->config('controller_security.workers', null);
+                    $hardenedEnabled = is_array($workerConfig) && ($workerConfig['hardened_engine'] ?? true);
+                } catch (\Throwable) {
+                    $hardenedEnabled = true;
+                }
+
+                $registry = $app->make(ControllerSecurityPolicyRegistryInterface::class);
+
+                if (! $hardenedEnabled) {
+                    return new ControllerSecurityDecisionEngine(
+                        registry: $registry,
+                        app: $app,
+                    );
+                }
+
+                $wCfg = is_array($workerConfig ?? null) ? $workerConfig : [];
+                $perEvalMs = $wCfg['policy_timeout_ms'] ?? null;
+                $perEvalNs = is_numeric($perEvalMs) && $perEvalMs > 0
+                    ? (int) (((float) $perEvalMs) * 1e6)
+                    : 25_000_000;
+                $maxRecursion = isset($wCfg['max_recursion_depth']) && is_int($wCfg['max_recursion_depth']) && $wCfg['max_recursion_depth'] > 0
+                    ? $wCfg['max_recursion_depth']
+                    : 8;
+                $cbThreshold = isset($wCfg['circuit_breaker_failures']) && is_int($wCfg['circuit_breaker_failures']) && $wCfg['circuit_breaker_failures'] > 0
+                    ? $wCfg['circuit_breaker_failures']
+                    : 5;
+                $cbOpenSeconds = isset($wCfg['circuit_breaker_open_seconds']) && is_int($wCfg['circuit_breaker_open_seconds']) && $wCfg['circuit_breaker_open_seconds'] > 0
+                    ? $wCfg['circuit_breaker_open_seconds']
+                    : 30;
+
+                $sandbox = new PolicyEvaluationSandbox(
+                    perPolicyTimeoutNs: $perEvalNs,
+                    maxRecursionDepth: $maxRecursion,
+                    circuitBreakerThreshold: $cbThreshold,
+                    circuitBreakerOpenSeconds: $cbOpenSeconds,
+                );
+
+                return new HardenedControllerSecurityDecisionEngine(
+                    registry: $registry,
+                    sandbox: $sandbox,
                     app: $app,
                 );
             });

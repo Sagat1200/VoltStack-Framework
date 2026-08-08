@@ -46,6 +46,11 @@ return [
     ],
 
     'workers' => [
+        'hardened_engine' => true,
+        'policy_timeout_ms' => 25,
+        'max_recursion_depth' => 8,
+        'circuit_breaker_failures' => 5,
+        'circuit_breaker_open_seconds' => 30,
         'reset_security_context' => true,
         'detect_context_leaks' => true,
         'terminate_on_trust_failure' => true,

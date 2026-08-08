@@ -56,4 +56,20 @@ return [
         'audit_denials' => true,
         'record_sensitive_values' => false,
     ],
+
+    'error_responses' => [
+        'enabled' => true,
+        'http_codes' => [
+            'authentication_required' => 401,
+            'authorization_denied' => 403,
+            'tenant_violation' => 404,
+            'exposure_violation' => 451,
+            'infrastructure_failure' => 500,
+        ],
+        'expose_safe_context' => false,
+        'expose_reason_code' => true,
+        'expose_challenge_headers' => true,
+        'expose_error_extensions' => true,
+        'include_security_type_links' => true,
+    ],
 ];

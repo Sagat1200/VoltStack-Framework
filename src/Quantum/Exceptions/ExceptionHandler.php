@@ -6,6 +6,7 @@ namespace Quantum\Exceptions;
 
 use Quantum\Controllers\Exceptions\ControllerException;
 use Quantum\Exceptions\Contracts\ExceptionHandlerInterface;
+use Quantum\Exceptions\Contracts\ExceptionMapperInterface;
 use Quantum\Exceptions\Enums\ExceptionHandlingStatus;
 use Quantum\Exceptions\Enums\WorkerDisposition;
 use Quantum\Http\JsonResponse;
@@ -25,6 +26,16 @@ use VoltStack\Runtime\Hydration\Exceptions\InvalidSnapshotException;
 
 final class ExceptionHandler implements ExceptionHandlerInterface
 {
+    /**
+     * @var list<ExceptionMapperInterface>
+     */
+    private array $mappers = [];
+
+    public function addMapper(ExceptionMapperInterface $mapper): void
+    {
+        $this->mappers[] = $mapper;
+    }
+
     public function handle(Throwable $throwable, ExceptionHandlingContext $context): ExceptionHandlingResult
     {
         $context->state->attempts++;
@@ -48,7 +59,7 @@ final class ExceptionHandler implements ExceptionHandlerInterface
 
         $context->state->status = ExceptionHandlingStatus::Rendering;
 
-        $response = $this->renderResponse($request, $throwable, $status, $headers);
+        $response = $this->renderResponse($request, $throwable, $status, $headers, $context->debug);
 
         $context->state->status = ExceptionHandlingStatus::Handled;
 
@@ -62,17 +73,17 @@ final class ExceptionHandler implements ExceptionHandlerInterface
     /**
      * @param array<string, string> $headers
      */
-    private function renderResponse(?Request $request, Throwable $exception, int $status, array $headers): Response
+    private function renderResponse(?Request $request, Throwable $exception, int $status, array $headers, bool $debug): Response
     {
         if ($request?->isVoltActionRequest() === true) {
-            return $this->voltErrorResponse($exception, $status, $headers);
+            return $this->voltErrorResponse($exception, $status, $headers, $debug);
         }
 
         if ($request?->expectsJson() === true) {
-            return $this->jsonResponse($exception, $status, $headers);
+            return $this->jsonResponse($exception, $status, $headers, $debug);
         }
 
-        return new Response($this->htmlResponse($exception, $status), $status, [
+        return new Response($this->htmlResponse($exception, $status, $debug), $status, [
             'Content-Type' => 'text/html; charset=UTF-8',
             ...$headers,
         ]);
@@ -80,6 +91,12 @@ final class ExceptionHandler implements ExceptionHandlerInterface
 
     private function statusCode(Throwable $exception): int
     {
+        foreach ($this->mappers as $mapper) {
+            if (null !== $code = $mapper->statusCode($exception)) {
+                return $code;
+            }
+        }
+
         return match (true) {
             $exception instanceof RouteNotFoundException => 404,
             $exception instanceof MissingRouteBindingException => 404,
@@ -99,7 +116,7 @@ final class ExceptionHandler implements ExceptionHandlerInterface
     /**
      * @param array<string, string> $headers
      */
-    private function jsonResponse(Throwable $exception, int $status, array $headers): JsonResponse
+    private function jsonResponse(Throwable $exception, int $status, array $headers, bool $debug): JsonResponse
     {
         $payload = [
             'message' => $this->jsonMessage($exception, $status),
@@ -109,16 +126,27 @@ final class ExceptionHandler implements ExceptionHandlerInterface
             $payload['errors'] = $exception->errors();
         }
 
+        $extensions = [];
+        foreach ($this->mappers as $mapper) {
+            $extensions[] = $mapper->jsonExtensions($exception, $debug);
+        }
+        if ($extensions !== []) {
+            $merged = array_merge(...$extensions);
+            if ($merged !== []) {
+                $payload = array_merge($payload, $merged);
+            }
+        }
+
         return new JsonResponse($payload, $status, $headers);
     }
 
     /**
      * @param array<string, string> $headers
      */
-    private function voltErrorResponse(Throwable $exception, int $status, array $headers): JsonResponse
+    private function voltErrorResponse(Throwable $exception, int $status, array $headers, bool $debug): JsonResponse
     {
         $payload = [
-            'error' => $this->voltErrorPayload($exception, $status),
+            'error' => $this->voltErrorPayload($exception, $status, $debug),
         ];
 
         return new JsonResponse($payload, $status, $headers);
@@ -127,7 +155,7 @@ final class ExceptionHandler implements ExceptionHandlerInterface
     /**
      * @return array<string, mixed>
      */
-    private function voltErrorPayload(Throwable $exception, int $status): array
+    private function voltErrorPayload(Throwable $exception, int $status, bool $debug): array
     {
         $payload = [
             'type' => $exception::class,
@@ -146,29 +174,57 @@ final class ExceptionHandler implements ExceptionHandlerInterface
             $payload['errors'] = $exception->errors();
         }
 
+        $extensions = [];
+        foreach ($this->mappers as $mapper) {
+            $extensions[] = $mapper->voltExtensions($exception, $debug);
+        }
+        if ($extensions !== []) {
+            $merged = array_merge(...$extensions);
+            if ($merged !== []) {
+                $payload = array_merge($payload, $merged);
+            }
+        }
+
         return $payload;
     }
 
-    private function htmlResponse(Throwable $exception, int $status): string
+    private function htmlResponse(Throwable $exception, int $status, bool $debug): string
     {
         $title = match ($status) {
+            401 => 'Unauthorized',
             403 => 'Forbidden',
             404 => 'Page Not Found',
             405 => 'Method Not Allowed',
             419 => 'Page Expired',
             422 => 'Validation Failed',
+            451 => 'Unavailable For Legal Reasons',
             default => 'Server Error',
         };
 
-        $body = $exception instanceof ValidationException
-            ? $this->renderValidationErrors($exception)
-            : '<p>' . match ($status) {
-                403 => 'Invalid signature.',
+        $customBody = null;
+        foreach ($this->mappers as $mapper) {
+            if (null !== $b = $mapper->htmlBody($exception, $status)) {
+                $customBody = $b;
+                break;
+            }
+        }
+
+        $body = match (true) {
+            $customBody !== null => $customBody,
+            $exception instanceof ValidationException => $this->renderValidationErrors($exception),
+            $exception instanceof InvalidSignatureException => '<p>Invalid signature.</p>',
+            $exception instanceof CsrfTokenMismatchException => '<p>CSRF token mismatch.</p>',
+            $exception instanceof MethodNotAllowedException => '<p>The requested HTTP method is not allowed for this route.</p>',
+            default => '<p>' . match ($status) {
+                401 => 'Authentication is required to access this resource.',
+                403 => 'You do not have permission to access this resource.',
                 404 => 'The requested page could not be found.',
-                405 => 'The requested HTTP method is not allowed for this route.',
                 419 => 'CSRF token mismatch.',
+                422 => 'The submitted data did not pass validation.',
+                451 => 'Access to this resource is restricted by policy.',
                 default => 'An unexpected error occurred while processing the request.',
-            } . '</p>';
+            } . '</p>',
+        };
 
         return sprintf(
             '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="volt-document" content="reload" data-volt-head-key="error-document-reload"><meta name="volt-navigation-mode" content="reload" data-volt-head-key="error-navigation-mode-reload"><title>%1$s</title><style>body{font-family:Arial,sans-serif;background:#0f172a;color:#e2e8f0;padding:40px;}main{max-width:720px;margin:0 auto;background:#111827;border:1px solid #334155;border-radius:12px;padding:32px;}h1{margin-top:0;}ul{padding-left:20px;}code{background:#1e293b;padding:2px 6px;border-radius:4px;}</style></head><body data-volt-document="reload"><main><h1>%1$s</h1>%2$s</main></body></html>',
@@ -194,6 +250,12 @@ final class ExceptionHandler implements ExceptionHandlerInterface
 
     private function jsonMessage(Throwable $exception, int $status): string
     {
+        foreach ($this->mappers as $mapper) {
+            if (null !== $msg = $mapper->message($exception, $status)) {
+                return $msg;
+            }
+        }
+
         return match (true) {
             $exception instanceof ValidationException => $exception->getMessage(),
             $exception instanceof CsrfTokenMismatchException => $exception->getMessage(),
@@ -202,15 +264,23 @@ final class ExceptionHandler implements ExceptionHandlerInterface
             $exception instanceof InvalidComponentActionException => $exception->getMessage(),
             $exception instanceof ComponentMountException => 'Server Error',
             $exception instanceof ComponentRenderException => 'Server Error',
+            $status === 401 => 'Unauthorized',
             $status === 403 => 'Forbidden',
             $status === 404 => 'Not Found',
             $status === 405 => 'Method Not Allowed',
+            $status === 451 => 'Unavailable For Legal Reasons',
             default => 'Server Error',
         };
     }
 
     private function errorCode(Throwable $exception, int $status): string
     {
+        foreach ($this->mappers as $mapper) {
+            if (null !== $code = $mapper->errorCode($exception, $status)) {
+                return $code;
+            }
+        }
+
         return match (true) {
             $exception instanceof RouteNotFoundException => 'route.not_found',
             $exception instanceof MissingRouteBindingException => 'route.binding_missing',
@@ -238,6 +308,13 @@ final class ExceptionHandler implements ExceptionHandlerInterface
 
         if ($this->shouldExposeVoltErrorCode($errorCode)) {
             $headers['X-Volt-Error-Code'] = $errorCode;
+        }
+
+        foreach ($this->mappers as $mapper) {
+            $mh = $mapper->headers($exception);
+            if ($mh !== []) {
+                $headers = array_merge($headers, $mh);
+            }
         }
 
         if ($exception instanceof MethodNotAllowedException) {

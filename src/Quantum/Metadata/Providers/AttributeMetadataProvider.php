@@ -6,6 +6,11 @@ namespace Quantum\Metadata\Providers;
 
 use Quantum\Controllers\Attributes\Interceptors;
 use Quantum\Controllers\Attributes\ParameterAliases;
+use Quantum\Controllers\Security\Attributes\AuthenticationRequired;
+use Quantum\Controllers\Security\Attributes\Expose;
+use Quantum\Controllers\Security\Attributes\Permissions;
+use Quantum\Controllers\Security\Attributes\Policies;
+use Quantum\Controllers\Security\Attributes\TenantRequired;
 use Quantum\Metadata\Attributes\Meta;
 use Quantum\Metadata\Contracts\MetadataProviderInterface;
 use Quantum\Metadata\MetadataFragment;
@@ -84,6 +89,11 @@ final class AttributeMetadataProvider implements MetadataProviderInterface
             ...$reflection->getAttributes(Meta::class, ReflectionAttribute::IS_INSTANCEOF),
             ...$reflection->getAttributes(Interceptors::class, ReflectionAttribute::IS_INSTANCEOF),
             ...$reflection->getAttributes(ParameterAliases::class, ReflectionAttribute::IS_INSTANCEOF),
+            ...$reflection->getAttributes(Expose::class, ReflectionAttribute::IS_INSTANCEOF),
+            ...$reflection->getAttributes(Policies::class, ReflectionAttribute::IS_INSTANCEOF),
+            ...$reflection->getAttributes(Permissions::class, ReflectionAttribute::IS_INSTANCEOF),
+            ...$reflection->getAttributes(AuthenticationRequired::class, ReflectionAttribute::IS_INSTANCEOF),
+            ...$reflection->getAttributes(TenantRequired::class, ReflectionAttribute::IS_INSTANCEOF),
         ];
     }
 
@@ -113,6 +123,83 @@ final class AttributeMetadataProvider implements MetadataProviderInterface
                     $fragments[] = new MetadataFragment(
                         key: 'parameter_aliases',
                         value: $instance->aliases,
+                        origin: new MetadataOrigin(
+                            provider: $this->name(),
+                            type: 'attribute',
+                            location: $location,
+                        ),
+                        priority: $instance->priority ?? $this->priority(),
+                        final: $instance->final,
+                    );
+                }
+
+                if ($instance instanceof Expose) {
+                    $fragments[] = new MetadataFragment(
+                        key: 'security.exposed',
+                        value: $instance->exposed,
+                        origin: new MetadataOrigin(
+                            provider: $this->name(),
+                            type: 'attribute',
+                            location: $location,
+                        ),
+                        priority: $instance->priority ?? $this->priority(),
+                        final: $instance->final,
+                    );
+                }
+
+                if ($instance instanceof Policies) {
+                    $fragments[] = new MetadataFragment(
+                        key: 'security.policies',
+                        value: array_values($instance->policies),
+                        origin: new MetadataOrigin(
+                            provider: $this->name(),
+                            type: 'attribute',
+                            location: $location,
+                        ),
+                        priority: $instance->priority ?? $this->priority(),
+                        final: $instance->final,
+                    );
+                }
+
+                if ($instance instanceof Permissions) {
+                    $fragments[] = new MetadataFragment(
+                        key: 'security.permissions',
+                        value: array_values($instance->permissions),
+                        origin: new MetadataOrigin(
+                            provider: $this->name(),
+                            type: 'attribute',
+                            location: $location,
+                        ),
+                        priority: $instance->priority ?? $this->priority(),
+                        final: $instance->final,
+                    );
+                }
+
+                if ($instance instanceof AuthenticationRequired) {
+                    $fragments[] = new MetadataFragment(
+                        key: 'security.authentication_required',
+                        value: [
+                            'minimum_strength' => $instance->minimumStrength->name,
+                            'minimum_strength_value' => $instance->minimumStrength->value,
+                            'require_any' => $instance->requireAny,
+                        ],
+                        origin: new MetadataOrigin(
+                            provider: $this->name(),
+                            type: 'attribute',
+                            location: $location,
+                        ),
+                        priority: $instance->priority ?? $this->priority(),
+                        final: $instance->final,
+                    );
+                }
+
+                if ($instance instanceof TenantRequired) {
+                    $fragments[] = new MetadataFragment(
+                        key: 'security.tenant_required',
+                        value: array_filter([
+                            'verified' => $instance->verified,
+                            'allowed_tenants' => $instance->allowedTenants,
+                        ], static fn ($v) => $v !== null),
                         origin: new MetadataOrigin(
                             provider: $this->name(),
                             type: 'attribute',

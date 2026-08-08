@@ -594,7 +594,21 @@ class Application extends Container
         }
 
         if (! isset($this->bindings[QuantumExceptionHandlerInterface::class])) {
-            $this->singleton(QuantumExceptionHandlerInterface::class, QuantumExceptionHandler::class);
+            $this->singleton(QuantumExceptionHandlerInterface::class, static function (Application $app): QuantumExceptionHandlerInterface {
+                $handler = new QuantumExceptionHandler();
+                try {
+                    /** @var array<string, mixed> $errorResponsesConfig */
+                    $errorResponsesConfig = $app->config('controller_security.error_responses', []);
+                    if (! is_array($errorResponsesConfig)) {
+                        $errorResponsesConfig = [];
+                    }
+                    $securityMapper = new \Quantum\Controllers\Security\Exceptions\ControllerSecurityExceptionMapper($errorResponsesConfig);
+                    $handler->addMapper($securityMapper);
+                } catch (\Throwable) {
+                }
+
+                return $handler;
+            });
         }
 
         if (! isset($this->bindings[ExceptionHandler::class])) {
@@ -681,15 +695,15 @@ class Application extends Container
                 $policiesConfig = $app->config('controller_security.policies', null);
                 if (is_array($policiesConfig)) {
                     foreach ($policiesConfig as $policyClassOrInstance) {
-                        if (is_string($policyClassOrInstance) && class_exists($policyClassOrInstance)) {
-                            $instance = $app->make($policyClassOrInstance);
-                        } elseif (is_object($policyClassOrInstance)) {
-                            $instance = $policyClassOrInstance;
-                        } else {
-                            continue;
-                        }
-                        if ($instance instanceof \Quantum\Controllers\Security\Contracts\ControllerSecurityPolicyInterface) {
-                            $registry->register($instance);
+                        if (is_string($policyClassOrInstance) && $policyClassOrInstance !== '' && class_exists($policyClassOrInstance)) {
+                            try {
+                                $registry->registerClass($policyClassOrInstance, static function () use ($app, $policyClassOrInstance) {
+                                    return $app->make($policyClassOrInstance);
+                                });
+                            } catch (\Throwable) {
+                            }
+                        } elseif (is_object($policyClassOrInstance) && $policyClassOrInstance instanceof \Quantum\Controllers\Security\Contracts\ControllerSecurityPolicyInterface) {
+                            $registry->register($policyClassOrInstance);
                         }
                     }
                 }

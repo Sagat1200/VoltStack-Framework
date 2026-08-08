@@ -18,6 +18,11 @@ use Quantum\Controllers\ParameterResolutionEngine;
 use Quantum\Controllers\Runtime\ControllerExecutionState;
 use Quantum\Controllers\Runtime\ControllerRuntimeResolverInterface;
 use Quantum\Controllers\Runtime\ControllerShortCircuitOrigin;
+use Quantum\Controllers\Security\Attributes\AuthenticationRequired;
+use Quantum\Controllers\Security\Attributes\Expose;
+use Quantum\Controllers\Security\Attributes\Permissions;
+use Quantum\Controllers\Security\Attributes\Policies;
+use Quantum\Controllers\Security\Attributes\TenantRequired;
 use Quantum\Controllers\Security\Contracts\ControllerSecurityManagerInterface;
 use Quantum\Controllers\Security\ControllerTarget;
 use Quantum\Controllers\Security\Decision\SecurityEvaluationRequest;
@@ -28,6 +33,9 @@ use Quantum\Routing\Dispatching\MissingRouteHandler;
 use Quantum\Routing\Dispatching\ResponseNormalizer;
 use Quantum\Routing\Exceptions\MissingRouteBindingException;
 use Quantum\Routing\RouteMatch;
+use ReflectionAttribute;
+use ReflectionClass;
+use ReflectionMethod;
 use Throwable;
 use VoltStack\Framework\Application;
 
@@ -188,7 +196,7 @@ final class ControllerEngine
                     'execution_id' => $securityContext->executionId,
                 ]);
 
-                $securityMetadata = $this->extractSecurityMetadata($match);
+                $securityMetadata = $this->extractSecurityMetadata($match, $definition);
                 $target = ControllerTarget::fromDefinition($definition);
                 if (array_key_exists('exposed', $securityMetadata)) {
                     $exposedRaw = $securityMetadata['exposed'];
@@ -311,7 +319,7 @@ final class ControllerEngine
     }
 
     /** @return array{policies?: string[], permissions?: string[], authentication_required?: bool, tenant_required?: bool} */
-    private function extractSecurityMetadata(RouteMatch $match): array
+    private function extractSecurityMetadata(RouteMatch $match, ?ControllerDefinition $definition = null): array
     {
         $meta = [];
         try {
@@ -323,30 +331,28 @@ final class ControllerEngine
             } else {
                 $raw = [];
             }
-            if (! is_array($raw)) {
-                return $meta;
-            }
-
-            foreach (['policies', 'permissions', 'authentication_required', 'tenant_required', 'exposed'] as $key) {
-                if (array_key_exists($key, $raw)) {
-                    $meta[$key] = $raw[$key];
-                }
-            }
-
-            if (isset($raw['security']) && is_array($raw['security'])) {
+            if (is_array($raw)) {
                 foreach (['policies', 'permissions', 'authentication_required', 'tenant_required', 'exposed'] as $key) {
-                    if (array_key_exists($key, $raw['security'])) {
-                        $meta[$key] = $raw['security'][$key];
+                    if (array_key_exists($key, $raw)) {
+                        $meta[$key] = $raw[$key];
                     }
                 }
-            }
 
-            if (isset($raw['attributes']) && is_array($raw['attributes'])) {
-                foreach ($raw['attributes'] as $attr) {
-                    if (is_array($attr) && isset($attr['security']) && is_array($attr['security'])) {
-                        foreach (['policies', 'permissions', 'authentication_required', 'tenant_required', 'exposed'] as $key) {
-                            if (array_key_exists($key, $attr['security'])) {
-                                $meta[$key] = $attr['security'][$key];
+                if (isset($raw['security']) && is_array($raw['security'])) {
+                    foreach (['policies', 'permissions', 'authentication_required', 'tenant_required', 'exposed'] as $key) {
+                        if (array_key_exists($key, $raw['security'])) {
+                            $meta[$key] = $raw['security'][$key];
+                        }
+                    }
+                }
+
+                if (isset($raw['attributes']) && is_array($raw['attributes'])) {
+                    foreach ($raw['attributes'] as $attr) {
+                        if (is_array($attr) && isset($attr['security']) && is_array($attr['security'])) {
+                            foreach (['policies', 'permissions', 'authentication_required', 'tenant_required', 'exposed'] as $key) {
+                                if (array_key_exists($key, $attr['security'])) {
+                                    $meta[$key] = $attr['security'][$key];
+                                }
                             }
                         }
                     }
@@ -355,7 +361,146 @@ final class ControllerEngine
         } catch (Throwable) {
         }
 
+        if ($definition === null) {
+            return $meta;
+        }
+
+        try {
+            $action = $definition->action();
+            if (is_string($action) && str_contains($action, '@')) {
+                [$controllerClass, $method] = explode('@', $action, 2);
+            } elseif (is_string($action)) {
+                $controllerClass = $action;
+                $method = '__invoke';
+            } elseif (is_array($action) && isset($action[0]) && is_string($action[0] ?? null) && isset($action[1])) {
+                $controllerClass = is_object($action[0]) ? get_class($action[0]) : (string) $action[0];
+                $method = (string) $action[1];
+            } elseif (is_object($action) && ! $action instanceof \Closure) {
+                $controllerClass = get_class($action);
+                $method = method_exists($action, '__invoke') ? '__invoke' : null;
+            } else {
+                return $meta;
+            }
+
+            if (! $controllerClass || ! class_exists($controllerClass)) {
+                return $meta;
+            }
+
+            $classReflection = new ReflectionClass($controllerClass);
+            $classAttrs = $this->collectSecurityAttributes($classReflection);
+
+            $methodAttrs = [];
+            if ($method !== null && method_exists($controllerClass, $method)) {
+                $methodReflection = new ReflectionMethod($controllerClass, $method);
+                $methodAttrs = $this->collectSecurityAttributes($methodReflection);
+            }
+
+            $merged = $this->mergeAttributeLayers($classAttrs, $methodAttrs);
+
+            if (array_key_exists('exposed', $merged)) {
+                $meta['exposed'] = $merged['exposed'];
+            }
+            if (array_key_exists('authentication_required', $merged)) {
+                $meta['authentication_required'] = $merged['authentication_required'];
+            }
+            if (array_key_exists('tenant_required', $merged)) {
+                $meta['tenant_required'] = $merged['tenant_required'];
+            }
+            if (array_key_exists('policies', $merged)) {
+                $existingPolicies = isset($meta['policies']) && is_array($meta['policies']) ? $meta['policies'] : [];
+                $meta['policies'] = array_values(array_unique(array_merge($existingPolicies, $merged['policies']), SORT_REGULAR));
+            }
+            if (array_key_exists('permissions', $merged)) {
+                $existingPerms = isset($meta['permissions']) && is_array($meta['permissions']) ? $meta['permissions'] : [];
+                $meta['permissions'] = array_values(array_unique(array_merge($existingPerms, $merged['permissions']), SORT_REGULAR));
+            }
+        } catch (Throwable) {
+        }
+
         return $meta;
+    }
+
+    /**
+     * @param ReflectionClass|ReflectionMethod $reflection
+     * @return array<string, mixed>
+     */
+    private function collectSecurityAttributes(ReflectionClass|ReflectionMethod $reflection): array
+    {
+        $collected = [
+            'policies' => [],
+            'permissions' => [],
+        ];
+
+        $exposes = $reflection->getAttributes(Expose::class, ReflectionAttribute::IS_INSTANCEOF);
+        if ($exposes !== []) {
+            $inst = $exposes[0]->newInstance();
+            $collected['exposed'] = $inst->exposed;
+        }
+
+        $authReqs = $reflection->getAttributes(AuthenticationRequired::class, ReflectionAttribute::IS_INSTANCEOF);
+        if ($authReqs !== []) {
+            $inst = $authReqs[0]->newInstance();
+            $collected['authentication_required'] = [
+                'minimum_strength' => $inst->minimumStrength->name,
+                'minimum_strength_value' => $inst->minimumStrength->value,
+                'require_any' => $inst->requireAny,
+            ];
+        }
+
+        $tenantReqs = $reflection->getAttributes(TenantRequired::class, ReflectionAttribute::IS_INSTANCEOF);
+        if ($tenantReqs !== []) {
+            $inst = $tenantReqs[0]->newInstance();
+            $collected['tenant_required'] = array_filter([
+                'verified' => $inst->verified,
+                'allowed_tenants' => $inst->allowedTenants,
+            ], static fn ($v) => $v !== null);
+        }
+
+        foreach ($reflection->getAttributes(Policies::class, ReflectionAttribute::IS_INSTANCEOF) as $attr) {
+            $inst = $attr->newInstance();
+            foreach ($inst->policies as $p) {
+                $collected['policies'][] = $p;
+            }
+        }
+
+        foreach ($reflection->getAttributes(Permissions::class, ReflectionAttribute::IS_INSTANCEOF) as $attr) {
+            $inst = $attr->newInstance();
+            foreach ($inst->permissions as $p) {
+                $collected['permissions'][] = $p;
+            }
+        }
+
+        return $collected;
+    }
+
+    /**
+     * @param array<string, mixed> $classAttrs
+     * @param array<string, mixed> $methodAttrs
+     * @return array<string, mixed>
+     */
+    private function mergeAttributeLayers(array $classAttrs, array $methodAttrs): array
+    {
+        $merged = $classAttrs;
+
+        if (array_key_exists('exposed', $methodAttrs)) {
+            $merged['exposed'] = $methodAttrs['exposed'];
+        }
+        if (array_key_exists('authentication_required', $methodAttrs)) {
+            $merged['authentication_required'] = $methodAttrs['authentication_required'];
+        }
+        if (array_key_exists('tenant_required', $methodAttrs)) {
+            $merged['tenant_required'] = $methodAttrs['tenant_required'];
+        }
+        if (isset($methodAttrs['policies']) && $methodAttrs['policies'] !== []) {
+            $existing = isset($merged['policies']) && is_array($merged['policies']) ? $merged['policies'] : [];
+            $merged['policies'] = array_values(array_unique(array_merge($existing, $methodAttrs['policies']), SORT_REGULAR));
+        }
+        if (isset($methodAttrs['permissions']) && $methodAttrs['permissions'] !== []) {
+            $existing = isset($merged['permissions']) && is_array($merged['permissions']) ? $merged['permissions'] : [];
+            $merged['permissions'] = array_values(array_unique(array_merge($existing, $methodAttrs['permissions']), SORT_REGULAR));
+        }
+
+        return $merged;
     }
 
     private function evaluateTimeout(ControllerExecution $execution): void

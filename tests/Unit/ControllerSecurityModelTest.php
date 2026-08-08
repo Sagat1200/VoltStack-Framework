@@ -6,6 +6,12 @@ namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
 use Quantum\Config\ConfigRepository;
+use Quantum\Controllers\Security\Attributes\AuthenticationRequired;
+use Quantum\Controllers\Security\Attributes\Expose;
+use Quantum\Controllers\Security\Attributes\Policies;
+use Quantum\Controllers\Security\Attributes\Permissions;
+use Quantum\Controllers\Security\Attributes\PolicyClass;
+use Quantum\Controllers\Security\Attributes\TenantRequired;
 use Quantum\Controllers\Security\Context\AuthenticationStrength;
 use Quantum\Controllers\Security\Context\ControllerSecurityContext;
 use Quantum\Controllers\Security\Context\ControllerSecurityContextFactory;
@@ -32,6 +38,7 @@ use Quantum\Controllers\Security\Exceptions\SecurityInfrastructureFailureExcepti
 use Quantum\Controllers\ControllerDefinition;
 use Quantum\Controllers\ControllerExecutionContext;
 use Quantum\Http\Request;
+use Quantum\Routing\CompiledRoute;
 use Quantum\Routing\Dispatching\ControllerDispatcher;
 use Quantum\Routing\Route;
 use Quantum\Routing\RouteDefinition;
@@ -609,6 +616,250 @@ final class ControllerSecurityModelTest extends TestCase
 
         self::assertSame(200, $response->statusCode());
         self::assertSame('hi', $response->content());
+    }
+
+    public function test_php_attribute_expose_on_controller_class_bypasses_allowlist(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('controller_security', [
+            'enabled' => true,
+            'controllers' => [
+                'explicit_exposure' => true,
+                'allowlist' => [],
+            ],
+            'defaults' => ['deny_by_default' => false, 'fail_closed' => false],
+            'authorization' => ['abstain_as_deny' => false],
+            'policies' => [],
+        ]);
+        $app->make(ConfigRepository::class)->set('controller_compilation', ['enabled' => false]);
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $route = new Route(RouteDefinition::make(
+            ['GET'],
+            '/t',
+            ExposedByAttributeClassStub::class . '@open',
+        ));
+        $match = new RouteMatch($route, [], 'GET');
+
+        $response = $dispatcher->dispatch($match, Request::create('/t', 'GET'));
+
+        self::assertSame(200, $response->statusCode());
+    }
+
+    public function test_php_attribute_expose_false_throws_exposure_even_when_in_allowlist(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('controller_security', [
+            'enabled' => true,
+            'controllers' => [
+                'explicit_exposure' => true,
+                'allowlist' => [
+                    UnexposedByAttributeClassStub::class . '@closed',
+                ],
+            ],
+            'defaults' => ['deny_by_default' => false, 'fail_closed' => false],
+            'authorization' => ['abstain_as_deny' => false],
+            'policies' => [],
+        ]);
+        $app->make(ConfigRepository::class)->set('controller_compilation', ['enabled' => false]);
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $route = new Route(RouteDefinition::make(
+            ['GET'],
+            '/t',
+            UnexposedByAttributeClassStub::class . '@closed',
+        ));
+        $match = new RouteMatch($route, [], 'GET');
+
+        try {
+            $dispatcher->dispatch($match, Request::create('/t', 'GET'));
+            self::fail('Expected ControllerExposureViolationException from #[Expose(false)]');
+        } catch (ControllerExposureViolationException $e) {
+            self::assertSame('metadata_explicit_unexposed', $e->reasonCode);
+            self::assertSame('route_metadata_exposed_false', $e->safeContext['exposure_source'] ?? 'none');
+        }
+    }
+
+    public function test_php_attribute_policies_and_permissions_merge_into_metadata(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $policy = new class() extends ControllerSecurityPolicy {
+            public function id(): string { return 'attribute.echo_policy'; }
+            public function evaluate(SecurityEvaluationRequest $r): SecurityDecision {
+                $meta = $r->metadata;
+                $hasPerm = in_array('attr:permission:can_echo', $meta['permissions'] ?? [], true);
+                $mentionsPolicy = in_array('attribute.echo_policy', $meta['policies'] ?? [], true);
+                if ($hasPerm || $mentionsPolicy) {
+                    return SecurityDecision::allow($this, 'has_policy_or_permission', [
+                        'got_perm' => $hasPerm,
+                        'policies' => $meta['policies'] ?? null,
+                        'permissions' => $meta['permissions'] ?? null,
+                    ]);
+                }
+                return SecurityDecision::deny($this, 'missing_metadata', $meta);
+            }
+        };
+        $app->make(ConfigRepository::class)->set('controller_security', [
+            'enabled' => true,
+            'controllers' => [
+                'explicit_exposure' => false,
+                'allowlist' => [],
+            ],
+            'defaults' => ['deny_by_default' => false, 'fail_closed' => false],
+            'authorization' => ['abstain_as_deny' => false, 'max_policy_evaluations' => 64],
+            'policies' => [$policy],
+        ]);
+        $app->make(ConfigRepository::class)->set('controller_compilation', ['enabled' => false]);
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $route = new Route(RouteDefinition::make(
+            ['GET'],
+            '/t',
+            AttributePoliciesStub::class . '@echo',
+        ));
+        $match = new RouteMatch(new CompiledRoute($route->definition()), [], 'GET');
+
+        $response = $dispatcher->dispatch($match, Request::create('/t', 'GET'));
+        self::assertSame(200, $response->statusCode());
+        self::assertSame('echo-ok', $response->content());
+    }
+
+    public function test_php_attribute_authentication_required_class_method_override(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $noOpPolicies = [
+            new class() extends ControllerSecurityPolicy {
+                public function id(): string { return 'noop_allow_auth_test'; }
+                public function evaluate(SecurityEvaluationRequest $r): SecurityDecision {
+                    return SecurityDecision::abstain($this);
+                }
+            },
+        ];
+        $app->make(ConfigRepository::class)->set('controller_security', [
+            'enabled' => true,
+            'controllers' => [
+                'explicit_exposure' => false,
+                'allowlist' => [],
+            ],
+            'defaults' => ['deny_by_default' => false, 'fail_closed' => false],
+            'authorization' => ['abstain_as_deny' => false, 'max_policy_evaluations' => 64],
+            'policies' => $noOpPolicies,
+        ]);
+        $app->make(ConfigRepository::class)->set('controller_compilation', ['enabled' => false]);
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $route = new Route(RouteDefinition::make(
+            ['GET'],
+            '/t',
+            AttributeAuthOverrideStub::class . '@mfaMethod',
+        ));
+        $match = new RouteMatch(new CompiledRoute($route->definition()), [], 'GET');
+
+        try {
+            $dispatcher->dispatch($match, Request::create('/t', 'GET'));
+            self::fail('Expected AuthenticationRequiredException for method-level #[AuthenticationRequired(MultiFactor)].');
+        } catch (AuthenticationRequiredException $e) {
+            self::assertSame('authentication_required', $e->reasonCode);
+            $reqStrength = (int) ($e->safeContext['required_strength_value'] ?? 0);
+            self::assertSame(AuthenticationStrength::MultiFactor->value, $reqStrength, 'Method #[AuthenticationRequired(MultiFactor)] override must require MFA=30');
+        }
+    }
+
+    public function test_policyregistry_registerclass_lazy_via_attributepolicyclass_id(): void
+    {
+        $registry = new ControllerSecurityPolicyRegistry();
+        self::assertSame(0, $registry->count());
+
+        $registry->registerClass(LazyWithAttributeStub::class);
+        self::assertSame(1, $registry->count());
+
+        $resolved = $registry->resolve('lazy.custom.id');
+        self::assertSame('lazy.custom.id', $resolved->id());
+        $execution = new ControllerExecutionContext(
+            Request::create('/'),
+            new RouteMatch(
+                (new CompiledRoute(RouteDefinition::make(['GET'], '/', LazyWithAttributeStub::class . '@ping'))),
+                [],
+                'GET',
+            ),
+        );
+        $definition = new ControllerDefinition(LazyWithAttributeStub::class . '@ping');
+        $decision = $resolved->evaluate(new SecurityEvaluationRequest(
+            security: (new ControllerSecurityContextFactory(64))->create(Request::create('/'), $execution),
+            target: ControllerTarget::fromDefinition($definition),
+            action: 'ping',
+            resource: [],
+            metadata: [],
+        ));
+        self::assertSame('lazy-value', $decision->obligations['hint'] ?? 'no-hint');
+    }
+
+    public function test_policyregistry_registerclass_factory_closure_lazy_resolved_once(): void
+    {
+        $registry = new ControllerSecurityPolicyRegistry();
+        $instantiations = 0;
+        $factory = static function () use (&$instantiations): ControllerSecurityPolicy {
+            $instantiations++;
+            return new #[PolicyClass(id: 'factory-policy')]
+            class() extends ControllerSecurityPolicy {
+                public function id(): string { return 'factory-policy'; }
+                public function evaluate(SecurityEvaluationRequest $r): SecurityDecision {
+                    return SecurityDecision::abstain($this);
+                }
+            };
+        };
+        $tempInstance = $factory();
+        $registry->registerClass(get_class($tempInstance), $factory);
+
+        $firstCallCountAfterReg = $instantiations;
+        $reg = $registry->resolve('factory-policy');
+        $reg2 = $registry->resolve('factory-policy');
+        self::assertSame($reg, $reg2);
+        self::assertSame($firstCallCountAfterReg + 1, $instantiations, 'Lazy factory MUST trigger exactly once after register; then cached.');
+    }
+}
+
+#[Expose]
+final class ExposedByAttributeClassStub
+{
+    public function open(): string
+    {
+        return 'open-ok';
+    }
+}
+
+#[Expose(false)]
+final class UnexposedByAttributeClassStub
+{
+    public function closed(): string
+    {
+        return 'nope';
+    }
+}
+
+#[Policies(['attribute.echo_policy'])]
+#[Permissions(['attr:permission:can_echo'])]
+final class AttributePoliciesStub
+{
+    public function echo(): string
+    {
+        return 'echo-ok';
+    }
+}
+
+#[AuthenticationRequired(minimumStrength: AuthenticationStrength::Password)]
+final class AttributeAuthOverrideStub
+{
+    public function passwordMethod(): string { return 'password-ok'; }
+
+    #[AuthenticationRequired(minimumStrength: AuthenticationStrength::MultiFactor)]
+    public function mfaMethod(): string { return 'mfa-ok'; }
+}
+
+#[PolicyClass(id: 'lazy.custom.id')]
+final class LazyWithAttributeStub extends ControllerSecurityPolicy
+{
+    public function id(): string { return 'lazy.custom.id'; }
+
+    public function evaluate(SecurityEvaluationRequest $r): SecurityDecision
+    {
+        return $this->allow('ok', ['hint' => 'lazy-value']);
     }
 }
 

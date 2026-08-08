@@ -6,6 +6,7 @@ namespace Quantum\Controllers\Security\Policy;
 
 use Quantum\Controllers\Security\Contracts\ControllerSecurityDecisionEngineInterface;
 use Quantum\Controllers\Security\Contracts\ControllerSecurityPolicyRegistryInterface;
+use Quantum\Controllers\Security\Context\AuthenticationStrength;
 use Quantum\Controllers\Security\Decision\SecurityDecision;
 use Quantum\Controllers\Security\Decision\SecurityDecisionEffect;
 use Quantum\Controllers\Security\Decision\SecurityDecisionKey;
@@ -43,15 +44,69 @@ final class ControllerSecurityDecisionEngine implements ControllerSecurityDecisi
         $abstainAsDeny = $this->app?->config('controller_security.authorization.abstain_as_deny', true) ?? true;
         $failClosed = $defaults['fail_closed'] ?? true;
 
-        if ($authRequired === true || $authRequired === 'true') {
+        $isAuthRequired = false;
+        $minAuthStrength = 0;
+        if (is_bool($authRequired)) {
+            $isAuthRequired = $authRequired;
+            $minAuthStrength = $isAuthRequired ? AuthenticationStrength::Password->value : 0;
+        } elseif (is_array($authRequired)) {
+            $isAuthRequired = true;
+            $minAuthStrength = (int) ($authRequired['minimum_strength_value'] ?? AuthenticationStrength::Password->value);
+        } elseif ($authRequired !== null && $authRequired !== '' && $authRequired !== 'false' && $authRequired !== '0') {
+            $isAuthRequired = true;
+            $minAuthStrength = AuthenticationStrength::Password->value;
+        }
+
+        if ($isAuthRequired) {
+            $obligations = [
+                'required_strength_value' => $minAuthStrength,
+            ];
             if (! $request->security->principal->authenticated()) {
-                return SecurityDecision::challenge('security.authentication_required', 'authentication_required');
+                return SecurityDecision::challenge(
+                    'security.authentication_required',
+                    'authentication_required',
+                    $obligations,
+                );
+            }
+            if ($request->security->authenticationStrength->value < $minAuthStrength) {
+                $obligations['current_strength_value'] = $request->security->authenticationStrength->value;
+                return SecurityDecision::challenge(
+                    'security.authentication_required',
+                    'authentication_strength_insufficient',
+                    $obligations,
+                );
             }
         }
 
-        if ($tenantRequired === true || $tenantRequired === 'true') {
+        $isTenantRequired = false;
+        $requireTenantVerified = null;
+        $allowedTenants = null;
+        if (is_bool($tenantRequired)) {
+            $isTenantRequired = $tenantRequired;
+            if ($tenantRequired) {
+                $requireTenantVerified = null;
+            }
+        } elseif (is_array($tenantRequired)) {
+            $isTenantRequired = true;
+            $requireTenantVerified = array_key_exists('verified', $tenantRequired) ? (bool) $tenantRequired['verified'] : null;
+            if (isset($tenantRequired['allowed_tenants']) && is_array($tenantRequired['allowed_tenants'])) {
+                $allowedTenants = $tenantRequired['allowed_tenants'];
+            }
+        } elseif ($tenantRequired !== null && $tenantRequired !== '' && $tenantRequired !== 'false' && $tenantRequired !== '0') {
+            $isTenantRequired = true;
+        }
+
+        if ($isTenantRequired) {
             if (! $request->security->hasTenant()) {
-                return SecurityDecision::deny('security.tenant_required', 'tenant_required');
+                return SecurityDecision::deny('security.tenant_required', 'tenant_required', [
+                    'tenant_required' => true,
+                ]);
+            }
+            if ($requireTenantVerified === true && ! $request->security->tenant->verified) {
+                return SecurityDecision::deny('security.tenant_required', 'tenant_verification_required');
+            }
+            if ($allowedTenants !== null && ! in_array($request->security->tenant->id, $allowedTenants, true)) {
+                return SecurityDecision::deny('security.tenant_required', 'tenant_not_in_allowed_list');
             }
         }
 

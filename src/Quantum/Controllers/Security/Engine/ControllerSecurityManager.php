@@ -47,17 +47,33 @@ final class ControllerSecurityManager implements ControllerSecurityManagerInterf
             case SecurityDecisionEffect::Abstain:
                 return;
             case SecurityDecisionEffect::Challenge:
+                $challengeMetadata = array_filter([
+                    'obligations' => $decision->obligations,
+                    'context' => $decision->context,
+                ], static fn ($v) => ! empty($v));
                 throw new AuthenticationRequiredException(
-                    sprintf('Authentication required by policy [%s]: %s', $decision->policyId, $decision->reasonCode),
+                    reasonCode: $decision->reasonCode ?: 'authentication_required',
+                    challengeMetadata: $challengeMetadata,
+                    safeContext: [
+                        'policy_id' => $decision->policyId,
+                        'reason_code' => $decision->reasonCode,
+                        'required_strength_value' => $decision->obligations['required_strength_value'] ?? null,
+                        'current_strength_value' => $decision->obligations['current_strength_value'] ?? null,
+                    ],
+                    message: sprintf(
+                        'Authentication required by policy [%s]: %s',
+                        $decision->policyId,
+                        $decision->reasonCode ?: 'challenge',
+                    ),
                 );
             case SecurityDecisionEffect::Deny:
             default:
                 throw new AuthorizationDeniedException(
                     reasonCode: $decision->reasonCode ?: 'deny_by_policy',
-                    safeContext: [
+                    safeContext: array_merge([
                         'policy_id' => $decision->policyId,
                         'obligations' => $decision->obligations,
-                    ],
+                    ], is_array($decision->context) ? $decision->context : []),
                     message: sprintf('Access denied by policy [%s]', $decision->policyId),
                 );
         }

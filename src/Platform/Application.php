@@ -89,6 +89,8 @@ use Quantum\Controllers\Security\Policy\ControllerSecurityPolicyRegistry;
 use Quantum\Controllers\Security\Worker\ControllerWorkerDisposition;
 use Quantum\Controllers\Security\Worker\HardenedControllerSecurityDecisionEngine;
 use Quantum\Controllers\Security\Worker\PolicyEvaluationSandbox;
+use Quantum\Controllers\Security\Policy\Composition\PolicyBuilder;
+use Quantum\Controllers\Security\Policy\Composition\PolicyExpressionResolver;
 use Quantum\Validation\Validator;
 use Quantum\View\Cache\CompiledViewStore;
 use Quantum\View\Compilers\ViewCompiler;
@@ -694,7 +696,15 @@ class Application extends Container
 
         if (! isset($this->bindings[ControllerSecurityPolicyRegistryInterface::class])) {
             $this->singleton(ControllerSecurityPolicyRegistryInterface::class, function (Application $app): ControllerSecurityPolicyRegistryInterface {
-                $registry = new ControllerSecurityPolicyRegistry();
+                $resolver = PolicyExpressionResolver::default();
+                try {
+                    $compositionCfg = $app->config('controller_security.composition', null);
+                    if (!is_array($compositionCfg) || !($compositionCfg['enabled'] ?? true) || !($compositionCfg['use_expression_parser'] ?? true)) {
+                        $resolver = null;
+                    }
+                } catch (\Throwable) {
+                }
+                $registry = new ControllerSecurityPolicyRegistry($resolver);
                 $policiesConfig = $app->config('controller_security.policies', null);
                 if (is_array($policiesConfig)) {
                     foreach ($policiesConfig as $policyClassOrInstance) {
@@ -705,6 +715,11 @@ class Application extends Container
                                 });
                             } catch (\Throwable) {
                             }
+                        } elseif (is_string($policyClassOrInstance) && $policyClassOrInstance !== '') {
+                            try {
+                                $registry->registerExpression($policyClassOrInstance);
+                            } catch (\Throwable) {
+                            }
                         } elseif (is_object($policyClassOrInstance) && $policyClassOrInstance instanceof \Quantum\Controllers\Security\Contracts\ControllerSecurityPolicyInterface) {
                             $registry->register($policyClassOrInstance);
                         }
@@ -712,6 +727,18 @@ class Application extends Container
                 }
 
                 return $registry;
+            });
+        }
+
+        if (! isset($this->bindings[PolicyExpressionResolver::class])) {
+            $this->singleton(PolicyExpressionResolver::class, static function (): PolicyExpressionResolver {
+                return PolicyExpressionResolver::default();
+            });
+        }
+
+        if (! isset($this->bindings[PolicyBuilder::class])) {
+            $this->bind(PolicyBuilder::class, static function (Application $app): PolicyBuilder {
+                return PolicyBuilder::create($app->make(PolicyExpressionResolver::class));
             });
         }
 

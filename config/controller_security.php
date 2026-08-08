@@ -77,4 +77,13 @@ return [
         'expose_error_extensions' => true,
         'include_security_type_links' => true,
     ],
+
+    'composition' => [
+        'enabled' => true,
+        'use_expression_parser' => true,
+        'auto_wrap_metadata_policies' => true,
+        'resolver_max_recursion_depth' => 16,
+        'default_approval_ratio' => 0.5,
+        'unresolvable_term_as_deny' => true,
+    ],
 ];

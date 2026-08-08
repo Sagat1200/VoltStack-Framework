@@ -23,9 +23,9 @@ final readonly class SecurityDecision
         return new self(SecurityDecisionEffect::Deny, $policyId, $reasonCode, $obligations);
     }
 
-    public static function abstain(string $policyId, string $reasonCode = 'policy_abstain'): self
+    public static function abstain(string $policyId, string $reasonCode = 'policy_abstain', array $obligations = []): self
     {
-        return new self(SecurityDecisionEffect::Abstain, $policyId, $reasonCode, []);
+        return new self(SecurityDecisionEffect::Abstain, $policyId, $reasonCode, $obligations);
     }
 
     public static function challenge(string $policyId, string $reasonCode = 'authentication_required', array $obligations = []): self

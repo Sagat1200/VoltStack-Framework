@@ -29,6 +29,7 @@ Tambien registra el estado de avance de cada linea para mantener alineadas la do
 0.14.x -> completada (Bloque 14: Worker Safety Budget Hardening + sandbox engine)
 0.15.x -> completada (Bloque 15: Policy Composition allOf / anyOf / not + expression parser)
 0.16.x -> completada (Bloque 16: End-to-end Skeleton smoke test security)
+0.17.x -> completada (Bloque 17: Public Contract Freeze & Signature Alignment)
 1.0.0 -> pendiente de consolidacion final
 ```
 
@@ -83,6 +84,19 @@ Tambien registra el estado de avance de cada linea para mantener alineadas la do
 - `PolicyExpressionResolver::parse` con operators: `||`, `&&`, `!`, paréntesis, términos `role:x`/`permission:y`/`tenant:z`
 - `ControllerSecurityPolicyRegistry::registerExpression` → id = string expression literal (coincide con lookup de metadata)
 - re-construcción de composite policies por constructor (evita readonly reflection) y `ReflectionProperty` setAccessible para children protected
+
+### Cierre operativo de 0.17.x — Bloque 17 (Public Contract Freeze & Signature Alignment)
+
+- **Congelación BC Backward Compatibility hasta versión MAJOR 2.x.**
+- **39 interfaces Contracts marcadas con `@api`** (Container, Kernel platform, MiddlewareInterface, ControllerExecutionContextAwareInterface,
+  ExceptionHandler/ExceptionMapper, Observability 3, Interceptors 4, Security stack 8, Metadata 3, Routing/Dispatching 2, Compilation 4, Cache 1).
+- **Nuevo `PublicContractSignatureTest`**: baseline SHA256 = `48263547bfe9a34bea016b3361acb9ab39129d252aaf1e75ab54e18267790a56`,
+  canonical 27 174 bytes, 80+ símbolos públicos congelados: contracts, enums (PrincipalType, AuthenticationStrength, Effect),
+  DTO readonly security, composition policies, security exceptions, exception runtime DTOs, PHP attributes.
+- **Regla safe-reflection**: baseline solo incluye símbolos sin side-effects. Clases concretas que necesitan container bootstrap
+  (Application, HttpKernel, Router, ControllerEngine) se excluyen para evitar `Premature end of PHP process`.
+- **SemVer**: cualquier cambio en signatures `@api` → MINOR si añade, MAJOR 2.0 si rompe.
+- **Modo dump baseline**: `DUMP_BASELINE=true regenera el hash; `DUMP_BASELINE=false valida comparación estricta y falla si hubo cambios sin actualizar.
 
 ### Cierre operativo de 0.16.x — Bloque 16 (End-to-end Skeleton Smoke Test)
 
@@ -177,6 +191,7 @@ sin un core estable previamente.
 0.14.x → Bloque 14: Worker Safety Budget Hardening
 0.15.x → Bloque 15: Policy Composition (allOf/anyOf/not + expression)
 0.16.x → Bloque 16: End-to-end Skeleton smoke test security
+0.17.x → Bloque 17: Public Contract Freeze & Signature Alignment
 1.0.0 → Stable production release
 ```
 

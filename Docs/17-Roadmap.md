@@ -13,7 +13,7 @@ Tambien registra el estado operativo actual del proyecto para que el roadmap no 
 ### Linea actual
 
 ```txt
-0.16.0 - Security Enterprise end-to-end (Bloque 16: Skeleton smoke test) completada
+0.17.0 - Public Contract Freeze (Bloque 17: Signature Alignment & Baseline SHA256) completada
 ```
 
 ### Capacidades ya verificadas
@@ -41,22 +41,33 @@ Tambien registra el estado operativo actual del proyecto para que el roadmap no 
   - Bloque 14: Worker Safety Budget Hardening (Hardened engine + sandbox)
   - Bloque 15: Policy Composition (allOf / anyOf / not + expression parser + composite policies)
   - Bloque 16: End-to-end Skeleton smoke test (5 endpoints demo + 9 escenarios E2E PHPUnit)
+- **Contract Freeze (Bloque 17)**
+  - Interfaces públicas estables marcadas con `@api` (Container/Kernel/Security/Observability/etc.)
+  - `PublicContractSignatureTest` con baseline SHA256 de firmas públicas (interfaces + enums + DTO readonly + attributes + exceptions)
+  - Congelación de firmas Backward Compatible hasta versión MAJOR 2.x
+  - Regla "safe reflection": sólo símbolos sin side-effects en baseline (evita crash por clases que necesitan container bootstrap)
 
-### Evidencia de cierre de 0.16.0
+### Evidencia de cierre de 0.17.0
 
 ```txt
-Framework tests: OK (580 tests, 3091 assertions, 0 failures, 0 errors)
-SkeletonSecuritySmokeTest: OK (9 / 9 scenarios E2E, 74 assertions)
-App skeleton security endpoints check:
-- GET /security/demo/public (sin auth)                    -> 200 explicit allow policy
-- GET /security/demo/auth-token (Bearer role:user)        -> 200 principal id + claims
-- GET /security/demo/admin-mfa (Bearer Token strength)    -> 401 WWW-Authenticate mfa_required
-- GET /security/demo/admin-mfa (Bearer MultiFactor admin) -> 200 admin + admin.panel permission
-- GET /security/demo/tenant-scoped (X-Tenant wrong)       -> 404 tenant_not_found_or_hidden
-- GET /security/demo/tenant-scoped (X-Tenant acme-corp)   -> 200 tenant verified
-- GET /security/demo/gdpr-exposed (Bearer role:user)      -> 451 unavailable_for_legal_reasons
-- GET /security/demo/gdpr-exposed (Bearer role:officer gdpr.export) -> 200 with X-Volt-Exposure-Level + personal data
-- GET /security/demo/gdpr-exposed (Bearer role:admin)     -> 200 with X-Volt-Exposure-Level: gdpr-sensitive
+Framework tests core:
+- PublicContractSignatureTest: OK (1 test, 1 assertion)
+  - Baseline SHA256 = b2988ce073b081cfe04ea5a45dfc78fefea670d6c9a7d8f7567a370afd4f7e51
+    (actualizado fix BC Throwable import ExceptionHandlerInterface 2026-08-09)
+  - Longitud canonical = 27 145 bytes
+  - 80+ símbolos públicos congelados: 39 contracts / 3 enums / 8 security DTOs / 7 composition policies
+                                / 7 security exceptions / 6 runtime exception DTOs / 6 PHP attributes
+- SkeletonSecuritySmokeTest: OK (9 / 9, 74 assertions)
+- PolicyCompositionTest: OK (40 tests Bloque 15, sin regresiones)
+- ContainerTest / BootstrapperTest: OK (sin regresiones)
+- ControllerSecurityContextFactoryTest: OK (6 / 6 Bloque 12)
+
+Interfaces públicas @api marcadas:
+- ContainerInterface, MiddlewareInterface, Kernel (platform)
+- ControllerExecutionContextAwareInterface
+- ExceptionHandlerInterface, ExceptionMapperInterface
+- SecurityManagerInterface, DecisionEngineInterface, PolicyRegistryInterface, PrincipalInterface
+- Contracts Observability, Interceptors, Metadata, Routing, Compilation, Cache
 ```
 
 ### Interpretacion

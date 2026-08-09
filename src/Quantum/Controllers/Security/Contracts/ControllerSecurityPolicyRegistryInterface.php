@@ -4,6 +4,13 @@ declare(strict_types=1);
 
 namespace Quantum\Controllers\Security\Contracts;
 
+/**
+ * @api Contrato público estable del Policy Registry (Bloque 15 Composition).
+ *
+ * Soporta policies por instancia, class-string con lazy factory, expression policies
+ * (registerExpression con id = string literal) y resolución por policyId string.
+ * Versión congelada hasta 2.x (incluye método registerExpression añadido en 0.15.x).
+ */
 interface ControllerSecurityPolicyRegistryInterface
 {
     public function register(ControllerSecurityPolicyInterface $policy): void;

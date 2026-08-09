@@ -116,7 +116,24 @@ final class ControllerSecurityDecisionEngine implements ControllerSecurityDecisi
 
         try {
             $candidates = is_array($explicitPolicyIds) && count($explicitPolicyIds) > 0
-                ? array_map(fn(string $id) => $this->registry->resolve($id), $explicitPolicyIds)
+                ? array_map(function (string $id): \Quantum\Controllers\Security\Contracts\ControllerSecurityPolicyInterface {
+                    try {
+                        return $this->registry->resolve($id);
+                    } catch (\Quantum\Controllers\Security\Exceptions\SecurityInfrastructureFailureException $e) {
+                        $compositionCfg = $this->app?->config('controller_security.composition', null);
+                        $autoWrap = is_array($compositionCfg) && ($compositionCfg['auto_wrap_metadata_policies'] ?? true);
+                        $useParser = is_array($compositionCfg) && ($compositionCfg['use_expression_parser'] ?? true);
+                        if (!$autoWrap || !$useParser) {
+                            throw $e;
+                        }
+                        try {
+                            $this->registry->registerExpression($id);
+                            return $this->registry->resolve($id);
+                        } catch (\Throwable) {
+                            throw $e;
+                        }
+                    }
+                }, $explicitPolicyIds)
                 : iterator_to_array($this->registry->all(), false);
         } catch (SecurityInfrastructureFailureException $e) {
             return SecurityDecision::deny(

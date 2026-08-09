@@ -22,6 +22,13 @@ Tambien registra el estado de avance de cada linea para mantener alineadas la do
 0.7.x -> completada
 0.8.x -> completada
 0.9.x -> completada como release candidate tecnico
+0.10.x -> completada (Bloque 11: Explicit Exposure baseline)
+0.11.x -> completada (Bloque 12: PHP Attributes wiring security)
+0.12.x -> completada (Bloque 13: Observabilidad y contabilidad controllers + security)
+0.13.x -> completada (pre-Bloque 14: interceptor pipeline y metadata providers)
+0.14.x -> completada (Bloque 14: Worker Safety Budget Hardening + sandbox engine)
+0.15.x -> completada (Bloque 15: Policy Composition allOf / anyOf / not + expression parser)
+0.16.x -> completada (Bloque 16: End-to-end Skeleton smoke test security)
 1.0.0 -> pendiente de consolidacion final
 ```
 
@@ -34,12 +41,73 @@ Tambien registra el estado de avance de cada linea para mantener alineadas la do
 - `app-skeleton` integrado con bootstrap, rutas, controller HTML y pagina reactiva
 - pruebas del framework en verde y smoke checks reales del skeleton validados
 
+### Cierre operativo de 0.10.x — Bloque 11 (Explicit Exposure)
+
+- atributo `#[Expose]` para endpoints GDPR/confidenciales (exposed/priority)
+- config `controller_security.explicit_exposure` + `deny_by_default`
+- excepción `ControllerExposureViolationException` mapeada a HTTP 451 Unavailable For Legal Reasons (RFC 7725)
+- fallo seguro fail-closed si la metadata exposure no coincide con la evaluación de la policy
+
+### Cierre operativo de 0.11.x — Bloque 12 (PHP Attributes Security)
+
+- atributos de controller/method: `#[AuthenticationRequired]`, `#[TenantRequired]`, `#[Policies]`, `#[Permissions]`, `#[Expose]`
+- extractor de metadata `ControllerEngine::extractSecurityMetadata` con herencia class→method
+- `ControllerSecurityContextFactory::create` con triple fallback de headers (server key / HTTP_ prefix / request header)
+- parsing Bearer JWT-lite de 3 partes (header.payload.sig) base64 → Principal + AuthenticationStrength
+
+### Cierre operativo de 0.12.x — Bloque 13 (Observabilidad y Contabilidad)
+
+- `ControllerObservabilityManager` con dispatchers: Null, InMemory, JsonLine
+- eventos de ciclo de vida controllers: execution.started/completed, invocation.started/completed, compilation.hit/miss
+- eventos security: context.created, authorization.evaluating/allowed/denied, authentication.failed
+- `ControllerSecurityBudget` para límite de tiempo/memoria/pasos en evaluación de policies
+- trazas de decisión `SecurityDecisionCache` por executionId
+
+### Cierre operativo de 0.13.x — Pre-Bloque 14 (Interceptor Pipeline)
+
+- `ControllerInterceptorPipeline` + condiciones de interceptor (env, HTTP method, route name)
+- `ControllerRuntimeResolver` con scoped controller disposal
+- `MetadataProviderPipeline` (Attribute / Config / Convention / Reflection / Route)
+- bindings container para servicios de security, observabilidad y compilation
+
+### Cierre operativo de 0.14.x — Bloque 14 (Worker Safety Budget Hardening)
+
+- `HardenedControllerSecurityDecisionEngine` (wrapper sandbox + budget enforcement)
+- `PolicyEvaluationSandbox` con aislamiento de evaluaciones externas (pesos)
+- auto-wrap fail-safe de policies expression (`auto_wrap_metadata_policies` + `use_expression_parser`)
+- fail closed `SecurityInfrastructureFailureException` → 403 `policy_resolution_failed_fail_closed` sin exponer stack
+
+### Cierre operativo de 0.15.x — Bloque 15 (Policy Composition)
+
+- composite policies: `AnyOfPolicy`, `AllOfPolicy`, `NotPolicy`, `WeightedVotingPolicy`, `AtLeastOnePolicy`
+- `PolicyExpressionResolver::parse` con operators: `||`, `&&`, `!`, paréntesis, términos `role:x`/`permission:y`/`tenant:z`
+- `ControllerSecurityPolicyRegistry::registerExpression` → id = string expression literal (coincide con lookup de metadata)
+- re-construcción de composite policies por constructor (evita readonly reflection) y `ReflectionProperty` setAccessible para children protected
+
+### Cierre operativo de 0.16.x — Bloque 16 (End-to-end Skeleton Smoke Test)
+
+- Controller base `Quantum\Controllers\Controller` implementa `ControllerExecutionContextAwareInterface`
+  - métodos protegidos `request()`, `route()`, `security()` (inyectados por `ControllerContextInjector`)
+- `SecurityDemoController` con 5 endpoints representativos:
+  - `GET /security/demo/public` → explicit allow policy `always.allow.public.smoke`
+  - `GET /security/demo/auth-token` → `AuthenticationRequired(Token)` + `Policies(['role:user || permission:dashboard:read'])`
+  - `GET /security/demo/admin-mfa` → `AuthenticationRequired(MultiFactor)` + `Policies(['role:admin && permission:admin.panel'])`
+  - `GET /security/demo/tenant-scoped` → `TenantRequired` + `Policies(['role:user && tenant:acme-corp'])`
+  - `GET /security/demo/gdpr-exposed` → `Expose(exposed:true,priority:10)` + `Policies(['role:admin || (role:officer && permission:gdpr.export)'])`
+- ExceptionHandler HTML modo development → bloque EXCEPTION DEBUG (class/message/file/line + trace) para depurar 500 en tests
+- `SkeletonSecuritySmokeTest` (PHPUnit Feature) → 9 escenarios E2E por HttpKernel sim-Request:
+  - T1 public 200, T2 auth-token sin credenciales 401 WWW-Authenticate, T3 auth-token Bearer role:user 200
+  - T4 admin-mfa sin MFA 401, T5 admin-mfa con MFA + admin 200
+  - T6 tenant-scoped sin tenant 404, T7 tenant-scoped X-Tenant-Id=acme-corp + role:user 200
+  - T8 gdpr-exposed role:user 451 reason_code=unavailable_for_legal_reasons, T9 gdpr-exposed admin 200 con X-Volt-Exposure-Level
+- Suite framework completa: **580 tests, 3091 assertions, 0 failures, 0 errors** (sin regresiones respecto a 0.9.x)
+
 ### Enfoque inmediato para 1.0.0
 
-- consolidar el alcance oficial de la release estable
-- reforzar documentacion de APIs publicas y limitaciones
-- mantener estabilidad del flujo end-to-end sobre `app-skeleton`
-- mover features no esenciales a fases posteriores
+- consolidar el alcance oficial de la release estable (Security Enterprise 0.16.0 es baseline)
+- reforzar documentacion de APIs publicas y limitaciones del módulo Security
+- mantener estabilidad del flujo end-to-end sobre `app-skeleton` (9 smoke scenarios + 5 endpoints)
+- mover features no esenciales a fases posteriores (security fine-grained RBAC, ABAC, session auth real)
 
 ### Referencia de consolidacion
 
@@ -102,6 +170,13 @@ sin un core estable previamente.
 0.7.x → Enterprise foundation
 0.8.x → Advanced reactive preview
 0.9.x → Release candidate line
+0.10.x → Bloque 11: Explicit Exposure (deny_by_default + 451 Exposure)
+0.11.x → Bloque 12: PHP Attributes security wiring
+0.12.x → Bloque 13: Observabilidad controllers + security
+0.13.x → Pre-Bloque 14: interceptors + metadata providers
+0.14.x → Bloque 14: Worker Safety Budget Hardening
+0.15.x → Bloque 15: Policy Composition (allOf/anyOf/not + expression)
+0.16.x → Bloque 16: End-to-end Skeleton smoke test security
 1.0.0 → Stable production release
 ```
 

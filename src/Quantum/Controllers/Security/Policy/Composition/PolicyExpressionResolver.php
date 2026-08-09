@@ -36,7 +36,8 @@ final class PolicyExpressionResolver
 
     public function resolveSingle(string $term): ControllerSecurityPolicyInterface
     {
-        return new ExpressionTermPolicy(sprintf('expr.term.%d', self::$termCounter++), trim($term));
+        $safeTerm = trim($term);
+        return new ExpressionTermPolicy($safeTerm, $safeTerm);
     }
 
     /**
@@ -83,11 +84,37 @@ final class PolicyExpressionResolver
                 $expression,
             ));
         }
-        if ($id !== null) {
-            try {
-                $refl = new \ReflectionProperty($result, 'policyId');
-                $refl->setValue($result, $id);
-            } catch (\Throwable) {
+        $useId = $id ?? $expression;
+        if ($useId !== null && $useId !== '' && $useId !== $result->id()) {
+            if ($result instanceof CompositePolicy) {
+                try {
+                    $refl = new \ReflectionProperty($result, 'children');
+                    $refl->setAccessible(true);
+                    $children = $refl->isInitialized($result) ? $refl->getValue($result) : [];
+                } catch (\Throwable) {
+                    $children = [];
+                }
+                $underlying = $result;
+                if ($underlying instanceof AnyOfPolicy) {
+                    $result = new AnyOfPolicy($useId, is_array($children) ? $children : []);
+                } elseif ($underlying instanceof AllOfPolicy) {
+                    $result = new AllOfPolicy($useId, is_array($children) ? $children : []);
+                } elseif ($underlying instanceof NotPolicy) {
+                    $result = new NotPolicy($useId, is_array($children) ? $children : []);
+                } elseif ($underlying instanceof WeightedVotingPolicy) {
+                    $result = new AnyOfPolicy($useId, is_array($children) ? $children : []);
+                } else {
+                    $result = new AnyOfPolicy($useId, is_array($children) ? $children : []);
+                }
+            } elseif ($result instanceof ExpressionTermPolicy) {
+                try {
+                    $refl = new \ReflectionProperty($result, 'term');
+                    $refl->setAccessible(true);
+                    $term = $refl->isInitialized($result) ? $refl->getValue($result) : '';
+                } catch (\Throwable) {
+                    $term = '';
+                }
+                $result = new ExpressionTermPolicy($useId, (string)$term);
             }
         }
         return $result;

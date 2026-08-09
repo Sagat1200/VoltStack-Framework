@@ -226,6 +226,19 @@ final class ExceptionHandler implements ExceptionHandlerInterface
             } . '</p>',
         };
 
+        if ($debug) {
+            $escMsg = htmlspecialchars($exception->getMessage(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+            $escFile = htmlspecialchars($exception->getFile(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+            $escLine = (int)$exception->getLine();
+            $escTrace = htmlspecialchars($exception->getTraceAsString(), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+            $body .= '<div style="margin-top:20px; padding:14px; background:#0b1220; border:1px solid #334155; border-radius:8px;">'
+                . '<p style="margin:0 0 8px 0;"><strong style="color:#fca5a5;">EXCEPTION DEBUG:</strong> <code style="color:#f87171;">' . htmlspecialchars($exception::class, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8') . '</code></p>'
+                . '<p style="margin:0 0 8px 0;"><strong>Message:</strong> <code>' . $escMsg . '</code></p>'
+                . '<p style="margin:0 0 8px 0;"><strong>Location:</strong> <code>' . $escFile . ':' . $escLine . '</code></p>'
+                . '<details open><summary style="cursor:pointer;opacity:0.85;">Stack trace</summary><pre style="margin-top:8px;padding:10px;background:#020617;border:1px solid #1e293b;border-radius:6px;white-space:pre-wrap;font-size:12px;">' . $escTrace . '</pre></details>'
+                . '</div>';
+        }
+
         return sprintf(
             '<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="volt-document" content="reload" data-volt-head-key="error-document-reload"><meta name="volt-navigation-mode" content="reload" data-volt-head-key="error-navigation-mode-reload"><title>%1$s</title><style>body{font-family:Arial,sans-serif;background:#0f172a;color:#e2e8f0;padding:40px;}main{max-width:720px;margin:0 auto;background:#111827;border:1px solid #334155;border-radius:12px;padding:32px;}h1{margin-top:0;}ul{padding-left:20px;}code{background:#1e293b;padding:2px 6px;border-radius:4px;}</style></head><body data-volt-document="reload"><main><h1>%1$s</h1>%2$s</main></body></html>',
             htmlspecialchars($title, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'),

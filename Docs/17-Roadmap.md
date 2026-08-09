@@ -13,7 +13,7 @@ Tambien registra el estado operativo actual del proyecto para que el roadmap no 
 ### Linea actual
 
 ```txt
-0.9.x - release candidate tecnico completado
+0.16.0 - Security Enterprise end-to-end (Bloque 16: Skeleton smoke test) completada
 ```
 
 ### Capacidades ya verificadas
@@ -32,21 +32,36 @@ Tambien registra el estado operativo actual del proyecto para que el roadmap no 
 - validacion backend-first
 - CSRF estable
 - auth base por request
-- manejo centralizado de errores HTML y JSON
+- manejo centralizado de errores HTML y JSON (incluye bloque debug throwable en dev)
 - integracion real con `app-skeleton`
+- **Security Enterprise (Bloques 11-16)**
+  - Bloque 11: Explicit Exposure (Expose attribute + deny_by_default)
+  - Bloque 12: PHP Attributes wiring (AuthenticationRequired / TenantRequired / Policies / Permissions)
+  - Bloque 13: Observabilidad y contabilidad (ControllerObservabilityManager + eventos security)
+  - Bloque 14: Worker Safety Budget Hardening (Hardened engine + sandbox)
+  - Bloque 15: Policy Composition (allOf / anyOf / not + expression parser + composite policies)
+  - Bloque 16: End-to-end Skeleton smoke test (5 endpoints demo + 9 escenarios E2E PHPUnit)
 
-### Evidencia de cierre de 0.9.x
+### Evidencia de cierre de 0.16.0
 
 ```txt
-Framework tests: OK (30 tests, 84 assertions)
-App skeleton checks:
-- GET /         -> 200
-- GET /counter  -> 200
+Framework tests: OK (580 tests, 3091 assertions, 0 failures, 0 errors)
+SkeletonSecuritySmokeTest: OK (9 / 9 scenarios E2E, 74 assertions)
+App skeleton security endpoints check:
+- GET /security/demo/public (sin auth)                    -> 200 explicit allow policy
+- GET /security/demo/auth-token (Bearer role:user)        -> 200 principal id + claims
+- GET /security/demo/admin-mfa (Bearer Token strength)    -> 401 WWW-Authenticate mfa_required
+- GET /security/demo/admin-mfa (Bearer MultiFactor admin) -> 200 admin + admin.panel permission
+- GET /security/demo/tenant-scoped (X-Tenant wrong)       -> 404 tenant_not_found_or_hidden
+- GET /security/demo/tenant-scoped (X-Tenant acme-corp)   -> 200 tenant verified
+- GET /security/demo/gdpr-exposed (Bearer role:user)      -> 451 unavailable_for_legal_reasons
+- GET /security/demo/gdpr-exposed (Bearer role:officer gdpr.export) -> 200 with X-Volt-Exposure-Level + personal data
+- GET /security/demo/gdpr-exposed (Bearer role:admin)     -> 200 with X-Volt-Exposure-Level: gdpr-sensitive
 ```
 
 ### Interpretacion
 
-VoltStack ya no se encuentra solo en fase conceptual. La linea `0.9.x` deja un core ejecutable, con demo real de aplicacion consumidora y contratos publicos basicos listos para estabilizacion.
+VoltStack ya no se encuentra solo en fase conceptual. La linea `0.9.x` deja un core ejecutable, y la linea `0.16.0` cierra el stack de seguridad empresarial completo (explicitness, composición, hardening, observabilidad y smoke test end-to-end) con demo real en `app-skeleton` y validación PHPUnit.
 
 El roadmap está diseñado bajo una estrategia progresiva:
 
@@ -141,17 +156,17 @@ Phase 7 → Distributed Runtime Future
 ### Siguiente hito recomendado
 
 ```txt
-1.0.0 - stable production release
+1.0.0 - stable production release (pre-work Security Enterprise ya completo)
 ```
 
 ### Trabajo restante minimo para 1.0.0
 
-- alinear documentacion publica con las APIs realmente expuestas
-- congelar contratos publicos del kernel, excepciones y runtime reactivo
-- reforzar pruebas end-to-end del `app-skeleton`
-- cerrar paginas y respuestas de error para uso general
+- alinear documentacion publica con las APIs realmente expuestas (incluir modulo Security Enterprise)
+- congelar contratos publicos del kernel, excepciones, runtime reactivo y security framework
+- mantener estabilidad del flujo end-to-end sobre `app-skeleton` (incluir smoke 9 escenarios security)
+- cerrar paginas y respuestas de error para uso general (ExceptionHandler RFC9457 + debug throwable HTML)
 - documentar limitaciones y APIs experimentales del runtime frontend
-- definir alcance oficial de `1.0.0` y mover lo no esencial a roadmap posterior
+- definir alcance oficial de `1.0.0` y mover lo no esencial a roadmap posterior (Security Enterprise 0.16.0 ya es baseline)
 
 ### Trabajo que no debe bloquear 1.0.0
 

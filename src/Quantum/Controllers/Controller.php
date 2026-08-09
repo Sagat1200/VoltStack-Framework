@@ -4,14 +4,59 @@ declare(strict_types=1);
 
 namespace Quantum\Controllers;
 
+use Quantum\Controllers\Contracts\ControllerExecutionContextAwareInterface;
+use Quantum\Controllers\Security\Context\ControllerSecurityContext;
 use Quantum\Http\JsonResponse;
 use Quantum\Http\RedirectResponse;
+use Quantum\Http\Request;
 use Quantum\Http\Response;
+use Quantum\Routing\RouteMatch;
 use Quantum\Validation\Validator;
 use Quantum\View\View;
 
-abstract class Controller
+abstract class Controller implements ControllerExecutionContextAwareInterface
 {
+    private ?ControllerExecutionContext $__context = null;
+
+    public function setControllerExecutionContext(ControllerExecutionContext $context): void
+    {
+        $this->__context = $context;
+    }
+
+    public function releaseControllerExecutionContext(): void
+    {
+        $this->__context = null;
+    }
+
+    protected function request(): Request
+    {
+        if ($this->__context === null) {
+            throw new \RuntimeException(sprintf(
+                'Controller %s is not running inside a ControllerEngine invocation — request() is unavailable.',
+                static::class,
+            ));
+        }
+
+        return $this->__context->request();
+    }
+
+    protected function route(): RouteMatch
+    {
+        if ($this->__context === null) {
+            throw new \RuntimeException(sprintf(
+                'Controller %s is not running inside a ControllerEngine invocation — route() is unavailable.',
+                static::class,
+            ));
+        }
+
+        return $this->__context->match();
+    }
+
+    protected function security(): ?ControllerSecurityContext
+    {
+        return $this->__context?->securityContext();
+    }
+
     /**
      * @param array<string, mixed> $data
      */

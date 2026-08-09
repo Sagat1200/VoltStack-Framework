@@ -93,14 +93,33 @@ final class ControllerSecurityPolicyRegistry implements ControllerSecurityPolicy
         if (!$hasOperators && isset($this->lazyDefinitions[$expressionOrId])) {
             return;
         }
-        $policy = $resolver->resolveOne($expressionOrId);
-        if ($overrideId !== null) {
-            $refl = new \ReflectionProperty($policy, 'policyId');
-            if ($refl->isInitialized($policy)) {
+        $useAsId = $overrideId ?? $expressionOrId;
+        if ($hasOperators) {
+            $policy = $resolver->parse($expressionOrId, $useAsId);
+            if ($policy->id() !== $useAsId) {
+                $compositeChildren = $policy instanceof \Quantum\Controllers\Security\Policy\Composition\CompositePolicy
+                    ? $policy->children
+                    : [$policy];
+                $class = get_class($policy);
                 try {
-                    $refl->setValue($policy, $overrideId);
+                    $r = new \ReflectionClass($class);
+                    if ($r->isSubclassOf(\Quantum\Controllers\Security\Policy\Composition\AnyOfPolicy::class)) {
+                        $policy = new \Quantum\Controllers\Security\Policy\Composition\AnyOfPolicy($useAsId, $compositeChildren);
+                    } elseif ($r->isSubclassOf(\Quantum\Controllers\Security\Policy\Composition\AllOfPolicy::class)) {
+                        $policy = new \Quantum\Controllers\Security\Policy\Composition\AllOfPolicy($useAsId, $compositeChildren);
+                    } elseif ($r->isSubclassOf(\Quantum\Controllers\Security\Policy\Composition\NotPolicy::class)) {
+                        $policy = new \Quantum\Controllers\Security\Policy\Composition\NotPolicy($useAsId, $compositeChildren);
+                    } else {
+                        $policy = new \Quantum\Controllers\Security\Policy\Composition\AnyOfPolicy($useAsId, $compositeChildren);
+                    }
                 } catch (\Throwable) {
+                    $policy = new \Quantum\Controllers\Security\Policy\Composition\AnyOfPolicy($useAsId, $compositeChildren);
                 }
+            }
+        } else {
+            $policy = $resolver->resolveSingle($expressionOrId);
+            if ($useAsId !== null && $useAsId !== '' && $useAsId !== $policy->id()) {
+                $policy = new \Quantum\Controllers\Security\Policy\Composition\ExpressionTermPolicy($useAsId, trim($expressionOrId));
             }
         }
         $this->register($policy);

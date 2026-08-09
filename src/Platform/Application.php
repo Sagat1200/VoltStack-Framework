@@ -612,6 +612,109 @@ class Application extends Container
                 } catch (\Throwable) {
                 }
 
+                // =========================================================
+                // Bloque 20: Shutdown fallback handler para Fatal Errors /
+                // E_PARSE / memory exhaustion que escapan al Throwable try/catch normal
+                // del HttpKernel.
+                // =========================================================
+                $shutdownHandlerRegistered = &$GLOBALS['__voltstack_exceptionhandler_shutdown_registered'];
+                if (!($shutdownHandlerRegistered ?? false)) {
+                    $shutdownHandlerRegistered = true;
+                    $debugMode = (bool) ($app->config('app.debug', false) === true
+                        || $app->config('exceptions.debug', false) === true
+                        || (\defined('APP_DEBUG') && APP_DEBUG === true));
+                    register_shutdown_function(static function () use ($debugMode): void {
+                        $last = error_get_last();
+                        if ($last === null) {
+                            return;
+                        }
+                        $fatalTypes = \E_ERROR | \E_PARSE | \E_CORE_ERROR | \E_COMPILE_ERROR
+                            | \E_USER_ERROR | \E_RECOVERABLE_ERROR | \E_ALL & ~(\E_WARNING | \E_NOTICE | \E_DEPRECATED | \E_STRICT);
+                        if (($last['type'] & $fatalTypes) === 0) {
+                            return;
+                        }
+                        if (headers_sent($file, $line)) {
+                            // Si ya se enviaron headers no podemos emitir otro response.
+                            return;
+                        }
+                        $errClass = match ($last['type']) {
+                            \E_ERROR => 'FatalError',
+                            \E_PARSE => 'ParseError',
+                            \E_CORE_ERROR => 'CoreError',
+                            \E_COMPILE_ERROR => 'CompileError',
+                            \E_USER_ERROR => 'UserError',
+                            \E_RECOVERABLE_ERROR => 'RecoverableError',
+                            default => 'UnknownFatal',
+                        };
+                        $errorCode = match ($last['type']) {
+                            \E_ERROR => 'runtime.fatal_error',
+                            \E_PARSE => 'runtime.parse_error',
+                            \E_CORE_ERROR => 'runtime.core_error',
+                            \E_COMPILE_ERROR => 'runtime.compile_error',
+                            \E_USER_ERROR => 'runtime.user_error',
+                            \E_RECOVERABLE_ERROR => 'runtime.recoverable_error',
+                            default => 'server.error',
+                        };
+                        $isJson = ($_SERVER['HTTP_ACCEPT'] ?? null) !== null
+                            && str_contains(strtolower((string)$_SERVER['HTTP_ACCEPT']), 'application/json');
+                        $isVolt = ($_SERVER['HTTP_X_REQUESTED_WITH'] ?? null) === 'VoltStack'
+                            || ($_SERVER['HTTP_X_VOLT_NAVIGATE'] ?? null) === 'true';
+                        $msgNoLeak = 'An unexpected error occurred while processing the request.';
+                        $escapedMessage = htmlspecialchars($last['message'] ?? 'Unknown fatal', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+                        $escapedFile = htmlspecialchars($last['file'] ?? 'unknown', ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+                        $escapedLine = (int)($last['line'] ?? 0);
+
+                        if ($isVolt) {
+                            header('Content-Type: application/json; charset=UTF-8', true, 500);
+                            $payload = [
+                                'error' => [
+                                    'type' => 'runtime.'.$errClass,
+                                    'kind' => 'fatal',
+                                    'code' => $errorCode,
+                                    'status' => 500,
+                                    'message' => $debugMode ? ($last['message'] ?? 'Server Error') : 'Server Error',
+                                ],
+                            ];
+                            echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+                            return;
+                        }
+
+                        if ($isJson) {
+                            header('Content-Type: application/problem+json; charset=UTF-8', true, 500);
+                            $payload = [
+                                'title' => 'Internal Server Error',
+                                'status' => 500,
+                                'reason_code' => $errorCode,
+                                'message' => $debugMode ? ($last['message'] ?? 'Server Error') : $msgNoLeak,
+                            ];
+                            if ($debugMode) {
+                                $payload['_debug'] = [
+                                    'error_type' => $errClass,
+                                    'file' => $last['file'] ?? null,
+                                    'line' => $last['line'] ?? null,
+                                ];
+                            }
+                            echo json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+                            return;
+                        }
+
+                        header('Content-Type: text/html; charset=UTF-8', true, 500);
+                        header('X-Volt-Error-Code: '.$errorCode, true);
+                        $debugHtml = $debugMode
+                            ? '<div style="margin-top:20px; padding:14px; background:#0b1220; border:1px solid #334155; border-radius:8px;">'
+                                . '<p style="margin:0 0 8px 0;"><strong style="color:#fca5a5;">FATAL SHUTDOWN:</strong> <code style="color:#f87171;">'.$errClass.'</code></p>'
+                                . '<p style="margin:0 0 8px 0;"><strong>Message:</strong> <code>'.$escapedMessage.'</code></p>'
+                                . '<p style="margin:0 0 8px 0;"><strong>Location:</strong> <code>'.$escapedFile.':'.$escapedLine.'</code></p>'
+                                . '</div>'
+                            : '';
+                        echo <<<HTML
+<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="volt-document" content="reload"><title>Server Error</title>
+<style>body{font-family:Arial,sans-serif;background:#0f172a;color:#e2e8f0;padding:40px;}main{max-width:720px;margin:0 auto;background:#111827;border:1px solid #334155;border-radius:12px;padding:32px;}h1{margin-top:0;}code{background:#1e293b;padding:2px 6px;border-radius:4px;}</style>
+</head><body data-volt-document="reload"><main><h1>Server Error</h1><p>{$msgNoLeak}</p>{$debugHtml}</main></body></html>
+HTML;
+                    });
+                }
+
                 return $handler;
             });
         }

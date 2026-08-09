@@ -13,7 +13,7 @@ Tambien registra el estado operativo actual del proyecto para que el roadmap no 
 ### Linea actual
 
 ```txt
-0.17.0 - Public Contract Freeze (Bloque 17: Signature Alignment & Baseline SHA256) completada
+0.18.0 - Exception Handling Stabilizer & Response Normalizer (Bloque 20) completada
 ```
 
 ### Capacidades ya verificadas
@@ -45,29 +45,60 @@ Tambien registra el estado operativo actual del proyecto para que el roadmap no 
   - Interfaces públicas estables marcadas con `@api` (Container/Kernel/Security/Observability/etc.)
   - `PublicContractSignatureTest` con baseline SHA256 de firmas públicas (interfaces + enums + DTO readonly + attributes + exceptions)
   - Congelación de firmas Backward Compatible hasta versión MAJOR 2.x
-  - Regla "safe reflection": sólo símbolos sin side-effects en baseline (evita crash por clases que necesitan container bootstrap)
+- **Exception Handling Stabilizer (Bloque 20)**
+  - `ResponseNormalizer` extendido: soporta `\JsonSerializable`, `\Stringable`, `bool`, `resource` (mime type auto-detect + fclose)
+  - Fallback seguro para cualquier tipo de controller output (no 500 ambiguo por \TypeError)
+  - `ExceptionHandler::errorCode()` categoriza errores internos PHP: TypeError → runtime.type_error,
+    ValueError → runtime.value_error, DivisionByZeroError → runtime.math.division_by_zero,
+    UnhandledMatchError → runtime.match.unhandled_case, ArgumentCountError, ArithmeticError,
+    ParseError, CompileError, FatalError (reason codes RFC 9457 específicos)
+  - `register_shutdown_function` fallback singleton (global once): captura E_ERROR/E_PARSE/E_CORE_ERROR
+    / E_COMPILE_ERROR / E_RECOVERABLE_ERROR que escapan al try/catch normal del kernel.
+    Emite response HTML / JSON Problem+ / Volt JSON según Accept header. Modo debug expone file:line.
+  - Casos límite TenantRequired definidos: sin tenant (tenant_required 404), sin verified
+    (tenant_verification_required 403), no en allowed_tenants (tenant_not_in_allowed_list 404).
+  - Runtime PHP ini safe para tests (zend_extension= + opcache.enable_cli=0 + memory_limit=512M)
+    resuelven Premature end of PHP process originado por Zend Debug/xdebug + OPCache en CLI con 24MB.
 
-### Evidencia de cierre de 0.17.0
+### Evidencia de cierre de 0.18.0
 
 ```txt
-Framework tests core:
-- PublicContractSignatureTest: OK (1 test, 1 assertion)
-  - Baseline SHA256 = b2988ce073b081cfe04ea5a45dfc78fefea670d6c9a7d8f7567a370afd4f7e51
-    (actualizado fix BC Throwable import ExceptionHandlerInterface 2026-08-09)
-  - Longitud canonical = 27 145 bytes
-  - 80+ símbolos públicos congelados: 39 contracts / 3 enums / 8 security DTOs / 7 composition policies
-                                / 7 security exceptions / 6 runtime exception DTOs / 6 PHP attributes
-- SkeletonSecuritySmokeTest: OK (9 / 9, 74 assertions)
-- PolicyCompositionTest: OK (40 tests Bloque 15, sin regresiones)
-- ContainerTest / BootstrapperTest: OK (sin regresiones)
-- ControllerSecurityContextFactoryTest: OK (6 / 6 Bloque 12)
+Suite framework completa (PHP safe ini):
+  Tests:        581 / 581  ✅
+  Assertions:   3092
+  Failures:     0
+  Errors:       0
+  Warnings:     6 (tests sin assertions legados Bloque 16 — no crítico)
 
-Interfaces públicas @api marcadas:
-- ContainerInterface, MiddlewareInterface, Kernel (platform)
-- ControllerExecutionContextAwareInterface
-- ExceptionHandlerInterface, ExceptionMapperInterface
-- SecurityManagerInterface, DecisionEngineInterface, PolicyRegistryInterface, PrincipalInterface
-- Contracts Observability, Interceptors, Metadata, Routing, Compilation, Cache
+ResponseNormalizer::normalize() type coverage new:
+  \JsonSerializable -> JsonResponse
+  \Stringable -> Response text/plain
+  bool true/false -> JsonResponse {"ok":<bool>}
+  resource (file stream) -> Response con Content-Type auto-detectado + fclose() seguro
+  fallback objeto desconocido -> JsonResponse {"__normalized_type":<debug_type>, "__normalized_value"?}
+
+Exception PHP internal reason codes RFC 9457 (mapped via errorCode()):
+  TypeError            -> runtime.type_error
+  ValueError           -> runtime.value_error
+  DivisionByZeroError  -> runtime.math.division_by_zero
+  UnhandledMatchError  -> runtime.match.unhandled_case
+  ArgumentCountError   -> runtime.argument_count_mismatch
+  ArithmeticError      -> runtime.math.arithmetic_error
+  ParseError           -> runtime.parse_error
+  CompileError         -> runtime.compile_error
+  FatalError           -> runtime.fatal_error
+  (todos expuestos vía X-Volt-Error-Code si son != 'server.error'/'runtime.error')
+
+Shutdown handler fallback (registrado 1 sola vez por request lifetime):
+  - Captura: E_ERROR | E_PARSE | E_CORE_ERROR | E_COMPILE_ERROR | E_USER_ERROR | E_RECOVERABLE_ERROR
+  - Content-Type según Accept:
+      * Volt Request (X-Requested-With=VoltStack / X-Volt-Navigate=true) -> JSON error.* structure
+      * Accept: application/json -> application/problem+json RFC 9457
+      * else -> text/html error document reload
+  - Modo debug (app.debug=true / exceptions.debug=true / APP_DEBUG=true):
+      * Incluye file:line + message real en JSON _debug field y HTML DEBUG block
+  - Modo producción: mensaje neutro "An unexpected error occurred while processing the request."
+    (NO leak de paths / internals PHP)
 ```
 
 ### Interpretacion

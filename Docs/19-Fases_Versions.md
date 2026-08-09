@@ -30,8 +30,17 @@ Tambien registra el estado de avance de cada linea para mantener alineadas la do
 0.15.x -> completada (Bloque 15: Policy Composition allOf / anyOf / not + expression parser)
 0.16.x -> completada (Bloque 16: End-to-end Skeleton smoke test security)
 0.17.x -> completada (Bloque 17: Public Contract Freeze & Signature Alignment)
+0.18.x -> completada (Bloque 20: Exception Handling Stabilizer & Response Normalizer)
 1.0.0 -> pendiente de consolidacion final
 ```
+
+### Cierre operativo de 0.18.x — Bloque 20 (Exception Handling Stabilizer & Response Normalizer)
+
+- **ResponseNormalizer extendido**: soporte oficial para `\JsonSerializable`, `\Stringable`, `bool`, `resource` (file streams con Content-Type auto-detectado y fclose seguro). Fallback safe-normalizer: cualquier return de controller raro devuelve JSON `__normalized_type` (no TypeError 500 ambiguo).
+- **Reason codes RFC 9457 para PHP internal Errors**: `\TypeError` → `runtime.type_error`, `\ValueError` → `runtime.value_error`, `\DivisionByZeroError` → `runtime.math.division_by_zero`, `\UnhandledMatchError` → `runtime.match.unhandled_case`, `\ArgumentCountError` → `runtime.argument_count_mismatch`, `\ArithmeticError` → `runtime.math.arithmetic_error`, `\ParseError` → `runtime.parse_error`, `\CompileError` → `runtime.compile_error`, `\FatalError` → `runtime.fatal_error` — expuestos vía X-Volt-Error-Code.
+- **register_shutdown_function fallback singleton** en singleton de QuantumExceptionHandler: captura E_ERROR/E_PARSE/E_CORE_ERROR/E_COMPILE_ERROR/E_USER_ERROR/E_RECOVERABLE_ERROR que escapan al Throwable try/catch del kernel. 3 strategies response (Volt/json/html) y modo debug con file:line.
+- **Edge cases TenantRequired/Exposure definidos formalmente**: sin tenant → 404 tenant_required, verified=false → 403 tenant_verification_required, not in allowed_list → 404 tenant_not_in_allowed_list.
+- **Solución Premature end PHP process**: crash no era framework bug → xdebug/zend_extension + opcache.enable_cli=1 + memory_limit=24MB phpunit CLI defaults. Ejecución con `php -d zend_extension= -d opcache.enable_cli=0 -d memory_limit=512M vendor/bin/phpunit` → **581 tests / 3092 assertions OK 0 failures 0 errors.
 
 ### Cierre operativo de 0.9.x
 
@@ -192,6 +201,7 @@ sin un core estable previamente.
 0.15.x → Bloque 15: Policy Composition (allOf/anyOf/not + expression)
 0.16.x → Bloque 16: End-to-end Skeleton smoke test security
 0.17.x → Bloque 17: Public Contract Freeze & Signature Alignment
+0.18.x → Bloque 20: Exception Handling Stabilizer & Response Normalizer
 1.0.0 → Stable production release
 ```
 

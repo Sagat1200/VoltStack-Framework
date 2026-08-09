@@ -306,6 +306,18 @@ final class ExceptionHandler implements ExceptionHandlerInterface
             $exception instanceof ControllerException => $exception->errorCode(),
             $exception instanceof ComponentMountException => 'runtime.component_mount_failed',
             $exception instanceof ComponentRenderException => 'runtime.component_render_failed',
+
+            // Errores internos de PHP (Bloque 20 Stabilizer) — reason codes RFC 9457 específicos
+            $exception instanceof \DivisionByZeroError => 'runtime.math.division_by_zero',
+            $exception instanceof \UnhandledMatchError => 'runtime.match.unhandled_case',
+            $exception instanceof \ArgumentCountError => 'runtime.argument_count_mismatch',
+            $exception instanceof \ValueError => 'runtime.value_error',
+            $exception instanceof \TypeError => 'runtime.type_error',
+            $exception instanceof \ArithmeticError => 'runtime.math.arithmetic_error',
+            $exception instanceof \ParseError => 'runtime.parse_error',
+            $exception instanceof \CompileError => 'runtime.compile_error',
+            $exception instanceof \FatalError => 'runtime.fatal_error',
+
             $status === 500 => 'server.error',
             default => 'runtime.error',
         };

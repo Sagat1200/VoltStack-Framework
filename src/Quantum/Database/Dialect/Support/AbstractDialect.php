@@ -13,10 +13,14 @@ use Quantum\Database\Operation\Orm\EntityUpdateOperation;
 use Quantum\Database\Operation\Orm\EntityDeleteOperation;
 use Quantum\Database\Operation\RawOperation;
 use Quantum\Database\Operation\SqgOperation;
+use Quantum\Database\Dialect\Emitter\NodeSqlEmitter;
+use Quantum\Database\Operation\Sqg\GraphCertification;
+use Quantum\Database\Capability\DatabaseCapabilitySet;
+use Quantum\Database\Dbal\Enum\DriverInfo;
 
 /**
  * Clase base AbstractDialect con toda la lógica común: quoting / placeholders / compile Raw/ORM.
- * Las 4 dialects solo definen el estilo de quoting/placeholders + matriz de capacidades.
+ * Las 4 dialects solo definen el estilo de quoting/placeholders + matriz de capacidades + NodeSqlEmitter factory.
  */
 abstract class AbstractDialect implements DialectInterface
 {
@@ -71,18 +75,15 @@ abstract class AbstractDialect implements DialectInterface
         return ['sql' => (string)$out, 'count' => $count];
     }
 
-    final public function compile(DatabaseOperationInterface $op): CompiledSql
+    final public function compile(DatabaseOperationInterface $op,
+                                  ?DatabaseCapabilitySet $caps = null): CompiledSql
     {
         return match (true) {
             $op instanceof RawOperation        => $this->compileRaw($op),
             $op instanceof EntityInsertOperation => $this->compileOrmInsert($op),
             $op instanceof EntityUpdateOperation => $this->compileOrmUpdate($op),
             $op instanceof EntityDeleteOperation => $this->compileOrmDelete($op),
-            $op instanceof SqgOperation        => throw new DbalException(
-                DatabaseFailureKind::Capability,
-                'compile.sqg',
-                message: 'SQG compilation requires Fase 2 (SemanticQueryGraph node model).',
-            ),
+            $op instanceof SqgOperation        => $this->compileSqg($op, $caps ?? DatabaseCapabilitySet::minimalSet()),
             default => throw new DbalException(
                 DatabaseFailureKind::Validation,
                 'compile.unknown',
@@ -196,4 +197,37 @@ abstract class AbstractDialect implements DialectInterface
 
     /** Override por dialect. */
     protected function supportsReturning(): bool { return false; }
+
+    /**
+     * @return class-string<NodeSqlEmitter>
+     */
+    protected function nodeSqlEmitterClass(): string
+    {
+        return NodeSqlEmitter::class;
+    }
+
+    private function compileSqg(SqgOperation $op, DatabaseCapabilitySet $caps): CompiledSql
+    {
+        $graph = $op->graph();
+        $cert = $graph->validate($caps);
+        if (!$cert->valid) {
+            $msgs = [];
+            foreach ($cert->errors() as $e) $msgs[] = "[{$e->code}] {$e->message}";
+            throw new DbalException(DatabaseFailureKind::Validation, 'compile.sqg.validate',
+                message: 'SQG validation failed: ' . implode('; ', $msgs));
+        }
+        $class = $this->nodeSqlEmitterClass();
+        $emitter = new $class($this);
+        \assert($emitter instanceof NodeSqlEmitter);
+        $compiled = $emitter->emit($graph->root, $graph->parameters);
+        // Sobrescribimos fingerprint con la certificada del graph.
+        return new CompiledSql(
+            sql: $compiled->sql,
+            params: $compiled->params,
+            paramCount: $compiled->paramCount,
+            fingerprint: $cert->fingerprint,
+            quoteStyle: $this->quoteStyle(),
+            paramStyle: $this->paramStyle(),
+        );
+    }
 }

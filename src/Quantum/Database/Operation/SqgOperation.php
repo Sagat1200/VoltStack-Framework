@@ -19,6 +19,9 @@ final readonly class SqgOperation implements DatabaseOperationInterface
 
     public function kind(): OperationKind { return $this->kind; }
 
+    /** @return SemanticQueryGraph */
+    public function graph(): mixed { return $this->graph; }
+
     public function describe(): string
     {
         return sprintf('[%s] graph=%s cert=%s',

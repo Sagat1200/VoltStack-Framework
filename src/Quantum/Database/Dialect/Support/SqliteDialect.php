@@ -2,6 +2,8 @@
 
 namespace Quantum\Database\Dialect\Support;
 
+use Quantum\Database\Dialect\Emitter\Dialects\SqliteNodeSqlEmitter;
+
 /** SQLite: DoubleQuote + ? positional. RETURNING support 3.35+. Enable por defecto. */
 final class SqliteDialect extends AbstractDialect
 {
@@ -10,4 +12,5 @@ final class SqliteDialect extends AbstractDialect
         parent::__construct(name: 'sqlite', quoteChar: '"', paramStyle: 'positional_q');
     }
     protected function supportsReturning(): bool { return true; }
+    protected function nodeSqlEmitterClass(): string { return SqliteNodeSqlEmitter::class; }
 }

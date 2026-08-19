@@ -1,4 +1,6 @@
-<?php declare(strict_types=1);
+<?php
+
+declare(strict_types=1);
 
 namespace Quantum\Database\Dbal\Driver\PdoCommon;
 
@@ -33,13 +35,20 @@ final class AbstractPdoStatement implements StatementInterface
         $this->owner->untrackPdoStatement($this->stmt);
     }
 
-    public function paramCount(): int { return $this->paramCount; }
+    public function paramCount(): int
+    {
+        return $this->paramCount;
+    }
 
     public function bindValue(int $index, mixed $value, ParamType $type = ParamType::Auto): void
     {
         if ($index < 0) {
-            throw new DbalException(kind: DbalExceptionKind_Encap::Validation(),
-                stage: 'bindValue', sql: $this->sql, message: "Invalid negative index $index");
+            throw new DbalException(
+                kind: DbalExceptionKind_Encap::Validation(),
+                stage: 'bindValue',
+                sql: $this->sql,
+                message: "Invalid negative index $index"
+            );
         }
         $resolvedType = $type;
         if ($type === ParamType::Auto) {
@@ -82,7 +91,9 @@ final class AbstractPdoStatement implements StatementInterface
                 }
                 if ($allAuto) {
                     $values = [];
-                    foreach ($ordered as [$val, ]) { $values[] = $val; }
+                    foreach ($ordered as [$val,]) {
+                        $values[] = $val;
+                    }
                     $ok = $stmt->execute($values);
                 } else {
                     ksort($ordered, SORT_NUMERIC);
@@ -104,7 +115,7 @@ final class AbstractPdoStatement implements StatementInterface
                 }
             }
         } catch (\Throwable $t) {
-            throw ($this->mapper->map)($t, $this->owner, 'stmt.execute', $this->sql);
+            throw $this->mapper->map($t, $this->owner, 'stmt.execute', $this->sql);
         }
 
         $this->owner->touchLastUsed();
@@ -113,7 +124,7 @@ final class AbstractPdoStatement implements StatementInterface
             $err = $stmt->errorInfo();
             $msg = is_array($err) ? implode(' | ', $err) : 'unknown';
             $fake = new \RuntimeException($msg);
-            throw ($this->mapper->map)($fake, $this->owner, 'stmt.execute_false', $this->sql);
+            throw $this->mapper->map($fake, $this->owner, 'stmt.execute_false', $this->sql);
         }
 
         return $this->buildQueryResult($stmt);
@@ -121,13 +132,16 @@ final class AbstractPdoStatement implements StatementInterface
 
     public function closeCursor(): void
     {
-        try { $this->stmt->closeCursor(); } catch (\Throwable) { /* ignore */ }
+        try {
+            $this->stmt->closeCursor();
+        } catch (\Throwable) { /* ignore */
+        }
         $this->owner->untrackPdoStatement($this->stmt);
     }
 
     private static function mapToPdoParam(ParamType $t, mixed $val): int
     {
-        return match($t) {
+        return match ($t) {
             ParamType::Auto, ParamType::Str => \PDO::PARAM_STR,
             ParamType::Null => \PDO::PARAM_NULL,
             ParamType::Int  => \PDO::PARAM_INT,
@@ -163,7 +177,10 @@ final class AbstractPdoStatement implements StatementInterface
         }
 
         $cleanup = function () use ($stmt): void {
-            try { $stmt->closeCursor(); } catch (\Throwable) { /* ignore */ }
+            try {
+                $stmt->closeCursor();
+            } catch (\Throwable) { /* ignore */
+            }
             $this->owner->untrackPdoStatement($stmt);
         };
 
@@ -172,7 +189,8 @@ final class AbstractPdoStatement implements StatementInterface
                 while (false !== ($row = $stmt->fetch(\PDO::FETCH_ASSOC))) {
                     yield $row;
                 }
-            } catch (\Throwable) { /* ignore */ }
+            } catch (\Throwable) { /* ignore */
+            }
         };
 
         $qr = new QueryResult(

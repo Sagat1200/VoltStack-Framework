@@ -2,6 +2,8 @@
 
 namespace Quantum\Database\Dialect\Support;
 
+use Quantum\Database\Dialect\Emitter\Dialects\MariadbNodeSqlEmitter;
+
 /** MariaDB: mismo style que MySQL, pero puede soportar RETURNING 10.5+. Por ahora off por simplicidad V1. */
 final class MariadbDialect extends AbstractDialect
 {
@@ -9,4 +11,5 @@ final class MariadbDialect extends AbstractDialect
     {
         parent::__construct(name: 'mariadb', quoteChar: '`', paramStyle: 'positional_q');
     }
+    protected function nodeSqlEmitterClass(): string { return MariadbNodeSqlEmitter::class; }
 }

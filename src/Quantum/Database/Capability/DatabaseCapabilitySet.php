@@ -130,7 +130,7 @@ final readonly class DatabaseCapabilitySet
         };
     }
 
-    private static function minimalSet(string $driverName): self
+    public static function minimalSet(string $driverName = 'generic'): self
     {
         return new self(
             returningClause: false,

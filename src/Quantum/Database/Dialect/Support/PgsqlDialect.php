@@ -2,6 +2,8 @@
 
 namespace Quantum\Database\Dialect\Support;
 
+use Quantum\Database\Dialect\Emitter\Dialects\PgsqlNodeSqlEmitter;
+
 /**
  * PostgresDialect: DoubleQuote + $N positional. Supports RETURNING.
  */
@@ -12,4 +14,5 @@ final class PgsqlDialect extends AbstractDialect
         parent::__construct(name: 'pgsql', quoteChar: '"', paramStyle: 'positional_$n');
     }
     protected function supportsReturning(): bool { return true; }
+    protected function nodeSqlEmitterClass(): string { return PgsqlNodeSqlEmitter::class; }
 }

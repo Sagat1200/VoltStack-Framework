@@ -37,8 +37,7 @@ final class DefaultPropertyAccessor implements PropertyAccessorInterface
             self::buildForProperty($cls, $meta);
         }
         $fn = self::$readers[$key];
-        // Closure bound en scope de $cls → puede acceder private
-        return $fn->call($entity);
+        return $fn($entity);
     }
 
     /**
@@ -52,7 +51,7 @@ final class DefaultPropertyAccessor implements PropertyAccessorInterface
             self::buildForProperty($cls, $meta);
         }
         $fn = self::$writers[$key];
-        $fn->call($entity, $value);
+        $fn($entity, $value);
     }
 
     /**
@@ -89,22 +88,23 @@ final class DefaultPropertyAccessor implements PropertyAccessorInterface
         $reader = null;
         if ($access?->getter !== null && $rc->hasMethod($access->getter)) {
             $getter = $access->getter;
-            $reader = (fn() => $this->{$getter}());
+            $reader = static function (object $e) use ($getter, $rc): mixed {
+                $rm = $rc->getMethod($getter);
+                $rm->setAccessible(true);
+                return $rm->invoke($e);
+            };
         } elseif ($access?->isPublicRead) {
-            $reader = (fn() => $this->{$propName});
+            $rp = $rc->getProperty($propName);
+            $rp->setAccessible(true);
+            $reader = static function (object $e) use ($rp): mixed {
+                return $rp->isInitialized($e) ? $rp->getValue($e) : null;
+            };
         } else {
-            // reflection fallback via closure bound (NO static: se debe bindear $this)
-            $reader = \Closure::bind(function () use ($propName): mixed {
-                return $this->{$propName};
-            }, null, $entityClass);
-            if ($reader === null) {
-                $rp = $rc->getProperty($propName);
-                $rp->setAccessible(true);
-                $reader = function (object $e) use ($rp): mixed {
-                    $rp->setAccessible(true);
-                    return $rp->getValue($e);
-                };
-            }
+            $rp = $rc->getProperty($propName);
+            $rp->setAccessible(true);
+            $reader = static function (object $e) use ($rp): mixed {
+                return $rp->isInitialized($e) ? $rp->getValue($e) : null;
+            };
         }
         self::$readers[$key] = $reader;
 
@@ -112,21 +112,23 @@ final class DefaultPropertyAccessor implements PropertyAccessorInterface
         $writer = null;
         if ($access?->setter !== null && $rc->hasMethod($access->setter)) {
             $setter = $access->setter;
-            $writer = (fn($v) => $this->{$setter}($v));
+            $writer = static function (object $e, mixed $v) use ($setter, $rc): void {
+                $rm = $rc->getMethod($setter);
+                $rm->setAccessible(true);
+                $rm->invoke($e, $v);
+            };
         } elseif ($access?->isPublicWrite) {
-            $writer = (fn($v) => $this->{$propName} = $v);
+            $rp = $rc->getProperty($propName);
+            $rp->setAccessible(true);
+            $writer = static function (object $e, mixed $v) use ($rp): void {
+                $rp->setValue($e, $v);
+            };
         } else {
-            $writer = \Closure::bind(function ($v) use ($propName): void {
-                $this->{$propName} = $v;
-            }, null, $entityClass);
-            if ($writer === null) {
-                $rp = $rc->getProperty($propName);
-                $rp->setAccessible(true);
-                $writer = function (object $e, mixed $v) use ($rp): void {
-                    $rp->setAccessible(true);
-                    $rp->setValue($e, $v);
-                };
-            }
+            $rp = $rc->getProperty($propName);
+            $rp->setAccessible(true);
+            $writer = static function (object $e, mixed $v) use ($rp): void {
+                $rp->setValue($e, $v);
+            };
         }
         self::$writers[$key] = $writer;
     }

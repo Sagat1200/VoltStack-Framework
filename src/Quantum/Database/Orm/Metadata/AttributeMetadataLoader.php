@@ -187,7 +187,9 @@ final class AttributeMetadataLoader
             }
 
             if ($assocAttr !== null) {
-                $assocCompiled = self::compileAssociation($assocKind, $assocAttr, $propName);
+                $jc = self::firstAttrOfClass($attrs, ORM\JoinColumn::class);
+                $jt = self::firstAttrOfClass($attrs, ORM\JoinTable::class);
+                $assocCompiled = self::compileAssociation($assocKind, $assocAttr, $propName, $jc, $jt);
                 $associations[$propName] = $assocCompiled;
                 continue;
             }
@@ -311,17 +313,25 @@ final class AttributeMetadataLoader
     }
 
     /**
-     * @param list<\ReflectionAttribute> $reflectionAttrs
+     * Helper genérico: acepta list<\ReflectionAttribute> OR list<object (instances)> según el contexto.
+     *    - Para ReflectionAttribute: is_a getName() e instancea newInstance().
+     *    - Para object instances: instanceof.
+     *
+     * @param list<\ReflectionAttribute|object> $attrs
      */
-    private static function firstInstanceOf(array $reflectionAttrs, string $class): ?object
+    private static function firstInstanceOf(array $attrs, string $class): mixed
     {
-        foreach ($reflectionAttrs as $ra) {
-            if (is_a($ra->getName(), $class, true)) {
-                try {
-                    return $ra->newInstance();
-                } catch (\Throwable) {
-                    return null;
+        foreach ($attrs as $ra) {
+            if ($ra instanceof \ReflectionAttribute) {
+                if (is_a($ra->getName(), $class, true)) {
+                    try {
+                        return $ra->newInstance();
+                    } catch (\Throwable) {
+                        return null;
+                    }
                 }
+            } elseif (is_object($ra) && $ra instanceof $class) {
+                return $ra;
             }
         }
         return null;
@@ -345,18 +355,23 @@ final class AttributeMetadataLoader
     /**
      * Build CompiledAssociationMetadata a partir del attribute.
      */
-    private static function compileAssociation(AssociationKind $kind, object $a, string $propName): CompiledAssociationMetadata
-    {
+    private static function compileAssociation(
+        AssociationKind $kind,
+        object $a,
+        string $propName,
+        ?ORM\JoinColumn $jc = null,
+        ?ORM\JoinTable $jt = null,
+    ): CompiledAssociationMetadata {
         return match (true) {
-            $a instanceof ORM\OneToOne => self::oneToOneMeta($a, $propName),
+            $a instanceof ORM\OneToOne => self::oneToOneMeta($a, $propName, $jc),
             $a instanceof ORM\OneToMany => self::oneToManyMeta($a, $propName),
-            $a instanceof ORM\ManyToOne => self::manyToOneMeta($a, $propName),
-            $a instanceof ORM\ManyToMany => self::manyToManyMeta($a, $propName),
+            $a instanceof ORM\ManyToOne => self::manyToOneMeta($a, $propName, $jc),
+            $a instanceof ORM\ManyToMany => self::manyToManyMeta($a, $propName, $jt),
             default => throw new MetadataLoaderException("Asociación desconocida: {$kind->value}", 'META_ORM_0104'),
         };
     }
 
-    private static function oneToOneMeta(ORM\OneToOne $a, string $propName): CompiledAssociationMetadata
+    private static function oneToOneMeta(ORM\OneToOne $a, string $propName, ?ORM\JoinColumn $jc = null): CompiledAssociationMetadata
     {
         $isOwning = ($a->mappedBy === null);
         $defaultJoinCol = self::defaultJoinColumnNameForToOne($propName);
@@ -369,9 +384,9 @@ final class AttributeMetadataLoader
             inversedBy: $a->inversedBy,
             cascades: $a->cascade,
             fetch: $a->fetch,
-            joinColumnName: $a->joinColumn ?? $defaultJoinCol,
-            referencedColumnName: $a->referencedColumn,
-            joinColumnNullable: $a->nullable,
+            joinColumnName: $jc?->name ?? $a->joinColumn ?? $defaultJoinCol,
+            referencedColumnName: $jc?->referencedColumn ?? $a->referencedColumn,
+            joinColumnNullable: $jc?->nullable ?? $a->nullable,
             orphanRemoval: $a->orphanRemoval,
             defaultOrderBy: [],
         );
@@ -392,10 +407,12 @@ final class AttributeMetadataLoader
             orphanRemoval: $a->orphanRemoval,
             collectionKind: $a->collection,
             defaultOrderBy: $a->orderBy,
+            defaultLimit: $a->defaultLimit,
+            indexBy: $a->indexBy,
         );
     }
 
-    private static function manyToOneMeta(ORM\ManyToOne $a, string $propName): CompiledAssociationMetadata
+    private static function manyToOneMeta(ORM\ManyToOne $a, string $propName, ?ORM\JoinColumn $jc = null): CompiledAssociationMetadata
     {
         $defaultJoinCol = self::defaultJoinColumnNameForToOne($propName);
         return new CompiledAssociationMetadata(
@@ -407,13 +424,13 @@ final class AttributeMetadataLoader
             inversedBy: $a->inversedBy,
             cascades: $a->cascade,
             fetch: $a->fetch,
-            joinColumnName: $a->joinColumn ?? $defaultJoinCol,
-            referencedColumnName: $a->referencedColumn,
-            joinColumnNullable: $a->nullable,
+            joinColumnName: $jc?->name ?? $a->joinColumn ?? $defaultJoinCol,
+            referencedColumnName: $jc?->referencedColumn ?? $a->referencedColumn,
+            joinColumnNullable: $jc?->nullable ?? $a->nullable,
         );
     }
 
-    private static function manyToManyMeta(ORM\ManyToMany $a, string $propName): CompiledAssociationMetadata
+    private static function manyToManyMeta(ORM\ManyToMany $a, string $propName, ?ORM\JoinTable $jt = null): CompiledAssociationMetadata
     {
         $isOwning = ($a->mappedBy === null);
         return new CompiledAssociationMetadata(
@@ -425,11 +442,13 @@ final class AttributeMetadataLoader
             inversedBy: $a->inversedBy,
             cascades: $a->cascade,
             fetch: $a->fetch,
-            joinTableName: $a->joinTable,
-            joinColumnThisSide: $a->joinColumn,
-            joinColumnTargetSide: $a->inverseJoinColumn,
+            joinTableName: $jt?->name ?? $a->joinTable,
+            joinColumnThisSide: $jt?->joinColumn ?? $a->joinColumn,
+            joinColumnTargetSide: $jt?->inverseJoinColumn ?? $a->inverseJoinColumn,
             orphanRemoval: $a->orphanRemoval,
             collectionKind: $a->collection,
+            indexBy: $a->indexBy,
+            defaultOrderBy: $a->orderBy,
         );
     }
 

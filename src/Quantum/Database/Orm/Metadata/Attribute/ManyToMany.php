@@ -27,5 +27,7 @@ final readonly class ManyToMany
         public FetchMode $fetch = FetchMode::Lazy,
         public CollectionKind $collection = CollectionKind::ArrayCollection,
         public bool $orphanRemoval = false,
+        public ?string $indexBy = null,
+        public array $orderBy = [],
     ) {}
 }

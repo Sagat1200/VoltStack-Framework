@@ -28,5 +28,6 @@ final readonly class OneToMany
         public bool $orphanRemoval = false,
         public array $orderBy = [],
         public ?int $defaultLimit = null,
+        public ?string $indexBy = null,
     ) {}
 }

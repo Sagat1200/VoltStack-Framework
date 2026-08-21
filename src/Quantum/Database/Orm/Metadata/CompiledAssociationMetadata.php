@@ -1,4 +1,6 @@
-<?php declare(strict_types=1);
+<?php
+
+declare(strict_types=1);
 
 namespace Quantum\Database\Orm\Metadata;
 
@@ -17,6 +19,7 @@ final readonly class CompiledAssociationMetadata
      * @param class-string $targetEntityClass
      * @param list<CascadeKind> $cascades
      * @param array<string,string> $defaultOrderBy
+     * @param class-string|null $collectionEntryClass for ManyToMany/OneToMany collection (null = infer targetEntity)
      */
     public function __construct(
         public AssociationKind $kind,
@@ -36,6 +39,9 @@ final readonly class CompiledAssociationMetadata
         public bool $orphanRemoval = false,
         public CollectionKind $collectionKind = CollectionKind::ArrayCollection,
         public array $defaultOrderBy = [],
+        public ?int $defaultLimit = null,
+        public ?string $indexBy = null,
+        public ?string $collectionEntryClass = null,
     ) {}
 
     public function hasCascade(CascadeKind $k): bool

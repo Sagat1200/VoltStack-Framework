@@ -1,4 +1,6 @@
-<?php declare(strict_types=1);
+<?php
+
+declare(strict_types=1);
 
 namespace Quantum\Database\Orm\UnitOfWork;
 
@@ -43,12 +45,16 @@ final class UnitOfWork
 
     // ============== PUBLIC API ==============
 
-    /** @throws OrmException si la entity ya está en NEW y REMOVED a la vez (UOW-003) */
     public function persist(object $entity, EntityManagerInterface $em): void
     {
         $meta = $em->getMetadataFactory()->getMetadataFor($entity::class);
         $oid = spl_object_id($entity);
         $this->entityMetaByOid[$oid] = $meta;
+
+        // Inverse sync bidireccional OneToMany → owning ManyToOne target.
+        // (CascadeEngine también lo hace dentro de cascadePersist, pero al menos una vez antes de la lógica
+        //  garantiza que incluso entidades sin cascade también sincronicen su FK a nivel memoria.)
+        $this->cascadeEngine->synchronizeInverseCollections($entity, $em);
 
         // Si ya está MANAGED → no repetir NEW
         $idHash = $this->tryHashId($entity, $meta, $em);
@@ -66,7 +72,7 @@ final class UnitOfWork
         $this->newEntities[$oid] = [$entity, $meta];
         unset($this->removedEntities[$oid]);
 
-        // Cascade (V1 stub placeholder)
+        // Cascade persist (incluye inverse sync recursivo dentro del engine)
         foreach ($this->cascadeEngine->cascadePersist($entity, $em) as $extra) {
             if ($extra !== $entity) {
                 $this->persist($extra, $em);
@@ -90,9 +96,6 @@ final class UnitOfWork
         }
     }
 
-    /**
-     * 4 fases flush. Devuelve FlushPlan para observabilidad/tests.
-     */
     public function flush(EntityManagerInterface $em): FlushPlan
     {
         $conn = $em->getConnection();
@@ -100,6 +103,136 @@ final class UnitOfWork
         $tenantId = $em->getTenantId();
 
         $this->eventDispatcher?->dispatchPreFlush($em);
+
+        $visitedCycleGuard = [];
+
+        // PRE-FLUSH 0) Envolver colecciones ArrayCollection → PersistentCollection (orphanRemoval + ManyToMany).
+        //             Esto garantiza dirty tracking correcto incluso para entidades NEW.
+        $wrapAllEntities = [];
+        foreach ($this->identityMap->allWithState() as $e2) {
+            $wrapAllEntities[] = $e2['entity'];
+        }
+        foreach ($this->newEntities as [$e2, $m2]) {
+            $wrapAllEntities[] = $e2;
+        }
+        foreach ($this->removedEntities as [$e2, $m2]) {
+            $wrapAllEntities[] = $e2;
+        }
+        foreach ($wrapAllEntities as $e2) {
+            try {
+                $meta2 = $this->entityMetaByOid[spl_object_id($e2)] ?? $mf->getMetadataFor($e2::class);
+            } catch (\Throwable) {
+                continue;
+            }
+            foreach ($meta2->associations as $assoc) {
+                if (
+                    $assoc->kind !== \Quantum\Database\Orm\Association\Enum\AssociationKind::OneToMany
+                    && $assoc->kind !== \Quantum\Database\Orm\Association\Enum\AssociationKind::ManyToMany
+                ) continue;
+                try {
+                    $rp = new \ReflectionProperty($e2, $assoc->propertyName);
+                    $rp->setAccessible(true);
+                    if (!$rp->isInitialized($e2)) continue;
+                    $cur = $rp->getValue($e2);
+                } catch (\Throwable) {
+                    continue;
+                }
+                if ($cur instanceof \Quantum\Database\Orm\Association\Collection\PersistentCollection) continue;
+                if ($cur instanceof \Quantum\Database\Orm\Association\Collection\CollectionInterface) {
+                    $elems = [];
+                    foreach ($cur as $item) {
+                        if (is_object($item)) $elems[] = $item;
+                    }
+                    $newColl = new \Quantum\Database\Orm\Association\Collection\PersistentCollection($assoc, $em, null, $elems);
+                    $newColl->takeSnapshot();
+                    $rp->setValue($e2, $newColl);
+                }
+            }
+        }
+
+        // PRE-FLUSH 1) Para todas las entidades MANAGED + NEW + REMOVED → inverse sync bidireccional
+        //             y orphanRemoval (en colecciones MANAGED + NEW).
+        $allEntities = [];
+        foreach ($this->identityMap->allWithState() as $e2) {
+            $allEntities[] = $e2['entity'];
+        }
+        foreach ($this->newEntities as [$e2, $m2]) {
+            $allEntities[] = $e2;
+        }
+        foreach ($this->removedEntities as [$e2, $m2]) {
+            $allEntities[] = $e2;
+        }
+        foreach ($allEntities as $e2) {
+            $this->cascadeEngine->synchronizeInverseCollections($e2, $em);
+            try {
+                $this->cascadeEngine->processOrphanRemoval($e2, $em, $visitedCycleGuard);
+            } catch (\Throwable) {
+            }
+        }
+
+        // PRE-FLUSH 1.5) Persist NEW entidades added en colecciones (ManyToMany / OneToMany) con cascade PERSIST/ALL.
+        //                 Soluciona el caso donde una entidad MANAGED se modifican sus collections sin llamar a persist().
+        $cascadePass2 = true;
+        $maxIters = 5;
+        while ($cascadePass2 && $maxIters-- > 0) {
+            $cascadePass2 = false;
+            $cascadeTargets = [];
+            foreach ($this->identityMap->allWithState() as $e2) {
+                $cascadeTargets[] = $e2['entity'];
+            }
+            foreach ($this->newEntities as [$e2, $m2]) {
+                $cascadeTargets[] = $e2;
+            }
+            foreach ($cascadeTargets as $src) {
+                try {
+                    $srcMeta = $this->entityMetaByOid[spl_object_id($src)] ?? $mf->getMetadataFor($src::class);
+                } catch (\Throwable) {
+                    continue;
+                }
+                foreach ($srcMeta->associations as $assoc) {
+                    if (
+                        !$assoc->hasCascade(\Quantum\Database\Orm\Association\Enum\CascadeKind::Persist)
+                        && !$assoc->hasCascade(\Quantum\Database\Orm\Association\Enum\CascadeKind::All)
+                    ) continue;
+                    if (
+                        $assoc->kind !== \Quantum\Database\Orm\Association\Enum\AssociationKind::OneToMany
+                        && $assoc->kind !== \Quantum\Database\Orm\Association\Enum\AssociationKind::ManyToMany
+                    ) continue;
+                    try {
+                        $rp = new \ReflectionProperty($src, $assoc->propertyName);
+                        $rp->setAccessible(true);
+                        if (!$rp->isInitialized($src)) continue;
+                        $coll = $rp->getValue($src);
+                    } catch (\Throwable) {
+                        continue;
+                    }
+                    $items = [];
+                    if ($coll instanceof \Quantum\Database\Orm\Association\Collection\PersistentCollection) {
+                        $items = $coll->getAdded();
+                        foreach ($coll as $x) {
+                            $items[] = $x;
+                        }
+                        $items = array_values(array_unique($items, SORT_REGULAR));
+                    } elseif ($coll instanceof \Quantum\Database\Orm\Association\Collection\CollectionInterface) {
+                        foreach ($coll as $x) {
+                            if (is_object($x)) $items[] = $x;
+                        }
+                    }
+                    foreach ($items as $child) {
+                        if (!is_object($child)) continue;
+                        $coid = spl_object_id($child);
+                        $alreadyIn = isset($this->newEntities[$coid]);
+                        if (!$alreadyIn) {
+                            $childMeta = $mf->getMetadataFor($child::class);
+                            $idHash = $this->tryHashId($child, $childMeta, $em);
+                            if ($idHash !== null && $this->identityMap->has($childMeta->entityClass, $idHash)) continue;
+                        } else continue;
+                        $this->persist($child, $em);
+                        $cascadePass2 = true;
+                    }
+                }
+            }
+        }
 
         // FASE A): Compute Changes MANAGED → ChangeSets
         /** @var array<int,array{0:object,1:CompiledEntityMetadata,2:?ChangeSet}> $pendingUpdates */
@@ -188,9 +321,88 @@ final class UnitOfWork
         $openedTx = !$conn->inTransaction();
         if ($openedTx) $conn->beginTransaction();
         try {
+            // POST-INSERT / PRE-DELETE: ManyToMany pivot dirty writes
+            // Los hacemos durante el executeStep en el orden apropiado.
+            $dialect = method_exists($em, 'getDialect') ? $em->getDialect() : null;
+            $assocPersister = ($dialect !== null)
+                ? new \Quantum\Database\Orm\UnitOfWork\Association\AssociationPersister($conn, $dialect)
+                : null;
+
             foreach ($plan->steps as $step) {
+                // PRE-INSERT owner: pivot insert
+                if ($step->type === FlushStepType::Insert && $assocPersister !== null) {
+                    foreach ($step->meta->associations as $assoc) {
+                        if (!$assoc->isOwningSide) continue;
+                        if ($assoc->kind !== \Quantum\Database\Orm\Association\Enum\AssociationKind::ManyToMany) continue;
+                        try {
+                            $rp = new \ReflectionProperty($step->entity, $assoc->propertyName);
+                            $rp->setAccessible(true);
+                            $coll = $rp->isInitialized($step->entity) ? $rp->getValue($step->entity) : null;
+                        } catch (\Throwable) {
+                            $coll = null;
+                        }
+                        if ($coll instanceof \Quantum\Database\Orm\Association\Collection\PersistentCollection) {
+                            $assocPersister->updateOwningSideManyToMany($assoc, $step->entity, $step->meta, $coll);
+                        }
+                    }
+                }
                 $this->executeStep($step, $conn, $em);
+                // POST-INSERT / POST-UPDATE: volvemos a ejecutar pivot writes (ahora los IDs están presentes).
+                if (($step->type === FlushStepType::Insert || $step->type === FlushStepType::Update) && $assocPersister !== null) {
+                    foreach ($step->meta->associations as $assoc) {
+                        if (!$assoc->isOwningSide) continue;
+                        if ($assoc->kind !== \Quantum\Database\Orm\Association\Enum\AssociationKind::ManyToMany) continue;
+                        try {
+                            $rp = new \ReflectionProperty($step->entity, $assoc->propertyName);
+                            $rp->setAccessible(true);
+                            $coll = $rp->isInitialized($step->entity) ? $rp->getValue($step->entity) : null;
+                        } catch (\Throwable) {
+                            $coll = null;
+                        }
+                        if ($coll instanceof \Quantum\Database\Orm\Association\Collection\PersistentCollection) {
+                            $assocPersister->updateOwningSideManyToMany($assoc, $step->entity, $step->meta, $coll);
+                        }
+                    }
+                }
             }
+
+            // POST-FLUSH M2M sync FINAL: entidades MANAGED + NEW sin cambios de columna pero SÍ dirty collection M2M.
+            // Garantiza que aunque la entidad no tuviera Update step, se actualice la tabla pivot.
+            if ($assocPersister !== null) {
+                $m2mCandidates = [];
+                foreach ($this->identityMap->allWithState() as $eState) {
+                    if (!in_array($eState['state'], [EntityState::MANAGED, EntityState::FLUSHING], true)) continue;
+                    $oid = spl_object_id($eState['entity']);
+                    $m2mCandidates[$oid] = $eState['entity'];
+                }
+                foreach ($m2mCandidates as $e) {
+                    try {
+                        $meta = $this->entityMetaByOid[spl_object_id($e)] ?? $mf->getMetadataFor($e::class);
+                    } catch (\Throwable) {
+                        continue;
+                    }
+                    foreach ($meta->associations as $assoc) {
+                        if (!$assoc->isOwningSide) continue;
+                        if ($assoc->kind !== \Quantum\Database\Orm\Association\Enum\AssociationKind::ManyToMany) continue;
+                        try {
+                            $rp = new \ReflectionProperty($e, $assoc->propertyName);
+                            $rp->setAccessible(true);
+                            $coll = $rp->isInitialized($e) ? $rp->getValue($e) : null;
+                        } catch (\Throwable) {
+                            $coll = null;
+                        }
+                        if (!($coll instanceof \Quantum\Database\Orm\Association\Collection\PersistentCollection)) continue;
+                        // skip clean collections (evitamos DELETE+INSERT vacíos redundantes)
+                        if (!$coll->isDirty() && count($coll) === 0) continue;
+                        try {
+                            $assocPersister->updateOwningSideManyToMany($assoc, $e, $meta, $coll);
+                            $coll->takeSnapshot();
+                        } catch (\Throwable) {
+                        }
+                    }
+                }
+            }
+
             if ($openedTx && $conn->inTransaction()) {
                 $conn->commit();
             }

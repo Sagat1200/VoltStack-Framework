@@ -121,7 +121,7 @@ final class ControllerSecurityContextFactory implements ControllerSecurityContex
         ], $extraClaims !== [] ? ['token_claims' => $extraClaims] : []));
 
         $decisions = new SecurityDecisionCache(maxItems: $this->defaultMaxEvaluations);
-        $executionId = $execution->execution?->id() ?? ('exec-' . bin2hex(random_bytes(6)));
+        $executionId = $this->buildExecutionId($request, $execution);
         $budget = new ControllerSecurityBudget(maxPolicyEvaluations: $this->defaultMaxEvaluations);
 
         return new ControllerSecurityContext(
@@ -133,6 +133,17 @@ final class ControllerSecurityContextFactory implements ControllerSecurityContex
             executionId: $executionId,
             budget: $budget,
             version: 1,
+        );
+    }
+
+    private function buildExecutionId(Request $request, ControllerExecutionContext $execution): string
+    {
+        $routePath = $execution->match()->route()->path();
+        $method = $request->method();
+
+        return sprintf(
+            'exec-%s',
+            substr(hash('xxh128', $method . '|' . $routePath . '|' . spl_object_id($request)), 0, 16),
         );
     }
 }

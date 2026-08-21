@@ -34,25 +34,7 @@ PHP
 
     protected function tearDown(): void
     {
-        $viewFile = $this->basePath . DIRECTORY_SEPARATOR . 'resources' . DIRECTORY_SEPARATOR . 'views' . DIRECTORY_SEPARATOR . 'home.volt.php';
-        $viewsDirectory = dirname($viewFile);
-        $resourcesDirectory = dirname($viewsDirectory);
-
-        if (is_file($viewFile)) {
-            unlink($viewFile);
-        }
-
-        if (is_dir($viewsDirectory)) {
-            rmdir($viewsDirectory);
-        }
-
-        if (is_dir($resourcesDirectory)) {
-            rmdir($resourcesDirectory);
-        }
-
-        if (is_dir($this->basePath)) {
-            rmdir($this->basePath);
-        }
+        $this->removeDirectory($this->basePath);
 
         parent::tearDown();
     }
@@ -104,6 +86,31 @@ PHP
         self::assertStringNotContainsString('<h1>Fallback</h1>', $html);
 
         unlink($phpFallback);
+    }
+
+    private function removeDirectory(string $directory): void
+    {
+        if (! is_dir($directory)) {
+            return;
+        }
+
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($directory, \RecursiveDirectoryIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST,
+        );
+
+        foreach ($iterator as $entry) {
+            $path = $entry->getPathname();
+
+            if ($entry->isDir()) {
+                @rmdir($path);
+                continue;
+            }
+
+            @unlink($path);
+        }
+
+        @rmdir($directory);
     }
 }
 

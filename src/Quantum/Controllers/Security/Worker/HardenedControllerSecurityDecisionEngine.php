@@ -154,7 +154,7 @@ final class HardenedControllerSecurityDecisionEngine implements ControllerSecuri
                 tenantId: $request->security->tenant?->id ?? '',
                 policyId: $policy->id(),
                 action: $request->action,
-                resourceIdentity: is_object($request->resource) ? spl_object_hash($request->resource) : (string) $request->resource,
+                resourceIdentity: $this->resourceIdentity($request->resource),
                 securityContextVersion: $request->security->version,
             );
             $cached = $request->security->decisions->get($cacheKey);
@@ -268,5 +268,28 @@ final class HardenedControllerSecurityDecisionEngine implements ControllerSecuri
         } catch (\Throwable) {
             return [];
         }
+    }
+
+    private function resourceIdentity(mixed $resource): string
+    {
+        if (is_object($resource)) {
+            return spl_object_hash($resource);
+        }
+
+        if (is_array($resource)) {
+            $encoded = json_encode($resource, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+            return is_string($encoded) && $encoded !== '' ? $encoded : serialize($resource);
+        }
+
+        if (is_bool($resource)) {
+            return $resource ? 'true' : 'false';
+        }
+
+        if ($resource === null) {
+            return 'null';
+        }
+
+        return (string) $resource;
     }
 }

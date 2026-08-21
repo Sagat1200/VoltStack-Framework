@@ -19,8 +19,18 @@ use Quantum\Controllers\Security\Contracts\ControllerSecurityPolicyInterface;
 
 final class SkeletonSecuritySmokeTest extends TestCase
 {
+    private static string $skeletonBasePath;
     private string $basePath;
     private Application $app;
+
+    public static function setUpBeforeClass(): void
+    {
+        parent::setUpBeforeClass();
+
+        self::$skeletonBasePath = self::locateSkeletonBasePath();
+
+        require_once self::$skeletonBasePath . DIRECTORY_SEPARATOR . 'vendor' . DIRECTORY_SEPARATOR . 'autoload.php';
+    }
 
     protected function setUp(): void
     {
@@ -319,5 +329,25 @@ final class SkeletonSecuritySmokeTest extends TestCase
             }
         }
         @rmdir($dir);
+    }
+
+    private static function locateSkeletonBasePath(): string
+    {
+        $candidates = [
+            dirname(__DIR__, 5),
+            dirname(__DIR__, 3) . DIRECTORY_SEPARATOR . 'app-skeleton',
+        ];
+
+        foreach ($candidates as $candidate) {
+            if (
+                is_file($candidate . DIRECTORY_SEPARATOR . 'composer.json') &&
+                is_dir($candidate . DIRECTORY_SEPARATOR . 'app') &&
+                is_dir($candidate . DIRECTORY_SEPARATOR . 'routes')
+            ) {
+                return $candidate;
+            }
+        }
+
+        throw new \RuntimeException('No se localizo el app-skeleton para SkeletonSecuritySmokeTest.');
     }
 }

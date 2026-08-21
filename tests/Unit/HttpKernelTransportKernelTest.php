@@ -21,7 +21,10 @@ final class HttpKernelTransportKernelTest extends TestCase
         $httpResponse = (new Response('ok'))->setStatusCode(200)->header('X-Foo', 'bar');
 
         $kernel = $this->createMock(Kernel::class);
-        $kernel->method('handle')->with(self::identicalTo($request))->willReturn($httpResponse);
+        $kernel->expects(self::once())
+            ->method('handle')
+            ->with(self::identicalTo($request))
+            ->willReturn($httpResponse);
 
         $bridge = new HttpKernelTransportKernel($kernel, new HttpResponseTransformer());
         $transportResponse = $bridge->handle($request);
@@ -38,7 +41,7 @@ final class HttpKernelTransportKernelTest extends TestCase
         $request = Request::create('/missing', 'GET');
         $httpResponse = (new Response('not found', 404))->header('Content-Type', 'text/plain');
 
-        $kernel = $this->createMock(Kernel::class);
+        $kernel = $this->createStub(Kernel::class);
         $kernel->method('handle')->willReturn($httpResponse);
 
         $bridge = new HttpKernelTransportKernel($kernel, new HttpResponseTransformer());

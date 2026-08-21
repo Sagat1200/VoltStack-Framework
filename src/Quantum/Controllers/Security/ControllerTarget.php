@@ -23,6 +23,10 @@ final readonly class ControllerTarget
         if (is_string($action) && str_contains($action, '@')) {
             [$class, $method] = explode('@', $action, 2);
             $type = ControllerTargetType::ControllerMethod;
+        } elseif (is_array($action) && isset($action[0], $action[1])) {
+            $class = is_object($action[0]) ? get_class($action[0]) : (string) $action[0];
+            $method = (string) $action[1];
+            $type = ControllerTargetType::ControllerMethod;
         } elseif (is_string($action)) {
             $class = $action;
             $method = '__invoke';

@@ -26,11 +26,11 @@ final class PublicContractSignatureTest extends TestCase
     private const DUMP_BASELINE = false;
 
     /**
-     * Baseline actualizado el 2026-08-09 al corregir import Throwable global en ExceptionHandlerInterface
-     * (fix BC: Quantum\Exceptions\Contracts\Throwable → global \Throwable).
-     * Longitud canonical = 27 145 bytes (80+ símbolos públicos estables).
+     * Baseline actualizado el 2026-08-21 tras extender SecurityDecision con contexto público
+     * para compatibilidad del stack ControllerSecurity.
+     * Longitud canonical = 27 261 bytes (80+ símbolos públicos estables).
      */
-    private const BASELINE_SHA256 = 'b2988ce073b081cfe04ea5a45dfc78fefea670d6c9a7d8f7567a370afd4f7e51';
+    private const BASELINE_SHA256 = '300eafb65fbaaf5d681e723b36446f8ac942853525e7388cf4cb7b6b8e4b0595';
 
     /**
      * @return list<class-string> Lista de clases/interfaces/enums/attributes públicos ESTABLES del API.

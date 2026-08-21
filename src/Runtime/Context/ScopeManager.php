@@ -28,12 +28,14 @@ final class ScopeManager
 
         $this->app->scopedInstance(Request::class, $request);
         $this->app->scopedInstance(RuntimeContext::class, $context);
+        $this->app->fireScopeStart($context);
 
         return $context;
     }
 
     public function end(): void
     {
+        $this->app->fireScopeEnd($this->context);
         $this->context = null;
         RuntimeContext::setCurrent(null);
         $this->app->flushScope();

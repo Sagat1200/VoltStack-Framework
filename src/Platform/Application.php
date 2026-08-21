@@ -124,6 +124,16 @@ class Application extends Container
 
     protected bool $booted = false;
 
+    /**
+     * @var array<int, callable(self, RuntimeContext): void>
+     */
+    protected array $scopeStartingCallbacks = [];
+
+    /**
+     * @var array<int, callable(self, ?RuntimeContext): void>
+     */
+    protected array $scopeEndingCallbacks = [];
+
     public function __construct(protected string $basePath)
     {
         $this->basePath = rtrim($basePath, '\\/');
@@ -668,7 +678,7 @@ class Application extends Container
                             header('Content-Type: application/json; charset=UTF-8', true, 500);
                             $payload = [
                                 'error' => [
-                                    'type' => 'runtime.'.$errClass,
+                                    'type' => 'runtime.' . $errClass,
                                     'kind' => 'fatal',
                                     'code' => $errorCode,
                                     'status' => 500,
@@ -699,13 +709,13 @@ class Application extends Container
                         }
 
                         header('Content-Type: text/html; charset=UTF-8', true, 500);
-                        header('X-Volt-Error-Code: '.$errorCode, true);
+                        header('X-Volt-Error-Code: ' . $errorCode, true);
                         $debugHtml = $debugMode
                             ? '<div style="margin-top:20px; padding:14px; background:#0b1220; border:1px solid #334155; border-radius:8px;">'
-                                . '<p style="margin:0 0 8px 0;"><strong style="color:#fca5a5;">FATAL SHUTDOWN:</strong> <code style="color:#f87171;">'.$errClass.'</code></p>'
-                                . '<p style="margin:0 0 8px 0;"><strong>Message:</strong> <code>'.$escapedMessage.'</code></p>'
-                                . '<p style="margin:0 0 8px 0;"><strong>Location:</strong> <code>'.$escapedFile.':'.$escapedLine.'</code></p>'
-                                . '</div>'
+                            . '<p style="margin:0 0 8px 0;"><strong style="color:#fca5a5;">FATAL SHUTDOWN:</strong> <code style="color:#f87171;">' . $errClass . '</code></p>'
+                            . '<p style="margin:0 0 8px 0;"><strong>Message:</strong> <code>' . $escapedMessage . '</code></p>'
+                            . '<p style="margin:0 0 8px 0;"><strong>Location:</strong> <code>' . $escapedFile . ':' . $escapedLine . '</code></p>'
+                            . '</div>'
                             : '';
                         echo <<<HTML
 <!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="volt-document" content="reload"><title>Server Error</title>
@@ -982,6 +992,36 @@ HTML;
     public function isBooted(): bool
     {
         return $this->booted;
+    }
+
+    /**
+     * @param callable(self, RuntimeContext): void $callback
+     */
+    public function onScopeStart(callable $callback): void
+    {
+        $this->scopeStartingCallbacks[] = $callback;
+    }
+
+    public function fireScopeStart(RuntimeContext $context): void
+    {
+        foreach ($this->scopeStartingCallbacks as $callback) {
+            $callback($this, $context);
+        }
+    }
+
+    /**
+     * @param callable(self, ?RuntimeContext): void $callback
+     */
+    public function onScopeEnd(callable $callback): void
+    {
+        $this->scopeEndingCallbacks[] = $callback;
+    }
+
+    public function fireScopeEnd(?RuntimeContext $context): void
+    {
+        foreach ($this->scopeEndingCallbacks as $callback) {
+            $callback($this, $context);
+        }
     }
 
     /**

@@ -114,6 +114,14 @@ class Container implements ContainerInterface
         $this->scopedInstances = [];
     }
 
+    public function resolved(string $abstract): bool
+    {
+        $abstract = $this->normalize($abstract);
+
+        return array_key_exists($abstract, $this->instances)
+            || array_key_exists($abstract, $this->scopedInstances);
+    }
+
     protected function resolve(mixed $concrete, array $parameters = []): mixed
     {
         if ($concrete instanceof Closure) {

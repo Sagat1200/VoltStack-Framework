@@ -62,6 +62,48 @@ final class RuntimeScopeTest extends TestCase
         $app = new Application(sys_get_temp_dir());
         $app->make(Request::class);
     }
+
+    public function test_scope_lifecycle_callbacks_run_around_the_request(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $events = [];
+
+        $app->onScopeStart(function (Application $app, RuntimeContext $context) use (&$events): void {
+            $events[] = [
+                'phase' => 'start',
+                'path' => $context->request()->path(),
+                'current_matches' => RuntimeContext::current()?->requestId() === $context->requestId(),
+            ];
+
+            $context->set('hook.started', true);
+        });
+
+        $app->onScopeEnd(function (Application $app, ?RuntimeContext $context) use (&$events): void {
+            $events[] = [
+                'phase' => 'end',
+                'path' => $context?->request()->path(),
+                'current_matches' => RuntimeContext::current()?->requestId() === $context?->requestId(),
+            ];
+        });
+
+        $router = $app->make(Router::class);
+        $router->get('/hooks', HookedScopeController::class);
+
+        $response = $app->make(HttpKernel::class)->handle(Request::create('/hooks'));
+
+        /** @var array<string, mixed> $payload */
+        $payload = json_decode($response->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertTrue($payload['hook_started']);
+        self::assertSame(
+            [
+                ['phase' => 'start', 'path' => '/hooks', 'current_matches' => true],
+                ['phase' => 'end', 'path' => '/hooks', 'current_matches' => true],
+            ],
+            $events,
+        );
+        self::assertNull(RuntimeContext::current());
+    }
 }
 
 final class ScopedRequestController
@@ -102,5 +144,19 @@ final class TestScopedService
 {
     public function __construct(public readonly string $id)
     {
+    }
+}
+
+final class HookedScopeController
+{
+    public function __construct(private readonly RuntimeContext $context)
+    {
+    }
+
+    public function __invoke(): array
+    {
+        return [
+            'hook_started' => $this->context->get('hook.started', false),
+        ];
     }
 }

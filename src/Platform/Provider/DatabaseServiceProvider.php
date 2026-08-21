@@ -13,6 +13,7 @@ use Quantum\Database\Trace\DatabaseDeadline;
 use Quantum\Database\Trace\DatabaseTraceContext;
 use VoltStack\Framework\Application;
 use VoltStack\Framework\ServiceProvider;
+use VoltStack\Runtime\Context\RuntimeContext;
 
 final class DatabaseServiceProvider extends ServiceProvider
 {
@@ -72,6 +73,17 @@ final class DatabaseServiceProvider extends ServiceProvider
             return $context
                 ->withConnection($connection)
                 ->withTenant($tenantId);
+        });
+    }
+
+    public function boot(): void
+    {
+        $this->app->onScopeStart(function (Application $app, RuntimeContext $context): void {
+            $registry = $app->make(ConnectionRegistry::class);
+            $maxIdleMs = (int) $app->config('database.timeouts.max_idle_ms_before_ping', 30000);
+
+            $registry->refreshIdleConnections($maxIdleMs);
+            $context->set('database.scope_ping', true);
         });
     }
 

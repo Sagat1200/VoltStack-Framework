@@ -154,6 +154,25 @@ final class OrmServiceProvider extends ServiceProvider
         $this->app->alias(EntityManager::class, EntityManagerInterface::class);
     }
 
+    public function boot(): void
+    {
+        $this->app->onScopeEnd(function (Application $app): void {
+            if (!(bool) $app->config('database.orm.auto_flush_on_terminate', false)) {
+                return;
+            }
+
+            if (!$app->resolved(EntityManager::class)) {
+                return;
+            }
+
+            /** @var EntityManager $em */
+            $em = $app->make(EntityManager::class);
+            if ($em->getUnitOfWork()->size() > 0) {
+                $em->flush();
+            }
+        });
+    }
+
     public function commands(): array
     {
         return [

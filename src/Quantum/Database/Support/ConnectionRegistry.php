@@ -93,6 +93,31 @@ final class ConnectionRegistry
         return $this->dialects[$resolved] = DialectFactory::forDriver($driverName);
     }
 
+    public function refreshIdleConnections(int $maxIdleMs): void
+    {
+        $maxIdleSeconds = max(0, $maxIdleMs) / 1000;
+        $now = hrtime(true) / 1_000_000_000;
+
+        foreach ($this->resolvedConnections as $connection) {
+            if (!$connection->isConnected()) {
+                $connection->connect();
+                continue;
+            }
+
+            $idleSeconds = $now - $connection->lastUsedAtSeconds();
+            if ($maxIdleSeconds > 0 && $idleSeconds < $maxIdleSeconds) {
+                continue;
+            }
+
+            if ($connection->ping()) {
+                continue;
+            }
+
+            $connection->close();
+            $connection->connect();
+        }
+    }
+
     private function resolveName(?string $name): string
     {
         $resolved = $name;

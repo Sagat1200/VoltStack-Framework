@@ -28,6 +28,9 @@ use Quantum\Database\Orm\UnitOfWork\Dependency\DependencyGraph;
 use Quantum\Database\Orm\UnitOfWork\EntityPersister\DefaultEntityPersister;
 use Quantum\Database\Orm\UnitOfWork\EntityPersister\EntityPersisterInterface;
 use Quantum\Database\Orm\UnitOfWork\EntityPersister\IdentifierExtractor;
+use Quantum\Database\Orm\UnitOfWork\Event\LifecycleEventDispatcherInterface;
+use Quantum\Database\Orm\UnitOfWork\Event\LifecycleListenerInterface;
+use Quantum\Database\Orm\UnitOfWork\Event\ListenerLifecycleEventDispatcher;
 use Quantum\Database\Orm\UnitOfWork\Event\NullLifecycleEventDispatcher;
 use Quantum\Database\Orm\UnitOfWork\IdentityMapInterface;
 use Quantum\Database\Orm\UnitOfWork\UnitOfWork;
@@ -121,6 +124,36 @@ final class OrmServiceProvider extends ServiceProvider
             );
         });
 
+        $this->app->scoped(LifecycleEventDispatcherInterface::class, function (Application $app): LifecycleEventDispatcherInterface {
+            $listenerClasses = $app->config('database.orm.lifecycle.listeners', []);
+
+            if (!is_array($listenerClasses) || $listenerClasses === []) {
+                return new NullLifecycleEventDispatcher();
+            }
+
+            $listeners = [];
+            foreach ($listenerClasses as $listenerClass) {
+                if (!is_string($listenerClass) || !class_exists($listenerClass)) {
+                    continue;
+                }
+
+                if (!is_a($listenerClass, LifecycleListenerInterface::class, true)) {
+                    continue;
+                }
+
+                $listener = $app->make($listenerClass);
+                if ($listener instanceof LifecycleListenerInterface) {
+                    $listeners[] = $listener;
+                }
+            }
+
+            if ($listeners === []) {
+                return new NullLifecycleEventDispatcher();
+            }
+
+            return new ListenerLifecycleEventDispatcher($listeners);
+        });
+
         $this->app->scoped(UnitOfWork::class, function (Application $app): UnitOfWork {
             return new UnitOfWork(
                 identityMap: $app->make(IdentityMapInterface::class),
@@ -128,7 +161,7 @@ final class OrmServiceProvider extends ServiceProvider
                 persister: $app->make(EntityPersisterInterface::class),
                 cascadeEngine: new AssociationCascadeEngine($app->make(MetadataManagerInterface::class)),
                 dependencyGraph: new DependencyGraph(),
-                eventDispatcher: new NullLifecycleEventDispatcher(),
+                eventDispatcher: $app->make(LifecycleEventDispatcherInterface::class),
             );
         });
 
@@ -157,17 +190,32 @@ final class OrmServiceProvider extends ServiceProvider
     public function boot(): void
     {
         $this->app->onScopeEnd(function (Application $app): void {
-            if (!(bool) $app->config('database.orm.auto_flush_on_terminate', false)) {
-                return;
-            }
-
             if (!$app->resolved(EntityManager::class)) {
                 return;
             }
 
             /** @var EntityManager $em */
             $em = $app->make(EntityManager::class);
-            if ($em->getUnitOfWork()->size() > 0) {
+            $connection = $em->getConnection();
+
+            // Any request-scoped transaction left open must be rolled back before
+            // the scope is flushed, otherwise a worker can leak transactional
+            // state across requests or accidentally persist data later.
+            if ($connection->inTransaction()) {
+                try {
+                    $connection->rollback();
+                } finally {
+                    $em->clear();
+                }
+
+                return;
+            }
+
+            if (!(bool) $app->config('database.orm.auto_flush_on_terminate', false)) {
+                return;
+            }
+
+            if ($em->getUnitOfWork()->hasPendingWork($em)) {
                 $em->flush();
             }
         });

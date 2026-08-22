@@ -7,6 +7,7 @@ namespace VoltStack\Framework\Provider;
 use Quantum\Database\DatabaseContext;
 use Quantum\Database\Dbal\Contract\ConnectionInterface;
 use Quantum\Database\Dialect\DialectInterface;
+use Quantum\Http\Request;
 use Quantum\Database\Security\DatabaseSecurityContext;
 use Quantum\Database\Support\ConnectionRegistry;
 use Quantum\Database\Trace\DatabaseDeadline;
@@ -82,9 +83,14 @@ final class DatabaseServiceProvider extends ServiceProvider
         $this->app->onScopeStart(function (Application $app, RuntimeContext $context): void {
             $registry = $app->make(ConnectionRegistry::class);
             $maxIdleMs = (int) $app->config('database.timeouts.max_idle_ms_before_ping', 30000);
+            $tenantId = self::resolveTenantFromRequest($context->request());
 
             $registry->refreshIdleConnections($maxIdleMs);
+            if ($tenantId !== null && !$app->has('tenant.id')) {
+                $app->scopedInstance('tenant.id', $tenantId);
+            }
             $context->set('database.scope_ping', true);
+            $context->set('database.tenant_id', $tenantId);
         });
     }
 
@@ -94,5 +100,23 @@ final class DatabaseServiceProvider extends ServiceProvider
             \Quantum\Console\Commands\Database\DbPingCommand::class,
             \Quantum\Console\Commands\Database\DbQueryCommand::class,
         ];
+    }
+
+    private static function resolveTenantFromRequest(Request $request): ?string
+    {
+        $tenantHeader = $request->server('X-Tenant-Id', '');
+        if ($tenantHeader === null || $tenantHeader === '') {
+            $tenantHeader = $request->server('HTTP_X_TENANT_ID', '');
+        }
+        if ($tenantHeader === null || $tenantHeader === '') {
+            $tenantHeader = $request->header('X-Tenant-Id', '') ?? '';
+        }
+
+        if (!is_string($tenantHeader)) {
+            return null;
+        }
+
+        $tenantId = trim($tenantHeader);
+        return $tenantId === '' ? null : $tenantId;
     }
 }

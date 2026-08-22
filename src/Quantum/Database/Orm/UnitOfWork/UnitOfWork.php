@@ -489,6 +489,59 @@ final class UnitOfWork
             + $this->identityMap->count();
     }
 
+    public function hasPendingWork(EntityManagerInterface $em): bool
+    {
+        if ($this->newEntities !== [] || $this->removedEntities !== []) {
+            return true;
+        }
+
+        $mf = $em->getMetadataFactory();
+        $tenantId = $em->getTenantId();
+
+        foreach ($this->identityMap->allWithState() as $entry) {
+            /** @var EntityState $state */
+            $state = $entry['state'];
+            if ($state !== EntityState::MANAGED && $state !== EntityState::FLUSHING) {
+                continue;
+            }
+
+            $entity = $entry['entity'];
+            $meta = $this->entityMetaByOid[spl_object_id($entity)] ?? $mf->getMetadataFor($entity::class);
+            $idHash = $this->hashId($entity, $meta, $tenantId);
+
+            $changeSet = $this->changeTracker->computeChanges($entity, $meta, $idHash);
+            if ($changeSet?->hasChanges()) {
+                return true;
+            }
+
+            foreach ($meta->associations as $assoc) {
+                if (
+                    $assoc->kind !== \Quantum\Database\Orm\Association\Enum\AssociationKind::OneToMany
+                    && $assoc->kind !== \Quantum\Database\Orm\Association\Enum\AssociationKind::ManyToMany
+                ) {
+                    continue;
+                }
+
+                try {
+                    $property = new \ReflectionProperty($entity, $assoc->propertyName);
+                    $property->setAccessible(true);
+                    if (!$property->isInitialized($entity)) {
+                        continue;
+                    }
+
+                    $collection = $property->getValue($entity);
+                    if ($collection instanceof \Quantum\Database\Orm\Association\Collection\PersistentCollection && $collection->isDirty()) {
+                        return true;
+                    }
+                } catch (\Throwable) {
+                    continue;
+                }
+            }
+        }
+
+        return false;
+    }
+
     // ====================== INTERNAL ======================
 
     private function tryHashId(object $e, CompiledEntityMetadata $meta, ?EntityManagerInterface $em = null, ?string &$outTenant = null): ?string

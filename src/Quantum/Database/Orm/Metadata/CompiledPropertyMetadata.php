@@ -19,10 +19,10 @@ final readonly class CompiledPropertyMetadata
         public bool $isInsertable,
         public bool $isUpdatable,
         public bool $isUnique,
+        public PropertyAccessInfo $access,
         public mixed $defaultValue = null,
         public ?string $enumClass = null,
         public bool $isGenerated = false,
         public ?string $customTypeClass = null,
-        public PropertyAccessInfo $access,
     ) {}
 }

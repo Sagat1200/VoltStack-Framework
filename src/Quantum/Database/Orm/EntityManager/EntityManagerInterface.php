@@ -2,8 +2,13 @@
 
 namespace Quantum\Database\Orm\EntityManager;
 
+use Quantum\Database\DatabaseContext;
 use Quantum\Database\Dbal\Contract\ConnectionInterface;
+use Quantum\Database\Dialect\DialectInterface;
+use Quantum\Database\Orm\Hydration\HydratorInterface;
 use Quantum\Database\Orm\Metadata\MetadataManagerInterface;
+use Quantum\Database\Orm\UnitOfWork\IdentityMapInterface;
+use Quantum\Database\Orm\UnitOfWork\UnitOfWork;
 
 /**
  * Placeholder EntityManager interface (implementado en DDD-08).
@@ -36,5 +41,46 @@ interface EntityManagerInterface
      */
     public function find(string $entityClass, mixed $id): ?object;
 
+    /**
+     * @template T of object
+     * @param class-string<T> $entityClass
+     * @param array<string,mixed> $criteria
+     * @param array<string,string>|null $orderBy
+     * @return list<T>
+     */
+    public function findBy(string $entityClass, array $criteria, ?array $orderBy = null, ?int $limit = null, ?int $offset = null): array;
+
+    /**
+     * @template T of object
+     * @param class-string<T> $entityClass
+     * @param array<string,mixed> $criteria
+     * @param array<string,string>|null $orderBy
+     * @return T|null
+     */
+    public function findOneBy(string $entityClass, array $criteria, ?array $orderBy = null): ?object;
+
+    /**
+     * @template T of object
+     * @param class-string<T> $entityClass
+     * @return list<T>
+     */
+    public function findAll(string $entityClass): array;
+
+    /**
+     * @param class-string $entityClass
+     * @param array<string,mixed> $criteria
+     */
+    public function count(string $entityClass, array $criteria = []): int;
+
     public function getTenantId(): ?string;
+
+    public function getDialect(): DialectInterface;
+
+    public function getHydrator(): HydratorInterface;
+
+    public function getIdentityMap(): IdentityMapInterface;
+
+    public function getContext(): DatabaseContext;
+
+    public function getUnitOfWork(): UnitOfWork;
 }

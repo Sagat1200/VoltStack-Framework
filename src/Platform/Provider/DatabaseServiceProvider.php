@@ -42,6 +42,7 @@ final class DatabaseServiceProvider extends ServiceProvider
         $this->app->scoped(DatabaseContext::class, function (Application $app): DatabaseContext {
             $registry = $app->make(ConnectionRegistry::class);
             $connection = $registry->connection();
+            $runtimeContext = RuntimeContext::current();
 
             $tenantId = $app->has('tenant.id')
                 ? (string) $app->make('tenant.id')
@@ -57,7 +58,7 @@ final class DatabaseServiceProvider extends ServiceProvider
             }
 
             $context = new DatabaseContext(
-                requestId: bin2hex(random_bytes(8)),
+                requestId: $runtimeContext?->requestId() ?? bin2hex(random_bytes(8)),
                 deadline: DatabaseDeadline::fromMs($timeoutMs),
                 security: new DatabaseSecurityContext(
                     subjectId: null,

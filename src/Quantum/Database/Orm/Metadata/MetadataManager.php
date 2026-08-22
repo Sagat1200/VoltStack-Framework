@@ -169,9 +169,11 @@ final class MetadataManager implements MetadataManagerInterface
      */
     private static function cacheKeyFor(string $entityClass): string
     {
+        $fingerprint = substr(bin2hex(hash('sha256', $entityClass, true)), 0, 16);
+
         return 'quantum.db.meta.' . self::CACHE_VERSION . '.'
             . strtr(strtolower(str_replace('\\', '_', $entityClass)), ['/' => '_', '.' => '_'])
-            . '.' . substr(base64_encode(hash('sha256', $entityClass, true)), 0, 8);
+            . '.' . $fingerprint;
     }
 
     private function writeCacheFile(string $cacheKey, CompiledEntityMetadata $data): void

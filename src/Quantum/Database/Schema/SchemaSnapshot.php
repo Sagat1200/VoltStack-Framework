@@ -17,7 +17,7 @@ final readonly class SchemaSnapshot
     public function table(string $name): ?SchemaTable
     {
         foreach ($this->tables as $table) {
-            if ($table->name === $name) {
+            if ($table->name === $name || $table->qualifiedName() === $name) {
                 return $table;
             }
         }
@@ -26,7 +26,7 @@ final readonly class SchemaSnapshot
     }
 
     /**
-     * @return array{driver:string,tables:list<array{name:string,primary_key:list<string>,columns:list<array{name:string,type:string,nullable:bool,default:mixed,primary:bool,auto_increment:bool,ordinal:int}>,create_sql:?string}>}
+     * @return array{driver:string,tables:list<array<string,mixed>>}
      */
     public function toArray(): array
     {

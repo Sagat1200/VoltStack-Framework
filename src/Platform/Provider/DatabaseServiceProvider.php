@@ -15,6 +15,9 @@ use Quantum\Database\Migration\MigrationRepository;
 use Quantum\Database\Migration\MigrationRunner;
 use Quantum\Database\Schema\SchemaIntrospectorInterface;
 use Quantum\Database\Schema\SchemaManager;
+use Quantum\Database\Schema\MariadbSchemaIntrospector;
+use Quantum\Database\Schema\MysqlSchemaIntrospector;
+use Quantum\Database\Schema\PgsqlSchemaIntrospector;
 use Quantum\Database\Schema\SqliteSchemaIntrospector;
 use Quantum\Database\Seeder\SeederDiscovery;
 use Quantum\Database\Seeder\SeederRunner;
@@ -117,6 +120,9 @@ final class DatabaseServiceProvider extends ServiceProvider
 
             return match ($connection->getDriverInfo()->driverName) {
                 'sqlite' => new SqliteSchemaIntrospector($connection),
+                'pgsql' => new PgsqlSchemaIntrospector($connection),
+                'mysql' => new MysqlSchemaIntrospector($connection),
+                'mariadb' => new MariadbSchemaIntrospector($connection),
                 default => throw new \RuntimeException(sprintf(
                     'Schema introspection is not implemented yet for driver [%s].',
                     $connection->getDriverInfo()->driverName,

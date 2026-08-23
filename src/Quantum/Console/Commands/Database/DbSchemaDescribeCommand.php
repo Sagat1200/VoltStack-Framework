@@ -18,7 +18,7 @@ final class DbSchemaDescribeCommand extends Command
 
     public function description(): string
     {
-        return 'Describe columnas y metadatos básicos de una tabla del schema real.';
+        return 'Describe columnas, índices y foreign keys de una tabla del schema real.';
     }
 
     public function usage(): string
@@ -66,18 +66,46 @@ final class DbSchemaDescribeCommand extends Command
                 return 0;
             }
 
-            $output->writeln(sprintf('Table: %s', $details->name));
+            $output->writeln(sprintf('Table: %s', $details->qualifiedName()));
             $output->writeln(sprintf('Primary key: %s', $details->primaryKey === [] ? '-' : implode(',', $details->primaryKey)));
 
             foreach ($details->columns as $column) {
                 $output->writeln(sprintf(
-                    '- %s type=%s nullable=%s primary=%s auto_increment=%s default=%s',
+                    '- %s type=%s portable=%s nullable=%s primary=%s auto_increment=%s default=%s',
                     $column->name,
                     $column->nativeType,
+                    $column->portableType ?? '-',
                     $column->nullable ? 'yes' : 'no',
                     $column->primaryKey ? 'yes' : 'no',
                     $column->autoIncrement ? 'yes' : 'no',
                     $column->defaultValue === null ? 'null' : (string) $column->defaultValue,
+                ));
+            }
+
+            $output->writeln(sprintf('Indexes: %d', count($details->indexes)));
+            foreach ($details->indexes as $index) {
+                $output->writeln(sprintf(
+                    '* %s columns=%s unique=%s primary=%s',
+                    $index->name,
+                    implode(',', $index->columns),
+                    $index->unique ? 'yes' : 'no',
+                    $index->primary ? 'yes' : 'no',
+                ));
+            }
+
+            $output->writeln(sprintf('Foreign keys: %d', count($details->foreignKeys)));
+            foreach ($details->foreignKeys as $foreignKey) {
+                $target = $foreignKey->referencedSchema !== null && $foreignKey->referencedSchema !== ''
+                    ? $foreignKey->referencedSchema . '.' . $foreignKey->referencedTable
+                    : $foreignKey->referencedTable;
+                $output->writeln(sprintf(
+                    '* %s columns=%s references=%s(%s) on_delete=%s on_update=%s',
+                    $foreignKey->name,
+                    implode(',', $foreignKey->columns),
+                    $target,
+                    implode(',', $foreignKey->referencedColumns),
+                    $foreignKey->onDelete ?? '-',
+                    $foreignKey->onUpdate ?? '-',
                 ));
             }
 

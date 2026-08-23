@@ -80,11 +80,30 @@ final class DatabaseSchemaCommandTest extends TestCase
 
         self::assertSame(0, $describe['exit']);
         self::assertStringContainsString('Table: f19_users', $describe['stdout']);
-        self::assertStringContainsString('email type=TEXT nullable=no', $describe['stdout']);
-        self::assertStringContainsString('status type=TEXT nullable=no', $describe['stdout']);
+        self::assertStringContainsString('email type=TEXT portable=text nullable=no', $describe['stdout']);
+        self::assertStringContainsString('status type=TEXT portable=text nullable=no', $describe['stdout']);
 
         self::assertSame(1, $missing['exit']);
         self::assertStringContainsString('missing_table', $missing['stderr']);
+    }
+
+    public function test_cli_schema_describe_includes_indexes_and_foreign_keys_metadata(): void
+    {
+        $app = $this->loadApp();
+        $connection = $app->make(ConnectionInterface::class);
+        $connection->executeStatement('CREATE TABLE IF NOT EXISTS f19_accounts (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL)');
+        $connection->executeStatement(
+            "CREATE TABLE IF NOT EXISTS f19_memberships (id INTEGER PRIMARY KEY AUTOINCREMENT, account_id INTEGER NOT NULL, email TEXT NOT NULL, CONSTRAINT fk_memberships_account FOREIGN KEY (account_id) REFERENCES f19_accounts(id) ON DELETE CASCADE)"
+        );
+        $connection->executeStatement('CREATE UNIQUE INDEX IF NOT EXISTS uq_memberships_email ON f19_memberships (email)');
+
+        $describe = $this->runConsole(['volt', 'db:schema-describe', 'f19_memberships']);
+
+        self::assertSame(0, $describe['exit']);
+        self::assertStringContainsString('Indexes: 1', $describe['stdout']);
+        self::assertStringContainsString('* uq_memberships_email columns=email unique=yes primary=no', $describe['stdout']);
+        self::assertStringContainsString('Foreign keys: 1', $describe['stdout']);
+        self::assertStringContainsString('references=f19_accounts(id) on_delete=CASCADE', $describe['stdout']);
     }
 
     /**

@@ -19,7 +19,7 @@ final class DbSchemaStatusCommand extends Command
 
     public function description(): string
     {
-        return 'Lista las tablas del schema real y resume sus columnas.';
+        return 'Lista las tablas del schema real y resume columnas, índices y foreign keys.';
     }
 
     public function usage(): string
@@ -63,9 +63,11 @@ final class DbSchemaStatusCommand extends Command
             $output->writeln(sprintf('Driver: %s', $schema->driverName()));
             foreach ($tables as $table) {
                 $output->writeln(sprintf(
-                    '- %s (columns=%d, primary_key=%s)',
-                    $table->name,
+                    '- %s (columns=%d, indexes=%d, foreign_keys=%d, primary_key=%s)',
+                    $table->qualifiedName(),
                     count($table->columns),
+                    count($table->indexes),
+                    count($table->foreignKeys),
                     $table->primaryKey === [] ? '-' : implode(',', $table->primaryKey),
                 ));
             }

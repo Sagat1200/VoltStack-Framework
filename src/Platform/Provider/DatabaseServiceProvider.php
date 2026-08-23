@@ -7,10 +7,17 @@ namespace VoltStack\Framework\Provider;
 use Quantum\Database\DatabaseContext;
 use Quantum\Database\Dbal\Contract\ConnectionInterface;
 use Quantum\Database\Dialect\DialectInterface;
+use Quantum\Database\Factory\FactoryDiscovery;
+use Quantum\Database\Factory\FactoryManager;
 use Quantum\Http\Request;
 use Quantum\Database\Migration\MigrationDiscovery;
 use Quantum\Database\Migration\MigrationRepository;
 use Quantum\Database\Migration\MigrationRunner;
+use Quantum\Database\Schema\SchemaIntrospectorInterface;
+use Quantum\Database\Schema\SchemaManager;
+use Quantum\Database\Schema\SqliteSchemaIntrospector;
+use Quantum\Database\Seeder\SeederDiscovery;
+use Quantum\Database\Seeder\SeederRunner;
 use Quantum\Database\Security\DatabaseSecurityContext;
 use Quantum\Database\Support\ConnectionRegistry;
 use Quantum\Database\Trace\DatabaseDeadline;
@@ -67,6 +74,59 @@ final class DatabaseServiceProvider extends ServiceProvider
             connection: $app->make(ConnectionInterface::class),
             discovery: $app->make(MigrationDiscovery::class),
             repository: $app->make(MigrationRepository::class),
+        ));
+
+        $this->app->singleton(SeederDiscovery::class, function (Application $app): SeederDiscovery {
+            $paths = $app->config('database.seeders.paths', ['database/seeders']);
+            $classes = $app->config('database.seeders.classes', []);
+
+            return new SeederDiscovery(
+                basePath: $app->basePath(),
+                paths: is_array($paths) ? array_values($paths) : ['database/seeders'],
+                classes: is_array($classes) ? array_values($classes) : [],
+            );
+        });
+
+        $this->app->singleton(SeederRunner::class, fn(Application $app): SeederRunner => new SeederRunner(
+            app: $app,
+            connection: $app->make(ConnectionInterface::class),
+            discovery: $app->make(SeederDiscovery::class),
+            factories: $app->make(FactoryManager::class),
+        ));
+
+        $this->app->singleton(FactoryDiscovery::class, function (Application $app): FactoryDiscovery {
+            $paths = $app->config('database.factories.paths', ['database/factories']);
+            $classes = $app->config('database.factories.classes', []);
+
+            return new FactoryDiscovery(
+                basePath: $app->basePath(),
+                paths: is_array($paths) ? array_values($paths) : ['database/factories'],
+                classes: is_array($classes) ? array_values($classes) : [],
+            );
+        });
+
+        $this->app->singleton(FactoryManager::class, fn(Application $app): FactoryManager => new FactoryManager(
+            app: $app,
+            discovery: $app->make(FactoryDiscovery::class),
+            defaultSeed: (int) $app->config('database.factories.default_seed', 12345),
+        ));
+
+        $this->app->singleton(SchemaIntrospectorInterface::class, function (Application $app): SchemaIntrospectorInterface {
+            $connection = $app->make(ConnectionInterface::class);
+            $connection->connect();
+
+            return match ($connection->getDriverInfo()->driverName) {
+                'sqlite' => new SqliteSchemaIntrospector($connection),
+                default => throw new \RuntimeException(sprintf(
+                    'Schema introspection is not implemented yet for driver [%s].',
+                    $connection->getDriverInfo()->driverName,
+                )),
+            };
+        });
+
+        $this->app->singleton(SchemaManager::class, fn(Application $app): SchemaManager => new SchemaManager(
+            connection: $app->make(ConnectionInterface::class),
+            introspector: $app->make(SchemaIntrospectorInterface::class),
         ));
 
         $this->app->scoped(DatabaseContext::class, function (Application $app): DatabaseContext {
@@ -131,6 +191,12 @@ final class DatabaseServiceProvider extends ServiceProvider
             \Quantum\Console\Commands\Database\DbMigrateCommand::class,
             \Quantum\Console\Commands\Database\DbRollbackCommand::class,
             \Quantum\Console\Commands\Database\DbMigrateStatusCommand::class,
+            \Quantum\Console\Commands\Database\DbSeedCommand::class,
+            \Quantum\Console\Commands\Database\DbSeedStatusCommand::class,
+            \Quantum\Console\Commands\Database\DbFactoryStatusCommand::class,
+            \Quantum\Console\Commands\Database\DbFactorySampleCommand::class,
+            \Quantum\Console\Commands\Database\DbSchemaStatusCommand::class,
+            \Quantum\Console\Commands\Database\DbSchemaDescribeCommand::class,
         ];
     }
 

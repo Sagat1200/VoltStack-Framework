@@ -12,10 +12,11 @@ final readonly class SchemaDiffAction
         public ?string $column,
         public string $message,
         public ?string $sql = null,
+        public ?string $rollbackSql = null,
     ) {}
 
     /**
-     * @return array{kind:string,table:string,column:?string,message:string,sql:?string}
+     * @return array{kind:string,table:string,column:?string,message:string,sql:?string,rollback_sql:?string}
      */
     public function toArray(): array
     {
@@ -25,6 +26,7 @@ final readonly class SchemaDiffAction
             'column' => $this->column,
             'message' => $this->message,
             'sql' => $this->sql,
+            'rollback_sql' => $this->rollbackSql,
         ];
     }
 }

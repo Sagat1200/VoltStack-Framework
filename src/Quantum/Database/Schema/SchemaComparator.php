@@ -80,6 +80,8 @@ final class SchemaComparator
                 );
             }
 
+            $this->appendObsoleteForeignKeyActions($existing, $desiredTable, $actions, $desired->driver);
+            $this->appendObsoleteIndexActions($existing, $desiredTable, $actions, $desired->driver);
             $this->appendMissingIndexActions($desiredTable, $actions, $desired->driver, $existing);
             $this->appendMissingForeignKeyActions($desiredTable, $actions, $desired->driver, $existing);
         }
@@ -189,6 +191,7 @@ final class SchemaComparator
                     $desiredTable->qualifiedName(),
                 ),
                 sql: $this->createIndexSql($desiredTable, $desiredIndex, $driver),
+                rollbackSql: $this->dropIndexSql($desiredTable, $desiredIndex, $driver),
             );
         }
     }
@@ -210,6 +213,55 @@ final class SchemaComparator
                 column: implode(',', $desiredForeignKey->columns),
                 message: sprintf('Add missing foreign key [%s] on [%s].', $desiredForeignKey->name, $desiredTable->qualifiedName()),
                 sql: $this->addForeignKeySql($desiredTable, $desiredForeignKey, $driver),
+                rollbackSql: $this->dropForeignKeySql($desiredTable, $desiredForeignKey, $driver),
+            );
+        }
+    }
+
+    private function appendObsoleteIndexActions(
+        SchemaTable $actualTable,
+        SchemaTable $desiredTable,
+        array &$actions,
+        string $driver,
+    ): void {
+        foreach ($actualTable->indexes as $actualIndex) {
+            if ($actualIndex->primary) {
+                continue;
+            }
+
+            if ($this->desiredContainsIndex($desiredTable, $actualIndex)) {
+                continue;
+            }
+
+            $actions[] = new SchemaDiffAction(
+                kind: 'drop_index',
+                table: $desiredTable->qualifiedName(),
+                column: null,
+                message: sprintf('Drop obsolete index [%s] from [%s].', $actualIndex->name, $desiredTable->qualifiedName()),
+                sql: $this->dropIndexSql($desiredTable, $actualIndex, $driver),
+                rollbackSql: $this->createIndexSql($desiredTable, $actualIndex, $driver),
+            );
+        }
+    }
+
+    private function appendObsoleteForeignKeyActions(
+        SchemaTable $actualTable,
+        SchemaTable $desiredTable,
+        array &$actions,
+        string $driver,
+    ): void {
+        foreach ($actualTable->foreignKeys as $actualForeignKey) {
+            if ($this->desiredContainsForeignKey($desiredTable, $actualForeignKey)) {
+                continue;
+            }
+
+            $actions[] = new SchemaDiffAction(
+                kind: 'drop_foreign_key',
+                table: $desiredTable->qualifiedName(),
+                column: implode(',', $actualForeignKey->columns),
+                message: sprintf('Drop obsolete foreign key [%s] from [%s].', $actualForeignKey->name, $desiredTable->qualifiedName()),
+                sql: $this->dropForeignKeySql($desiredTable, $actualForeignKey, $driver),
+                rollbackSql: $this->addForeignKeySql($desiredTable, $actualForeignKey, $driver),
             );
         }
     }
@@ -225,10 +277,32 @@ final class SchemaComparator
         return false;
     }
 
+    private function desiredContainsIndex(SchemaTable $desiredTable, SchemaIndex $actualIndex): bool
+    {
+        foreach ($desiredTable->indexes as $desiredIndex) {
+            if ($this->indexSignature($desiredIndex) === $this->indexSignature($actualIndex)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function hasEquivalentForeignKey(SchemaTable $actualTable, SchemaForeignKey $desiredForeignKey): bool
     {
         foreach ($actualTable->foreignKeys as $actualForeignKey) {
             if ($this->foreignKeySignature($actualForeignKey) === $this->foreignKeySignature($desiredForeignKey)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function desiredContainsForeignKey(SchemaTable $desiredTable, SchemaForeignKey $actualForeignKey): bool
+    {
+        foreach ($desiredTable->foreignKeys as $desiredForeignKey) {
+            if ($this->foreignKeySignature($desiredForeignKey) === $this->foreignKeySignature($actualForeignKey)) {
                 return true;
             }
         }
@@ -371,6 +445,41 @@ final class SchemaComparator
         }
 
         return $sql;
+    }
+
+    private function dropIndexSql(SchemaTable $table, SchemaIndex $index, string $driver): ?string
+    {
+        return match ($driver) {
+            'mysql', 'mariadb' => sprintf(
+                'DROP INDEX %s ON %s',
+                $this->quoteIdentifier($index->name, $driver),
+                $this->quoteQualifiedIdentifier($table->schemaName, $table->name, $driver),
+            ),
+            default => sprintf(
+                'DROP INDEX %s',
+                $this->quoteQualifiedIdentifier($table->schemaName, $index->name, $driver),
+            ),
+        };
+    }
+
+    private function dropForeignKeySql(SchemaTable $table, SchemaForeignKey $foreignKey, string $driver): ?string
+    {
+        if ($driver === 'sqlite') {
+            return null;
+        }
+
+        return match ($driver) {
+            'mysql', 'mariadb' => sprintf(
+                'ALTER TABLE %s DROP FOREIGN KEY %s',
+                $this->quoteQualifiedIdentifier($table->schemaName, $table->name, $driver),
+                $this->quoteIdentifier($foreignKey->name, $driver),
+            ),
+            default => sprintf(
+                'ALTER TABLE %s DROP CONSTRAINT %s',
+                $this->quoteQualifiedIdentifier($table->schemaName, $table->name, $driver),
+                $this->quoteIdentifier($foreignKey->name, $driver),
+            ),
+        };
     }
 
     private function normalizeDefault(mixed $value): string

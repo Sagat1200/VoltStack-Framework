@@ -75,11 +75,15 @@ final class DbMakeMigrationCommand extends Command
                 throw new \RuntimeException(sprintf('Migration file [%s] already exists.', $path));
             }
 
-            $comments = $input->hasOption('diff')
-                ? $this->buildDiffComments($app)
-                : ['// Fill in SQL or ORM-aware operations here.'];
+            if ($input->hasOption('diff')) {
+                [$comments, $upStatements, $downStatements] = $this->buildDiffPlan($app);
+            } else {
+                $comments = ['// Fill in SQL or ORM-aware operations here.'];
+                $upStatements = ['// Fill in SQL or ORM-aware operations here.'];
+                $downStatements = ['// Write the rollback counterpart here.'];
+            }
 
-            $contents = $this->renderMigration($class, $version, $name, $comments);
+            $contents = $this->renderMigration($class, $version, $name, $comments, $upStatements, $downStatements);
             file_put_contents($path, $contents);
 
             $output->writeln(sprintf('Migración creada: %s', $path));
@@ -103,9 +107,9 @@ final class DbMakeMigrationCommand extends Command
     }
 
     /**
-     * @return list<string>
+     * @return array{0:list<string>,1:list<string>,2:list<string>}
      */
-    private function buildDiffComments(Application $app): array
+    private function buildDiffPlan(Application $app): array
     {
         try {
             /** @var SchemaManager $schema */
@@ -115,7 +119,11 @@ final class DbMakeMigrationCommand extends Command
             /** @var EntityDiscovery $discovery */
             $discovery = $app->make(EntityDiscovery::class);
         } catch (BindingResolutionException $e) {
-            return ['// Diff no disponible: falta OrmServiceProvider o metadata ORM configurada.'];
+            return [
+                ['// Diff no disponible: falta OrmServiceProvider o metadata ORM configurada.'],
+                ['// Diff no disponible: falta OrmServiceProvider o metadata ORM configurada.'],
+                ['// Write the rollback counterpart here.'],
+            ];
         }
 
         $report = (new SchemaComparator())->compare(
@@ -128,7 +136,11 @@ final class DbMakeMigrationCommand extends Command
         );
 
         if ($report->isEmpty()) {
-            return ['// No differences detected between live schema and ORM metadata.'];
+            return [
+                ['// No differences detected between live schema and ORM metadata.'],
+                ['// No SQL generable para el diff actual.'],
+                ['// Write the rollback counterpart here.'],
+            ];
         }
 
         $lines = ['// Suggested plan from current schema diff:'];
@@ -140,15 +152,27 @@ final class DbMakeMigrationCommand extends Command
             }
         }
 
-        return $lines;
+        [$upStatements, $downStatements] = $this->renderDiffStatements($report->actions);
+
+        return [$lines, $upStatements, $downStatements];
     }
 
     /**
      * @param list<string> $comments
+     * @param list<string> $upStatements
+     * @param list<string> $downStatements
      */
-    private function renderMigration(string $class, string $version, string $name, array $comments): string
-    {
+    private function renderMigration(
+        string $class,
+        string $version,
+        string $name,
+        array $comments,
+        array $upStatements,
+        array $downStatements,
+    ): string {
         $commentBlock = implode("\n        ", $comments);
+        $upBlock = implode("\n        ", $upStatements);
+        $downBlock = implode("\n        ", $downStatements);
 
         return <<<PHP
 <?php
@@ -173,14 +197,56 @@ final class {$class} extends AbstractMigration
     public function up(ConnectionInterface \$connection): void
     {
         {$commentBlock}
+        
+        {$upBlock}
     }
 
     public function down(ConnectionInterface \$connection): void
     {
-        // Write the rollback counterpart here.
+        {$downBlock}
     }
 }
 PHP;
+    }
+
+    /**
+     * @param list<\Quantum\Database\Schema\SchemaDiffAction> $actions
+     * @return array{0:list<string>,1:list<string>}
+     */
+    private function renderDiffStatements(array $actions): array
+    {
+        $up = [];
+        $down = [];
+        $rollbackComments = [];
+
+        foreach ($actions as $action) {
+            if ($action->sql !== null && trim($action->sql) !== '') {
+                $up[] = sprintf('$connection->executeStatement(%s);', var_export($action->sql, true));
+            } else {
+                $up[] = '// Manual step: ' . $action->message;
+            }
+
+            if ($action->rollbackSql !== null && trim($action->rollbackSql) !== '') {
+                array_unshift($down, sprintf('$connection->executeStatement(%s);', var_export($action->rollbackSql, true)));
+                continue;
+            }
+
+            $rollbackComments[] = '// Manual rollback: ' . $action->message;
+        }
+
+        if ($up === []) {
+            $up[] = '// No SQL generable para el diff actual.';
+        }
+
+        if ($down === []) {
+            $down[] = '// Write the rollback counterpart here.';
+        }
+
+        foreach ($rollbackComments as $comment) {
+            $down[] = $comment;
+        }
+
+        return [$up, $down];
     }
 
     private function slug(string $name): string

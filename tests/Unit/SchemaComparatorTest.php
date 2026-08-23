@@ -104,4 +104,57 @@ final class SchemaComparatorTest extends TestCase
         self::assertSame('add_foreign_key', $actions[1]->kind);
         self::assertSame('ALTER TABLE "public"."users" ADD CONSTRAINT "fk_users_account_id" FOREIGN KEY ("account_id") REFERENCES "public"."accounts" ("id") ON DELETE CASCADE', $actions[1]->sql);
     }
+
+    public function test_it_reports_obsolete_indexes_and_foreign_keys_with_rollback_sql(): void
+    {
+        $actual = new SchemaSnapshot('pgsql', [
+            new SchemaTable(
+                name: 'users',
+                schemaName: 'public',
+                columns: [
+                    new SchemaColumn('id', 'INTEGER', false, null, true, true, 0, 'integer'),
+                    new SchemaColumn('email', 'VARCHAR(255)', false, null, false, false, 1, 'varchar', 255),
+                    new SchemaColumn('account_id', 'INTEGER', false, null, false, false, 2, 'integer'),
+                ],
+                primaryKey: ['id'],
+                indexes: [
+                    new SchemaIndex('idx_users_email_shadow', ['email']),
+                ],
+                foreignKeys: [
+                    new SchemaForeignKey('fk_users_account_id_legacy', ['account_id'], 'accounts_legacy', ['id'], 'public', onDelete: 'RESTRICT'),
+                ],
+            ),
+        ]);
+
+        $desired = new SchemaSnapshot('pgsql', [
+            new SchemaTable(
+                name: 'users',
+                schemaName: 'public',
+                columns: [
+                    new SchemaColumn('id', 'INTEGER', false, null, true, true, 0, 'integer'),
+                    new SchemaColumn('email', 'VARCHAR(255)', false, null, false, false, 1, 'varchar', 255),
+                    new SchemaColumn('account_id', 'INTEGER', false, null, false, false, 2, 'integer'),
+                ],
+                primaryKey: ['id'],
+                indexes: [
+                    new SchemaIndex('uq_users_email', ['email'], unique: true),
+                ],
+                foreignKeys: [
+                    new SchemaForeignKey('fk_users_account_id', ['account_id'], 'accounts', ['id'], 'public', onDelete: 'CASCADE'),
+                ],
+            ),
+        ]);
+
+        $actions = (new SchemaComparator())->compare($actual, $desired)->actions;
+
+        self::assertCount(4, $actions);
+        self::assertSame('drop_foreign_key', $actions[0]->kind);
+        self::assertSame('ALTER TABLE "public"."users" DROP CONSTRAINT "fk_users_account_id_legacy"', $actions[0]->sql);
+        self::assertSame('ALTER TABLE "public"."users" ADD CONSTRAINT "fk_users_account_id_legacy" FOREIGN KEY ("account_id") REFERENCES "public"."accounts_legacy" ("id") ON DELETE RESTRICT', $actions[0]->rollbackSql);
+        self::assertSame('drop_index', $actions[1]->kind);
+        self::assertSame('DROP INDEX "public"."idx_users_email_shadow"', $actions[1]->sql);
+        self::assertSame('CREATE INDEX "idx_users_email_shadow" ON "public"."users" ("email")', $actions[1]->rollbackSql);
+        self::assertSame('create_index', $actions[2]->kind);
+        self::assertSame('add_foreign_key', $actions[3]->kind);
+    }
 }

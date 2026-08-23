@@ -43,10 +43,12 @@ final class DatabaseSchemaDiffCommandTest extends TestCase
         self::assertSame(0, $diff['exit']);
         self::assertStringContainsString('ADD_COLUMN', $diff['stdout']);
         self::assertStringContainsString('CREATE_TABLE', $diff['stdout']);
+        self::assertStringContainsString('DROP_INDEX', $diff['stdout']);
         self::assertStringContainsString('f20_users.status', $diff['stdout']);
         self::assertStringContainsString('f20_logs', $diff['stdout']);
 
         self::assertSame(0, $sql['exit']);
+        self::assertStringContainsString('DROP INDEX "idx_f20_users_email_shadow";', $sql['stdout']);
         self::assertStringContainsString('ALTER TABLE "f20_users" ADD COLUMN "status" TEXT NOT NULL DEFAULT \'draft\';', $sql['stdout']);
         self::assertStringContainsString('CREATE TABLE "f20_logs"', $sql['stdout']);
     }
@@ -61,6 +63,7 @@ final class DatabaseSchemaDiffCommandTest extends TestCase
         self::assertSame(0, $json['exit']);
         self::assertStringContainsString('"kind": "add_column"', $json['stdout']);
         self::assertStringContainsString('"kind": "create_table"', $json['stdout']);
+        self::assertStringContainsString('"kind": "drop_index"', $json['stdout']);
         self::assertStringContainsString('"table": "f20_users"', $json['stdout']);
     }
 
@@ -81,8 +84,10 @@ final class DatabaseSchemaDiffCommandTest extends TestCase
         $contents = file_get_contents($files[0]);
         self::assertIsString($contents);
         self::assertStringContainsString('Suggested plan from current schema diff', $contents);
-        self::assertStringContainsString('ALTER TABLE "f20_users" ADD COLUMN "status" TEXT NOT NULL DEFAULT \'draft\';', $contents);
-        self::assertStringContainsString('CREATE TABLE "f20_logs"', $contents);
+        self::assertStringContainsString('$connection->executeStatement(\'DROP INDEX "idx_f20_users_email_shadow"\');', $contents);
+        self::assertStringContainsString('$connection->executeStatement(\'ALTER TABLE "f20_users" ADD COLUMN "status" TEXT NOT NULL DEFAULT \\\'draft\\\'\');', $contents);
+        self::assertStringContainsString('$connection->executeStatement(\'CREATE TABLE "f20_logs" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "message" TEXT NOT NULL)\');', $contents);
+        self::assertStringContainsString('$connection->executeStatement(\'CREATE INDEX "idx_f20_users_email_shadow" ON "f20_users" ("email")\');', $contents);
     }
 
     public function test_schema_diff_projects_many_to_many_pivot_table_indexes_and_foreign_keys(): void
@@ -129,6 +134,7 @@ final class DatabaseSchemaDiffCommandTest extends TestCase
     {
         $db = $app->make(ConnectionInterface::class);
         $db->executeStatement('CREATE TABLE IF NOT EXISTS f20_users (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL)');
+        $db->executeStatement('CREATE INDEX IF NOT EXISTS idx_f20_users_email_shadow ON f20_users (email)');
     }
 
     private function makeTempProject(string $basePath): void

@@ -8,6 +8,9 @@ use Quantum\Database\DatabaseContext;
 use Quantum\Database\Dbal\Contract\ConnectionInterface;
 use Quantum\Database\Dialect\DialectInterface;
 use Quantum\Http\Request;
+use Quantum\Database\Migration\MigrationDiscovery;
+use Quantum\Database\Migration\MigrationRepository;
+use Quantum\Database\Migration\MigrationRunner;
 use Quantum\Database\Security\DatabaseSecurityContext;
 use Quantum\Database\Support\ConnectionRegistry;
 use Quantum\Database\Trace\DatabaseDeadline;
@@ -39,6 +42,32 @@ final class DatabaseServiceProvider extends ServiceProvider
         $this->app->alias(ConnectionInterface::class, 'db');
 
         $this->app->singleton(DialectInterface::class, fn(Application $app): DialectInterface => $app->make(ConnectionRegistry::class)->dialect());
+
+        $this->app->singleton(MigrationDiscovery::class, function (Application $app): MigrationDiscovery {
+            $paths = $app->config('database.migrations.paths', ['database/migrations']);
+            $classes = $app->config('database.migrations.classes', []);
+
+            return new MigrationDiscovery(
+                basePath: $app->basePath(),
+                paths: is_array($paths) ? array_values($paths) : ['database/migrations'],
+                classes: is_array($classes) ? array_values($classes) : [],
+            );
+        });
+
+        $this->app->singleton(MigrationRepository::class, function (Application $app): MigrationRepository {
+            $table = (string) $app->config('database.migrations.table', 'framework_migrations');
+
+            return new MigrationRepository(
+                connection: $app->make(ConnectionInterface::class),
+                tableName: $table,
+            );
+        });
+
+        $this->app->singleton(MigrationRunner::class, fn(Application $app): MigrationRunner => new MigrationRunner(
+            connection: $app->make(ConnectionInterface::class),
+            discovery: $app->make(MigrationDiscovery::class),
+            repository: $app->make(MigrationRepository::class),
+        ));
 
         $this->app->scoped(DatabaseContext::class, function (Application $app): DatabaseContext {
             $registry = $app->make(ConnectionRegistry::class);
@@ -99,6 +128,9 @@ final class DatabaseServiceProvider extends ServiceProvider
         return [
             \Quantum\Console\Commands\Database\DbPingCommand::class,
             \Quantum\Console\Commands\Database\DbQueryCommand::class,
+            \Quantum\Console\Commands\Database\DbMigrateCommand::class,
+            \Quantum\Console\Commands\Database\DbRollbackCommand::class,
+            \Quantum\Console\Commands\Database\DbMigrateStatusCommand::class,
         ];
     }
 

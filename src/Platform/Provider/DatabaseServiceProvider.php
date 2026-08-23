@@ -197,6 +197,8 @@ final class DatabaseServiceProvider extends ServiceProvider
             \Quantum\Console\Commands\Database\DbFactorySampleCommand::class,
             \Quantum\Console\Commands\Database\DbSchemaStatusCommand::class,
             \Quantum\Console\Commands\Database\DbSchemaDescribeCommand::class,
+            \Quantum\Console\Commands\Database\DbSchemaDiffCommand::class,
+            \Quantum\Console\Commands\Database\DbMakeMigrationCommand::class,
         ];
     }
 

@@ -26,13 +26,19 @@ final class OrmSchemaProjector
         $entities = $this->discovery->discover();
         $this->metadata->warmup($entities);
 
-        $tables = [];
+        $tablesByKey = [];
 
         foreach ($entities as $entityClass) {
             $meta = $this->metadata->getMetadataFor($entityClass);
-            $tables[] = $this->projectEntity($meta);
+            $table = $this->projectEntity($meta);
+            $tablesByKey[strtolower($table->qualifiedName())] = $table;
+
+            foreach ($this->projectPivotTables($meta) as $pivotTable) {
+                $tablesByKey[strtolower($pivotTable->qualifiedName())] = $pivotTable;
+            }
         }
 
+        $tables = array_values($tablesByKey);
         usort($tables, static fn(SchemaTable $a, SchemaTable $b): int => strcmp($a->name, $b->name));
 
         return new SchemaSnapshot(
@@ -142,7 +148,7 @@ final class OrmSchemaProjector
         }
 
         if (count($primary) > 1) {
-            $quoted = array_map($this->quoteIdentifier(...), $primary);
+            $quoted = array_map(fn(string $identifier): string => $this->quoteIdentifier($identifier), $primary);
             $createParts[] = 'PRIMARY KEY (' . implode(', ', $quoted) . ')';
         }
 
@@ -155,6 +161,114 @@ final class OrmSchemaProjector
             indexes: $indexes,
             foreignKeys: $foreignKeys,
         );
+    }
+
+    /**
+     * @return list<SchemaTable>
+     */
+    private function projectPivotTables(CompiledEntityMetadata $meta): array
+    {
+        $tables = [];
+
+        foreach ($meta->associations as $association) {
+            if (
+                $association->kind !== AssociationKind::ManyToMany
+                || !$association->isOwningSide
+                || $association->joinTableName === null
+                || $association->joinTableName === ''
+            ) {
+                continue;
+            }
+
+            $ownerIds = $meta->getIdentifierProperties();
+            $targetMeta = $this->metadata->getMetadataFor($association->targetEntityClass);
+            $targetIds = $targetMeta->getIdentifierProperties();
+
+            if (count($ownerIds) !== 1 || count($targetIds) !== 1) {
+                continue;
+            }
+
+            $ownerId = $ownerIds[0];
+            $targetId = $targetIds[0];
+            $ownerJoinColumn = $association->joinColumnThisSide ?? ($association->propertyName . '_id');
+            $targetJoinColumn = $association->joinColumnTargetSide ?? ($this->defaultTargetJoinColumn($targetMeta) . '_id');
+            $ownerType = $this->typeDefinition($ownerId->type);
+            $targetType = $this->typeDefinition($targetId->type);
+
+            $columns = [
+                new SchemaColumn(
+                    name: $ownerJoinColumn,
+                    nativeType: $ownerType['native_type'],
+                    nullable: false,
+                    defaultValue: null,
+                    primaryKey: false,
+                    autoIncrement: false,
+                    ordinal: 0,
+                    portableType: $ownerType['portable_type'],
+                    length: $ownerType['length'],
+                    precision: $ownerType['precision'],
+                    scale: $ownerType['scale'],
+                ),
+                new SchemaColumn(
+                    name: $targetJoinColumn,
+                    nativeType: $targetType['native_type'],
+                    nullable: false,
+                    defaultValue: null,
+                    primaryKey: false,
+                    autoIncrement: false,
+                    ordinal: 1,
+                    portableType: $targetType['portable_type'],
+                    length: $targetType['length'],
+                    precision: $targetType['precision'],
+                    scale: $targetType['scale'],
+                ),
+            ];
+
+            $indexes = [
+                new SchemaIndex(
+                    name: sprintf('idx_%s_%s', $association->joinTableName, $ownerJoinColumn),
+                    columns: [$ownerJoinColumn],
+                ),
+                new SchemaIndex(
+                    name: sprintf('idx_%s_%s', $association->joinTableName, $targetJoinColumn),
+                    columns: [$targetJoinColumn],
+                ),
+            ];
+
+            $foreignKeys = [
+                new SchemaForeignKey(
+                    name: sprintf('fk_%s_%s', $association->joinTableName, $ownerJoinColumn),
+                    columns: [$ownerJoinColumn],
+                    referencedTable: $meta->tableName,
+                    referencedColumns: [$ownerId->columnName],
+                    referencedSchema: $meta->schemaName,
+                ),
+                new SchemaForeignKey(
+                    name: sprintf('fk_%s_%s', $association->joinTableName, $targetJoinColumn),
+                    columns: [$targetJoinColumn],
+                    referencedTable: $targetMeta->tableName,
+                    referencedColumns: [$targetId->columnName],
+                    referencedSchema: $targetMeta->schemaName,
+                ),
+            ];
+
+            $createParts = array_map(
+                fn(SchemaColumn $column): string => $this->columnSql($column),
+                $columns,
+            );
+
+            $tables[] = new SchemaTable(
+                name: $association->joinTableName,
+                columns: $columns,
+                primaryKey: [],
+                createSql: 'CREATE TABLE ' . $this->quoteIdentifier($association->joinTableName) . ' (' . implode(', ', $createParts) . ')',
+                schemaName: null,
+                indexes: $indexes,
+                foreignKeys: $foreignKeys,
+            );
+        }
+
+        return $tables;
     }
 
     /**
@@ -279,6 +393,14 @@ final class OrmSchemaProjector
     {
         return $association->isOwningSide
             && in_array($association->kind, [AssociationKind::ManyToOne, AssociationKind::OneToOne], true);
+    }
+
+    private function defaultTargetJoinColumn(CompiledEntityMetadata $meta): string
+    {
+        $parts = explode('\\', $meta->entityClass);
+        $shortName = (string) end($parts);
+
+        return strtolower($shortName);
     }
 
     private function columnSql(SchemaColumn $column, bool $inlinePrimaryKey = false): string

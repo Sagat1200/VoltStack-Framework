@@ -85,6 +85,22 @@ final class DatabaseSchemaDiffCommandTest extends TestCase
         self::assertStringContainsString('CREATE TABLE "f20_logs"', $contents);
     }
 
+    public function test_schema_diff_projects_many_to_many_pivot_table_indexes_and_foreign_keys(): void
+    {
+        $json = $this->runConsole(['volt', 'db:schema-diff', '--json']);
+        $sql = $this->runConsole(['volt', 'db:schema-diff', '--sql']);
+
+        self::assertSame(0, $json['exit']);
+        self::assertStringContainsString('"table": "f20_post_tags"', $json['stdout']);
+        self::assertStringContainsString('"kind": "create_index"', $json['stdout']);
+        self::assertStringContainsString('"kind": "add_foreign_key"', $json['stdout']);
+
+        self::assertSame(0, $sql['exit']);
+        self::assertStringContainsString('CREATE TABLE "f20_post_tags" ("post_id" INTEGER NOT NULL, "tag_id" INTEGER NOT NULL);', $sql['stdout']);
+        self::assertStringContainsString('CREATE INDEX "idx_f20_post_tags_post_id" ON "f20_post_tags" ("post_id");', $sql['stdout']);
+        self::assertStringContainsString('CREATE INDEX "idx_f20_post_tags_tag_id" ON "f20_post_tags" ("tag_id");', $sql['stdout']);
+    }
+
     /**
      * @param array<int, string> $argv
      * @return array{exit:int,stdout:string,stderr:string}
@@ -161,6 +177,8 @@ final class DatabaseSchemaDiffCommandTest extends TestCase
                     'entities' => [
                         F20DiffUser::class,
                         F20DiffLog::class,
+                        F20DiffPost::class,
+                        F20DiffTag::class,
                     ],
                     'cache_dir' => $cacheDir,
                     'custom_types' => [],
@@ -286,4 +304,42 @@ final class F20DiffLog
 
     #[ORM\Column(name: 'message', type: 'string')]
     public string $message = '';
+}
+
+#[ORM\Entity(table: 'f20_posts')]
+final class F20DiffPost
+{
+    #[ORM\Id]
+    #[ORM\Column(name: 'id', type: 'int')]
+    #[ORM\GeneratedValue('IDENTITY')]
+    public ?int $id = null;
+
+    #[ORM\Column(name: 'title', type: 'string')]
+    public string $title = '';
+
+    /** @var array<int,F20DiffTag> */
+    #[ORM\ManyToMany(
+        targetEntity: F20DiffTag::class,
+        inversedBy: 'posts',
+        joinTable: 'f20_post_tags',
+        joinColumn: 'post_id',
+        inverseJoinColumn: 'tag_id',
+    )]
+    public array $tags = [];
+}
+
+#[ORM\Entity(table: 'f20_tags')]
+final class F20DiffTag
+{
+    #[ORM\Id]
+    #[ORM\Column(name: 'id', type: 'int')]
+    #[ORM\GeneratedValue('IDENTITY')]
+    public ?int $id = null;
+
+    #[ORM\Column(name: 'name', type: 'string')]
+    public string $name = '';
+
+    /** @var array<int,F20DiffPost> */
+    #[ORM\ManyToMany(targetEntity: F20DiffPost::class, mappedBy: 'tags')]
+    public array $posts = [];
 }

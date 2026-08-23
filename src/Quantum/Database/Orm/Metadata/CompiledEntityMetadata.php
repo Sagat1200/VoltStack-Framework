@@ -44,7 +44,7 @@ final readonly class CompiledEntityMetadata
     {
         return array_values(array_filter(
             $this->properties,
-            static fn($p): bool => in_array($p->propertyName, $this->identifierPropertyNames, true),
+            fn(CompiledPropertyMetadata $property): bool => in_array($property->propertyName, $this->identifierPropertyNames, true),
         ));
     }
 

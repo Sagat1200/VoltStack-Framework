@@ -106,6 +106,35 @@ final class DatabaseSchemaDiffCommandTest extends TestCase
         self::assertStringContainsString('CREATE INDEX "idx_f20_post_tags_tag_id" ON "f20_post_tags" ("tag_id");', $sql['stdout']);
     }
 
+    public function test_make_migration_marks_sqlite_rebuild_diff_as_non_transactional(): void
+    {
+        $app = $this->loadApp();
+        $this->createLiveSchemaForSqliteRebuild($app);
+
+        $diff = $this->runConsole(['volt', 'db:schema-diff', '--json']);
+        $make = $this->runConsole(['volt', 'db:make-migration', 'rebuild_f20_user_schema', '--diff']);
+
+        self::assertSame(0, $diff['exit']);
+        self::assertStringContainsString('"kind": "rebuild_table"', $diff['stdout']);
+        self::assertStringContainsString('"requires_non_transactional": true', $diff['stdout']);
+        self::assertStringContainsString('dropped columns=legacy_code', $diff['stdout']);
+        self::assertStringContainsString('"kind": "drop_table"', $diff['stdout']);
+
+        self::assertSame(0, $make['exit']);
+        $files = glob($this->basePath . DIRECTORY_SEPARATOR . 'database' . DIRECTORY_SEPARATOR . 'migrations' . DIRECTORY_SEPARATOR . '*.php');
+        self::assertIsArray($files);
+        self::assertCount(1, $files);
+
+        $contents = file_get_contents($files[0]);
+        self::assertIsString($contents);
+        self::assertStringContainsString('public function isTransactional(): bool', $contents);
+        self::assertStringContainsString('return false;', $contents);
+        self::assertStringContainsString('$connection->executeStatement(\'PRAGMA foreign_keys = OFF\');', $contents);
+        self::assertStringContainsString('$connection->executeStatement(\'ALTER TABLE "f20_users" RENAME TO "__vs_rebuild_f20_users"\');', $contents);
+        self::assertStringContainsString('$connection->executeStatement(\'CREATE TABLE "f20_users" ("id" INTEGER PRIMARY KEY AUTOINCREMENT', $contents);
+        self::assertStringContainsString('$connection->executeStatement(\'DROP TABLE "f20_legacy_notes"\');', $contents);
+    }
+
     /**
      * @param array<int, string> $argv
      * @return array{exit:int,stdout:string,stderr:string}
@@ -135,6 +164,13 @@ final class DatabaseSchemaDiffCommandTest extends TestCase
         $db = $app->make(ConnectionInterface::class);
         $db->executeStatement('CREATE TABLE IF NOT EXISTS f20_users (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NOT NULL)');
         $db->executeStatement('CREATE INDEX IF NOT EXISTS idx_f20_users_email_shadow ON f20_users (email)');
+    }
+
+    private function createLiveSchemaForSqliteRebuild(Application $app): void
+    {
+        $db = $app->make(ConnectionInterface::class);
+        $db->executeStatement('CREATE TABLE IF NOT EXISTS f20_users (id INTEGER PRIMARY KEY AUTOINCREMENT, email TEXT NULL, status TEXT NULL, legacy_code TEXT NULL)');
+        $db->executeStatement('CREATE TABLE IF NOT EXISTS f20_legacy_notes (id INTEGER PRIMARY KEY AUTOINCREMENT, body TEXT NOT NULL)');
     }
 
     private function makeTempProject(string $basePath): void

@@ -13,8 +13,7 @@ final readonly class SchemaDiffReport
         public SchemaSnapshot $actual,
         public SchemaSnapshot $desired,
         public array $actions,
-    ) {
-    }
+    ) {}
 
     public function isEmpty(): bool
     {
@@ -29,6 +28,15 @@ final readonly class SchemaDiffReport
         $sql = [];
 
         foreach ($this->actions as $action) {
+            if ($action->sqlBatch !== []) {
+                foreach ($action->sqlBatch as $statement) {
+                    if (trim($statement) !== '') {
+                        $sql[] = $statement;
+                    }
+                }
+                continue;
+            }
+
             if ($action->sql !== null && trim($action->sql) !== '') {
                 $sql[] = $action->sql;
             }
@@ -38,7 +46,7 @@ final readonly class SchemaDiffReport
     }
 
     /**
-     * @return array{actual:array{driver:string,tables:list<array{name:string,primary_key:list<string>,columns:list<array{name:string,type:string,nullable:bool,default:mixed,primary:bool,auto_increment:bool,ordinal:int}>,create_sql:?string}>},desired:array{driver:string,tables:list<array{name:string,primary_key:list<string>,columns:list<array{name:string,type:string,nullable:bool,default:mixed,primary:bool,auto_increment:bool,ordinal:int}>,create_sql:?string}>},actions:list<array{kind:string,table:string,column:?string,message:string,sql:?string}>}
+     * @return array{actual:array{driver:string,tables:list<array{name:string,primary_key:list<string>,columns:list<array{name:string,type:string,nullable:bool,default:mixed,primary:bool,auto_increment:bool,ordinal:int}>,create_sql:?string}>},desired:array{driver:string,tables:list<array{name:string,primary_key:list<string>,columns:list<array{name:string,type:string,nullable:bool,default:mixed,primary:bool,auto_increment:bool,ordinal:int}>,create_sql:?string}>},actions:list<array{kind:string,table:string,column:?string,message:string,sql:?string,rollback_sql:?string,sql_batch:list<string>,rollback_sql_batch:list<string>,requires_non_transactional:bool}>}
      */
     public function toArray(): array
     {

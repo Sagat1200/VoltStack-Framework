@@ -156,6 +156,7 @@ final class OrmSchemaProjector
             name: $meta->tableName,
             columns: $columns,
             primaryKey: $primary,
+            primaryKeyName: $this->projectPrimaryKeyName($meta->tableName, $primary),
             createSql: 'CREATE TABLE ' . $this->quoteQualifiedIdentifier($meta->schemaName, $meta->tableName) . ' (' . implode(', ', $createParts) . ')',
             schemaName: $meta->schemaName,
             indexes: $indexes,
@@ -261,6 +262,7 @@ final class OrmSchemaProjector
                 name: $association->joinTableName,
                 columns: $columns,
                 primaryKey: [],
+                primaryKeyName: null,
                 createSql: 'CREATE TABLE ' . $this->quoteIdentifier($association->joinTableName) . ' (' . implode(', ', $createParts) . ')',
                 schemaName: null,
                 indexes: $indexes,
@@ -401,6 +403,22 @@ final class OrmSchemaProjector
         $shortName = (string) end($parts);
 
         return strtolower($shortName);
+    }
+
+    /**
+     * @param list<string> $primary
+     */
+    private function projectPrimaryKeyName(string $tableName, array $primary): ?string
+    {
+        if ($primary === []) {
+            return null;
+        }
+
+        return match ($this->driverName) {
+            'pgsql' => $tableName . '_pkey',
+            'mysql', 'mariadb' => 'PRIMARY',
+            default => null,
+        };
     }
 
     private function columnSql(SchemaColumn $column, bool $inlinePrimaryKey = false): string

@@ -87,6 +87,7 @@ final class SqliteSchemaIntrospector implements SchemaIntrospectorInterface
             name: $table,
             columns: $columns,
             primaryKey: array_values($primaryKey),
+            primaryKeyName: null,
             createSql: $createSql,
             indexes: $indexes,
             foreignKeys: $foreignKeys,

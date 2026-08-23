@@ -76,14 +76,15 @@ final class DbMakeMigrationCommand extends Command
             }
 
             if ($input->hasOption('diff')) {
-                [$comments, $upStatements, $downStatements] = $this->buildDiffPlan($app);
+                [$comments, $upStatements, $downStatements, $transactional] = $this->buildDiffPlan($app);
             } else {
                 $comments = ['// Fill in SQL or ORM-aware operations here.'];
                 $upStatements = ['// Fill in SQL or ORM-aware operations here.'];
                 $downStatements = ['// Write the rollback counterpart here.'];
+                $transactional = true;
             }
 
-            $contents = $this->renderMigration($class, $version, $name, $comments, $upStatements, $downStatements);
+            $contents = $this->renderMigration($class, $version, $name, $comments, $upStatements, $downStatements, $transactional);
             file_put_contents($path, $contents);
 
             $output->writeln(sprintf('Migración creada: %s', $path));
@@ -107,7 +108,7 @@ final class DbMakeMigrationCommand extends Command
     }
 
     /**
-     * @return array{0:list<string>,1:list<string>,2:list<string>}
+     * @return array{0:list<string>,1:list<string>,2:list<string>,3:bool}
      */
     private function buildDiffPlan(Application $app): array
     {
@@ -123,6 +124,7 @@ final class DbMakeMigrationCommand extends Command
                 ['// Diff no disponible: falta OrmServiceProvider o metadata ORM configurada.'],
                 ['// Diff no disponible: falta OrmServiceProvider o metadata ORM configurada.'],
                 ['// Write the rollback counterpart here.'],
+                true,
             ];
         }
 
@@ -140,6 +142,7 @@ final class DbMakeMigrationCommand extends Command
                 ['// No differences detected between live schema and ORM metadata.'],
                 ['// No SQL generable para el diff actual.'],
                 ['// Write the rollback counterpart here.'],
+                true,
             ];
         }
 
@@ -147,14 +150,18 @@ final class DbMakeMigrationCommand extends Command
 
         foreach ($report->actions as $action) {
             $lines[] = '// - ' . $action->message;
-            if ($action->sql !== null) {
+            if ($action->sqlBatch !== []) {
+                foreach ($action->sqlBatch as $statement) {
+                    $lines[] = '//   SQL: ' . $statement . ';';
+                }
+            } elseif ($action->sql !== null) {
                 $lines[] = '//   SQL: ' . $action->sql . ';';
             }
         }
 
-        [$upStatements, $downStatements] = $this->renderDiffStatements($report->actions);
+        [$upStatements, $downStatements, $transactional] = $this->renderDiffStatements($report->actions);
 
-        return [$lines, $upStatements, $downStatements];
+        return [$lines, $upStatements, $downStatements, $transactional];
     }
 
     /**
@@ -169,10 +176,14 @@ final class DbMakeMigrationCommand extends Command
         array $comments,
         array $upStatements,
         array $downStatements,
+        bool $transactional,
     ): string {
         $commentBlock = implode("\n        ", $comments);
         $upBlock = implode("\n        ", $upStatements);
         $downBlock = implode("\n        ", $downStatements);
+        $transactionalBlock = $transactional
+            ? ''
+            : "\n    public function isTransactional(): bool\n    {\n        return false;\n    }\n";
 
         return <<<PHP
 <?php
@@ -193,6 +204,7 @@ final class {$class} extends AbstractMigration
     {
         return '{$this->escapeString($name)}';
     }
+{$transactionalBlock}
 
     public function up(ConnectionInterface \$connection): void
     {
@@ -211,23 +223,34 @@ PHP;
 
     /**
      * @param list<\Quantum\Database\Schema\SchemaDiffAction> $actions
-     * @return array{0:list<string>,1:list<string>}
+     * @return array{0:list<string>,1:list<string>,2:bool}
      */
     private function renderDiffStatements(array $actions): array
     {
         $up = [];
         $down = [];
         $rollbackComments = [];
+        $transactional = true;
 
         foreach ($actions as $action) {
-            if ($action->sql !== null && trim($action->sql) !== '') {
-                $up[] = sprintf('$connection->executeStatement(%s);', var_export($action->sql, true));
+            if ($action->requiresNonTransactional) {
+                $transactional = false;
+            }
+
+            $forwardStatements = $action->sqlBatch !== [] ? $action->sqlBatch : (($action->sql !== null && trim($action->sql) !== '') ? [$action->sql] : []);
+            if ($forwardStatements !== []) {
+                foreach ($forwardStatements as $statement) {
+                    $up[] = sprintf('$connection->executeStatement(%s);', var_export($statement, true));
+                }
             } else {
                 $up[] = '// Manual step: ' . $action->message;
             }
 
-            if ($action->rollbackSql !== null && trim($action->rollbackSql) !== '') {
-                array_unshift($down, sprintf('$connection->executeStatement(%s);', var_export($action->rollbackSql, true)));
+            $rollbackStatements = $action->rollbackSqlBatch !== [] ? $action->rollbackSqlBatch : (($action->rollbackSql !== null && trim($action->rollbackSql) !== '') ? [$action->rollbackSql] : []);
+            if ($rollbackStatements !== []) {
+                foreach (array_reverse($rollbackStatements) as $statement) {
+                    array_unshift($down, sprintf('$connection->executeStatement(%s);', var_export($statement, true)));
+                }
                 continue;
             }
 
@@ -246,7 +269,7 @@ PHP;
             $down[] = $comment;
         }
 
-        return [$up, $down];
+        return [$up, $down, $transactional];
     }
 
     private function slug(string $name): string

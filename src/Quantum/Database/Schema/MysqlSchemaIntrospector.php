@@ -82,6 +82,7 @@ class MysqlSchemaIntrospector implements SchemaIntrospectorInterface
             name: $name,
             columns: $columns,
             primaryKey: $primaryKey,
+            primaryKeyName: $primaryKey !== [] ? 'PRIMARY' : null,
             createSql: null,
             schemaName: $resolvedSchema !== '' ? $resolvedSchema : null,
             indexes: $indexes,

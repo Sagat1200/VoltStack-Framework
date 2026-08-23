@@ -16,6 +16,7 @@ final readonly class SchemaTable
         public string $name,
         public array $columns,
         public array $primaryKey = [],
+        public ?string $primaryKeyName = null,
         public ?string $createSql = null,
         public ?string $schemaName = null,
         public array $indexes = [],
@@ -44,7 +45,7 @@ final readonly class SchemaTable
     }
 
     /**
-     * @return array{name:string,schema:?string,qualified_name:string,primary_key:list<string>,columns:list<array{name:string,type:string,portable_type:?string,nullable:bool,default:mixed,primary:bool,auto_increment:bool,ordinal:int,length:?int,precision:?int,scale:?int}>,indexes:list<array{name:string,columns:list<string>,unique:bool,primary:bool}>,foreign_keys:list<array{name:string,columns:list<string>,referenced_table:string,referenced_columns:list<string>,referenced_schema:?string,on_update:?string,on_delete:?string}>,create_sql:?string}
+     * @return array{name:string,schema:?string,qualified_name:string,primary_key:list<string>,primary_key_name:?string,columns:list<array{name:string,type:string,portable_type:?string,nullable:bool,default:mixed,primary:bool,auto_increment:bool,ordinal:int,length:?int,precision:?int,scale:?int}>,indexes:list<array{name:string,columns:list<string>,unique:bool,primary:bool}>,foreign_keys:list<array{name:string,columns:list<string>,referenced_table:string,referenced_columns:list<string>,referenced_schema:?string,on_update:?string,on_delete:?string}>,create_sql:?string}
      */
     public function toArray(): array
     {
@@ -53,6 +54,7 @@ final readonly class SchemaTable
             'schema' => $this->schemaName,
             'qualified_name' => $this->qualifiedName(),
             'primary_key' => $this->primaryKey,
+            'primary_key_name' => $this->primaryKeyName,
             'columns' => array_map(static fn(SchemaColumn $column): array => $column->toArray(), $this->columns),
             'indexes' => array_map(static fn(SchemaIndex $index): array => $index->toArray(), $this->indexes),
             'foreign_keys' => array_map(static fn(SchemaForeignKey $foreignKey): array => $foreignKey->toArray(), $this->foreignKeys),

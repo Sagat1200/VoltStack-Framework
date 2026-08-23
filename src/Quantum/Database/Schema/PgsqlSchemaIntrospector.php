@@ -75,6 +75,7 @@ final class PgsqlSchemaIntrospector implements SchemaIntrospectorInterface
 
         $resolvedSchema = (string) ($rows[0]['table_schema'] ?? $schema ?? 'public');
         $primaryKey = $this->loadPrimaryKey($resolvedSchema, $name);
+        $primaryKeyName = $this->loadPrimaryKeyName($resolvedSchema, $name);
         $indexes = $this->loadIndexes($resolvedSchema, $name);
         $foreignKeys = $this->loadForeignKeys($resolvedSchema, $name);
 
@@ -100,6 +101,7 @@ final class PgsqlSchemaIntrospector implements SchemaIntrospectorInterface
             name: $name,
             columns: $normalizedColumns,
             primaryKey: $primaryKey,
+            primaryKeyName: $primaryKeyName,
             createSql: null,
             schemaName: $resolvedSchema,
             indexes: $indexes,
@@ -198,6 +200,16 @@ final class PgsqlSchemaIntrospector implements SchemaIntrospectorInterface
         )->fetchAllAssoc();
 
         return array_values(array_map(static fn(array $row): string => (string) ($row['column_name'] ?? ''), $rows));
+    }
+
+    private function loadPrimaryKeyName(string $schema, string $table): ?string
+    {
+        $row = $this->connection->executeQuery(
+            "SELECT tc.constraint_name FROM information_schema.table_constraints tc WHERE tc.constraint_type = 'PRIMARY KEY' AND tc.table_schema = ? AND tc.table_name = ? LIMIT 1",
+            [$schema, $table],
+        )->fetchOneAssoc();
+
+        return is_array($row) ? (string) ($row['constraint_name'] ?? '') ?: null : null;
     }
 
     /**

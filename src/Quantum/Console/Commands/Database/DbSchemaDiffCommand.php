@@ -78,7 +78,9 @@ final class DbSchemaDiffCommand extends Command
 
             foreach ($report->actions as $action) {
                 $line = sprintf('[%s] %s', strtoupper($action->kind), $action->message);
-                if ($action->sql !== null) {
+                if ($action->sqlBatch !== []) {
+                    $line .= ' SQL=' . implode(' | ', $action->sqlBatch);
+                } elseif ($action->sql !== null) {
                     $line .= ' SQL=' . $action->sql;
                 }
 

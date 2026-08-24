@@ -10,8 +10,7 @@ use Quantum\Console\Output;
 use Quantum\Database\Migration\MigrationDiscovery;
 use Quantum\Database\Migration\MigrationExecutionException;
 use Quantum\Database\Migration\MigrationLock;
-use Quantum\Database\Migration\MigrationPlan;
-use Quantum\Database\Migration\MigrationPlanItem;
+use Quantum\Database\Migration\MigrationRecoveryPlan;
 use Quantum\Database\Migration\MigrationRecoveryStore;
 use Quantum\Database\Migration\MigrationRepository;
 use Quantum\Database\Migration\MigrationRunner;
@@ -19,21 +18,21 @@ use Quantum\Database\Migration\MigrationVerificationResult;
 use Quantum\Database\Support\ConnectionRegistry;
 use VoltStack\Framework\Application;
 
-final class DbMigrateCommand extends Command
+final class DbMigrateRecoverCommand extends Command
 {
     public function name(): string
     {
-        return 'db:migrate';
+        return 'db:migrate-recover';
     }
 
     public function description(): string
     {
-        return 'Ejecuta migraciones pendientes y registra el historial aplicado.';
+        return 'Reanuda, revierte parcialmente o reconcilia una ejecucion de migraciones fallida.';
     }
 
     public function usage(): string
     {
-        return 'db:migrate [--connection=primary] [--pretend] [--step=1]';
+        return 'db:migrate-recover [--connection=primary] [--pretend] [--strategy=auto]';
     }
 
     public function category(): string
@@ -45,8 +44,8 @@ final class DbMigrateCommand extends Command
     {
         return [
             '--connection=' => 'Nombre de la conexión configurada a utilizar.',
-            '--pretend' => 'Muestra qué migraciones se ejecutarían sin aplicarlas.',
-            '--step=' => 'Limita la cantidad de migraciones pendientes a ejecutar.',
+            '--pretend' => 'Muestra el recovery plan sin ejecutarlo.',
+            '--strategy=' => 'Estrategia: auto, resume, rollback-partial, continue o reconcile.',
         ];
     }
 
@@ -55,25 +54,24 @@ final class DbMigrateCommand extends Command
         $app = $this->bootstrapApplication();
         $runner = $this->makeRunner($app, $this->resolveConnectionName($input));
         $pretend = $input->hasOption('pretend');
-        $step = $this->resolvePositiveIntOption($input, 'step');
+        $strategy = $this->resolveStrategy($input);
 
         try {
-            $plan = $runner->planMigrate($step);
-
-            if (!$plan->hasItems()) {
-                $output->writeln('No hay migraciones pendientes.');
+            $plan = $runner->planRecovery($strategy);
+            if ($plan === null) {
+                $output->writeln('No hay recovery plan pendiente.');
                 return 0;
             }
 
             $this->renderPlan($plan, $output);
 
             if ($pretend) {
-                $output->writeln('Dry-run activado: no se aplicaron cambios.');
+                $output->writeln('Dry-run activado: no se ejecutaron cambios.');
                 return 0;
             }
 
-            $result = $runner->executePlan($plan);
-            $this->renderExecutionResult($result, $output);
+            $result = $runner->recover(false, $strategy);
+            $this->renderResult($plan, $result, $output);
 
             return 0;
         } catch (MigrationExecutionException $e) {
@@ -81,7 +79,7 @@ final class DbMigrateCommand extends Command
             $advice = $e->recoveryAdvice();
 
             $output->error(sprintf(
-                'db:migrate failed: failure=%s retryable=%s phase=%s fingerprint=%s batch=%s position=%d/%d completed=%d failed_version=%s failed_migration=%s message=%s',
+                'db:migrate-recover failed: failure=%s retryable=%s phase=%s fingerprint=%s batch=%s position=%d/%d completed=%d failed_version=%s failed_migration=%s message=%s',
                 $e->failure->value,
                 $e->retryable ? 'yes' : 'no',
                 $checkpoint->phase,
@@ -102,9 +100,10 @@ final class DbMigrateCommand extends Command
             foreach ($advice->recommendedCommands as $command) {
                 $output->error(sprintf('  next: %s', $command));
             }
+
             return 1;
         } catch (\Throwable $e) {
-            $output->error(sprintf('db:migrate failed: %s', $e->getMessage()));
+            $output->error(sprintf('db:migrate-recover failed: %s', $e->getMessage()));
             return 1;
         }
     }
@@ -145,58 +144,79 @@ final class DbMigrateCommand extends Command
         );
     }
 
-    private function renderPlan(MigrationPlan $plan, Output $output): void
+    private function renderPlan(MigrationRecoveryPlan $plan, Output $output): void
     {
-        $output->writeln(sprintf('Plan de migración: %d pendiente(s).', $plan->plannedCount()));
-        $output->writeln(sprintf('Fingerprint: %s', $plan->fingerprint));
         $output->writeln(sprintf(
-            'Contexto: driver=%s version=%s historial=%s batch=%s tx=%d non-tx=%d',
-            $plan->driver->driverName,
-            $plan->driver->serverVersion !== '' ? $plan->driver->serverVersion : 'unknown',
-            $plan->repositoryTable,
-            $plan->batchNumber !== null ? (string) $plan->batchNumber : 'n/a',
-            $plan->transactionalCount(),
-            $plan->nonTransactionalCount(),
+            'Recovery plan: action=%s source=%s phase=%s fingerprint=%s batch=%s items=%d',
+            $plan->action,
+            $plan->sourceOperation,
+            $plan->checkpoint->phase,
+            $plan->checkpoint->fingerprint,
+            $plan->checkpoint->batchNumber !== null ? (string) $plan->checkpoint->batchNumber : 'n/a',
+            $plan->plannedCount(),
         ));
+        $output->writeln(sprintf('Summary: %s', $plan->summary));
 
-        foreach ($plan->items as $item) {
-            $this->renderPlanItem($item, $output);
+        foreach ($plan->versions as $version) {
+            $output->writeln(sprintf('  - %s', $version));
         }
     }
 
     /**
      * @param array{
+     *   action:string,
      *   planned:int,
+     *   fingerprint:string,
      *   applied:list<string>,
-     *   verification:MigrationVerificationResult
+     *   rolled_back:list<string>,
+     *   reconciled:list<string>,
+     *   pretended:list<string>,
+     *   verification:MigrationVerificationResult|null
      * } $result
      */
-    private function renderExecutionResult(array $result, Output $output): void
+    private function renderResult(MigrationRecoveryPlan $plan, array $result, Output $output): void
     {
-        $output->writeln(sprintf('Migraciones aplicadas: %d', count($result['applied'])));
-        foreach ($result['applied'] as $version) {
-            $output->writeln(sprintf('  - %s', $version));
+        if ($result['action'] === 'resume_migrate') {
+            $output->writeln(sprintf('Recovery completado: migraciones aplicadas=%d', count($result['applied'])));
+            foreach ($result['applied'] as $version) {
+                $output->writeln(sprintf('  - %s', $version));
+            }
+
+            $verification = $result['verification'];
+            if ($verification instanceof MigrationVerificationResult) {
+                $output->writeln(sprintf(
+                    'Verify: OK fingerprint=%s batch=%s verified=%d remaining_pending=%d',
+                    $verification->fingerprint,
+                    $verification->batchNumber !== null ? (string) $verification->batchNumber : 'n/a',
+                    $verification->verifiedCount(),
+                    $verification->remainingPendingCount(),
+                ));
+            }
+
+            return;
         }
 
-        $verification = $result['verification'];
-        $output->writeln(sprintf(
-            'Verify: OK fingerprint=%s batch=%s verified=%d remaining_pending=%d',
-            $verification->fingerprint,
-            $verification->batchNumber !== null ? (string) $verification->batchNumber : 'n/a',
-            $verification->verifiedCount(),
-            $verification->remainingPendingCount(),
-        ));
-    }
+        if (in_array($result['action'], ['rollback_partial', 'continue_rollback'], true)) {
+            $output->writeln(sprintf(
+                'Recovery completado: action=%s rolled_back=%d',
+                $result['action'],
+                count($result['rolled_back']),
+            ));
+            foreach ($result['rolled_back'] as $version) {
+                $output->writeln(sprintf('  - %s', $version));
+            }
 
-    private function renderPlanItem(MigrationPlanItem $item, Output $output): void
-    {
+            return;
+        }
+
         $output->writeln(sprintf(
-            '  - [%s] %s %s (%s)',
-            $item->isTransactional() ? 'tx' : 'non-tx',
-            $item->version(),
-            $item->description(),
-            $item->migrationClass(),
+            'Recovery completado: action=%s reconciled=%d',
+            $plan->action,
+            count($result['reconciled']),
         ));
+        foreach ($result['reconciled'] as $version) {
+            $output->writeln(sprintf('  - %s', $version));
+        }
     }
 
     private function resolveConnectionName(Input $input): ?string
@@ -204,14 +224,8 @@ final class DbMigrateCommand extends Command
         return is_string($input->option('connection')) ? (string) $input->option('connection') : null;
     }
 
-    private function resolvePositiveIntOption(Input $input, string $option): ?int
+    private function resolveStrategy(Input $input): ?string
     {
-        $value = $input->option($option);
-        if (!is_string($value) || trim($value) === '') {
-            return null;
-        }
-
-        $int = (int) $value;
-        return $int > 0 ? $int : null;
+        return is_string($input->option('strategy')) ? (string) $input->option('strategy') : null;
     }
 }

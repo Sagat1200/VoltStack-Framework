@@ -33,7 +33,9 @@ final class MigrationExecutionException extends \RuntimeException
         $commands = ['db:migrate-status'];
 
         if ($checkpoint->completedCount() > 0) {
+            $commands[] = 'db:migrate-recover';
             $commands[] = 'db:migrate';
+            $commands[] = 'db:migrate-recover --strategy=rollback-partial';
             $commands[] = sprintf('db:rollback --step=%d', $checkpoint->completedCount());
 
             return new MigrationRecoveryAdvice(
@@ -43,6 +45,7 @@ final class MigrationExecutionException extends \RuntimeException
             );
         }
 
+        $commands[] = 'db:migrate-recover';
         $commands[] = 'db:migrate';
 
         return new MigrationRecoveryAdvice(
@@ -55,7 +58,7 @@ final class MigrationExecutionException extends \RuntimeException
     private function rollbackRecoveryAdvice(): MigrationRecoveryAdvice
     {
         $checkpoint = $this->checkpoint;
-        $commands = ['db:migrate-status', 'db:rollback'];
+        $commands = ['db:migrate-status', 'db:migrate-recover', 'db:rollback'];
 
         return new MigrationRecoveryAdvice(
             strategy: $checkpoint->completedCount() > 0 ? 'continue_rollback' : 'fix_and_retry_rollback',
@@ -69,7 +72,7 @@ final class MigrationExecutionException extends \RuntimeException
     private function verifyRecoveryAdvice(): MigrationRecoveryAdvice
     {
         $checkpoint = $this->checkpoint;
-        $commands = ['db:migrate-status'];
+        $commands = ['db:migrate-status', 'db:migrate-recover --strategy=reconcile'];
 
         if ($checkpoint->completedCount() > 0) {
             $commands[] = sprintf('db:rollback --step=%d', $checkpoint->completedCount());

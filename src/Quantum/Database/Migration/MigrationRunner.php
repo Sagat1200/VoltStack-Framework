@@ -15,8 +15,9 @@ final class MigrationRunner
         private readonly MigrationDiscovery $discovery,
         private readonly MigrationRepository $repository,
         private readonly ?MigrationLock $lock = null,
-    ) {}
-
+        private readonly ?MigrationRecoveryStore $recoveryStore = null,
+    ) {
+    }
 
     /**
      * @return list<array{
@@ -49,7 +50,7 @@ final class MigrationRunner
     }
 
     /**
-     * @return array{planned:int,applied:list<string>,pretended:list<string>}
+     * @return array{planned:int,applied:list<string>,pretended:list<string>,plan:MigrationPlan}
      */
     public function migrate(bool $pretend = false, ?int $step = null): array
     {
@@ -126,6 +127,8 @@ final class MigrationRunner
 
         return $this->withExecutionLock(function () use ($plan): array {
             if (!$plan->hasItems()) {
+                $this->clearRecoveryState();
+
                 return [
                     'planned' => 0,
                     'applied' => [],
@@ -173,6 +176,8 @@ final class MigrationRunner
                 );
             }
 
+            $this->clearRecoveryState();
+
             return [
                 'planned' => $plan->plannedCount(),
                 'applied' => $appliedVersions,
@@ -198,22 +203,10 @@ final class MigrationRunner
             ];
         }
 
-        $all = [];
-        foreach ($this->discovery->discover() as $migration) {
-            $all[$migration->version()] = $migration;
-        }
-
-        $target = [];
-        foreach ($records as $record) {
-            if (!isset($all[$record->version])) {
-                throw new \RuntimeException(sprintf(
-                    'Applied migration version [%s] is missing from discovery and cannot be rolled back.',
-                    $record->version,
-                ));
-            }
-
-            $target[] = $all[$record->version];
-        }
+        $target = $this->resolveRollbackTargetVersions(array_map(
+            static fn(MigrationRecord $record): string => $record->version,
+            $records,
+        ));
 
         if ($pretend) {
             return [
@@ -223,33 +216,62 @@ final class MigrationRunner
             ];
         }
 
-        return $this->withExecutionLock(function () use ($target, $step): array {
-            $rolledBack = [];
-            $fingerprint = $this->rollbackFingerprint($target, $step);
+        return $this->executeRollbackMigrations($target, $this->rollbackFingerprint($target, $step));
+    }
 
-            try {
-                foreach ($target as $migration) {
-                    $this->runDown($migration);
-                    $rolledBack[] = $migration->version();
-                }
-            } catch (\Throwable $e) {
-                $failedMigration = $target[count($rolledBack)] ?? null;
+    public function recoveryState(): ?MigrationRecoveryState
+    {
+        return $this->recoveryStore?->load();
+    }
 
-                throw $this->mapRollbackFailure(
-                    throwable: $e,
-                    fingerprint: $fingerprint,
-                    rolledBackVersions: $rolledBack,
-                    failedMigration: $failedMigration,
-                    plannedCount: count($target),
-                );
-            }
+    public function planRecovery(?string $strategy = null): ?MigrationRecoveryPlan
+    {
+        $state = $this->recoveryState();
+        if ($state === null) {
+            return null;
+        }
 
+        return $this->buildRecoveryPlan($state, $strategy);
+    }
+
+    /**
+     * @return array{
+     *   action:string,
+     *   planned:int,
+     *   fingerprint:string,
+     *   applied:list<string>,
+     *   rolled_back:list<string>,
+     *   reconciled:list<string>,
+     *   pretended:list<string>,
+     *   verification:MigrationVerificationResult|null
+     * }
+     */
+    public function recover(bool $pretend = false, ?string $strategy = null): array
+    {
+        $plan = $this->planRecovery($strategy);
+        if ($plan === null) {
+            throw new \RuntimeException('No migration recovery plan is currently recorded.');
+        }
+
+        if ($pretend) {
             return [
-                'planned' => count($target),
-                'rolled_back' => $rolledBack,
-                'pretended' => [],
+                'action' => $plan->action,
+                'planned' => $plan->plannedCount(),
+                'fingerprint' => $plan->checkpoint->fingerprint,
+                'applied' => [],
+                'rolled_back' => [],
+                'reconciled' => [],
+                'pretended' => $plan->versions,
+                'verification' => null,
             ];
-        });
+        }
+
+        return match ($plan->action) {
+            'resume_migrate' => $this->executeRecoveryMigratePlan($plan),
+            'rollback_partial', 'continue_rollback' => $this->executeRecoveryRollbackPlan($plan),
+            'reconcile_status' => $this->executeRecoveryReconciliation($plan),
+            default => throw new \RuntimeException(sprintf('Unsupported migration recovery action [%s].', $plan->action)),
+        };
     }
 
     private function runUp(MigrationInterface $migration, int $batch): void
@@ -383,6 +405,13 @@ final class MigrationRunner
             failedDescription: $failedItem?->description(),
         );
 
+        $this->persistRecoveryState(new MigrationRecoveryState(
+            operation: 'migrate',
+            checkpoint: $checkpoint,
+            targetVersions: $plan->versions(),
+            recordedAt: $this->timestampNow(),
+        ));
+
         $message = sprintf(
             'Migration %s failed [%s] at position %d/%d after %d completed step(s): %s',
             $phase,
@@ -411,6 +440,7 @@ final class MigrationRunner
         array $rolledBackVersions,
         ?MigrationInterface $failedMigration,
         int $plannedCount,
+        array $targetVersions,
     ): MigrationExecutionException {
         if ($throwable instanceof MigrationExecutionException) {
             return $throwable;
@@ -431,6 +461,13 @@ final class MigrationRunner
             failedMigration: $failedMigration !== null ? $failedMigration::class : null,
             failedDescription: $failedMigration?->description(),
         );
+
+        $this->persistRecoveryState(new MigrationRecoveryState(
+            operation: 'rollback',
+            checkpoint: $checkpoint,
+            targetVersions: array_values($targetVersions),
+            recordedAt: $this->timestampNow(),
+        ));
 
         $message = sprintf(
             'Migration rollback failed [%s] at position %d/%d after %d completed step(s): %s',
@@ -517,5 +554,344 @@ final class MigrationRunner
         } finally {
             $lease->release();
         }
+    }
+
+    private function buildRecoveryPlan(MigrationRecoveryState $state, ?string $strategy): MigrationRecoveryPlan
+    {
+        $selectedStrategy = $this->normalizeRecoveryStrategy($strategy);
+        $applied = $this->repository->appliedByVersion();
+
+        if ($state->checkpoint->phase === 'verify') {
+            return new MigrationRecoveryPlan(
+                action: 'reconcile_status',
+                sourceOperation: $state->operation,
+                checkpoint: $state->checkpoint,
+                targetVersions: $state->targetVersions,
+                versions: $state->targetVersions,
+                summary: 'Verifica y reconcilia el estado del historial antes de continuar con nuevas migraciones.',
+            );
+        }
+
+        if ($state->operation === 'migrate') {
+            if ($selectedStrategy === 'rollback-partial') {
+                $versions = array_values(array_reverse($state->checkpoint->completedVersions));
+
+                return new MigrationRecoveryPlan(
+                    action: 'rollback_partial',
+                    sourceOperation: 'migrate',
+                    checkpoint: $state->checkpoint,
+                    targetVersions: $state->targetVersions,
+                    versions: $versions,
+                    summary: 'Revierte solo las migraciones aplicadas por la ejecucion fallida para volver al punto inicial del plan.',
+                );
+            }
+
+            $versions = [];
+            foreach ($state->targetVersions as $version) {
+                if (!isset($applied[$version])) {
+                    $versions[] = $version;
+                }
+            }
+
+            if ($versions === [] || $selectedStrategy === 'reconcile') {
+                return new MigrationRecoveryPlan(
+                    action: 'reconcile_status',
+                    sourceOperation: 'migrate',
+                    checkpoint: $state->checkpoint,
+                    targetVersions: $state->targetVersions,
+                    versions: $state->targetVersions,
+                    summary: 'Confirma si el historial ya refleja el plan original y limpia el recovery pendiente.',
+                );
+            }
+
+            return new MigrationRecoveryPlan(
+                action: 'resume_migrate',
+                sourceOperation: 'migrate',
+                checkpoint: $state->checkpoint,
+                targetVersions: $state->targetVersions,
+                versions: $versions,
+                summary: 'Reanuda el plan original ejecutando solo las migraciones que siguen pendientes.',
+            );
+        }
+
+        $versions = [];
+        foreach ($state->targetVersions as $version) {
+            if (isset($applied[$version])) {
+                $versions[] = $version;
+            }
+        }
+
+        if ($versions === [] || $selectedStrategy === 'reconcile') {
+            return new MigrationRecoveryPlan(
+                action: 'reconcile_status',
+                sourceOperation: 'rollback',
+                checkpoint: $state->checkpoint,
+                targetVersions: $state->targetVersions,
+                versions: $state->targetVersions,
+                summary: 'Confirma si el rollback objetivo ya quedo reconciliado y limpia el recovery pendiente.',
+            );
+        }
+
+        return new MigrationRecoveryPlan(
+            action: 'continue_rollback',
+            sourceOperation: 'rollback',
+            checkpoint: $state->checkpoint,
+            targetVersions: $state->targetVersions,
+            versions: $versions,
+            summary: 'Continua el rollback original usando las migraciones objetivo que siguen aplicadas.',
+        );
+    }
+
+    private function normalizeRecoveryStrategy(?string $strategy): string
+    {
+        $normalized = strtolower(trim((string) $strategy));
+        if ($normalized === '' || $normalized === 'auto') {
+            return 'auto';
+        }
+
+        if (!in_array($normalized, ['resume', 'rollback-partial', 'continue', 'reconcile'], true)) {
+            throw new \RuntimeException(sprintf('Unsupported migration recovery strategy [%s].', $strategy));
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * @return array<string, MigrationInterface>
+     */
+    private function discoveryMap(): array
+    {
+        $all = [];
+
+        foreach ($this->discovery->discover() as $migration) {
+            $all[$migration->version()] = $migration;
+        }
+
+        return $all;
+    }
+
+    /**
+     * @param list<string> $versions
+     * @return list<MigrationInterface>
+     */
+    private function resolveRollbackTargetVersions(array $versions): array
+    {
+        $all = $this->discoveryMap();
+        $target = [];
+
+        foreach ($versions as $version) {
+            if (!isset($all[$version])) {
+                throw new \RuntimeException(sprintf(
+                    'Applied migration version [%s] is missing from discovery and cannot be rolled back.',
+                    $version,
+                ));
+            }
+
+            $target[] = $all[$version];
+        }
+
+        return $target;
+    }
+
+    private function buildMigratePlanFromVersions(array $versions, ?int $batchNumber): MigrationPlan
+    {
+        $all = $this->discoveryMap();
+        $selected = [];
+
+        foreach ($versions as $version) {
+            if (!isset($all[$version])) {
+                throw new \RuntimeException(sprintf(
+                    'Migration version [%s] is missing from discovery and cannot be resumed.',
+                    $version,
+                ));
+            }
+
+            $selected[] = $all[$version];
+        }
+
+        return MigrationPlan::forMigrate(
+            driver: $this->connection->getDriverInfo(),
+            capabilities: $this->connection->getCapabilities(),
+            repositoryTable: $this->repository->tableName(),
+            batchNumber: $selected === [] ? null : $batchNumber,
+            stepLimit: null,
+            discoveredCount: count($all),
+            appliedCount: count($this->repository->appliedByVersion()),
+            migrations: $selected,
+        );
+    }
+
+    /**
+     * @param list<MigrationInterface> $target
+     * @return array{planned:int,rolled_back:list<string>,pretended:list<string>}
+     */
+    private function executeRollbackMigrations(array $target, ?string $fingerprint): array
+    {
+        return $this->withExecutionLock(function () use ($target, $fingerprint): array {
+            $rolledBack = [];
+            $effectiveFingerprint = $fingerprint ?? $this->rollbackFingerprint($target, null);
+            $targetVersions = array_map(static fn(MigrationInterface $migration): string => $migration->version(), $target);
+
+            try {
+                foreach ($target as $migration) {
+                    $this->runDown($migration);
+                    $rolledBack[] = $migration->version();
+                }
+            } catch (\Throwable $e) {
+                $failedMigration = $target[count($rolledBack)] ?? null;
+
+                throw $this->mapRollbackFailure(
+                    throwable: $e,
+                    fingerprint: $effectiveFingerprint,
+                    rolledBackVersions: $rolledBack,
+                    failedMigration: $failedMigration,
+                    plannedCount: count($target),
+                    targetVersions: $targetVersions,
+                );
+            }
+
+            $this->clearRecoveryState();
+
+            return [
+                'planned' => count($target),
+                'rolled_back' => $rolledBack,
+                'pretended' => [],
+            ];
+        });
+    }
+
+    /**
+     * @return array{
+     *   action:string,
+     *   planned:int,
+     *   fingerprint:string,
+     *   applied:list<string>,
+     *   rolled_back:list<string>,
+     *   reconciled:list<string>,
+     *   pretended:list<string>,
+     *   verification:MigrationVerificationResult|null
+     * }
+     */
+    private function executeRecoveryMigratePlan(MigrationRecoveryPlan $plan): array
+    {
+        $migratePlan = $this->buildMigratePlanFromVersions($plan->versions, $plan->checkpoint->batchNumber);
+        $result = $this->executePlan($migratePlan);
+
+        return [
+            'action' => $plan->action,
+            'planned' => $migratePlan->plannedCount(),
+            'fingerprint' => $migratePlan->fingerprint,
+            'applied' => $result['applied'],
+            'rolled_back' => [],
+            'reconciled' => [],
+            'pretended' => [],
+            'verification' => $result['verification'],
+        ];
+    }
+
+    /**
+     * @return array{
+     *   action:string,
+     *   planned:int,
+     *   fingerprint:string,
+     *   applied:list<string>,
+     *   rolled_back:list<string>,
+     *   reconciled:list<string>,
+     *   pretended:list<string>,
+     *   verification:MigrationVerificationResult|null
+     * }
+     */
+    private function executeRecoveryRollbackPlan(MigrationRecoveryPlan $plan): array
+    {
+        $target = $this->resolveRollbackTargetVersions($plan->versions);
+        $result = $this->executeRollbackMigrations($target, $plan->checkpoint->fingerprint);
+
+        return [
+            'action' => $plan->action,
+            'planned' => $result['planned'],
+            'fingerprint' => $plan->checkpoint->fingerprint,
+            'applied' => [],
+            'rolled_back' => $result['rolled_back'],
+            'reconciled' => [],
+            'pretended' => [],
+            'verification' => null,
+        ];
+    }
+
+    /**
+     * @return array{
+     *   action:string,
+     *   planned:int,
+     *   fingerprint:string,
+     *   applied:list<string>,
+     *   rolled_back:list<string>,
+     *   reconciled:list<string>,
+     *   pretended:list<string>,
+     *   verification:MigrationVerificationResult|null
+     * }
+     */
+    private function executeRecoveryReconciliation(MigrationRecoveryPlan $plan): array
+    {
+        $applied = $this->repository->appliedByVersion();
+
+        if ($plan->sourceOperation === 'migrate') {
+            $missing = [];
+
+            foreach ($plan->targetVersions as $version) {
+                if (!isset($applied[$version])) {
+                    $missing[] = $version;
+                }
+            }
+
+            if ($missing !== []) {
+                throw new \RuntimeException(sprintf(
+                    'Cannot reconcile migration recovery because version(s) are still missing from history: [%s].',
+                    implode(', ', $missing),
+                ));
+            }
+        } else {
+            $stillApplied = [];
+
+            foreach ($plan->targetVersions as $version) {
+                if (isset($applied[$version])) {
+                    $stillApplied[] = $version;
+                }
+            }
+
+            if ($stillApplied !== []) {
+                throw new \RuntimeException(sprintf(
+                    'Cannot reconcile rollback recovery because version(s) are still applied: [%s].',
+                    implode(', ', $stillApplied),
+                ));
+            }
+        }
+
+        $this->clearRecoveryState();
+
+        return [
+            'action' => $plan->action,
+            'planned' => count($plan->targetVersions),
+            'fingerprint' => $plan->checkpoint->fingerprint,
+            'applied' => [],
+            'rolled_back' => [],
+            'reconciled' => $plan->targetVersions,
+            'pretended' => [],
+            'verification' => null,
+        ];
+    }
+
+    private function persistRecoveryState(MigrationRecoveryState $state): void
+    {
+        $this->recoveryStore?->save($state);
+    }
+
+    private function clearRecoveryState(): void
+    {
+        $this->recoveryStore?->clear();
+    }
+
+    private function timestampNow(): string
+    {
+        return (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format(\DATE_ATOM);
     }
 }

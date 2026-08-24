@@ -10,6 +10,7 @@ use Quantum\Console\Output;
 use Quantum\Database\Migration\MigrationDiscovery;
 use Quantum\Database\Migration\MigrationExecutionException;
 use Quantum\Database\Migration\MigrationLock;
+use Quantum\Database\Migration\MigrationRecoveryStore;
 use Quantum\Database\Migration\MigrationRepository;
 use Quantum\Database\Migration\MigrationRunner;
 use Quantum\Database\Support\ConnectionRegistry;
@@ -107,6 +108,12 @@ final class DbRollbackCommand extends Command
             connection: $connection,
             repositoryTable: $table,
         );
+        $recovery = MigrationRecoveryStore::forConnection(
+            root: $app->storagePath('framework/database/migrations/recovery'),
+            connectionName: $connectionName,
+            connection: $connection,
+            repositoryTable: $table,
+        );
 
         return new MigrationRunner(
             $connection,
@@ -117,6 +124,7 @@ final class DbRollbackCommand extends Command
             ),
             new MigrationRepository($connection, $table),
             $lock,
+            $recovery,
         );
     }
 

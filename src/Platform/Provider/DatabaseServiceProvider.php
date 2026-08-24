@@ -11,6 +11,8 @@ use Quantum\Database\Factory\FactoryDiscovery;
 use Quantum\Database\Factory\FactoryManager;
 use Quantum\Http\Request;
 use Quantum\Database\Migration\MigrationDiscovery;
+use Quantum\Database\Migration\MigrationLock;
+use Quantum\Database\Migration\MigrationRecoveryStore;
 use Quantum\Database\Migration\MigrationRepository;
 use Quantum\Database\Migration\MigrationRunner;
 use Quantum\Database\Schema\SchemaIntrospectorInterface;
@@ -73,10 +75,38 @@ final class DatabaseServiceProvider extends ServiceProvider
             );
         });
 
+        $this->app->singleton(MigrationLock::class, function (Application $app): MigrationLock {
+            $connection = $app->make(ConnectionInterface::class);
+            $connection->connect();
+            $table = (string) $app->config('database.migrations.table', 'framework_migrations');
+
+            return MigrationLock::forConnection(
+                locksRoot: $app->storagePath('framework/database/migrations'),
+                connectionName: null,
+                connection: $connection,
+                repositoryTable: $table,
+            );
+        });
+
+        $this->app->singleton(MigrationRecoveryStore::class, function (Application $app): MigrationRecoveryStore {
+            $connection = $app->make(ConnectionInterface::class);
+            $connection->connect();
+            $table = (string) $app->config('database.migrations.table', 'framework_migrations');
+
+            return MigrationRecoveryStore::forConnection(
+                root: $app->storagePath('framework/database/migrations/recovery'),
+                connectionName: null,
+                connection: $connection,
+                repositoryTable: $table,
+            );
+        });
+
         $this->app->singleton(MigrationRunner::class, fn(Application $app): MigrationRunner => new MigrationRunner(
             connection: $app->make(ConnectionInterface::class),
             discovery: $app->make(MigrationDiscovery::class),
             repository: $app->make(MigrationRepository::class),
+            lock: $app->make(MigrationLock::class),
+            recoveryStore: $app->make(MigrationRecoveryStore::class),
         ));
 
         $this->app->singleton(SeederDiscovery::class, function (Application $app): SeederDiscovery {
@@ -195,6 +225,7 @@ final class DatabaseServiceProvider extends ServiceProvider
             \Quantum\Console\Commands\Database\DbPingCommand::class,
             \Quantum\Console\Commands\Database\DbQueryCommand::class,
             \Quantum\Console\Commands\Database\DbMigrateCommand::class,
+            \Quantum\Console\Commands\Database\DbMigrateRecoverCommand::class,
             \Quantum\Console\Commands\Database\DbRollbackCommand::class,
             \Quantum\Console\Commands\Database\DbMigrateStatusCommand::class,
             \Quantum\Console\Commands\Database\DbSeedCommand::class,

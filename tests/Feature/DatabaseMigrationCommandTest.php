@@ -8,8 +8,12 @@ use PHPUnit\Framework\TestCase;
 use Quantum\Console\ConsoleApplication;
 use Quantum\Console\Output;
 use Quantum\Database\Dbal\Contract\ConnectionInterface;
+use Quantum\Database\Migration\MigrationDiscovery;
 use Quantum\Database\Migration\MigrationLock;
 use Quantum\Database\Migration\MigrationLockLease;
+use Quantum\Database\Migration\MigrationRecoveryStore;
+use Quantum\Database\Migration\MigrationRepository;
+use Quantum\Database\Migration\MigrationRunner;
 use VoltStack\Framework\Application;
 use VoltStack\Framework\Provider\DatabaseServiceProvider;
 
@@ -149,7 +153,9 @@ final class DatabaseMigrationCommandTest extends TestCase
         self::assertStringContainsString('boom failing migration', $migrate['stderr']);
         self::assertStringContainsString('Recovery: strategy=resume_or_revert_partial', $migrate['stderr']);
         self::assertStringContainsString('next: db:migrate-status', $migrate['stderr']);
+        self::assertStringContainsString('next: db:migrate-recover', $migrate['stderr']);
         self::assertStringContainsString('next: db:migrate', $migrate['stderr']);
+        self::assertStringContainsString('next: db:migrate-recover --strategy=rollback-partial', $migrate['stderr']);
         self::assertStringContainsString('next: db:rollback --step=2', $migrate['stderr']);
 
         $status = $this->runConsole(['volt', 'db:migrate-status']);
@@ -182,6 +188,7 @@ final class DatabaseMigrationCommandTest extends TestCase
         self::assertStringContainsString('boom failing rollback', $rollback['stderr']);
         self::assertStringContainsString('Recovery: strategy=fix_and_retry_rollback', $rollback['stderr']);
         self::assertStringContainsString('next: db:migrate-status', $rollback['stderr']);
+        self::assertStringContainsString('next: db:migrate-recover', $rollback['stderr']);
         self::assertStringContainsString('next: db:rollback', $rollback['stderr']);
 
         $status = $this->runConsole(['volt', 'db:migrate-status']);
@@ -191,6 +198,76 @@ final class DatabaseMigrationCommandTest extends TestCase
         $app = $this->loadApp();
         self::assertTrue($this->tableExists($app, 'f16_users'));
         self::assertTrue($this->tableExists($app, 'f16_logs'));
+    }
+
+    public function test_cli_migrate_recover_resumes_failed_plan_and_clears_persisted_state(): void
+    {
+        $this->appendFailingMigration();
+
+        $failed = $this->runConsole(['volt', 'db:migrate']);
+        self::assertSame(1, $failed['exit']);
+
+        $runner = $this->makeRunner();
+        $plan = $runner->planRecovery();
+        self::assertInstanceOf(\Quantum\Database\Migration\MigrationRecoveryPlan::class, $plan);
+        self::assertSame('resume_migrate', $plan->action);
+        self::assertSame(['202608220003'], $plan->versions);
+
+        $this->replaceFailingMigrationWithWorkingVersion();
+
+        $recover = $this->runConsoleSubprocess(['db:migrate-recover']);
+        self::assertSame(0, $recover['exit']);
+        self::assertStringContainsString('Recovery plan: action=resume_migrate', $recover['stdout']);
+        self::assertStringContainsString('Recovery completado: migraciones aplicadas=1', $recover['stdout']);
+        self::assertStringContainsString('202608220003', $recover['stdout']);
+        self::assertStringContainsString('Verify: OK', $recover['stdout']);
+
+        self::assertNull($this->makeRunner()->planRecovery());
+
+        $status = $this->runConsole(['volt', 'db:migrate-status']);
+        self::assertStringContainsString('[APPLIED] 202608220001', $status['stdout']);
+        self::assertStringContainsString('[APPLIED] 202608220002', $status['stdout']);
+        self::assertStringContainsString('[APPLIED] 202608220003', $status['stdout']);
+
+        $app = $this->loadApp();
+        self::assertTrue($this->tableExists($app, 'f16_users'));
+        self::assertTrue($this->tableExists($app, 'f16_logs'));
+        self::assertTrue($this->tableExists($app, 'f16_failures'));
+    }
+
+    public function test_cli_migrate_recover_continues_failed_rollback(): void
+    {
+        $this->replaceLogsMigrationWithFailingRollback();
+
+        $migrate = $this->runConsole(['volt', 'db:migrate']);
+        self::assertSame(0, $migrate['exit']);
+
+        $failed = $this->runConsole(['volt', 'db:rollback']);
+        self::assertSame(1, $failed['exit']);
+
+        $plan = $this->makeRunner()->planRecovery();
+        self::assertInstanceOf(\Quantum\Database\Migration\MigrationRecoveryPlan::class, $plan);
+        self::assertSame('continue_rollback', $plan->action);
+        self::assertSame(['202608220002', '202608220001'], $plan->versions);
+
+        $this->restoreLogsMigration();
+
+        $recover = $this->runConsoleSubprocess(['db:migrate-recover']);
+        self::assertSame(0, $recover['exit']);
+        self::assertStringContainsString('Recovery plan: action=continue_rollback', $recover['stdout']);
+        self::assertStringContainsString('Recovery completado: action=continue_rollback rolled_back=2', $recover['stdout']);
+        self::assertStringContainsString('202608220002', $recover['stdout']);
+        self::assertStringContainsString('202608220001', $recover['stdout']);
+
+        self::assertNull($this->makeRunner()->planRecovery());
+
+        $status = $this->runConsole(['volt', 'db:migrate-status']);
+        self::assertStringContainsString('[PENDING] 202608220001', $status['stdout']);
+        self::assertStringContainsString('[PENDING] 202608220002', $status['stdout']);
+
+        $app = $this->loadApp();
+        self::assertFalse($this->tableExists($app, 'f16_users'));
+        self::assertFalse($this->tableExists($app, 'f16_logs'));
     }
 
     /**
@@ -206,6 +283,43 @@ final class DatabaseMigrationCommandTest extends TestCase
             'exit' => $console->run($argv),
             'stdout' => $output->stdout(),
             'stderr' => $output->stderr(),
+        ];
+    }
+
+    /**
+     * @param array<int, string> $argv
+     * @return array{exit:int,stdout:string,stderr:string}
+     */
+    private function runConsoleSubprocess(array $argv): array
+    {
+        $command = escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($this->basePath . DIRECTORY_SEPARATOR . 'volt');
+        foreach ($argv as $arg) {
+            $command .= ' ' . escapeshellarg($arg);
+        }
+
+        $descriptorSpec = [
+            0 => ['pipe', 'r'],
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w'],
+        ];
+
+        $process = proc_open($command, $descriptorSpec, $pipes, $this->basePath);
+        if (!is_resource($process)) {
+            throw new \RuntimeException('Failed to start console subprocess.');
+        }
+
+        fclose($pipes[0]);
+        $stdout = stream_get_contents($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+
+        $exit = proc_close($process);
+
+        return [
+            'exit' => is_int($exit) ? $exit : 1,
+            'stdout' => is_string($stdout) ? $stdout : '',
+            'stderr' => is_string($stderr) ? $stderr : '',
         ];
     }
 
@@ -246,6 +360,37 @@ final class DatabaseMigrationCommandTest extends TestCase
         return $lock->acquire();
     }
 
+    private function makeRunner(?string $connectionName = null): MigrationRunner
+    {
+        $app = $this->loadApp();
+        $connection = $app->make(ConnectionInterface::class);
+        $connection->connect();
+
+        $table = (string) $app->config('database.migrations.table', 'framework_migrations');
+
+        return new MigrationRunner(
+            $connection,
+            new MigrationDiscovery(
+                basePath: $app->basePath(),
+                paths: ['database/migrations'],
+                classes: [],
+            ),
+            new MigrationRepository($connection, $table),
+            MigrationLock::forConnection(
+                locksRoot: $app->storagePath('framework/database/migrations'),
+                connectionName: $connectionName,
+                connection: $connection,
+                repositoryTable: $table,
+            ),
+            MigrationRecoveryStore::forConnection(
+                root: $app->storagePath('framework/database/migrations/recovery'),
+                connectionName: $connectionName,
+                connection: $connection,
+                repositoryTable: $table,
+            ),
+        );
+    }
+
     private function appendFailingMigration(): void
     {
         $namespace = 'TempMigrations\\T' . substr(md5($this->basePath), 0, 8);
@@ -278,6 +423,50 @@ final class CreateF16FailuresMigration extends AbstractMigration
     public function up(ConnectionInterface $connection): void
     {
         throw new \RuntimeException('boom failing migration');
+    }
+
+    public function down(ConnectionInterface $connection): void
+    {
+        $connection->executeStatement('DROP TABLE IF EXISTS f16_failures');
+    }
+}
+PHP
+            , $namespace)
+        );
+    }
+
+    private function replaceFailingMigrationWithWorkingVersion(): void
+    {
+        $namespace = 'TempMigrations\\T' . substr(md5($this->basePath), 0, 8);
+        $migrationPath = $this->basePath . DIRECTORY_SEPARATOR . 'database' . DIRECTORY_SEPARATOR . 'migrations';
+
+        file_put_contents(
+            $migrationPath . DIRECTORY_SEPARATOR . '202608220003_create_f16_failures.php',
+            sprintf(<<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+namespace %s;
+
+use Quantum\Database\Dbal\Contract\ConnectionInterface;
+use Quantum\Database\Migration\AbstractMigration;
+
+final class CreateF16FailuresMigration extends AbstractMigration
+{
+    public function version(): string
+    {
+        return '202608220003';
+    }
+
+    public function description(): string
+    {
+        return 'Create failing table.';
+    }
+
+    public function up(ConnectionInterface $connection): void
+    {
+        $connection->executeStatement('CREATE TABLE IF NOT EXISTS f16_failures (id INTEGER PRIMARY KEY AUTOINCREMENT, message TEXT NOT NULL)');
     }
 
     public function down(ConnectionInterface $connection): void
@@ -339,6 +528,55 @@ PHP
         );
     }
 
+    private function restoreLogsMigration(): void
+    {
+        $namespace = 'TempMigrations\\T' . substr(md5($this->basePath), 0, 8);
+        $migrationPath = $this->basePath . DIRECTORY_SEPARATOR . 'database' . DIRECTORY_SEPARATOR . 'migrations';
+
+        file_put_contents(
+            $migrationPath . DIRECTORY_SEPARATOR . '202608220002_create_f16_logs.php',
+            sprintf(<<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+namespace %s;
+
+use Quantum\Database\Dbal\Contract\ConnectionInterface;
+use Quantum\Database\Migration\AbstractMigration;
+
+final class CreateF16LogsMigration extends AbstractMigration
+{
+    public function version(): string
+    {
+        return '202608220002';
+    }
+
+    public function description(): string
+    {
+        return 'Create f16 logs table.';
+    }
+
+    public function isTransactional(): bool
+    {
+        return false;
+    }
+
+    public function up(ConnectionInterface $connection): void
+    {
+        $connection->executeStatement('CREATE TABLE IF NOT EXISTS f16_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, message TEXT NOT NULL)');
+    }
+
+    public function down(ConnectionInterface $connection): void
+    {
+        $connection->executeStatement('DROP TABLE IF EXISTS f16_logs');
+    }
+}
+PHP
+            , $namespace)
+        );
+    }
+
     private function makeTempProject(string $basePath): void
     {
         $configPath = $basePath . DIRECTORY_SEPARATOR . 'config';
@@ -347,6 +585,7 @@ PHP
         $storagePath = $basePath . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'database';
         $sqlitePath = $storagePath . DIRECTORY_SEPARATOR . 'app.sqlite';
         $autoloadPath = getcwd() . DIRECTORY_SEPARATOR . 'vendor' . DIRECTORY_SEPARATOR . 'autoload.php';
+        $frameworkVoltPath = getcwd() . DIRECTORY_SEPARATOR . 'vendor' . DIRECTORY_SEPARATOR . 'voltstack' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'volt';
         $namespace = 'TempMigrations\\T' . substr(md5($basePath), 0, 8);
 
         mkdir($configPath, 0777, true);
@@ -431,6 +670,21 @@ PHP;
         file_put_contents(
             $bootstrapPath . DIRECTORY_SEPARATOR . 'app.php',
             sprintf($bootstrapPhp, var_export($autoloadPath, true), var_export($basePath, true))
+        );
+
+        file_put_contents(
+            $basePath . DIRECTORY_SEPARATOR . 'volt',
+            sprintf(<<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+define('VOLT_BASE_PATH', __DIR__);
+
+require __DIR__ . '/bootstrap/app.php';
+require %s;
+PHP
+            , var_export($frameworkVoltPath, true))
         );
 
         file_put_contents(

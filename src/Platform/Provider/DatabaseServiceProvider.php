@@ -15,6 +15,8 @@ use Quantum\Database\Migration\MigrationLock;
 use Quantum\Database\Migration\MigrationRecoveryStore;
 use Quantum\Database\Migration\MigrationRepository;
 use Quantum\Database\Migration\MigrationRunner;
+use Quantum\Database\Operation\DatabaseCircuitBreaker;
+use Quantum\Database\Operation\DatabaseOperationRuntime;
 use Quantum\Database\Schema\SchemaIntrospectorInterface;
 use Quantum\Database\Schema\SchemaManager;
 use Quantum\Database\Schema\MariadbSchemaIntrospector;
@@ -107,6 +109,11 @@ final class DatabaseServiceProvider extends ServiceProvider
             repository: $app->make(MigrationRepository::class),
             lock: $app->make(MigrationLock::class),
             recoveryStore: $app->make(MigrationRecoveryStore::class),
+        ));
+
+        $this->app->singleton(DatabaseCircuitBreaker::class, fn(): DatabaseCircuitBreaker => new DatabaseCircuitBreaker());
+        $this->app->singleton(DatabaseOperationRuntime::class, fn(Application $app): DatabaseOperationRuntime => new DatabaseOperationRuntime(
+            circuitBreaker: $app->make(DatabaseCircuitBreaker::class),
         ));
 
         $this->app->singleton(SeederDiscovery::class, function (Application $app): SeederDiscovery {

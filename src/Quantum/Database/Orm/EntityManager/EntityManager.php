@@ -30,6 +30,12 @@ use Quantum\Database\Orm\UnitOfWork\EntityPersister\IdentifierExtractor;
 use Quantum\Database\Orm\UnitOfWork\Event\NullLifecycleEventDispatcher;
 use Quantum\Database\Orm\UnitOfWork\IdentityMapInterface;
 use Quantum\Database\Orm\UnitOfWork\UnitOfWork;
+use Quantum\Database\Operation\DatabaseDiagnosticSnapshot;
+use Quantum\Database\Operation\DatabaseExecutionPolicy;
+use Quantum\Database\Operation\DatabaseOperationPlan;
+use Quantum\Database\Operation\DatabaseOperationRuntime;
+use Quantum\Database\Operation\OperationKind;
+use Quantum\Database\Operation\RawOperation;
 use Quantum\Database\Query\SelectQueryBuilder;
 
 /**
@@ -56,6 +62,9 @@ final class EntityManager implements EntityManagerInterface
     private readonly DialectInterface $dialect;
     private readonly DatabaseContext $context;
     private readonly ?string $tenantId;
+    private readonly ?DatabaseOperationRuntime $operationRuntime;
+    private ?DatabaseOperationPlan $lastReadPlan = null;
+    private ?DatabaseDiagnosticSnapshot $lastReadDiagnostic = null;
 
     public function __construct(
         private readonly ConnectionInterface $connection,
@@ -70,6 +79,7 @@ final class EntityManager implements EntityManagerInterface
         ?IdentityMapInterface $identityMap = null,
         ?SnapshotChangeTracker $changeTracker = null,
         ?EntityPersisterInterface $persister = null,
+        ?DatabaseOperationRuntime $operationRuntime = null,
     ) {
         $this->metadataFactory = $metadataFactory ?? new MetadataManager(
             loader: new AttributeMetadataLoader(),
@@ -83,6 +93,7 @@ final class EntityManager implements EntityManagerInterface
             $this->accessor,
         );
         $this->tenantId = $tenantId ?? $context?->tenantId;
+        $this->operationRuntime = $operationRuntime;
         $this->hydrator = $hydrator ?? new RowToEntityHydrator(
             $this->accessor,
             new IdentifierExtractor($this->accessor),
@@ -234,7 +245,7 @@ final class EntityManager implements EntityManagerInterface
     {
         $meta = $this->metadataFactory->getMetadataFor($entityClass);
         $query = $this->buildSelectQuery($meta, $criteria, $orderBy, $limit, $offset);
-        $rows = $this->connection->executeQuery($query['sql'], $query['params']);
+        $rows = $this->executeReadQuery($query['sql'], $query['params']);
         $entities = iterator_to_array(
             $this->hydrator->hydrateAll($rows, $meta, $this->identityMap, HydrationOptions::defaults()),
             false,
@@ -277,7 +288,7 @@ final class EntityManager implements EntityManagerInterface
     {
         $meta = $this->metadataFactory->getMetadataFor($entityClass);
         $query = $this->buildCountQuery($meta, $criteria);
-        $row = $this->connection->executeQuery($query['sql'], $query['params'])->fetchOneAssoc();
+        $row = $this->executeReadQuery($query['sql'], $query['params'])->fetchOneAssoc();
 
         if ($row === null) {
             return 0;
@@ -294,8 +305,18 @@ final class EntityManager implements EntityManagerInterface
     {
         $meta = $this->metadataFactory->getMetadataFor($entityClass);
 
-        return (new SelectQueryBuilder($this->connection, $this->context))
+        return (new SelectQueryBuilder($this->connection, $this->context, $this->operationRuntime))
             ->from($this->tableIdentifier($meta), $alias);
+    }
+
+    public function getLastReadPlan(): ?DatabaseOperationPlan
+    {
+        return $this->lastReadPlan;
+    }
+
+    public function getLastReadDiagnostic(): ?DatabaseDiagnosticSnapshot
+    {
+        return $this->lastReadDiagnostic;
     }
 
     /**
@@ -590,5 +611,51 @@ final class EntityManager implements EntityManagerInterface
                 }
             };
         }
+    }
+
+    /**
+     * @param list<mixed> $params
+     */
+    private function executeReadQuery(string $sql, array $params): \Quantum\Database\Dbal\Value\QueryResult
+    {
+        if ($this->operationRuntime === null) {
+            $this->lastReadPlan = null;
+            $this->lastReadDiagnostic = null;
+            return $this->connection->executeQuery($sql, $params);
+        }
+
+        $context = $this->context->withConnection($this->connection);
+        $plan = $this->operationRuntime->plan(
+            operation: new RawOperation(
+                kind: OperationKind::RawQuery,
+                sql: $sql,
+                params: $params,
+                comment: $this->connection->getDriverInfo()->databaseName !== ''
+                    ? $this->connection->getDriverInfo()->databaseName
+                    : 'default',
+            ),
+            context: $context,
+            policy: $this->runtimePolicyFromContext($context),
+        );
+        $result = $this->operationRuntime->execute($plan, $context);
+        $this->lastReadPlan = $plan;
+        $this->lastReadDiagnostic = $result->debug['diagnostic'] ?? null;
+
+        if (!$result->queryResult instanceof \Quantum\Database\Dbal\Value\QueryResult) {
+            throw new \RuntimeException('Runtime ORM read no devolvió QueryResult.');
+        }
+
+        return $result->queryResult;
+    }
+
+    private function runtimePolicyFromContext(DatabaseContext $context): DatabaseExecutionPolicy
+    {
+        $timeoutMs = $context->deadline?->remainingMs() ?? 30000;
+
+        return new DatabaseExecutionPolicy(
+            timeoutMs: max(1, $timeoutMs),
+            maxRows: max(1, $context->maxRows),
+            maxDepth: max(1, $context->maxDepth),
+        );
     }
 }

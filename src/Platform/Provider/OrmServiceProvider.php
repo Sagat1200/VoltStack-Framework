@@ -9,6 +9,7 @@ use Quantum\Console\Commands\Database\OrmWarmupMetadataCommand;
 use Quantum\Database\DatabaseContext;
 use Quantum\Database\Dbal\Contract\ConnectionInterface;
 use Quantum\Database\Dialect\DialectInterface;
+use Quantum\Database\Operation\DatabaseOperationRuntime;
 use Quantum\Database\Orm\EntityManager\EntityManager;
 use Quantum\Database\Orm\EntityManager\EntityManagerInterface;
 use Quantum\Database\Orm\Hydration\HydratorInterface;
@@ -181,6 +182,7 @@ final class OrmServiceProvider extends ServiceProvider
                 identityMap: $app->make(IdentityMapInterface::class),
                 changeTracker: $app->make(SnapshotChangeTracker::class),
                 persister: $app->make(EntityPersisterInterface::class),
+                operationRuntime: $app->make(DatabaseOperationRuntime::class),
             );
         });
 

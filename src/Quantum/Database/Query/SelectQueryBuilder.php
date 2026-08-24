@@ -42,6 +42,10 @@ use Quantum\Database\Operation\Sqg\Node\UnaryExpressionNode;
 use Quantum\Database\Operation\Sqg\SemanticNode;
 use Quantum\Database\Operation\Sqg\SemanticQueryGraph;
 use Quantum\Database\Capability\DatabaseCapabilitySet;
+use Quantum\Database\Operation\DatabaseDiagnosticSnapshot;
+use Quantum\Database\Operation\DatabaseExecutionPolicy;
+use Quantum\Database\Operation\DatabaseOperationPlan;
+use Quantum\Database\Operation\DatabaseOperationRuntime;
 use Quantum\Database\Query\Enum\JoinType;
 use Quantum\Database\Query\Enum\Order;
 use Quantum\Database\Query\Expression\CompositeExpression;
@@ -92,9 +96,13 @@ final class SelectQueryBuilder implements \Stringable
     public function __construct(
         private readonly ?ConnectionInterface $connection = null,
         private readonly ?DatabaseContext     $context = null,
+        private readonly ?DatabaseOperationRuntime $runtime = null,
     ) {
         $this->params = new ParameterBag();
     }
+
+    private ?DatabaseOperationPlan $lastOperationPlan = null;
+    private ?DatabaseDiagnosticSnapshot $lastDiagnostic = null;
 
     public function __clone()
     {
@@ -348,7 +356,36 @@ final class SelectQueryBuilder implements \Stringable
         ['graph' => $graph, 'dialect' => $dialect, 'caps' => $caps] = $this->translateStateToSqg();
         $op = new SqgOperation(kind: OperationKind::SqgSelect, graph: $graph);
         $compiled = $dialect->compile($op, $caps);
-        return $this->connection->executeQuery($compiled->sql, $compiled->params);
+
+        if ($this->runtime === null || $this->context === null) {
+            $this->lastOperationPlan = null;
+            $this->lastDiagnostic = null;
+            return $this->connection->executeQuery($compiled->sql, $compiled->params);
+        }
+
+        $context = $this->context->withConnection($this->connection);
+        $policy = $this->runtimePolicyFromContext($context);
+        $plan = $this->runtime->plan(
+            operation: new \Quantum\Database\Operation\RawOperation(
+                kind: OperationKind::RawQuery,
+                sql: $compiled->sql,
+                params: $compiled->params,
+                comment: $this->connection->getDriverInfo()->databaseName !== ''
+                    ? $this->connection->getDriverInfo()->databaseName
+                    : 'default',
+            ),
+            context: $context,
+            policy: $policy,
+        );
+        $result = $this->runtime->execute($plan, $context);
+        $this->lastOperationPlan = $plan;
+        $this->lastDiagnostic = $result->debug['diagnostic'] ?? null;
+
+        if (!$result->queryResult instanceof QueryResult) {
+            throw new \RuntimeException('Runtime SQG no devolvió QueryResult para una consulta SELECT.');
+        }
+
+        return $result->queryResult;
     }
 
     /**
@@ -375,6 +412,16 @@ final class SelectQueryBuilder implements \Stringable
             return null;
         }
         return $row[array_key_first($row)];
+    }
+
+    public function getLastOperationPlan(): ?DatabaseOperationPlan
+    {
+        return $this->lastOperationPlan;
+    }
+
+    public function getLastDiagnostic(): ?DatabaseDiagnosticSnapshot
+    {
+        return $this->lastDiagnostic;
     }
 
     /**
@@ -1010,6 +1057,17 @@ final class SelectQueryBuilder implements \Stringable
             $parts[] = 'OFFSET ' . $this->offsetVal;
         }
         return implode("\n  ", $parts);
+    }
+
+    private function runtimePolicyFromContext(DatabaseContext $context): DatabaseExecutionPolicy
+    {
+        $timeoutMs = $context->deadline?->remainingMs() ?? 30000;
+
+        return new DatabaseExecutionPolicy(
+            timeoutMs: max(1, $timeoutMs),
+            maxRows: max(1, $context->maxRows),
+            maxDepth: max(1, $context->maxDepth),
+        );
     }
 }
 

@@ -26,6 +26,30 @@ final readonly class SchemaSnapshot
     }
 
     /**
+     * @param list<string> $tableNames
+     */
+    public function withoutTables(array $tableNames): self
+    {
+        if ($tableNames === []) {
+            return $this;
+        }
+
+        $lookup = [];
+        foreach ($tableNames as $tableName) {
+            $lookup[strtolower($tableName)] = true;
+        }
+
+        return new self(
+            $this->driver,
+            array_values(array_filter(
+                $this->tables,
+                static fn(SchemaTable $table): bool => !isset($lookup[strtolower($table->name)])
+                    && !isset($lookup[strtolower($table->qualifiedName())]),
+            )),
+        );
+    }
+
+    /**
      * @return array{driver:string,tables:list<array<string,mixed>>}
      */
     public function toArray(): array

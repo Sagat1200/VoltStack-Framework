@@ -41,9 +41,11 @@ final class DatabaseSchemaDiffCommandTest extends TestCase
         $sql = $this->runConsole(['volt', 'db:schema-diff', '--sql']);
 
         self::assertSame(0, $diff['exit']);
+        self::assertStringContainsString('WARNING operationally sensitive actions: add_foreign_key, drop_index', $diff['stdout']);
         self::assertStringContainsString('ADD_COLUMN', $diff['stdout']);
         self::assertStringContainsString('CREATE_TABLE', $diff['stdout']);
         self::assertStringContainsString('DROP_INDEX', $diff['stdout']);
+        self::assertStringContainsString('[RISK:OPERATIONAL] Drop obsolete index [idx_f20_users_email_shadow]', $diff['stdout']);
         self::assertStringContainsString('f20_users.status', $diff['stdout']);
         self::assertStringContainsString('f20_logs', $diff['stdout']);
 
@@ -51,6 +53,31 @@ final class DatabaseSchemaDiffCommandTest extends TestCase
         self::assertStringContainsString('DROP INDEX "idx_f20_users_email_shadow";', $sql['stdout']);
         self::assertStringContainsString('ALTER TABLE "f20_users" ADD COLUMN "status" TEXT NOT NULL DEFAULT \'draft\';', $sql['stdout']);
         self::assertStringContainsString('CREATE TABLE "f20_logs"', $sql['stdout']);
+    }
+
+    public function test_schema_diff_fail_on_data_loss_returns_exit_code_two_only_when_needed(): void
+    {
+        $app = $this->loadApp();
+        $this->createLiveSchema($app);
+
+        $safe = $this->runConsole(['volt', 'db:schema-diff', '--json', '--fail-on-data-loss']);
+
+        self::assertSame(0, $safe['exit']);
+        self::assertSame('', $safe['stderr']);
+        self::assertStringContainsString('"kind": "add_column"', $safe['stdout']);
+
+        $this->deleteDirectory($this->basePath);
+        $this->basePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-db-schema-diff-' . bin2hex(random_bytes(6));
+        $this->makeTempProject($this->basePath);
+
+        $rebuildApp = $this->loadApp();
+        $this->createLiveSchemaForSqliteRebuild($rebuildApp);
+
+        $blocked = $this->runConsole(['volt', 'db:schema-diff', '--json', '--fail-on-data-loss']);
+
+        self::assertSame(2, $blocked['exit']);
+        self::assertStringContainsString('db:schema-diff blocked: data-loss actions detected (rebuild_table, drop_table).', $blocked['stderr']);
+        self::assertStringContainsString('"risk_level": "data_loss"', $blocked['stdout']);
     }
 
     public function test_schema_diff_supports_json_output(): void
@@ -65,6 +92,21 @@ final class DatabaseSchemaDiffCommandTest extends TestCase
         self::assertStringContainsString('"kind": "create_table"', $json['stdout']);
         self::assertStringContainsString('"kind": "drop_index"', $json['stdout']);
         self::assertStringContainsString('"table": "f20_users"', $json['stdout']);
+        self::assertStringContainsString('"risk_level": "operational"', $json['stdout']);
+    }
+
+    public function test_schema_diff_ignores_migration_history_table_from_actual_schema(): void
+    {
+        $app = $this->loadApp();
+        $db = $app->make(ConnectionInterface::class);
+        $db->executeStatement('CREATE TABLE IF NOT EXISTS framework_migrations (version TEXT PRIMARY KEY, migration TEXT NOT NULL, batch INTEGER NOT NULL, executed_at TEXT NOT NULL)');
+
+        $json = $this->runConsole(['volt', 'db:schema-diff', '--json', '--fail-on-data-loss']);
+
+        self::assertSame(0, $json['exit']);
+        self::assertSame('', $json['stderr']);
+        self::assertStringNotContainsString('"table": "framework_migrations"', $json['stdout']);
+        self::assertStringNotContainsString('"kind": "drop_table"', $json['stdout']);
     }
 
     public function test_make_migration_can_embed_current_schema_diff_plan(): void
@@ -84,10 +126,16 @@ final class DatabaseSchemaDiffCommandTest extends TestCase
         $contents = file_get_contents($files[0]);
         self::assertIsString($contents);
         self::assertStringContainsString('Suggested plan from current schema diff', $contents);
-        self::assertStringContainsString('$connection->executeStatement(\'DROP INDEX "idx_f20_users_email_shadow"\');', $contents);
-        self::assertStringContainsString('$connection->executeStatement(\'ALTER TABLE "f20_users" ADD COLUMN "status" TEXT NOT NULL DEFAULT \\\'draft\\\'\');', $contents);
-        self::assertStringContainsString('$connection->executeStatement(\'CREATE TABLE "f20_logs" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "message" TEXT NOT NULL)\');', $contents);
-        self::assertStringContainsString('$connection->executeStatement(\'CREATE INDEX "idx_f20_users_email_shadow" ON "f20_users" ("email")\');', $contents);
+        self::assertStringContainsString('WARNING: operationally sensitive actions detected.', $contents);
+        self::assertStringContainsString('Operational kinds: add_foreign_key, drop_index', $contents);
+        self::assertStringContainsString('// - [risk:operational] Drop obsolete index [idx_f20_users_email_shadow] from [f20_users].', $contents);
+        self::assertStringContainsString('$upStatements = [', $contents);
+        self::assertStringContainsString('\'DROP INDEX "idx_f20_users_email_shadow"\'', $contents);
+        self::assertStringContainsString('\'ALTER TABLE "f20_users" ADD COLUMN "status" TEXT NOT NULL DEFAULT \\\'draft\\\'\'', $contents);
+        self::assertStringContainsString('\'CREATE TABLE "f20_logs" ("id" INTEGER PRIMARY KEY AUTOINCREMENT, "message" TEXT NOT NULL)\'', $contents);
+        self::assertStringContainsString('$this->executeStatements($connection, $upStatements);', $contents);
+        self::assertStringContainsString('$downStatements = [', $contents);
+        self::assertStringContainsString('\'CREATE INDEX "idx_f20_users_email_shadow" ON "f20_users" ("email")\'', $contents);
     }
 
     public function test_schema_diff_projects_many_to_many_pivot_table_indexes_and_foreign_keys(): void
@@ -117,6 +165,7 @@ final class DatabaseSchemaDiffCommandTest extends TestCase
         self::assertSame(0, $diff['exit']);
         self::assertStringContainsString('"kind": "rebuild_table"', $diff['stdout']);
         self::assertStringContainsString('"requires_non_transactional": true', $diff['stdout']);
+        self::assertStringContainsString('"risk_level": "data_loss"', $diff['stdout']);
         self::assertStringContainsString('dropped columns=legacy_code', $diff['stdout']);
         self::assertStringContainsString('"kind": "drop_table"', $diff['stdout']);
 
@@ -127,12 +176,18 @@ final class DatabaseSchemaDiffCommandTest extends TestCase
 
         $contents = file_get_contents($files[0]);
         self::assertIsString($contents);
+        self::assertStringContainsString('WARNING: data-loss actions detected.', $contents);
+        self::assertStringContainsString('Data-loss kinds: rebuild_table, drop_table', $contents);
+        self::assertStringContainsString('WARNING: operationally sensitive actions detected.', $contents);
+        self::assertStringContainsString('Operational kinds: add_foreign_key', $contents);
         self::assertStringContainsString('public function isTransactional(): bool', $contents);
         self::assertStringContainsString('return false;', $contents);
-        self::assertStringContainsString('$connection->executeStatement(\'PRAGMA foreign_keys = OFF\');', $contents);
-        self::assertStringContainsString('$connection->executeStatement(\'ALTER TABLE "f20_users" RENAME TO "__vs_rebuild_f20_users"\');', $contents);
-        self::assertStringContainsString('$connection->executeStatement(\'CREATE TABLE "f20_users" ("id" INTEGER PRIMARY KEY AUTOINCREMENT', $contents);
-        self::assertStringContainsString('$connection->executeStatement(\'DROP TABLE "f20_legacy_notes"\');', $contents);
+        self::assertStringContainsString('$upStatements = [', $contents);
+        self::assertStringContainsString('\'PRAGMA foreign_keys = OFF\'', $contents);
+        self::assertStringContainsString('\'ALTER TABLE "f20_users" RENAME TO "__vs_rebuild_f20_users"\'', $contents);
+        self::assertStringContainsString('\'CREATE TABLE "f20_users" ("id" INTEGER PRIMARY KEY AUTOINCREMENT', $contents);
+        self::assertStringContainsString('\'DROP TABLE "f20_legacy_notes"\'', $contents);
+        self::assertStringContainsString('$this->executeStatements($connection, $upStatements);', $contents);
     }
 
     /**

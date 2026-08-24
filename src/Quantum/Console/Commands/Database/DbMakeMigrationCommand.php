@@ -129,7 +129,9 @@ final class DbMakeMigrationCommand extends Command
         }
 
         $report = (new SchemaComparator())->compare(
-            actual: $schema->snapshot(),
+            actual: $schema->snapshot()->withoutTables([
+                (string) $app->config('database.migrations.table', 'framework_migrations'),
+            ]),
             desired: (new OrmSchemaProjector(
                 metadata: $metadata,
                 discovery: $discovery,
@@ -147,9 +149,15 @@ final class DbMakeMigrationCommand extends Command
         }
 
         $lines = ['// Suggested plan from current schema diff:'];
+        foreach ($this->riskCommentLines($report->riskSummary()) as $line) {
+            $lines[] = $line;
+        }
 
         foreach ($report->actions as $action) {
-            $lines[] = '// - ' . $action->message;
+            $riskPrefix = $action->riskLevel !== 'none'
+                ? sprintf('[risk:%s] ', $action->riskLevel)
+                : '';
+            $lines[] = '// - ' . $riskPrefix . $action->message;
             if ($action->sqlBatch !== []) {
                 foreach ($action->sqlBatch as $statement) {
                     $lines[] = '//   SQL: ' . $statement . ';';
@@ -179,8 +187,8 @@ final class DbMakeMigrationCommand extends Command
         bool $transactional,
     ): string {
         $commentBlock = implode("\n        ", $comments);
-        $upBlock = implode("\n        ", $upStatements);
-        $downBlock = implode("\n        ", $downStatements);
+        $upBlock = $this->renderMigrationBody($upStatements, '$upStatements');
+        $downBlock = $this->renderMigrationBody($downStatements, '$downStatements');
         $transactionalBlock = $transactional
             ? ''
             : "\n    public function isTransactional(): bool\n    {\n        return false;\n    }\n";
@@ -240,7 +248,7 @@ PHP;
             $forwardStatements = $action->sqlBatch !== [] ? $action->sqlBatch : (($action->sql !== null && trim($action->sql) !== '') ? [$action->sql] : []);
             if ($forwardStatements !== []) {
                 foreach ($forwardStatements as $statement) {
-                    $up[] = sprintf('$connection->executeStatement(%s);', var_export($statement, true));
+                    $up[] = $statement;
                 }
             } else {
                 $up[] = '// Manual step: ' . $action->message;
@@ -249,7 +257,7 @@ PHP;
             $rollbackStatements = $action->rollbackSqlBatch !== [] ? $action->rollbackSqlBatch : (($action->rollbackSql !== null && trim($action->rollbackSql) !== '') ? [$action->rollbackSql] : []);
             if ($rollbackStatements !== []) {
                 foreach (array_reverse($rollbackStatements) as $statement) {
-                    array_unshift($down, sprintf('$connection->executeStatement(%s);', var_export($statement, true)));
+                    array_unshift($down, $statement);
                 }
                 continue;
             }
@@ -270,6 +278,67 @@ PHP;
         }
 
         return [$up, $down, $transactional];
+    }
+
+    /**
+     * @param array{data_loss:list<string>,operational:list<string>} $riskSummary
+     * @return list<string>
+     */
+    private function riskCommentLines(array $riskSummary): array
+    {
+        $lines = [];
+
+        if ($riskSummary['data_loss'] !== []) {
+            $lines[] = '// WARNING: data-loss actions detected.';
+            $lines[] = '// Review data retention and backup implications before applying this migration.';
+            $lines[] = '// Data-loss kinds: ' . implode(', ', $riskSummary['data_loss']);
+        }
+
+        if ($riskSummary['operational'] !== []) {
+            $lines[] = '// WARNING: operationally sensitive actions detected.';
+            $lines[] = '// Review locking, availability, and deployment timing before applying this migration.';
+            $lines[] = '// Operational kinds: ' . implode(', ', $riskSummary['operational']);
+        }
+
+        return $lines;
+    }
+
+    /**
+     * @param list<string> $statements
+     */
+    private function renderMigrationBody(array $statements, string $variableName): string
+    {
+        $manualComments = [];
+        $sqlStatements = [];
+
+        foreach ($statements as $statement) {
+            if (str_starts_with($statement, '//')) {
+                $manualComments[] = $statement;
+                continue;
+            }
+
+            $sqlStatements[] = $statement;
+        }
+
+        $lines = [];
+        foreach ($manualComments as $comment) {
+            $lines[] = $comment;
+        }
+
+        if ($sqlStatements !== []) {
+            $lines[] = sprintf('%s = [', $variableName);
+            foreach ($sqlStatements as $statement) {
+                $lines[] = '    ' . var_export($statement, true) . ',';
+            }
+            $lines[] = '];';
+            $lines[] = sprintf('$this->executeStatements($connection, %s);', $variableName);
+        }
+
+        if ($lines === []) {
+            $lines[] = '// No SQL generable para el diff actual.';
+        }
+
+        return implode("\n        ", $lines);
     }
 
     private function slug(string $name): string

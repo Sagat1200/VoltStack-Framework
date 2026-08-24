@@ -27,6 +27,7 @@ final class SchemaComparator
                     column: null,
                     message: sprintf('Create missing table [%s].', $desiredTable->qualifiedName()),
                     sql: $desiredTable->createSql,
+                    riskLevel: 'none',
                 );
                 $this->appendMissingIndexActions($desiredTable, $actions, $desired->driver);
                 $this->appendMissingForeignKeyActions($desiredTable, $actions, $desired->driver);
@@ -60,6 +61,7 @@ final class SchemaComparator
                             $this->quoteQualifiedIdentifier($desiredTable->schemaName, $desiredTable->name, $desired->driver),
                             $this->columnSql($desiredColumn, $desired->driver),
                         ),
+                        riskLevel: 'none',
                     );
                     continue;
                 }
@@ -73,6 +75,7 @@ final class SchemaComparator
                         message: sprintf('Column [%s.%s] differs: %s.', $desiredTable->qualifiedName(), $desiredColumn->name, $this->describeColumnDifference($current, $desiredColumn)),
                         sql: $modifySql,
                         rollbackSql: $rollbackSql,
+                        riskLevel: $this->columnRiskLevel($current, $desiredColumn),
                     );
                 }
             }
@@ -91,6 +94,7 @@ final class SchemaComparator
                     ),
                     sql: $modifyPrimaryKeySql,
                     rollbackSql: $rollbackPrimaryKeySql,
+                    riskLevel: 'operational',
                 );
             }
 
@@ -116,6 +120,7 @@ final class SchemaComparator
                 rollbackSqlBatch: $actualTable->createSql !== null
                     ? $this->recreateTableArtifactsSql($actualTable, $desired->driver)
                     : [],
+                riskLevel: 'data_loss',
             );
         }
 
@@ -188,6 +193,7 @@ final class SchemaComparator
             sqlBatch: $sqlBatch,
             rollbackSqlBatch: $rollbackSqlBatch,
             requiresNonTransactional: true,
+            riskLevel: 'data_loss',
         );
     }
 
@@ -222,6 +228,7 @@ final class SchemaComparator
                     $this->quoteQualifiedIdentifier($desiredTable->schemaName, $desiredTable->name, $driver),
                     $this->columnSql($actualColumn, $driver),
                 ),
+                riskLevel: 'data_loss',
             );
         }
     }
@@ -238,6 +245,27 @@ final class SchemaComparator
             || $actual->nullable !== $desired->nullable
             || $this->normalizeDefaultComparable($actual->defaultValue) !== $this->normalizeDefaultComparable($desired->defaultValue)
             || $actual->autoIncrement !== $desired->autoIncrement;
+    }
+
+    private function columnRiskLevel(SchemaColumn $actual, SchemaColumn $desired): string
+    {
+        if ($this->comparableType($actual) !== $this->comparableType($desired)) {
+            return 'data_loss';
+        }
+
+        if ($actual->length !== null && $desired->length !== null && $desired->length < $actual->length) {
+            return 'data_loss';
+        }
+
+        if ($actual->precision !== null && $desired->precision !== null && $desired->precision < $actual->precision) {
+            return 'data_loss';
+        }
+
+        if ($actual->scale !== null && $desired->scale !== null && $desired->scale < $actual->scale) {
+            return 'data_loss';
+        }
+
+        return 'operational';
     }
 
     private function comparableType(SchemaColumn $column): string
@@ -380,6 +408,7 @@ final class SchemaComparator
                 ),
                 sql: $this->createIndexSql($desiredTable, $desiredIndex, $driver),
                 rollbackSql: $this->dropIndexSql($desiredTable, $desiredIndex, $driver),
+                riskLevel: 'none',
             );
         }
     }
@@ -402,6 +431,7 @@ final class SchemaComparator
                 message: sprintf('Add missing foreign key [%s] on [%s].', $desiredForeignKey->name, $desiredTable->qualifiedName()),
                 sql: $this->addForeignKeySql($desiredTable, $desiredForeignKey, $driver),
                 rollbackSql: $this->dropForeignKeySql($desiredTable, $desiredForeignKey, $driver),
+                riskLevel: 'operational',
             );
         }
     }
@@ -428,6 +458,7 @@ final class SchemaComparator
                 message: sprintf('Drop obsolete index [%s] from [%s].', $actualIndex->name, $desiredTable->qualifiedName()),
                 sql: $this->dropIndexSql($desiredTable, $actualIndex, $driver),
                 rollbackSql: $this->createIndexSql($desiredTable, $actualIndex, $driver),
+                riskLevel: 'operational',
             );
         }
     }
@@ -450,6 +481,7 @@ final class SchemaComparator
                 message: sprintf('Drop obsolete foreign key [%s] from [%s].', $actualForeignKey->name, $desiredTable->qualifiedName()),
                 sql: $this->dropForeignKeySql($desiredTable, $actualForeignKey, $driver),
                 rollbackSql: $this->addForeignKeySql($desiredTable, $actualForeignKey, $driver),
+                riskLevel: 'operational',
             );
         }
     }

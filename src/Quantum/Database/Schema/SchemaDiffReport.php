@@ -46,7 +46,34 @@ final readonly class SchemaDiffReport
     }
 
     /**
-     * @return array{actual:array{driver:string,tables:list<array{name:string,primary_key:list<string>,columns:list<array{name:string,type:string,nullable:bool,default:mixed,primary:bool,auto_increment:bool,ordinal:int}>,create_sql:?string}>},desired:array{driver:string,tables:list<array{name:string,primary_key:list<string>,columns:list<array{name:string,type:string,nullable:bool,default:mixed,primary:bool,auto_increment:bool,ordinal:int}>,create_sql:?string}>},actions:list<array{kind:string,table:string,column:?string,message:string,sql:?string,rollback_sql:?string,sql_batch:list<string>,rollback_sql_batch:list<string>,requires_non_transactional:bool}>}
+     * @return array{data_loss:list<string>,operational:list<string>}
+     */
+    public function riskSummary(): array
+    {
+        $summary = [
+            'data_loss' => [],
+            'operational' => [],
+        ];
+
+        foreach ($this->actions as $action) {
+            if ($action->riskLevel === 'data_loss') {
+                $summary['data_loss'][] = $action->kind;
+                continue;
+            }
+
+            if ($action->riskLevel === 'operational') {
+                $summary['operational'][] = $action->kind;
+            }
+        }
+
+        return [
+            'data_loss' => array_values(array_unique($summary['data_loss'])),
+            'operational' => array_values(array_unique($summary['operational'])),
+        ];
+    }
+
+    /**
+     * @return array{actual:array{driver:string,tables:list<array{name:string,primary_key:list<string>,columns:list<array{name:string,type:string,nullable:bool,default:mixed,primary:bool,auto_increment:bool,ordinal:int}>,create_sql:?string}>},desired:array{driver:string,tables:list<array{name:string,primary_key:list<string>,columns:list<array{name:string,type:string,nullable:bool,default:mixed,primary:bool,auto_increment:bool,ordinal:int}>,create_sql:?string}>},actions:list<array{kind:string,table:string,column:?string,message:string,sql:?string,rollback_sql:?string,sql_batch:list<string>,rollback_sql_batch:list<string>,requires_non_transactional:bool,risk_level:string}>}
      */
     public function toArray(): array
     {

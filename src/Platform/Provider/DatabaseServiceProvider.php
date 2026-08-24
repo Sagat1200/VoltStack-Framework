@@ -22,6 +22,7 @@ use Quantum\Database\Operation\DatabaseHealthSnapshot;
 use Quantum\Database\Operation\DatabaseOperationRuntime;
 use Quantum\Database\Operation\DatabaseTelemetryReport;
 use Quantum\Database\Operation\DatabaseTelemetryStore;
+use Quantum\Database\Operation\Engine\DirectoryDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\InMemoryDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\InMemoryDatabaseTelemetryDispatcher;
 use Quantum\Database\Operation\Engine\JsonFileDatabaseHealthStore;
@@ -145,6 +146,18 @@ final class DatabaseServiceProvider extends ServiceProvider
 
                 return new JsonFileDatabaseHealthStore(
                     $app->joinPath($app->storagePath('framework/database'), 'database-health.json'),
+                );
+            }
+
+            if ($mode === 'directory') {
+                $path = $app->config('database.health.directory_path');
+
+                if (is_string($path) && trim($path) !== '') {
+                    return new DirectoryDatabaseHealthStore(trim($path));
+                }
+
+                return new DirectoryDatabaseHealthStore(
+                    $app->joinPath($app->storagePath('framework/database'), 'health-nodes'),
                 );
             }
 

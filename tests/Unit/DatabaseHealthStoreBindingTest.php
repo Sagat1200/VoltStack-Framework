@@ -7,6 +7,7 @@ namespace VoltStack\Test\Unit;
 use PHPUnit\Framework\TestCase;
 use Quantum\Config\ConfigRepository;
 use Quantum\Database\Operation\Contracts\DatabaseHealthStoreInterface;
+use Quantum\Database\Operation\Engine\DirectoryDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\InMemoryDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\JsonFileDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\JsonLineDatabaseHealthStore;
@@ -66,6 +67,18 @@ final class DatabaseHealthStoreBindingTest extends TestCase
         $store = $app->make(DatabaseHealthStoreInterface::class);
 
         self::assertInstanceOf(JsonLineDatabaseHealthStore::class, $store);
+    }
+
+    public function test_it_resolves_directory_store_when_configured(): void
+    {
+        $app = new Application($this->basePath);
+        $app->register(DatabaseServiceProvider::class);
+        $app->make(ConfigRepository::class)->set('database.health.store', 'directory');
+        $app->make(ConfigRepository::class)->set('database.health.directory_path', $this->basePath . DIRECTORY_SEPARATOR . 'health-nodes');
+
+        $store = $app->make(DatabaseHealthStoreInterface::class);
+
+        self::assertInstanceOf(DirectoryDatabaseHealthStore::class, $store);
     }
 
     public function test_it_resolves_null_store_when_configured(): void

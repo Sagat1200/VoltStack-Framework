@@ -4,8 +4,15 @@ declare(strict_types=1);
 
 namespace Quantum\Database\Orm\UnitOfWork\Association;
 
+use Quantum\Database\DatabaseContext;
 use Quantum\Database\Dbal\Contract\ConnectionInterface;
 use Quantum\Database\Dialect\DialectInterface;
+use Quantum\Database\Operation\DatabaseDiagnosticSnapshot;
+use Quantum\Database\Operation\DatabaseExecutionPolicy;
+use Quantum\Database\Operation\DatabaseOperationPlan;
+use Quantum\Database\Operation\DatabaseOperationRuntime;
+use Quantum\Database\Operation\OperationKind;
+use Quantum\Database\Operation\RawOperation;
 use Quantum\Database\Orm\Association\Collection\PersistentCollection;
 use Quantum\Database\Orm\Association\Enum\AssociationKind;
 use Quantum\Database\Orm\Metadata\CompiledAssociationMetadata;
@@ -21,7 +28,12 @@ final class AssociationPersister
     public function __construct(
         private readonly ConnectionInterface $conn,
         private readonly DialectInterface $dialect,
+        private readonly ?DatabaseOperationRuntime $operationRuntime = null,
+        private readonly ?DatabaseContext $context = null,
     ) {}
+
+    private ?DatabaseOperationPlan $lastWritePlan = null;
+    private ?DatabaseDiagnosticSnapshot $lastWriteDiagnostic = null;
 
     /**
      * ManyToMany: inserta multi-INSERT en batches en pivot joinTable.
@@ -49,7 +61,7 @@ final class AssociationPersister
             }
             $sql = "INSERT INTO {$quotedTable} ({$quotedThisCol}, {$quotedTgtCol}) VALUES "
                 . implode(', ', $placeholders);
-            $this->conn->executeStatement($sql, $binds);
+            $this->executeStatement($sql, $binds);
         }
     }
 
@@ -79,7 +91,7 @@ final class AssociationPersister
 
         try {
             $sqlDel = "DELETE FROM {$quotedTbl} WHERE {$quotedThis} = ?";
-            $this->conn->executeStatement($sqlDel, [$ownerId]);
+            $this->executeStatement($sqlDel, [$ownerId]);
         } catch (\Throwable) {
         }
 
@@ -243,5 +255,56 @@ final class AssociationPersister
         $parts = explode('\\', $cls);
         $last = end($parts);
         return lcfirst($last);
+    }
+
+    public function getLastWritePlan(): ?DatabaseOperationPlan
+    {
+        return $this->lastWritePlan;
+    }
+
+    public function getLastWriteDiagnostic(): ?DatabaseDiagnosticSnapshot
+    {
+        return $this->lastWriteDiagnostic;
+    }
+
+    /**
+     * @param list<mixed> $params
+     */
+    private function executeStatement(string $sql, array $params): void
+    {
+        if ($this->operationRuntime === null || $this->context === null) {
+            $this->lastWritePlan = null;
+            $this->lastWriteDiagnostic = null;
+            $this->conn->executeStatement($sql, $params);
+            return;
+        }
+
+        $context = $this->context->withConnection($this->conn);
+        $plan = $this->operationRuntime->plan(
+            operation: new RawOperation(
+                kind: OperationKind::RawExecute,
+                sql: $sql,
+                params: $params,
+                comment: $this->conn->getDriverInfo()->databaseName !== ''
+                    ? $this->conn->getDriverInfo()->databaseName
+                    : 'default',
+            ),
+            context: $context,
+            policy: $this->runtimePolicyFromContext($context),
+        );
+        $result = $this->operationRuntime->execute($plan, $context);
+        $this->lastWritePlan = $plan;
+        $this->lastWriteDiagnostic = $result->debug['diagnostic'] ?? null;
+    }
+
+    private function runtimePolicyFromContext(DatabaseContext $context): DatabaseExecutionPolicy
+    {
+        $timeoutMs = $context->deadline?->remainingMs() ?? 30000;
+
+        return new DatabaseExecutionPolicy(
+            timeoutMs: max(1, $timeoutMs),
+            maxRows: max(1, $context->maxRows),
+            maxDepth: max(1, $context->maxDepth),
+        );
     }
 }

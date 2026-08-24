@@ -311,12 +311,51 @@ final class EntityManager implements EntityManagerInterface
 
     public function getLastReadPlan(): ?DatabaseOperationPlan
     {
-        return $this->lastReadPlan;
+        if ($this->lastReadPlan !== null) {
+            return $this->lastReadPlan;
+        }
+
+        if ($this->persister instanceof \Quantum\Database\Orm\UnitOfWork\EntityPersister\DefaultEntityPersister) {
+            return $this->persister->getLastReadPlan();
+        }
+
+        return null;
     }
 
     public function getLastReadDiagnostic(): ?DatabaseDiagnosticSnapshot
     {
-        return $this->lastReadDiagnostic;
+        if ($this->lastReadDiagnostic !== null) {
+            return $this->lastReadDiagnostic;
+        }
+
+        if ($this->persister instanceof \Quantum\Database\Orm\UnitOfWork\EntityPersister\DefaultEntityPersister) {
+            return $this->persister->getLastReadDiagnostic();
+        }
+
+        return null;
+    }
+
+    public function getLastWritePlan(): ?DatabaseOperationPlan
+    {
+        if ($this->persister instanceof \Quantum\Database\Orm\UnitOfWork\EntityPersister\DefaultEntityPersister) {
+            return $this->persister->getLastWritePlan();
+        }
+
+        return null;
+    }
+
+    public function getLastWriteDiagnostic(): ?DatabaseDiagnosticSnapshot
+    {
+        if ($this->persister instanceof \Quantum\Database\Orm\UnitOfWork\EntityPersister\DefaultEntityPersister) {
+            return $this->persister->getLastWriteDiagnostic();
+        }
+
+        return null;
+    }
+
+    public function getOperationRuntime(): ?DatabaseOperationRuntime
+    {
+        return $this->operationRuntime;
     }
 
     /**

@@ -4,8 +4,15 @@ declare(strict_types=1);
 
 namespace Quantum\Database\Orm\UnitOfWork\EntityPersister;
 
+use Quantum\Database\DatabaseContext;
 use Quantum\Database\Dbal\Contract\ConnectionInterface;
 use Quantum\Database\Dbal\Value\QueryResult;
+use Quantum\Database\Operation\DatabaseDiagnosticSnapshot;
+use Quantum\Database\Operation\DatabaseExecutionPolicy;
+use Quantum\Database\Operation\DatabaseOperationPlan;
+use Quantum\Database\Operation\DatabaseOperationRuntime;
+use Quantum\Database\Operation\OperationKind;
+use Quantum\Database\Operation\RawOperation;
 use Quantum\Database\Orm\Hydration\HydrationOptions;
 use Quantum\Database\Orm\Hydration\HydratorInterface;
 use Quantum\Database\Orm\Mapping\EntityToRowMapper;
@@ -30,7 +37,14 @@ final class DefaultEntityPersister implements EntityPersisterInterface
     public function __construct(
         private readonly EntityToRowMapper         $rowMapper,
         private readonly PropertyAccessorInterface $accessor,
+        private readonly ?DatabaseOperationRuntime $operationRuntime = null,
+        private readonly ?DatabaseContext $context = null,
     ) {}
+
+    private ?DatabaseOperationPlan $lastWritePlan = null;
+    private ?DatabaseDiagnosticSnapshot $lastWriteDiagnostic = null;
+    private ?DatabaseOperationPlan $lastReadPlan = null;
+    private ?DatabaseDiagnosticSnapshot $lastReadDiagnostic = null;
 
     public function executeInsert(
         object $entity,
@@ -106,7 +120,7 @@ final class DefaultEntityPersister implements EntityPersisterInterface
         }
         $sql = 'INSERT INTO ' . $conn->quoteIdentifier($meta->tableName)
             . ' (' . implode(', ', $cols) . ') VALUES (' . implode(', ', $placeholders) . ')';
-        $conn->executeStatement($sql, $values);
+        $this->executeStatement($conn, $sql, $values);
         $lastId = $idColName !== null ? $conn->lastInsertId($idColName) : null;
 
         // Si ID generada → settear back
@@ -165,7 +179,7 @@ final class DefaultEntityPersister implements EntityPersisterInterface
                         . ' FROM ' . $conn->quoteIdentifier($meta->tableName)
                         . ' WHERE ' . implode(' AND ', $selCols)
                         . ' ORDER BY ' . $conn->quoteIdentifier($idColName) . ' DESC LIMIT 1';
-                    $qr = $conn->executeQuery($q, $selVals);
+                    $qr = $this->executeQuery($conn, $q, $selVals);
                     $found = $qr->fetchOneAssoc();
                     if (is_array($found) && isset($found[$idColName]) && $found[$idColName] !== null && $found[$idColName] !== '') {
                         $candId = $found[$idColName];
@@ -237,7 +251,7 @@ final class DefaultEntityPersister implements EntityPersisterInterface
             . (count($whereParts) > 0 ? ' WHERE ' . implode(' AND ', $whereParts) : '');
 
         $params = array_merge($bind, $bindWhere);
-        $conn->executeStatement($sql, $params);
+        $this->executeStatement($conn, $sql, $params);
 
         // Verificación Optimistic Lock: al terminar UPDATE si había Version,
         // re-leemos la columna version de BD y si NO coincide con newVer →
@@ -259,7 +273,7 @@ final class DefaultEntityPersister implements EntityPersisterInterface
                     . ' FROM ' . $conn->quoteIdentifier($meta->tableName)
                     . ' WHERE ' . implode(' AND ', $whereVerifParts) . ' LIMIT 1';
                 try {
-                    $verifQr = $conn->executeQuery($verifSel, $vb);
+                    $verifQr = $this->executeQuery($conn, $verifSel, $vb);
                     $foundRow = $verifQr->fetchOneAssoc();
                 } catch (\Throwable) {
                     $foundRow = false;
@@ -298,7 +312,7 @@ final class DefaultEntityPersister implements EntityPersisterInterface
         }
         $sql = 'DELETE FROM ' . $conn->quoteIdentifier($meta->tableName)
             . (count($whereParts) > 0 ? ' WHERE ' . implode(' AND ', $whereParts) : '');
-        $conn->executeStatement($sql, $bind);
+        $this->executeStatement($conn, $sql, $bind);
     }
 
     public function loadById(
@@ -327,7 +341,7 @@ final class DefaultEntityPersister implements EntityPersisterInterface
             $parts[] = $conn->quoteIdentifier($meta->softDelete->columnName) . ' IS NULL';
         }
         $sql = $select . ' WHERE ' . implode(' AND ', $parts) . ' LIMIT 1';
-        $stmt = $conn->executeQuery($sql, $bind);
+        $stmt = $this->executeQuery($conn, $sql, $bind);
         if (!($stmt instanceof QueryResult)) {
             throw new \RuntimeException(
                 "executeQuery debe devolver QueryResult; devolvió "
@@ -335,6 +349,26 @@ final class DefaultEntityPersister implements EntityPersisterInterface
             );
         }
         return $hydrator->hydrateOne($stmt, $meta, $im, HydrationOptions::defaults());
+    }
+
+    public function getLastWritePlan(): ?DatabaseOperationPlan
+    {
+        return $this->lastWritePlan;
+    }
+
+    public function getLastWriteDiagnostic(): ?DatabaseDiagnosticSnapshot
+    {
+        return $this->lastWriteDiagnostic;
+    }
+
+    public function getLastReadPlan(): ?DatabaseOperationPlan
+    {
+        return $this->lastReadPlan;
+    }
+
+    public function getLastReadDiagnostic(): ?DatabaseDiagnosticSnapshot
+    {
+        return $this->lastReadDiagnostic;
     }
 
     /**
@@ -380,5 +414,86 @@ final class DefaultEntityPersister implements EntityPersisterInterface
             // ignore
         }
         return null;
+    }
+
+    /**
+     * @param list<mixed> $params
+     */
+    private function executeStatement(ConnectionInterface $conn, string $sql, array $params): QueryResult
+    {
+        if ($this->operationRuntime === null || $this->context === null) {
+            $this->lastWritePlan = null;
+            $this->lastWriteDiagnostic = null;
+            return $conn->executeStatement($sql, $params);
+        }
+
+        $context = $this->context->withConnection($conn);
+        $plan = $this->operationRuntime->plan(
+            operation: new RawOperation(
+                kind: OperationKind::RawExecute,
+                sql: $sql,
+                params: $params,
+                comment: $conn->getDriverInfo()->databaseName !== ''
+                    ? $conn->getDriverInfo()->databaseName
+                    : 'default',
+            ),
+            context: $context,
+            policy: $this->runtimePolicyFromContext($context),
+        );
+        $result = $this->operationRuntime->execute($plan, $context);
+        $this->lastWritePlan = $plan;
+        $this->lastWriteDiagnostic = $result->debug['diagnostic'] ?? null;
+
+        if (!$result->queryResult instanceof QueryResult) {
+            throw new \RuntimeException('Runtime ORM write no devolvió QueryResult.');
+        }
+
+        return $result->queryResult;
+    }
+
+    /**
+     * @param list<mixed> $params
+     */
+    private function executeQuery(ConnectionInterface $conn, string $sql, array $params): QueryResult
+    {
+        if ($this->operationRuntime === null || $this->context === null) {
+            $this->lastReadPlan = null;
+            $this->lastReadDiagnostic = null;
+            return $conn->executeQuery($sql, $params);
+        }
+
+        $context = $this->context->withConnection($conn);
+        $plan = $this->operationRuntime->plan(
+            operation: new RawOperation(
+                kind: OperationKind::RawQuery,
+                sql: $sql,
+                params: $params,
+                comment: $conn->getDriverInfo()->databaseName !== ''
+                    ? $conn->getDriverInfo()->databaseName
+                    : 'default',
+            ),
+            context: $context,
+            policy: $this->runtimePolicyFromContext($context),
+        );
+        $result = $this->operationRuntime->execute($plan, $context);
+        $this->lastReadPlan = $plan;
+        $this->lastReadDiagnostic = $result->debug['diagnostic'] ?? null;
+
+        if (!$result->queryResult instanceof QueryResult) {
+            throw new \RuntimeException('Runtime ORM read no devolvió QueryResult.');
+        }
+
+        return $result->queryResult;
+    }
+
+    private function runtimePolicyFromContext(DatabaseContext $context): DatabaseExecutionPolicy
+    {
+        $timeoutMs = $context->deadline?->remainingMs() ?? 30000;
+
+        return new DatabaseExecutionPolicy(
+            timeoutMs: max(1, $timeoutMs),
+            maxRows: max(1, $context->maxRows),
+            maxDepth: max(1, $context->maxDepth),
+        );
     }
 }

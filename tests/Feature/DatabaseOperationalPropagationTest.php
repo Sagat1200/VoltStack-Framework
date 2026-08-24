@@ -82,6 +82,39 @@ final class DatabaseOperationalPropagationTest extends TestCase
         }
     }
 
+    public function test_entity_manager_write_side_records_operational_diagnostics(): void
+    {
+        $app = $this->makeDatabaseApp(maxRows: 10);
+        $this->seedRecords($app);
+
+        /** @var EntityManager $em */
+        $em = $app->make(EntityManager::class);
+        $record = new OperationalRecord();
+        $record->name = 'gamma';
+
+        $em->persist($record);
+        $em->flush();
+
+        $writePlan = $em->getLastWritePlan();
+        $writeDiagnostic = $em->getLastWriteDiagnostic();
+
+        self::assertNotNull($writePlan);
+        self::assertNotNull($writeDiagnostic);
+        self::assertSame('raw_execute', $writePlan->operation->kind->value);
+        self::assertSame('completed', $writeDiagnostic->outcome);
+
+        $em->clear();
+        $loaded = $em->find(OperationalRecord::class, $record->id);
+        $readPlan = $em->getLastReadPlan();
+        $readDiagnostic = $em->getLastReadDiagnostic();
+
+        self::assertInstanceOf(OperationalRecord::class, $loaded);
+        self::assertNotNull($readPlan);
+        self::assertNotNull($readDiagnostic);
+        self::assertSame('raw_query', $readPlan->operation->kind->value);
+        self::assertSame('completed', $readDiagnostic->outcome);
+    }
+
     private function makeDatabaseApp(int $maxRows): Application
     {
         $app = new Application($this->basePath);

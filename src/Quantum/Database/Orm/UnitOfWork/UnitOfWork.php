@@ -324,8 +324,10 @@ final class UnitOfWork
             // POST-INSERT / PRE-DELETE: ManyToMany pivot dirty writes
             // Los hacemos durante el executeStep en el orden apropiado.
             $dialect = method_exists($em, 'getDialect') ? $em->getDialect() : null;
+            $operationRuntime = method_exists($em, 'getOperationRuntime') ? $em->getOperationRuntime() : null;
+            $context = method_exists($em, 'getContext') ? $em->getContext() : null;
             $assocPersister = ($dialect !== null)
-                ? new \Quantum\Database\Orm\UnitOfWork\Association\AssociationPersister($conn, $dialect)
+                ? new \Quantum\Database\Orm\UnitOfWork\Association\AssociationPersister($conn, $dialect, $operationRuntime, $context)
                 : null;
 
             foreach ($plan->steps as $step) {

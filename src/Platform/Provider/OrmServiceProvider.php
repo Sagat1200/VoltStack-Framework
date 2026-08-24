@@ -112,6 +112,8 @@ final class OrmServiceProvider extends ServiceProvider
                 $app->make(CustomTypeBridgeRegistry::class),
             ),
             $app->make(PropertyAccessorInterface::class),
+            $app->make(DatabaseOperationRuntime::class),
+            $app->make(DatabaseContext::class),
         ));
 
         $this->app->scoped(HydratorInterface::class, function (Application $app): HydratorInterface {

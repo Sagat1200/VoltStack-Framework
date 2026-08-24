@@ -7,6 +7,8 @@ namespace VoltStack\Test\Feature;
 use PHPUnit\Framework\TestCase;
 use Quantum\Config\ConfigRepository;
 use Quantum\Database\DatabaseContext;
+use Quantum\Database\Operation\Contracts\DatabaseTelemetryDispatcherInterface;
+use Quantum\Database\Operation\Engine\InMemoryDatabaseTelemetryDispatcher;
 use Quantum\Database\Orm\EntityManager\EntityManagerInterface;
 use Quantum\Database\Orm\Metadata\Attribute as ORM;
 use Quantum\Http\Request;
@@ -59,6 +61,10 @@ final class DatabaseRequestLifecycleTest extends TestCase
         self::assertSame(1, $payload['telemetry']['completed']);
         self::assertSame(1, $payload['health']['total_segments']);
         self::assertSame('closed', $payload['health']['segments'][0]['state']);
+        $dispatcher = $app->make(DatabaseTelemetryDispatcherInterface::class);
+        self::assertInstanceOf(InMemoryDatabaseTelemetryDispatcher::class, $dispatcher);
+        self::assertSame(1, count($dispatcher->reports()));
+        self::assertSame($payload['telemetry']['total_operations'], $dispatcher->last()?->summary['total_operations'] ?? null);
         self::assertSame(1, $this->countPersistedRecords($app));
     }
 
@@ -160,6 +166,9 @@ final class DatabaseRequestLifecycleTest extends TestCase
                     'policies' => [
                         'soft_delete_filter' => true,
                     ],
+                ],
+                'observability' => [
+                    'dispatcher' => 'in_memory',
                 ],
                 'orm' => [
                     'auto_flush_on_terminate' => $autoFlushOnTerminate,

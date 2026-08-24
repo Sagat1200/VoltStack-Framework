@@ -15,10 +15,15 @@ use Quantum\Database\Migration\MigrationLock;
 use Quantum\Database\Migration\MigrationRecoveryStore;
 use Quantum\Database\Migration\MigrationRepository;
 use Quantum\Database\Migration\MigrationRunner;
+use Quantum\Database\Operation\Contracts\DatabaseTelemetryDispatcherInterface;
 use Quantum\Database\Operation\DatabaseCircuitBreaker;
 use Quantum\Database\Operation\DatabaseHealthSnapshot;
 use Quantum\Database\Operation\DatabaseOperationRuntime;
+use Quantum\Database\Operation\DatabaseTelemetryReport;
 use Quantum\Database\Operation\DatabaseTelemetryStore;
+use Quantum\Database\Operation\Engine\InMemoryDatabaseTelemetryDispatcher;
+use Quantum\Database\Operation\Engine\JsonLineDatabaseTelemetryDispatcher;
+use Quantum\Database\Operation\Engine\NullDatabaseTelemetryDispatcher;
 use Quantum\Database\Schema\SchemaIntrospectorInterface;
 use Quantum\Database\Schema\SchemaManager;
 use Quantum\Database\Schema\MariadbSchemaIntrospector;
@@ -115,6 +120,37 @@ final class DatabaseServiceProvider extends ServiceProvider
 
         $this->app->singleton(DatabaseCircuitBreaker::class, fn(): DatabaseCircuitBreaker => new DatabaseCircuitBreaker());
         $this->app->scoped(DatabaseTelemetryStore::class, fn(): DatabaseTelemetryStore => new DatabaseTelemetryStore());
+        $this->app->singleton(DatabaseTelemetryDispatcherInterface::class, function (Application $app): DatabaseTelemetryDispatcherInterface {
+            $mode = $app->config('database.observability.dispatcher', 'auto');
+
+            if ($mode === 'null') {
+                return new NullDatabaseTelemetryDispatcher();
+            }
+
+            if ($mode === 'in_memory') {
+                return new InMemoryDatabaseTelemetryDispatcher();
+            }
+
+            if ($mode === 'jsonl') {
+                $path = $app->config('database.observability.jsonl_path');
+
+                if (is_string($path) && trim($path) !== '') {
+                    return new JsonLineDatabaseTelemetryDispatcher(trim($path));
+                }
+
+                return new JsonLineDatabaseTelemetryDispatcher(
+                    $app->joinPath($app->storagePath('framework/logs'), 'database-telemetry.jsonl'),
+                );
+            }
+
+            if ($app->isProduction()) {
+                return new JsonLineDatabaseTelemetryDispatcher(
+                    $app->joinPath($app->storagePath('framework/logs'), 'database-telemetry.jsonl'),
+                );
+            }
+
+            return new InMemoryDatabaseTelemetryDispatcher();
+        });
         $this->app->singleton(DatabaseOperationRuntime::class, fn(Application $app): DatabaseOperationRuntime => new DatabaseOperationRuntime(
             circuitBreaker: $app->make(DatabaseCircuitBreaker::class),
             telemetry: $app->make(DatabaseTelemetryStore::class),
@@ -250,8 +286,22 @@ final class DatabaseServiceProvider extends ServiceProvider
             }
 
             $telemetry = $app->make(DatabaseTelemetryStore::class);
-            $context->set('database.telemetry', $telemetry->summary());
-            $context->set('database.health', $telemetry->health()->toArray());
+            $summary = $telemetry->summary();
+            $health = $telemetry->health()->toArray();
+
+            $context->set('database.telemetry', $summary);
+            $context->set('database.health', $health);
+
+            $dispatcher = $app->make(DatabaseTelemetryDispatcherInterface::class);
+            $dbContext = $app->make(DatabaseContext::class);
+            $dispatcher->dispatch(new DatabaseTelemetryReport(
+                requestId: $dbContext->requestId,
+                tenantId: $dbContext->tenantId,
+                traceId: $dbContext->trace?->traceId,
+                generatedAt: (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format(\DATE_ATOM),
+                summary: $summary,
+                health: $health,
+            ));
         });
     }
 

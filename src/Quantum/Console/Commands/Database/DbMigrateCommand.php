@@ -8,8 +8,13 @@ use Quantum\Console\Command;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
 use Quantum\Database\Migration\MigrationDiscovery;
+use Quantum\Database\Migration\MigrationExecutionException;
+use Quantum\Database\Migration\MigrationLock;
+use Quantum\Database\Migration\MigrationPlan;
+use Quantum\Database\Migration\MigrationPlanItem;
 use Quantum\Database\Migration\MigrationRepository;
 use Quantum\Database\Migration\MigrationRunner;
+use Quantum\Database\Migration\MigrationVerificationResult;
 use Quantum\Database\Support\ConnectionRegistry;
 use VoltStack\Framework\Application;
 
@@ -52,10 +57,42 @@ final class DbMigrateCommand extends Command
         $step = $this->resolvePositiveIntOption($input, 'step');
 
         try {
-            $result = $runner->migrate($pretend, $step);
-            $this->renderResult($result, $pretend, $output);
+            $plan = $runner->planMigrate($step);
+
+            if (!$plan->hasItems()) {
+                $output->writeln('No hay migraciones pendientes.');
+                return 0;
+            }
+
+            $this->renderPlan($plan, $output);
+
+            if ($pretend) {
+                $output->writeln('Dry-run activado: no se aplicaron cambios.');
+                return 0;
+            }
+
+            $result = $runner->executePlan($plan);
+            $this->renderExecutionResult($result, $output);
 
             return 0;
+        } catch (MigrationExecutionException $e) {
+            $checkpoint = $e->checkpoint;
+
+            $output->error(sprintf(
+                'db:migrate failed: failure=%s retryable=%s phase=%s fingerprint=%s batch=%s position=%d/%d completed=%d failed_version=%s failed_migration=%s message=%s',
+                $e->failure->value,
+                $e->retryable ? 'yes' : 'no',
+                $checkpoint->phase,
+                $checkpoint->fingerprint,
+                $checkpoint->batchNumber !== null ? (string) $checkpoint->batchNumber : 'n/a',
+                $checkpoint->failedPosition,
+                $checkpoint->plannedCount,
+                $checkpoint->completedCount(),
+                $checkpoint->failedVersion ?? 'n/a',
+                $checkpoint->failedMigration ?? 'n/a',
+                $e->getPrevious()?->getMessage() ?? $e->getMessage(),
+            ));
+            return 1;
         } catch (\Throwable $e) {
             $output->error(sprintf('db:migrate failed: %s', $e->getMessage()));
             return 1;
@@ -72,6 +109,12 @@ final class DbMigrateCommand extends Command
         $paths = $app->config('database.migrations.paths', ['database/migrations']);
         $classes = $app->config('database.migrations.classes', []);
         $table = (string) $app->config('database.migrations.table', 'framework_migrations');
+        $lock = MigrationLock::forConnection(
+            locksRoot: $app->storagePath('framework/database/migrations'),
+            connectionName: $connectionName,
+            connection: $connection,
+            repositoryTable: $table,
+        );
 
         return new MigrationRunner(
             $connection,
@@ -81,31 +124,62 @@ final class DbMigrateCommand extends Command
                 classes: is_array($classes) ? array_values($classes) : [],
             ),
             new MigrationRepository($connection, $table),
+            $lock,
         );
     }
 
-    /**
-     * @param array{planned:int,applied:list<string>,pretended:list<string>} $result
-     */
-    private function renderResult(array $result, bool $pretend, Output $output): void
+    private function renderPlan(MigrationPlan $plan, Output $output): void
     {
-        if ($result['planned'] === 0) {
-            $output->writeln('No hay migraciones pendientes.');
-            return;
-        }
+        $output->writeln(sprintf('Plan de migración: %d pendiente(s).', $plan->plannedCount()));
+        $output->writeln(sprintf('Fingerprint: %s', $plan->fingerprint));
+        $output->writeln(sprintf(
+            'Contexto: driver=%s version=%s historial=%s batch=%s tx=%d non-tx=%d',
+            $plan->driver->driverName,
+            $plan->driver->serverVersion !== '' ? $plan->driver->serverVersion : 'unknown',
+            $plan->repositoryTable,
+            $plan->batchNumber !== null ? (string) $plan->batchNumber : 'n/a',
+            $plan->transactionalCount(),
+            $plan->nonTransactionalCount(),
+        ));
 
-        if ($pretend) {
-            $output->writeln(sprintf('Plan de migración: %d pendiente(s).', $result['planned']));
-            foreach ($result['pretended'] as $version) {
-                $output->writeln(sprintf('  - %s', $version));
-            }
-            return;
+        foreach ($plan->items as $item) {
+            $this->renderPlanItem($item, $output);
         }
+    }
 
+    /**
+     * @param array{
+     *   planned:int,
+     *   applied:list<string>,
+     *   verification:MigrationVerificationResult
+     * } $result
+     */
+    private function renderExecutionResult(array $result, Output $output): void
+    {
         $output->writeln(sprintf('Migraciones aplicadas: %d', count($result['applied'])));
         foreach ($result['applied'] as $version) {
             $output->writeln(sprintf('  - %s', $version));
         }
+
+        $verification = $result['verification'];
+        $output->writeln(sprintf(
+            'Verify: OK fingerprint=%s batch=%s verified=%d remaining_pending=%d',
+            $verification->fingerprint,
+            $verification->batchNumber !== null ? (string) $verification->batchNumber : 'n/a',
+            $verification->verifiedCount(),
+            $verification->remainingPendingCount(),
+        ));
+    }
+
+    private function renderPlanItem(MigrationPlanItem $item, Output $output): void
+    {
+        $output->writeln(sprintf(
+            '  - [%s] %s %s (%s)',
+            $item->isTransactional() ? 'tx' : 'non-tx',
+            $item->version(),
+            $item->description(),
+            $item->migrationClass(),
+        ));
     }
 
     private function resolveConnectionName(Input $input): ?string

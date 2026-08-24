@@ -8,6 +8,8 @@ use PHPUnit\Framework\TestCase;
 use Quantum\Console\ConsoleApplication;
 use Quantum\Console\Output;
 use Quantum\Database\Dbal\Contract\ConnectionInterface;
+use Quantum\Database\Migration\MigrationLock;
+use Quantum\Database\Migration\MigrationLockLease;
 use VoltStack\Framework\Application;
 use VoltStack\Framework\Provider\DatabaseServiceProvider;
 
@@ -34,8 +36,15 @@ final class DatabaseMigrationCommandTest extends TestCase
     {
         $migrate = $this->runConsole(['volt', 'db:migrate', '--step=1']);
         self::assertSame(0, $migrate['exit']);
+        self::assertStringContainsString('Plan de migración: 1 pendiente(s).', $migrate['stdout']);
+        self::assertStringContainsString('Fingerprint:', $migrate['stdout']);
+        self::assertStringContainsString('Contexto: driver=sqlite', $migrate['stdout']);
+        self::assertStringContainsString('[tx] 202608220001', $migrate['stdout']);
         self::assertStringContainsString('Migraciones aplicadas: 1', $migrate['stdout']);
         self::assertStringContainsString('202608220001', $migrate['stdout']);
+        self::assertStringContainsString('Verify: OK', $migrate['stdout']);
+        self::assertStringContainsString('verified=1', $migrate['stdout']);
+        self::assertStringContainsString('remaining_pending=1', $migrate['stdout']);
 
         $status = $this->runConsole(['volt', 'db:migrate-status']);
         self::assertSame(0, $status['exit']);
@@ -53,8 +62,11 @@ final class DatabaseMigrationCommandTest extends TestCase
 
         self::assertSame(0, $pretend['exit']);
         self::assertStringContainsString('Plan de migración: 2 pendiente(s).', $pretend['stdout']);
-        self::assertStringContainsString('202608220001', $pretend['stdout']);
-        self::assertStringContainsString('202608220002', $pretend['stdout']);
+        self::assertStringContainsString('Fingerprint:', $pretend['stdout']);
+        self::assertStringContainsString('Contexto: driver=sqlite', $pretend['stdout']);
+        self::assertStringContainsString('[tx] 202608220001', $pretend['stdout']);
+        self::assertStringContainsString('[non-tx] 202608220002', $pretend['stdout']);
+        self::assertStringContainsString('Dry-run activado: no se aplicaron cambios.', $pretend['stdout']);
 
         $app = $this->loadApp();
         self::assertFalse($this->tableExists($app, 'f16_users'));
@@ -65,6 +77,9 @@ final class DatabaseMigrationCommandTest extends TestCase
     {
         $migrate = $this->runConsole(['volt', 'db:migrate']);
         self::assertSame(0, $migrate['exit']);
+        self::assertStringContainsString('Verify: OK', $migrate['stdout']);
+        self::assertStringContainsString('verified=2', $migrate['stdout']);
+        self::assertStringContainsString('remaining_pending=0', $migrate['stdout']);
 
         $app = $this->loadApp();
         self::assertTrue($this->tableExists($app, 'f16_users'));
@@ -83,6 +98,65 @@ final class DatabaseMigrationCommandTest extends TestCase
         $status = $this->runConsole(['volt', 'db:migrate-status']);
         self::assertStringContainsString('[PENDING] 202608220001', $status['stdout']);
         self::assertStringContainsString('[PENDING] 202608220002', $status['stdout']);
+    }
+
+    public function test_cli_migrate_fails_when_migration_lock_is_already_held(): void
+    {
+        $lease = $this->acquireMigrationLock();
+
+        try {
+            $migrate = $this->runConsole(['volt', 'db:migrate']);
+        } finally {
+            $lease->release();
+        }
+
+        self::assertSame(1, $migrate['exit']);
+        self::assertStringContainsString('db:migrate failed:', $migrate['stderr']);
+        self::assertStringContainsString('Migration lock is already held', $migrate['stderr']);
+    }
+
+    public function test_cli_rollback_fails_when_migration_lock_is_already_held(): void
+    {
+        $migrate = $this->runConsole(['volt', 'db:migrate']);
+        self::assertSame(0, $migrate['exit']);
+
+        $lease = $this->acquireMigrationLock();
+
+        try {
+            $rollback = $this->runConsole(['volt', 'db:rollback']);
+        } finally {
+            $lease->release();
+        }
+
+        self::assertSame(1, $rollback['exit']);
+        self::assertStringContainsString('db:rollback failed:', $rollback['stderr']);
+        self::assertStringContainsString('Migration lock is already held', $rollback['stderr']);
+    }
+
+    public function test_cli_migrate_reports_checkpoint_when_execution_fails_mid_plan(): void
+    {
+        $this->appendFailingMigration();
+
+        $migrate = $this->runConsole(['volt', 'db:migrate']);
+
+        self::assertSame(1, $migrate['exit']);
+        self::assertStringContainsString('db:migrate failed: failure=permanent', $migrate['stderr']);
+        self::assertStringContainsString('phase=execute', $migrate['stderr']);
+        self::assertStringContainsString('position=3/3', $migrate['stderr']);
+        self::assertStringContainsString('completed=2', $migrate['stderr']);
+        self::assertStringContainsString('failed_version=202608220003', $migrate['stderr']);
+        self::assertStringContainsString('failed_migration=TempMigrations\\', $migrate['stderr']);
+        self::assertStringContainsString('boom failing migration', $migrate['stderr']);
+
+        $status = $this->runConsole(['volt', 'db:migrate-status']);
+        self::assertStringContainsString('[APPLIED] 202608220001', $status['stdout']);
+        self::assertStringContainsString('[APPLIED] 202608220002', $status['stdout']);
+        self::assertStringContainsString('[PENDING] 202608220003', $status['stdout']);
+
+        $app = $this->loadApp();
+        self::assertTrue($this->tableExists($app, 'f16_users'));
+        self::assertTrue($this->tableExists($app, 'f16_logs'));
+        self::assertFalse($this->tableExists($app, 'f16_failures'));
     }
 
     /**
@@ -120,6 +194,66 @@ final class DatabaseMigrationCommandTest extends TestCase
             ->fetchOneAssoc();
 
         return is_array($row);
+    }
+
+    private function acquireMigrationLock(?string $connectionName = null): MigrationLockLease
+    {
+        $app = $this->loadApp();
+        $connection = $app->make(ConnectionInterface::class);
+        $connection->connect();
+
+        $lock = MigrationLock::forConnection(
+            locksRoot: $app->storagePath('framework/database/migrations'),
+            connectionName: $connectionName,
+            connection: $connection,
+            repositoryTable: (string) $app->config('database.migrations.table', 'framework_migrations'),
+        );
+
+        return $lock->acquire();
+    }
+
+    private function appendFailingMigration(): void
+    {
+        $namespace = 'TempMigrations\\T' . substr(md5($this->basePath), 0, 8);
+        $migrationPath = $this->basePath . DIRECTORY_SEPARATOR . 'database' . DIRECTORY_SEPARATOR . 'migrations';
+
+        file_put_contents(
+            $migrationPath . DIRECTORY_SEPARATOR . '202608220003_create_f16_failures.php',
+            sprintf(<<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+namespace %s;
+
+use Quantum\Database\Dbal\Contract\ConnectionInterface;
+use Quantum\Database\Migration\AbstractMigration;
+
+final class CreateF16FailuresMigration extends AbstractMigration
+{
+    public function version(): string
+    {
+        return '202608220003';
+    }
+
+    public function description(): string
+    {
+        return 'Create failing table.';
+    }
+
+    public function up(ConnectionInterface $connection): void
+    {
+        throw new \RuntimeException('boom failing migration');
+    }
+
+    public function down(ConnectionInterface $connection): void
+    {
+        $connection->executeStatement('DROP TABLE IF EXISTS f16_failures');
+    }
+}
+PHP
+            , $namespace)
+        );
     }
 
     private function makeTempProject(string $basePath): void
@@ -276,6 +410,11 @@ final class CreateF16LogsMigration extends AbstractMigration
     public function description(): string
     {
         return 'Create f16 logs table.';
+    }
+
+    public function isTransactional(): bool
+    {
+        return false;
     }
 
     public function up(ConnectionInterface $connection): void

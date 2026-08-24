@@ -8,6 +8,7 @@ use Quantum\Console\Command;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
 use Quantum\Database\Migration\MigrationDiscovery;
+use Quantum\Database\Migration\MigrationLock;
 use Quantum\Database\Migration\MigrationRepository;
 use Quantum\Database\Migration\MigrationRunner;
 use Quantum\Database\Support\ConnectionRegistry;
@@ -72,6 +73,12 @@ final class DbRollbackCommand extends Command
         $paths = $app->config('database.migrations.paths', ['database/migrations']);
         $classes = $app->config('database.migrations.classes', []);
         $table = (string) $app->config('database.migrations.table', 'framework_migrations');
+        $lock = MigrationLock::forConnection(
+            locksRoot: $app->storagePath('framework/database/migrations'),
+            connectionName: $connectionName,
+            connection: $connection,
+            repositoryTable: $table,
+        );
 
         return new MigrationRunner(
             $connection,
@@ -81,6 +88,7 @@ final class DbRollbackCommand extends Command
                 classes: is_array($classes) ? array_values($classes) : [],
             ),
             new MigrationRepository($connection, $table),
+            $lock,
         );
     }
 

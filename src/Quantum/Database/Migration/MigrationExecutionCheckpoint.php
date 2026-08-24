@@ -19,8 +19,7 @@ final readonly class MigrationExecutionCheckpoint
         public ?string $failedVersion,
         public ?string $failedMigration,
         public ?string $failedDescription,
-    ) {
-    }
+    ) {}
 
     public function completedCount(): int
     {
@@ -30,5 +29,10 @@ final readonly class MigrationExecutionCheckpoint
     public function hasFailedMigration(): bool
     {
         return $this->failedVersion !== null && $this->failedMigration !== null;
+    }
+
+    public function remainingCount(): int
+    {
+        return max(0, $this->plannedCount - $this->completedCount());
     }
 }

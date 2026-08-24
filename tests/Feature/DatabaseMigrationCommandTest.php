@@ -147,6 +147,10 @@ final class DatabaseMigrationCommandTest extends TestCase
         self::assertStringContainsString('failed_version=202608220003', $migrate['stderr']);
         self::assertStringContainsString('failed_migration=TempMigrations\\', $migrate['stderr']);
         self::assertStringContainsString('boom failing migration', $migrate['stderr']);
+        self::assertStringContainsString('Recovery: strategy=resume_or_revert_partial', $migrate['stderr']);
+        self::assertStringContainsString('next: db:migrate-status', $migrate['stderr']);
+        self::assertStringContainsString('next: db:migrate', $migrate['stderr']);
+        self::assertStringContainsString('next: db:rollback --step=2', $migrate['stderr']);
 
         $status = $this->runConsole(['volt', 'db:migrate-status']);
         self::assertStringContainsString('[APPLIED] 202608220001', $status['stdout']);
@@ -157,6 +161,36 @@ final class DatabaseMigrationCommandTest extends TestCase
         self::assertTrue($this->tableExists($app, 'f16_users'));
         self::assertTrue($this->tableExists($app, 'f16_logs'));
         self::assertFalse($this->tableExists($app, 'f16_failures'));
+    }
+
+    public function test_cli_rollback_reports_checkpoint_when_execution_fails_mid_plan(): void
+    {
+        $this->replaceLogsMigrationWithFailingRollback();
+
+        $migrate = $this->runConsole(['volt', 'db:migrate']);
+        self::assertSame(0, $migrate['exit']);
+
+        $rollback = $this->runConsole(['volt', 'db:rollback']);
+
+        self::assertSame(1, $rollback['exit']);
+        self::assertStringContainsString('db:rollback failed: failure=permanent', $rollback['stderr']);
+        self::assertStringContainsString('phase=rollback', $rollback['stderr']);
+        self::assertStringContainsString('position=1/2', $rollback['stderr']);
+        self::assertStringContainsString('completed=0', $rollback['stderr']);
+        self::assertStringContainsString('failed_version=202608220002', $rollback['stderr']);
+        self::assertStringContainsString('failed_migration=TempMigrations\\', $rollback['stderr']);
+        self::assertStringContainsString('boom failing rollback', $rollback['stderr']);
+        self::assertStringContainsString('Recovery: strategy=fix_and_retry_rollback', $rollback['stderr']);
+        self::assertStringContainsString('next: db:migrate-status', $rollback['stderr']);
+        self::assertStringContainsString('next: db:rollback', $rollback['stderr']);
+
+        $status = $this->runConsole(['volt', 'db:migrate-status']);
+        self::assertStringContainsString('[APPLIED] 202608220001', $status['stdout']);
+        self::assertStringContainsString('[APPLIED] 202608220002', $status['stdout']);
+
+        $app = $this->loadApp();
+        self::assertTrue($this->tableExists($app, 'f16_users'));
+        self::assertTrue($this->tableExists($app, 'f16_logs'));
     }
 
     /**
@@ -249,6 +283,55 @@ final class CreateF16FailuresMigration extends AbstractMigration
     public function down(ConnectionInterface $connection): void
     {
         $connection->executeStatement('DROP TABLE IF EXISTS f16_failures');
+    }
+}
+PHP
+            , $namespace)
+        );
+    }
+
+    private function replaceLogsMigrationWithFailingRollback(): void
+    {
+        $namespace = 'TempMigrations\\T' . substr(md5($this->basePath), 0, 8);
+        $migrationPath = $this->basePath . DIRECTORY_SEPARATOR . 'database' . DIRECTORY_SEPARATOR . 'migrations';
+
+        file_put_contents(
+            $migrationPath . DIRECTORY_SEPARATOR . '202608220002_create_f16_logs.php',
+            sprintf(<<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+namespace %s;
+
+use Quantum\Database\Dbal\Contract\ConnectionInterface;
+use Quantum\Database\Migration\AbstractMigration;
+
+final class CreateF16LogsMigration extends AbstractMigration
+{
+    public function version(): string
+    {
+        return '202608220002';
+    }
+
+    public function description(): string
+    {
+        return 'Create f16 logs table.';
+    }
+
+    public function isTransactional(): bool
+    {
+        return false;
+    }
+
+    public function up(ConnectionInterface $connection): void
+    {
+        $connection->executeStatement('CREATE TABLE IF NOT EXISTS f16_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, message TEXT NOT NULL)');
+    }
+
+    public function down(ConnectionInterface $connection): void
+    {
+        throw new \RuntimeException('boom failing rollback');
     }
 }
 PHP

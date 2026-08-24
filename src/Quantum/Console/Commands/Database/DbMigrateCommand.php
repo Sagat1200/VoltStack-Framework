@@ -77,6 +77,7 @@ final class DbMigrateCommand extends Command
             return 0;
         } catch (MigrationExecutionException $e) {
             $checkpoint = $e->checkpoint;
+            $advice = $e->recoveryAdvice();
 
             $output->error(sprintf(
                 'db:migrate failed: failure=%s retryable=%s phase=%s fingerprint=%s batch=%s position=%d/%d completed=%d failed_version=%s failed_migration=%s message=%s',
@@ -92,6 +93,14 @@ final class DbMigrateCommand extends Command
                 $checkpoint->failedMigration ?? 'n/a',
                 $e->getPrevious()?->getMessage() ?? $e->getMessage(),
             ));
+            $output->error(sprintf(
+                'Recovery: strategy=%s summary=%s',
+                $advice->strategy,
+                $advice->summary,
+            ));
+            foreach ($advice->recommendedCommands as $command) {
+                $output->error(sprintf('  next: %s', $command));
+            }
             return 1;
         } catch (\Throwable $e) {
             $output->error(sprintf('db:migrate failed: %s', $e->getMessage()));

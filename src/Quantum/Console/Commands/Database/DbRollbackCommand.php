@@ -8,6 +8,7 @@ use Quantum\Console\Command;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
 use Quantum\Database\Migration\MigrationDiscovery;
+use Quantum\Database\Migration\MigrationExecutionException;
 use Quantum\Database\Migration\MigrationLock;
 use Quantum\Database\Migration\MigrationRepository;
 use Quantum\Database\Migration\MigrationRunner;
@@ -57,6 +58,33 @@ final class DbRollbackCommand extends Command
             $this->renderResult($result, $pretend, $output);
 
             return 0;
+        } catch (MigrationExecutionException $e) {
+            $checkpoint = $e->checkpoint;
+            $advice = $e->recoveryAdvice();
+
+            $output->error(sprintf(
+                'db:rollback failed: failure=%s retryable=%s phase=%s fingerprint=%s batch=%s position=%d/%d completed=%d failed_version=%s failed_migration=%s message=%s',
+                $e->failure->value,
+                $e->retryable ? 'yes' : 'no',
+                $checkpoint->phase,
+                $checkpoint->fingerprint,
+                $checkpoint->batchNumber !== null ? (string) $checkpoint->batchNumber : 'n/a',
+                $checkpoint->failedPosition,
+                $checkpoint->plannedCount,
+                $checkpoint->completedCount(),
+                $checkpoint->failedVersion ?? 'n/a',
+                $checkpoint->failedMigration ?? 'n/a',
+                $e->getPrevious()?->getMessage() ?? $e->getMessage(),
+            ));
+            $output->error(sprintf(
+                'Recovery: strategy=%s summary=%s',
+                $advice->strategy,
+                $advice->summary,
+            ));
+            foreach ($advice->recommendedCommands as $command) {
+                $output->error(sprintf('  next: %s', $command));
+            }
+            return 1;
         } catch (\Throwable $e) {
             $output->error(sprintf('db:rollback failed: %s', $e->getMessage()));
             return 1;

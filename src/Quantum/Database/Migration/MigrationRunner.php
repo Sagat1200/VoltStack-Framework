@@ -223,12 +223,25 @@ final class MigrationRunner
             ];
         }
 
-        return $this->withExecutionLock(function () use ($target): array {
+        return $this->withExecutionLock(function () use ($target, $step): array {
             $rolledBack = [];
+            $fingerprint = $this->rollbackFingerprint($target, $step);
 
-            foreach ($target as $migration) {
-                $this->runDown($migration);
-                $rolledBack[] = $migration->version();
+            try {
+                foreach ($target as $migration) {
+                    $this->runDown($migration);
+                    $rolledBack[] = $migration->version();
+                }
+            } catch (\Throwable $e) {
+                $failedMigration = $target[count($rolledBack)] ?? null;
+
+                throw $this->mapRollbackFailure(
+                    throwable: $e,
+                    fingerprint: $fingerprint,
+                    rolledBackVersions: $rolledBack,
+                    failedMigration: $failedMigration,
+                    plannedCount: count($target),
+                );
             }
 
             return [
@@ -390,6 +403,54 @@ final class MigrationRunner
     }
 
     /**
+     * @param list<string> $rolledBackVersions
+     */
+    private function mapRollbackFailure(
+        \Throwable $throwable,
+        string $fingerprint,
+        array $rolledBackVersions,
+        ?MigrationInterface $failedMigration,
+        int $plannedCount,
+    ): MigrationExecutionException {
+        if ($throwable instanceof MigrationExecutionException) {
+            return $throwable;
+        }
+
+        [$failure, $retryable] = $throwable instanceof DbalException
+            ? $this->mapDbalFailure($throwable)
+            : [MigrationOperationalFailure::Permanent, false];
+
+        $checkpoint = new MigrationExecutionCheckpoint(
+            fingerprint: $fingerprint,
+            batchNumber: null,
+            phase: 'rollback',
+            plannedCount: $plannedCount,
+            failedPosition: count($rolledBackVersions) + 1,
+            completedVersions: $rolledBackVersions,
+            failedVersion: $failedMigration?->version(),
+            failedMigration: $failedMigration !== null ? $failedMigration::class : null,
+            failedDescription: $failedMigration?->description(),
+        );
+
+        $message = sprintf(
+            'Migration rollback failed [%s] at position %d/%d after %d completed step(s): %s',
+            $failure->value,
+            $checkpoint->failedPosition,
+            $checkpoint->plannedCount,
+            $checkpoint->completedCount(),
+            $throwable->getMessage(),
+        );
+
+        return new MigrationExecutionException(
+            failure: $failure,
+            checkpoint: $checkpoint,
+            retryable: $retryable,
+            message: $message,
+            previous: $throwable,
+        );
+    }
+
+    /**
      * @return array{MigrationOperationalFailure,bool}
      */
     private function mapDbalFailure(DbalException $e): array
@@ -405,6 +466,37 @@ final class MigrationRunner
             DatabaseFailureKind::Integrity,
             DatabaseFailureKind::Internal => [MigrationOperationalFailure::Permanent, $e->retryable],
         };
+    }
+
+    /**
+     * @param list<MigrationInterface> $target
+     */
+    private function rollbackFingerprint(array $target, ?int $step): string
+    {
+        $driver = $this->connection->getDriverInfo();
+        $payload = [
+            'format' => 'voltstack-migration-rollback-v1',
+            'operation' => 'rollback',
+            'repository_table' => $this->repository->tableName(),
+            'step_limit' => $step,
+            'driver' => [
+                'name' => $driver->driverName,
+                'server_version' => $driver->serverVersion,
+                'database' => $driver->databaseName,
+                'charset' => $driver->charset,
+            ],
+            'items' => array_map(
+                static fn(MigrationInterface $migration): array => [
+                    'version' => $migration->version(),
+                    'migration' => $migration::class,
+                    'description' => $migration->description(),
+                    'transactional' => $migration->isTransactional(),
+                ],
+                $target,
+            ),
+        ];
+
+        return hash('sha256', json_encode($payload, JSON_THROW_ON_ERROR));
     }
 
     /**

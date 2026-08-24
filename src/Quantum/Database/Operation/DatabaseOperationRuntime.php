@@ -15,7 +15,7 @@ final class DatabaseOperationRuntime
 {
     public function __construct(
         private readonly DatabaseCircuitBreaker $circuitBreaker,
-        private readonly ?DatabaseTelemetryStore $telemetry = null,
+        private readonly DatabaseTelemetryStore|\Closure|null $telemetry = null,
     ) {}
 
     public function plan(RawOperation $operation, DatabaseContext $context, DatabaseExecutionPolicy $policy): DatabaseOperationPlan
@@ -470,11 +470,13 @@ final class DatabaseOperationRuntime
 
     private function recordTelemetry(DatabaseOperationPlan $plan, DatabaseDiagnosticSnapshot $snapshot): void
     {
-        if (!$this->telemetry instanceof DatabaseTelemetryStore) {
+        $telemetry = $this->resolveTelemetryStore();
+
+        if (!$telemetry instanceof DatabaseTelemetryStore) {
             return;
         }
 
-        $this->telemetry->record(
+        $telemetry->record(
             plan: $plan,
             snapshot: $snapshot,
             segmentState: new DatabaseCircuitStateSnapshot(
@@ -489,6 +491,22 @@ final class DatabaseOperationRuntime
             ),
         );
     }
+
+    private function resolveTelemetryStore(): ?DatabaseTelemetryStore
+    {
+        if ($this->telemetry instanceof DatabaseTelemetryStore) {
+            return $this->telemetry;
+        }
+
+        if ($this->telemetry instanceof \Closure) {
+            $resolved = ($this->telemetry)();
+
+            return $resolved instanceof DatabaseTelemetryStore ? $resolved : null;
+        }
+
+        return null;
+    }
+
 
     private function durationMs(int $startedAt): int
     {

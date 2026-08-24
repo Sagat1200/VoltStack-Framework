@@ -15,14 +15,19 @@ use Quantum\Database\Migration\MigrationLock;
 use Quantum\Database\Migration\MigrationRecoveryStore;
 use Quantum\Database\Migration\MigrationRepository;
 use Quantum\Database\Migration\MigrationRunner;
+use Quantum\Database\Operation\Contracts\DatabaseHealthStoreInterface;
 use Quantum\Database\Operation\Contracts\DatabaseTelemetryDispatcherInterface;
 use Quantum\Database\Operation\DatabaseCircuitBreaker;
 use Quantum\Database\Operation\DatabaseHealthSnapshot;
 use Quantum\Database\Operation\DatabaseOperationRuntime;
 use Quantum\Database\Operation\DatabaseTelemetryReport;
 use Quantum\Database\Operation\DatabaseTelemetryStore;
+use Quantum\Database\Operation\Engine\InMemoryDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\InMemoryDatabaseTelemetryDispatcher;
+use Quantum\Database\Operation\Engine\JsonFileDatabaseHealthStore;
+use Quantum\Database\Operation\Engine\JsonLineDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\JsonLineDatabaseTelemetryDispatcher;
+use Quantum\Database\Operation\Engine\NullDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\NullDatabaseTelemetryDispatcher;
 use Quantum\Database\Schema\SchemaIntrospectorInterface;
 use Quantum\Database\Schema\SchemaManager;
@@ -120,6 +125,49 @@ final class DatabaseServiceProvider extends ServiceProvider
 
         $this->app->singleton(DatabaseCircuitBreaker::class, fn(): DatabaseCircuitBreaker => new DatabaseCircuitBreaker());
         $this->app->scoped(DatabaseTelemetryStore::class, fn(): DatabaseTelemetryStore => new DatabaseTelemetryStore());
+        $this->app->singleton(DatabaseHealthStoreInterface::class, function (Application $app): DatabaseHealthStoreInterface {
+            $mode = $app->config('database.health.store', 'auto');
+
+            if ($mode === 'null') {
+                return new NullDatabaseHealthStore();
+            }
+
+            if ($mode === 'in_memory') {
+                return new InMemoryDatabaseHealthStore();
+            }
+
+            if ($mode === 'json') {
+                $path = $app->config('database.health.json_path');
+
+                if (is_string($path) && trim($path) !== '') {
+                    return new JsonFileDatabaseHealthStore(trim($path));
+                }
+
+                return new JsonFileDatabaseHealthStore(
+                    $app->joinPath($app->storagePath('framework/database'), 'database-health.json'),
+                );
+            }
+
+            if ($mode === 'jsonl') {
+                $path = $app->config('database.health.jsonl_path');
+
+                if (is_string($path) && trim($path) !== '') {
+                    return new JsonLineDatabaseHealthStore(trim($path));
+                }
+
+                return new JsonLineDatabaseHealthStore(
+                    $app->joinPath($app->storagePath('framework/database'), 'database-health.jsonl'),
+                );
+            }
+
+            if ($app->isProduction()) {
+                return new JsonLineDatabaseHealthStore(
+                    $app->joinPath($app->storagePath('framework/database'), 'database-health.jsonl'),
+                );
+            }
+
+            return new InMemoryDatabaseHealthStore();
+        });
         $this->app->singleton(DatabaseTelemetryDispatcherInterface::class, function (Application $app): DatabaseTelemetryDispatcherInterface {
             $mode = $app->config('database.observability.dispatcher', 'auto');
 
@@ -153,7 +201,7 @@ final class DatabaseServiceProvider extends ServiceProvider
         });
         $this->app->singleton(DatabaseOperationRuntime::class, fn(Application $app): DatabaseOperationRuntime => new DatabaseOperationRuntime(
             circuitBreaker: $app->make(DatabaseCircuitBreaker::class),
-            telemetry: $app->make(DatabaseTelemetryStore::class),
+            telemetry: static fn() => $app->make(DatabaseTelemetryStore::class),
         ));
 
         $this->app->singleton(SeederDiscovery::class, function (Application $app): SeederDiscovery {
@@ -293,15 +341,20 @@ final class DatabaseServiceProvider extends ServiceProvider
             $context->set('database.health', $health);
 
             $dispatcher = $app->make(DatabaseTelemetryDispatcherInterface::class);
+            $healthStore = $app->make(DatabaseHealthStoreInterface::class);
             $dbContext = $app->make(DatabaseContext::class);
-            $dispatcher->dispatch(new DatabaseTelemetryReport(
+            $report = new DatabaseTelemetryReport(
                 requestId: $dbContext->requestId,
                 tenantId: $dbContext->tenantId,
                 traceId: $dbContext->trace?->traceId,
                 generatedAt: (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format(\DATE_ATOM),
                 summary: $summary,
                 health: $health,
-            ));
+                nodeId: (string) $app->config('database.health.node_id', (string) $app->config('app.name', 'app')),
+            );
+
+            $dispatcher->dispatch($report);
+            $healthStore->persist($report);
         });
     }
 
@@ -309,6 +362,7 @@ final class DatabaseServiceProvider extends ServiceProvider
     {
         return [
             \Quantum\Console\Commands\Database\DbPingCommand::class,
+            \Quantum\Console\Commands\Database\DbHealthCommand::class,
             \Quantum\Console\Commands\Database\DbQueryCommand::class,
             \Quantum\Console\Commands\Database\DbMigrateCommand::class,
             \Quantum\Console\Commands\Database\DbMigrateRecoverCommand::class,

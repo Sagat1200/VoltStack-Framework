@@ -6,9 +6,9 @@ namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
 use Quantum\Database\Operation\DatabaseTelemetryReport;
-use Quantum\Database\Operation\Engine\JsonLineDatabaseTelemetryDispatcher;
+use Quantum\Database\Operation\Engine\JsonFileDatabaseHealthStore;
 
-final class JsonLineDatabaseTelemetryDispatcherTest extends TestCase
+final class JsonFileDatabaseHealthStoreTest extends TestCase
 {
     private string $basePath;
 
@@ -16,7 +16,7 @@ final class JsonLineDatabaseTelemetryDispatcherTest extends TestCase
     {
         parent::setUp();
 
-        $this->basePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-db-observability-jsonl-' . uniqid('', true);
+        $this->basePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-db-health-json-' . uniqid('', true);
         mkdir($this->basePath, 0777, true);
     }
 
@@ -27,12 +27,11 @@ final class JsonLineDatabaseTelemetryDispatcherTest extends TestCase
         parent::tearDown();
     }
 
-    public function test_it_writes_database_telemetry_as_json_line(): void
+    public function test_it_persists_and_reads_latest_health_report(): void
     {
-        $file = $this->basePath . DIRECTORY_SEPARATOR . 'database-events.jsonl';
-        $dispatcher = new JsonLineDatabaseTelemetryDispatcher($file, maxBytesPerLine: 4096);
-
-        $dispatcher->dispatch(new DatabaseTelemetryReport(
+        $file = $this->basePath . DIRECTORY_SEPARATOR . 'database-health.json';
+        $store = new JsonFileDatabaseHealthStore($file);
+        $report = new DatabaseTelemetryReport(
             requestId: 'req-1',
             tenantId: 'tenant-a',
             traceId: 'trace-1',
@@ -42,7 +41,7 @@ final class JsonLineDatabaseTelemetryDispatcherTest extends TestCase
                 'completed' => 2,
                 'failed' => 0,
                 'cancelled' => 0,
-                'slow_queries' => 1,
+                'slow_queries' => 0,
                 'latest' => [
                     ['logical_target' => 'users'],
                 ],
@@ -55,23 +54,18 @@ final class JsonLineDatabaseTelemetryDispatcherTest extends TestCase
                 'segments' => [],
             ],
             nodeId: 'node-a',
-        ));
+        );
+
+        $store->persist($report);
+        $loaded = $store->latest();
 
         self::assertFileExists($file);
-
-        $lines = file($file, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
-        self::assertIsArray($lines);
-        self::assertCount(1, $lines);
-
-        /** @var array<string, mixed> $payload */
-        $payload = json_decode((string) $lines[0], true, 512, JSON_THROW_ON_ERROR);
-
-        self::assertSame('database_telemetry', $payload['type']);
-        self::assertSame('req-1', $payload['payload']['request_id']);
-        self::assertSame('tenant-a', $payload['payload']['tenant_id']);
-        self::assertSame('node-a', $payload['payload']['node_id']);
-        self::assertSame(2, $payload['payload']['summary']['total_operations']);
-        self::assertSame(1, $payload['payload']['health']['closed_segments']);
+        self::assertInstanceOf(DatabaseTelemetryReport::class, $loaded);
+        self::assertSame('req-1', $loaded->requestId);
+        self::assertSame('tenant-a', $loaded->tenantId);
+        self::assertSame('node-a', $loaded->nodeId);
+        self::assertSame(2, $loaded->summary['total_operations']);
+        self::assertSame(1, $loaded->health['closed_segments']);
     }
 
     private function deleteDirectory(string $path): void

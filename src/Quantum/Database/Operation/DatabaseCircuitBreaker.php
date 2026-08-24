@@ -57,4 +57,20 @@ final class DatabaseCircuitBreaker
     {
         return $this->segments[$segment]['state'] ?? 'closed';
     }
+
+    public function failureCount(string $segment): int
+    {
+        return (int) ($this->segments[$segment]['failures'] ?? 0);
+    }
+
+    public function openedAt(string $segment): ?string
+    {
+        $openedAt = $this->segments[$segment]['opened_at'] ?? null;
+        if (!is_int($openedAt)) {
+            return null;
+        }
+
+        $elapsedMs = (int) ((hrtime(true) - $openedAt) / 1_000_000);
+        return sprintf('-%dms', $elapsedMs);
+    }
 }

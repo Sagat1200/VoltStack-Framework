@@ -15,6 +15,7 @@ final class DatabaseOperationRuntime
 {
     public function __construct(
         private readonly DatabaseCircuitBreaker $circuitBreaker,
+        private readonly ?DatabaseTelemetryStore $telemetry = null,
     ) {}
 
     public function plan(RawOperation $operation, DatabaseContext $context, DatabaseExecutionPolicy $policy): DatabaseOperationPlan
@@ -26,14 +27,22 @@ final class DatabaseOperationRuntime
         $driver = $connection->getDriverInfo()->driverName;
         $safePreview = $this->safeSqlPreview($operation->sql);
         $sqlFingerprint = hash('sha256', $safePreview);
+        $logicalTarget = $this->extractLogicalTarget($operation->sql);
         $deadline = $context->deadline ?? DatabaseDeadline::fromMs($policy->timeoutMs);
         $depth = $this->detectDepth($operation->sql);
         $retryable = $this->isRetryableOperation($operation);
         $retryLimit = $retryable ? $policy->retryLimit : 0;
+        $circuitSegment = $this->segmentKey(
+            connectionName: $connectionName,
+            driver: $driver,
+            operationKind: $operation->kind->value,
+            logicalTarget: $logicalTarget,
+        );
         $payload = [
             'kind' => $operation->kind->value,
             'connection' => $connectionName,
             'driver' => $driver,
+            'logical_target' => $logicalTarget,
             'sql_fingerprint' => $sqlFingerprint,
             'max_rows' => $policy->maxRows,
             'max_depth' => $policy->maxDepth,
@@ -46,6 +55,8 @@ final class DatabaseOperationRuntime
             operation: $operation,
             connectionName: $connectionName,
             driver: $driver,
+            logicalTarget: $logicalTarget,
+            circuitSegment: $circuitSegment,
             fingerprint: hash('sha256', json_encode($payload, JSON_THROW_ON_ERROR)),
             sqlFingerprint: $sqlFingerprint,
             safeSqlPreview: $safePreview,
@@ -79,13 +90,14 @@ final class DatabaseOperationRuntime
                 outcome: 'failed',
                 failure: DatabaseOperationalFailure::InvalidPlan,
                 retryable: false,
-                circuitState: $this->circuitBreaker->currentState($this->segmentKey($plan)),
+                circuitState: $this->circuitBreaker->currentState($plan->circuitSegment),
                 events: array_merge($events, [
                     new DatabaseDiagnosticEvent('failed', $this->timestampNow(), [
                         'reason' => 'query_depth_exceeded',
                     ]),
                 ]),
             );
+            $this->recordTelemetry($plan, $snapshot);
 
             throw new DatabaseOperationException(
                 failure: DatabaseOperationalFailure::InvalidPlan,
@@ -95,7 +107,7 @@ final class DatabaseOperationRuntime
             );
         }
 
-        $segment = $this->segmentKey($plan);
+        $segment = $plan->circuitSegment;
         $attempt = 0;
         $startedAt = hrtime(true);
 
@@ -117,6 +129,7 @@ final class DatabaseOperationRuntime
                         ]),
                     ]),
                 );
+                $this->recordTelemetry($plan, $snapshot);
 
                 throw new DatabaseOperationException(
                     failure: DatabaseOperationalFailure::ResourceExhausted,
@@ -144,6 +157,7 @@ final class DatabaseOperationRuntime
                         ]),
                     ]),
                 );
+                $this->recordTelemetry($plan, $snapshot);
 
                 throw new DatabaseOperationException(
                     failure: DatabaseOperationalFailure::Transient,
@@ -181,6 +195,7 @@ final class DatabaseOperationRuntime
                         circuitState: $gateState,
                         events: $events,
                     );
+                    $this->recordTelemetry($plan, $snapshot);
 
                     throw new DatabaseOperationException(
                         failure: DatabaseOperationalFailure::ResourceExhausted,
@@ -209,6 +224,7 @@ final class DatabaseOperationRuntime
                     circuitState: $this->circuitBreaker->currentState($segment),
                     events: $events,
                 );
+                $this->recordTelemetry($plan, $snapshot);
 
                 return DatabaseOperationResult::success(
                     kind: $plan->operation->kind,
@@ -256,6 +272,7 @@ final class DatabaseOperationRuntime
                     circuitState: $circuitState,
                     events: $events,
                 );
+                $this->recordTelemetry($plan, $snapshot);
 
                 throw new DatabaseOperationException(
                     failure: $failure,
@@ -424,9 +441,53 @@ final class DatabaseOperationRuntime
         );
     }
 
-    private function segmentKey(DatabaseOperationPlan $plan): string
+    private function segmentKey(string $connectionName, string $driver, string $operationKind, string $logicalTarget): string
     {
-        return $plan->connectionName . '|' . $plan->driver . '|' . $plan->operation->kind->value;
+        return $connectionName . '|' . $driver . '|' . $operationKind . '|' . $logicalTarget;
+    }
+
+    private function extractLogicalTarget(string $sql): string
+    {
+        $patterns = [
+            '/\bdelete\s+from\s+([`"\\[]?[a-zA-Z0-9_.-]+[`"\\]]?)/i',
+            '/\binsert\s+into\s+([`"\\[]?[a-zA-Z0-9_.-]+[`"\\]]?)/i',
+            '/\bupdate\s+([`"\\[]?[a-zA-Z0-9_.-]+[`"\\]]?)/i',
+            '/\bfrom\s+([`"\\[]?[a-zA-Z0-9_.-]+[`"\\]]?)/i',
+        ];
+
+        foreach ($patterns as $pattern) {
+            if (preg_match($pattern, $sql, $matches) === 1) {
+                $target = trim((string) ($matches[1] ?? ''));
+                $target = trim($target, "`\"[]");
+                if ($target !== '') {
+                    return strtolower($target);
+                }
+            }
+        }
+
+        return 'unknown';
+    }
+
+    private function recordTelemetry(DatabaseOperationPlan $plan, DatabaseDiagnosticSnapshot $snapshot): void
+    {
+        if (!$this->telemetry instanceof DatabaseTelemetryStore) {
+            return;
+        }
+
+        $this->telemetry->record(
+            plan: $plan,
+            snapshot: $snapshot,
+            segmentState: new DatabaseCircuitStateSnapshot(
+                segment: $plan->circuitSegment,
+                connectionName: $plan->connectionName,
+                driver: $plan->driver,
+                operationKind: $plan->operation->kind->value,
+                logicalTarget: $plan->logicalTarget,
+                state: $this->circuitBreaker->currentState($plan->circuitSegment),
+                failureCount: $this->circuitBreaker->failureCount($plan->circuitSegment),
+                openedAt: $this->circuitBreaker->openedAt($plan->circuitSegment),
+            ),
+        );
     }
 
     private function durationMs(int $startedAt): int

@@ -55,6 +55,10 @@ final class DatabaseRequestLifecycleTest extends TestCase
 
         self::assertTrue($payload['scope_ping']);
         self::assertSame(0, $payload['count_during_request']);
+        self::assertSame(1, $payload['telemetry']['total_operations']);
+        self::assertSame(1, $payload['telemetry']['completed']);
+        self::assertSame(1, $payload['health']['total_segments']);
+        self::assertSame('closed', $payload['health']['segments'][0]['state']);
         self::assertSame(1, $this->countPersistedRecords($app));
     }
 
@@ -73,6 +77,8 @@ final class DatabaseRequestLifecycleTest extends TestCase
 
         self::assertTrue($payload['scope_ping']);
         self::assertSame(0, $payload['count_during_request']);
+        self::assertSame(1, $payload['telemetry']['total_operations']);
+        self::assertSame(1, $payload['telemetry']['completed']);
         self::assertSame(0, $this->countPersistedRecords($app));
     }
 
@@ -95,6 +101,8 @@ final class DatabaseRequestLifecycleTest extends TestCase
         self::assertTrue($createPayload['scope_ping']);
         self::assertIsInt($id);
         self::assertSame($createPayload['runtime_request_id'], $createPayload['database_request_id']);
+        self::assertSame(1, $createPayload['telemetry']['completed']);
+        self::assertSame('test_auto_flush_records', $createPayload['telemetry']['latest'][0]['logical_target']);
 
         $readResponse = $kernel->handle(Request::create('/records/' . $id));
         /** @var array<string, mixed> $readPayload */
@@ -105,6 +113,8 @@ final class DatabaseRequestLifecycleTest extends TestCase
         self::assertSame($id, $readPayload['record_id']);
         self::assertSame('created-from-request', $readPayload['name']);
         self::assertSame($readPayload['runtime_request_id'], $readPayload['database_request_id']);
+        self::assertGreaterThanOrEqual(1, (int) $readPayload['telemetry']['completed']);
+        self::assertGreaterThanOrEqual(1, (int) $readPayload['health']['closed_segments']);
         self::assertNotSame($createPayload['runtime_request_id'], $readPayload['runtime_request_id']);
     }
 
@@ -225,6 +235,8 @@ final class AutoFlushRecordController
         return [
             'scope_ping' => \VoltStack\Runtime\Context\RuntimeContext::current()?->get('database.scope_ping', false) ?? false,
             'count_during_request' => $this->em->count(TestAutoFlushRecord::class),
+            'telemetry' => \VoltStack\Runtime\Context\RuntimeContext::current()?->get('database.telemetry', []),
+            'health' => \VoltStack\Runtime\Context\RuntimeContext::current()?->get('database.health', []),
         ];
     }
 }
@@ -248,6 +260,8 @@ final class CreateAndFlushRecordController
             'record_id' => $record->id(),
             'runtime_request_id' => \VoltStack\Runtime\Context\RuntimeContext::current()?->requestId(),
             'database_request_id' => $this->databaseContext->requestId,
+            'telemetry' => \VoltStack\Runtime\Context\RuntimeContext::current()?->get('database.telemetry', []),
+            'health' => \VoltStack\Runtime\Context\RuntimeContext::current()?->get('database.health', []),
         ];
     }
 }
@@ -270,6 +284,8 @@ final class ReadPersistedRecordController
             'name' => $record?->name(),
             'runtime_request_id' => \VoltStack\Runtime\Context\RuntimeContext::current()?->requestId(),
             'database_request_id' => $this->databaseContext->requestId,
+            'telemetry' => \VoltStack\Runtime\Context\RuntimeContext::current()?->get('database.telemetry', []),
+            'health' => \VoltStack\Runtime\Context\RuntimeContext::current()?->get('database.health', []),
         ];
     }
 }

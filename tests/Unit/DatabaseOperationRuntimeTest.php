@@ -18,6 +18,7 @@ use Quantum\Database\Operation\DatabaseCircuitBreaker;
 use Quantum\Database\Operation\DatabaseExecutionPolicy;
 use Quantum\Database\Operation\DatabaseOperationException;
 use Quantum\Database\Operation\DatabaseOperationRuntime;
+use Quantum\Database\Operation\DatabaseTelemetryStore;
 use Quantum\Database\Operation\OperationKind;
 use Quantum\Database\Operation\RawOperation;
 
@@ -80,6 +81,52 @@ final class DatabaseOperationRuntimeTest extends TestCase
         }
 
         self::assertSame(2, $connection->queryCalls);
+    }
+
+    public function test_runtime_segments_circuit_by_logical_target_and_records_telemetry(): void
+    {
+        $connection = new RuntimeTestConnection([
+            DbalException::wrap(new \RuntimeException('temporary users disconnect'), DatabaseFailureKind::Connectivity, 'stmt.execute', 'SELECT * FROM users', true),
+            DbalException::wrap(new \RuntimeException('temporary posts disconnect'), DatabaseFailureKind::Connectivity, 'stmt.execute', 'SELECT * FROM posts', true),
+            RuntimeTestConnection::queryResult([
+                ['id' => 1],
+            ]),
+        ]);
+        $telemetry = new DatabaseTelemetryStore();
+        $runtime = new DatabaseOperationRuntime(new DatabaseCircuitBreaker(), $telemetry);
+        $context = DatabaseContext::empty()->withConnection($connection);
+        $policy = new DatabaseExecutionPolicy(retryLimit: 0, retryBackoffMs: 0, circuitFailureThreshold: 2, circuitCooldownMs: 60000);
+        $usersPlan = $runtime->plan(new RawOperation(OperationKind::RawQuery, 'SELECT * FROM users', [], 'primary'), $context, $policy);
+        $postsPlan = $runtime->plan(new RawOperation(OperationKind::RawQuery, 'SELECT * FROM posts', [], 'primary'), $context, $policy);
+
+        try {
+            $runtime->execute($usersPlan, $context);
+            self::fail('First users failure should raise an exception.');
+        } catch (DatabaseOperationException) {
+        }
+
+        try {
+            $runtime->execute($postsPlan, $context);
+            self::fail('First posts failure should raise an exception.');
+        } catch (DatabaseOperationException) {
+        }
+
+        $result = $runtime->execute($usersPlan, $context);
+
+        self::assertTrue($result->isSuccess);
+        self::assertSame('users', $usersPlan->logicalTarget);
+        self::assertSame('posts', $postsPlan->logicalTarget);
+        self::assertNotSame($usersPlan->circuitSegment, $postsPlan->circuitSegment);
+        self::assertSame(3, $connection->queryCalls);
+
+        $summary = $telemetry->summary();
+        $health = $telemetry->health();
+
+        self::assertSame(3, $summary['total_operations']);
+        self::assertSame(1, $summary['completed']);
+        self::assertSame(2, $summary['failed']);
+        self::assertSame(2, $health->totalSegments);
+        self::assertSame(2, $health->closedSegments);
     }
 }
 

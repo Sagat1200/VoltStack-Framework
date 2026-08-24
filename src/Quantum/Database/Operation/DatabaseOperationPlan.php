@@ -12,6 +12,8 @@ final readonly class DatabaseOperationPlan
         public RawOperation $operation,
         public string $connectionName,
         public string $driver,
+        public string $logicalTarget,
+        public string $circuitSegment,
         public string $fingerprint,
         public string $sqlFingerprint,
         public string $safeSqlPreview,
@@ -22,6 +24,5 @@ final readonly class DatabaseOperationPlan
         public bool $retryable,
         public DatabaseDeadline $deadline,
         public DatabaseExecutionPolicy $policy,
-    ) {
-    }
+    ) {}
 }

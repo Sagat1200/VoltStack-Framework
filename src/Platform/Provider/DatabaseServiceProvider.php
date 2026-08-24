@@ -16,7 +16,9 @@ use Quantum\Database\Migration\MigrationRecoveryStore;
 use Quantum\Database\Migration\MigrationRepository;
 use Quantum\Database\Migration\MigrationRunner;
 use Quantum\Database\Operation\DatabaseCircuitBreaker;
+use Quantum\Database\Operation\DatabaseHealthSnapshot;
 use Quantum\Database\Operation\DatabaseOperationRuntime;
+use Quantum\Database\Operation\DatabaseTelemetryStore;
 use Quantum\Database\Schema\SchemaIntrospectorInterface;
 use Quantum\Database\Schema\SchemaManager;
 use Quantum\Database\Schema\MariadbSchemaIntrospector;
@@ -112,8 +114,10 @@ final class DatabaseServiceProvider extends ServiceProvider
         ));
 
         $this->app->singleton(DatabaseCircuitBreaker::class, fn(): DatabaseCircuitBreaker => new DatabaseCircuitBreaker());
+        $this->app->scoped(DatabaseTelemetryStore::class, fn(): DatabaseTelemetryStore => new DatabaseTelemetryStore());
         $this->app->singleton(DatabaseOperationRuntime::class, fn(Application $app): DatabaseOperationRuntime => new DatabaseOperationRuntime(
             circuitBreaker: $app->make(DatabaseCircuitBreaker::class),
+            telemetry: $app->make(DatabaseTelemetryStore::class),
         ));
 
         $this->app->singleton(SeederDiscovery::class, function (Application $app): SeederDiscovery {
@@ -223,6 +227,31 @@ final class DatabaseServiceProvider extends ServiceProvider
             }
             $context->set('database.scope_ping', true);
             $context->set('database.tenant_id', $tenantId);
+            $context->set('database.telemetry', [
+                'total_operations' => 0,
+                'completed' => 0,
+                'failed' => 0,
+                'cancelled' => 0,
+                'slow_queries' => 0,
+                'latest' => [],
+            ]);
+            $context->set('database.health', (new DatabaseHealthSnapshot(
+                totalSegments: 0,
+                closedSegments: 0,
+                halfOpenSegments: 0,
+                openSegments: 0,
+                segments: [],
+            ))->toArray());
+        });
+
+        $this->app->onScopeEnd(function (Application $app, ?RuntimeContext $context): void {
+            if (!$context instanceof RuntimeContext) {
+                return;
+            }
+
+            $telemetry = $app->make(DatabaseTelemetryStore::class);
+            $context->set('database.telemetry', $telemetry->summary());
+            $context->set('database.health', $telemetry->health()->toArray());
         });
     }
 

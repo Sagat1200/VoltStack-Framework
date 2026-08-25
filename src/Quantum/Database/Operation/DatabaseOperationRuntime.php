@@ -20,6 +20,7 @@ final class DatabaseOperationRuntime
         private readonly DatabaseTelemetryStore|\Closure|null $telemetry = null,
         private readonly DatabaseHealthStoreInterface|\Closure|null $healthStore = null,
         private readonly DatabaseIdempotencyStoreInterface|\Closure|null $idempotencyStore = null,
+        private readonly string|\Closure|null $idempotencyNodeId = null,
     ) {}
 
     public function plan(RawOperation $operation, DatabaseContext $context, DatabaseExecutionPolicy $policy): DatabaseOperationPlan
@@ -739,10 +740,31 @@ final class DatabaseOperationRuntime
             connectionName: $plan->connectionName,
             logicalTarget: $plan->logicalTarget,
             createdAt: $this->timestampNow(),
-            nodeId: null,
+            nodeId: $this->resolveIdempotencyNodeId(),
             status: 'pending',
             expiresAt: $this->timestampAfterSeconds($plan->policy->idempotencyPendingTtlSeconds),
         );
+    }
+
+    private function resolveIdempotencyNodeId(): ?string
+    {
+        if (is_string($this->idempotencyNodeId)) {
+            $value = trim($this->idempotencyNodeId);
+
+            return $value !== '' ? $value : null;
+        }
+
+        if ($this->idempotencyNodeId instanceof \Closure) {
+            $resolved = ($this->idempotencyNodeId)();
+
+            if (is_string($resolved)) {
+                $value = trim($resolved);
+
+                return $value !== '' ? $value : null;
+            }
+        }
+
+        return null;
     }
 
 

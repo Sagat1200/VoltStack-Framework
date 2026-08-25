@@ -252,6 +252,10 @@ final class DatabaseServiceProvider extends ServiceProvider
             telemetry: static fn() => $app->make(DatabaseTelemetryStore::class),
             healthStore: static fn() => $app->make(DatabaseHealthStoreInterface::class),
             idempotencyStore: static fn() => $app->make(DatabaseIdempotencyStoreInterface::class),
+            idempotencyNodeId: static fn() => (string) $app->config(
+                'database.idempotency.node_id',
+                (string) $app->config('database.health.node_id', (string) $app->config('app.name', 'app')),
+            ),
         ));
 
         $this->app->singleton(SeederDiscovery::class, function (Application $app): SeederDiscovery {

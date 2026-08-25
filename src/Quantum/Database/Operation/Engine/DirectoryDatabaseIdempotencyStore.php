@@ -22,49 +22,57 @@ final class DirectoryDatabaseIdempotencyStore implements DatabaseIdempotencyStor
             mkdir($this->directoryPath, 0777, true);
         }
 
-        $filePath = $this->filePathForHash($record->keyHash);
-        if (!is_file($filePath)) {
-            $this->writeRecord($filePath, $record);
+        return $this->withKeyLock($record->keyHash, function () use ($record): DatabaseIdempotencyAcquireResult {
+            $filePath = $this->filePathForHash($record->keyHash);
+            if (!is_file($filePath)) {
+                $this->writeRecord($filePath, $record);
 
-            return DatabaseIdempotencyAcquireResult::acquired($record);
-        }
+                return DatabaseIdempotencyAcquireResult::acquired($record);
+            }
 
-        $existing = $this->readRecord($filePath);
-        if (!$existing instanceof DatabaseIdempotencyRecord) {
-            $this->writeRecord($filePath, $record);
+            $existing = $this->readRecord($filePath);
+            if (!$existing instanceof DatabaseIdempotencyRecord) {
+                $this->writeRecord($filePath, $record);
 
-            return DatabaseIdempotencyAcquireResult::acquired($record);
-        }
+                return DatabaseIdempotencyAcquireResult::acquired($record);
+            }
 
-        if ($existing->isExpired()) {
-            $this->writeRecord($filePath, $record);
+            if ($existing->isExpired()) {
+                $this->writeRecord($filePath, $record);
 
-            return DatabaseIdempotencyAcquireResult::acquired($record, 'reclaimed_expired');
-        }
+                return DatabaseIdempotencyAcquireResult::acquired($record, 'reclaimed_expired');
+            }
 
-        if ($existing->operationFingerprint === $record->operationFingerprint) {
-            return DatabaseIdempotencyAcquireResult::duplicate($existing);
-        }
+            if ($existing->operationFingerprint === $record->operationFingerprint) {
+                return DatabaseIdempotencyAcquireResult::duplicate($existing);
+            }
 
-        return DatabaseIdempotencyAcquireResult::conflict($existing);
+            return DatabaseIdempotencyAcquireResult::conflict($existing);
+        });
     }
 
     public function complete(DatabaseIdempotencyRecord $record): void
     {
-        $this->writeRecord($this->filePathForHash($record->keyHash), $record->withStatus('completed'));
+        $this->withKeyLock($record->keyHash, function () use ($record): void {
+            $this->writeRecord($this->filePathForHash($record->keyHash), $record->withStatus('completed'));
+        });
     }
 
     public function fail(DatabaseIdempotencyRecord $record): void
     {
-        $this->writeRecord($this->filePathForHash($record->keyHash), $record->withStatus('failed'));
+        $this->withKeyLock($record->keyHash, function () use ($record): void {
+            $this->writeRecord($this->filePathForHash($record->keyHash), $record->withStatus('failed'));
+        });
     }
 
     public function release(DatabaseIdempotencyRecord $record): void
     {
-        $filePath = $this->filePathForHash($record->keyHash);
-        if (is_file($filePath)) {
-            @unlink($filePath);
-        }
+        $this->withKeyLock($record->keyHash, function () use ($record): void {
+            $filePath = $this->filePathForHash($record->keyHash);
+            if (is_file($filePath)) {
+                @unlink($filePath);
+            }
+        });
     }
 
     public function latest(): ?DatabaseIdempotencyRecord
@@ -127,6 +135,14 @@ final class DirectoryDatabaseIdempotencyStore implements DatabaseIdempotencyStor
         return $this->directoryPath . DIRECTORY_SEPARATOR . $safe . '.json';
     }
 
+    private function lockPathForHash(string $keyHash): string
+    {
+        $safe = preg_replace('/[^a-zA-Z0-9_.-]+/', '-', $keyHash);
+        $safe = is_string($safe) && trim($safe) !== '' ? $safe : 'unknown-key';
+
+        return $this->directoryPath . DIRECTORY_SEPARATOR . $safe . '.lock';
+    }
+
     private function readRecord(string $filePath): ?DatabaseIdempotencyRecord
     {
         $contents = file_get_contents($filePath);
@@ -152,5 +168,37 @@ final class DirectoryDatabaseIdempotencyStore implements DatabaseIdempotencyStor
         }
 
         file_put_contents($filePath, $json, LOCK_EX);
+    }
+
+    /**
+     * @template T
+     * @param callable(): T $callback
+     * @return T
+     */
+    private function withKeyLock(string $keyHash, callable $callback): mixed
+    {
+        if (!is_dir($this->directoryPath)) {
+            mkdir($this->directoryPath, 0777, true);
+        }
+
+        $lockPath = $this->lockPathForHash($keyHash);
+        $handle = fopen($lockPath, 'c+');
+        if ($handle === false) {
+            throw new \RuntimeException('Unable to open database idempotency lock file.');
+        }
+
+        try {
+            if (!flock($handle, LOCK_EX)) {
+                throw new \RuntimeException('Unable to acquire database idempotency lock.');
+            }
+
+            try {
+                return $callback();
+            } finally {
+                flock($handle, LOCK_UN);
+            }
+        } finally {
+            fclose($handle);
+        }
     }
 }

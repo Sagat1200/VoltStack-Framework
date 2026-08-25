@@ -22,6 +22,11 @@ final readonly class DatabaseIdempotencyAcquireResult
         return new self(false, 'duplicate', $record);
     }
 
+    public static function replay(DatabaseIdempotencyRecord $record): self
+    {
+        return new self(false, 'replay', $record);
+    }
+
     public static function conflict(DatabaseIdempotencyRecord $record): self
     {
         return new self(false, 'conflict', $record);

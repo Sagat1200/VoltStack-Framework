@@ -154,6 +154,43 @@ final class DatabaseOperationRuntime
         $idempotencyRecord = $this->buildIdempotencyRecord($plan, $context);
         if ($idempotencyRecord instanceof DatabaseIdempotencyRecord) {
             $acquire = $this->resolveIdempotencyStore()?->acquire($idempotencyRecord);
+            if ($acquire instanceof DatabaseIdempotencyAcquireResult && $acquire->reason === 'replay') {
+                $existing = $acquire->record ?? $idempotencyRecord;
+                $snapshot = $this->snapshot(
+                    plan: $plan,
+                    attempts: 0,
+                    durationMs: 0,
+                    rowsRead: 0,
+                    affectedRows: 0,
+                    outcome: 'completed',
+                    failure: null,
+                    retryable: false,
+                    circuitState: $this->circuitBreaker->currentState($plan->circuitSegment),
+                    events: array_merge($events, [
+                        new DatabaseDiagnosticEvent('completed', $this->timestampNow(), [
+                            'reason' => 'idempotency_guard_replayed_confirmed',
+                            'status' => $existing->status,
+                            'node_id' => $existing->nodeId,
+                        ]),
+                    ]),
+                );
+                $this->recordTelemetry($plan, $snapshot);
+
+                return DatabaseOperationResult::successNoRows(
+                    kind: $plan->operation->kind,
+                    affectedRows: 0,
+                    debug: [
+                        'plan' => $plan,
+                        'diagnostic' => $snapshot,
+                        'idempotency' => [
+                            'status' => 'replayed_confirmed',
+                            'key_hash' => $idempotencyRecord->keyHash,
+                            'record' => $existing->toArray(),
+                        ],
+                    ],
+                );
+            }
+
             if ($acquire instanceof DatabaseIdempotencyAcquireResult && !$acquire->acquired) {
                 $snapshot = $this->snapshot(
                     plan: $plan,

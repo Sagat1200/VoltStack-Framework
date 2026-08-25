@@ -290,6 +290,75 @@ final class DatabaseOperationRuntimeTest extends TestCase
         self::assertSame('node-runtime-a', $store->find(hash('sha256', 'mutation-users-node'))?->nodeId);
     }
 
+    public function test_runtime_short_circuits_confirmed_replay_without_touching_database(): void
+    {
+        $this->idempotencyBasePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-db-idempotency-runtime-' . uniqid('', true);
+        mkdir($this->idempotencyBasePath, 0777, true);
+
+        $store = new DirectoryDatabaseIdempotencyStore($this->idempotencyBasePath . DIRECTORY_SEPARATOR . 'idempotency');
+        $seed = new DatabaseIdempotencyRecord(
+            keyHash: hash('sha256', 'mutation-users-replay'),
+            operationFingerprint: 'raw:primary:update-users-replay',
+            requestId: 'req-replay-a',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            createdAt: '2026-08-25T00:00:00+00:00',
+            nodeId: 'node-a',
+            status: 'pending',
+            expiresAt: '2099-08-25T00:05:00+00:00',
+        );
+        $store->acquire($seed);
+        $store->complete($seed);
+
+        $connection = new RuntimeTestConnection(
+            statementQueue: [
+                RuntimeTestConnection::statementResult(1),
+            ],
+        );
+        $runtime = new DatabaseOperationRuntime(
+            new DatabaseCircuitBreaker(),
+            idempotencyStore: $store,
+        );
+        $context = DatabaseContext::empty()->withConnection($connection);
+        $policy = new DatabaseExecutionPolicy(
+            retryLimit: 1,
+            retryBackoffMs: 0,
+            retryMutationsWhenIdempotent: true,
+            idempotencyPendingTtlSeconds: 300,
+        );
+        $plan = $runtime->plan(
+            new RawOperation(
+                OperationKind::RawExecute,
+                'UPDATE users SET active = 1 WHERE id = 1',
+                [],
+                'primary',
+                'mutation-users-replay',
+            ),
+            $context,
+            $policy,
+        );
+
+        $confirmed = new DatabaseIdempotencyRecord(
+            keyHash: hash('sha256', 'mutation-users-replay'),
+            operationFingerprint: $plan->fingerprint,
+            requestId: 'req-replay-a',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            createdAt: '2026-08-25T00:00:00+00:00',
+            nodeId: 'node-a',
+            status: 'pending',
+            expiresAt: '2099-08-25T00:05:00+00:00',
+        );
+        $store->complete($confirmed);
+
+        $result = $runtime->execute($plan, $context);
+
+        self::assertTrue($result->isSuccess);
+        self::assertSame(0, $connection->statementCalls);
+        self::assertSame('replayed_confirmed', $result->debug['idempotency']['status'] ?? null);
+        self::assertSame('completed', $result->debug['idempotency']['record']['status'] ?? null);
+    }
+
     public function test_runtime_opens_circuit_after_repeated_transient_failures(): void
     {
         $connection = new RuntimeTestConnection([

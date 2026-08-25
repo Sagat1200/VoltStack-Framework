@@ -44,6 +44,10 @@ final class DirectoryDatabaseIdempotencyStore implements DatabaseIdempotencyStor
             }
 
             if ($existing->operationFingerprint === $record->operationFingerprint) {
+                if ($existing->status === 'completed') {
+                    return DatabaseIdempotencyAcquireResult::replay($existing);
+                }
+
                 return DatabaseIdempotencyAcquireResult::duplicate($existing);
             }
 

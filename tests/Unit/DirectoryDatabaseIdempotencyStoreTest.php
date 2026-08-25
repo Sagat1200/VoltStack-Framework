@@ -123,6 +123,42 @@ final class DirectoryDatabaseIdempotencyStoreTest extends TestCase
         self::assertSame(0, $aggregate['expired_pending']);
     }
 
+    public function test_it_recognizes_completed_record_as_confirmed_replay(): void
+    {
+        $store = new DirectoryDatabaseIdempotencyStore($this->basePath . DIRECTORY_SEPARATOR . 'idempotency');
+        $completed = new DatabaseIdempotencyRecord(
+            keyHash: hash('sha256', 'mutation-completed'),
+            operationFingerprint: 'plan-completed-a',
+            requestId: 'req-completed-a',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            createdAt: '2026-08-25T00:00:00+00:00',
+            nodeId: 'node-a',
+            status: 'pending',
+            expiresAt: '2099-08-25T00:05:00+00:00',
+        );
+
+        $store->acquire($completed);
+        $store->complete($completed);
+
+        $replay = $store->acquire(new DatabaseIdempotencyRecord(
+            keyHash: hash('sha256', 'mutation-completed'),
+            operationFingerprint: 'plan-completed-a',
+            requestId: 'req-completed-b',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            createdAt: '2026-08-25T00:01:00+00:00',
+            nodeId: 'node-b',
+            status: 'pending',
+            expiresAt: '2099-08-25T00:06:00+00:00',
+        ));
+
+        self::assertFalse($replay->acquired);
+        self::assertSame('replay', $replay->reason);
+        self::assertSame('completed', $replay->record?->status);
+        self::assertSame('req-completed-a', $replay->record?->requestId);
+    }
+
     private function deleteDirectory(string $path): void
     {
         if (!is_dir($path)) {

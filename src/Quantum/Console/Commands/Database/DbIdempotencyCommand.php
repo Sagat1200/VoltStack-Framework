@@ -147,6 +147,11 @@ final class DbIdempotencyCommand extends Command
                 (string) ($record->confirmation['outcome'] ?? 'n/a'),
                 (string) ($record->confirmation['confirmed_at'] ?? 'n/a'),
             ));
+            $output->writeln(sprintf(
+                'Replay support: reproducibility=%s summary_version=%s',
+                $this->resolveReplayReproducibility($record->confirmation),
+                isset($record->confirmation['summary_version']) ? (string) $record->confirmation['summary_version'] : 'n/a',
+            ));
             $resultSummary = $this->normalizeResultSummary($record->confirmation);
             if ($resultSummary !== []) {
                 $output->writeln(sprintf(
@@ -206,5 +211,20 @@ final class DbIdempotencyCommand extends Command
             'rows_read' => max(0, (int) ($confirmation['rows_read'] ?? 0)),
             'column_count' => 0,
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $confirmation
+     */
+    private function resolveReplayReproducibility(array $confirmation): string
+    {
+        $value = $confirmation['replay_reproducibility'] ?? null;
+        if (is_string($value) && trim($value) !== '') {
+            return $value;
+        }
+
+        return is_array($confirmation['result_summary'] ?? null)
+            ? 'persisted_summary'
+            : 'legacy_reconstructed';
     }
 }

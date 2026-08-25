@@ -158,6 +158,7 @@ final class DatabaseOperationRuntime
                 $existing = $acquire->record ?? $idempotencyRecord;
                 $confirmedAffectedRows = max(0, (int) ($existing->confirmation['affected_rows'] ?? 0));
                 $replayResultSummary = $this->normalizeIdempotencyResultSummary($existing->confirmation);
+                $replayReproducibility = $this->resolveReplayReproducibility($existing->confirmation);
                 $snapshot = $this->snapshot(
                     plan: $plan,
                     attempts: 0,
@@ -175,6 +176,7 @@ final class DatabaseOperationRuntime
                             'node_id' => $existing->nodeId,
                             'confirmed_at' => $existing->confirmation['confirmed_at'] ?? null,
                             'affected_rows' => $confirmedAffectedRows,
+                            'replay_reproducibility' => $replayReproducibility,
                         ]),
                     ]),
                 );
@@ -193,6 +195,7 @@ final class DatabaseOperationRuntime
                             'record' => $existing->toArray(),
                             'confirmation' => $existing->confirmation,
                             'result_summary' => $replayResultSummary,
+                            'replay_reproducibility' => $replayReproducibility,
                         ],
                     ],
                 );
@@ -367,6 +370,8 @@ final class DatabaseOperationRuntime
                         'rows_read' => $rowsRead,
                         'outcome' => 'completed',
                         'confirmed_at' => $this->timestampNow(),
+                        'summary_version' => 1,
+                        'replay_reproducibility' => 'persisted_summary',
                         'result_summary' => $this->buildIdempotencyResultSummary($plan, $result, $rowsRead),
                     ];
                     $this->resolveIdempotencyStore()?->complete($idempotencyRecord, [
@@ -375,6 +380,8 @@ final class DatabaseOperationRuntime
                         'rows_read' => $confirmation['rows_read'],
                         'outcome' => $confirmation['outcome'],
                         'confirmed_at' => $confirmation['confirmed_at'],
+                        'summary_version' => $confirmation['summary_version'],
+                        'replay_reproducibility' => $confirmation['replay_reproducibility'],
                         'result_summary' => $confirmation['result_summary'],
                     ]);
                 }
@@ -890,5 +897,20 @@ final class DatabaseOperationRuntime
             'column_count' => 0,
             'result_type' => 'success_no_rows',
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $confirmation
+     */
+    private function resolveReplayReproducibility(array $confirmation): string
+    {
+        $value = $confirmation['replay_reproducibility'] ?? null;
+        if (is_string($value) && trim($value) !== '') {
+            return $value;
+        }
+
+        return is_array($confirmation['result_summary'] ?? null)
+            ? 'persisted_summary'
+            : 'legacy_reconstructed';
     }
 }

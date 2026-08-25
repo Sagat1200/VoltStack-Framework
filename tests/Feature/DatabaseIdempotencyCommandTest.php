@@ -53,6 +53,8 @@ final class DatabaseIdempotencyCommandTest extends TestCase
             'rows_read' => 0,
             'outcome' => 'completed',
             'confirmed_at' => '2026-08-25T07:00:10+00:00',
+            'summary_version' => 1,
+            'replay_reproducibility' => 'persisted_summary',
             'result_summary' => [
                 'kind' => 'raw_execute',
                 'is_select' => false,
@@ -69,6 +71,7 @@ final class DatabaseIdempotencyCommandTest extends TestCase
         self::assertStringContainsString('expires_at=n/a expired=no', $result['stdout']);
         self::assertStringContainsString('Operation: fingerprint=plan-users-1 connection=primary target=users', $result['stdout']);
         self::assertStringContainsString('Confirmation: kind=raw_execute affected_rows=1 rows_read=0 outcome=completed confirmed_at=2026-08-25T07:00:10+00:00', $result['stdout']);
+        self::assertStringContainsString('Replay support: reproducibility=persisted_summary summary_version=1', $result['stdout']);
         self::assertStringContainsString('Result summary: type=success_no_rows is_select=no affected_rows=1 rows_read=0 column_count=0', $result['stdout']);
 
         $lookup = $this->runConsole(['volt', 'db:idempotency', '--key=mutation-users-1', '--json']);
@@ -77,6 +80,7 @@ final class DatabaseIdempotencyCommandTest extends TestCase
         self::assertStringContainsString('"status": "completed"', $lookup['stdout']);
         self::assertStringContainsString('"confirmation"', $lookup['stdout']);
         self::assertStringContainsString('"result_summary"', $lookup['stdout']);
+        self::assertStringContainsString('"replay_reproducibility": "persisted_summary"', $lookup['stdout']);
     }
 
     public function test_cli_idempotency_can_aggregate_recent_records(): void
@@ -133,6 +137,37 @@ final class DatabaseIdempotencyCommandTest extends TestCase
         self::assertStringContainsString('"completed": 1', $json['stdout']);
         self::assertStringContainsString('"failed": 1', $json['stdout']);
         self::assertStringContainsString('"expired_pending": 1', $json['stdout']);
+    }
+
+    public function test_cli_idempotency_reconstructs_replay_support_for_legacy_confirmation(): void
+    {
+        $app = $this->loadApp();
+        /** @var DatabaseIdempotencyStoreInterface $store */
+        $store = $app->make(DatabaseIdempotencyStoreInterface::class);
+        $record = new DatabaseIdempotencyRecord(
+            keyHash: hash('sha256', 'mutation-users-legacy'),
+            operationFingerprint: 'plan-users-legacy',
+            requestId: 'req-users-legacy',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            createdAt: '2026-08-25T08:00:00+00:00',
+            nodeId: 'node-legacy',
+            status: 'pending',
+        );
+        $store->acquire($record);
+        $store->complete($record, [
+            'kind' => 'raw_execute',
+            'affected_rows' => 2,
+            'rows_read' => 0,
+            'outcome' => 'completed',
+            'confirmed_at' => '2026-08-25T08:00:10+00:00',
+        ]);
+
+        $result = $this->runConsole(['volt', 'db:idempotency', '--key=mutation-users-legacy']);
+
+        self::assertSame(0, $result['exit']);
+        self::assertStringContainsString('Replay support: reproducibility=legacy_reconstructed summary_version=n/a', $result['stdout']);
+        self::assertStringContainsString('Result summary: type=success_no_rows is_select=no affected_rows=2 rows_read=0 column_count=0', $result['stdout']);
     }
 
     /**

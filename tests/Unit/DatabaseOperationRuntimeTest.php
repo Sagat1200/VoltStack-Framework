@@ -332,10 +332,13 @@ final class DatabaseOperationRuntimeTest extends TestCase
         self::assertSame('raw_execute', $stored?->confirmation['kind'] ?? null);
         self::assertSame(3, $stored?->confirmation['affected_rows'] ?? null);
         self::assertSame(0, $stored?->confirmation['rows_read'] ?? null);
+        self::assertSame(1, $stored?->confirmation['summary_version'] ?? null);
+        self::assertSame('persisted_summary', $stored?->confirmation['replay_reproducibility'] ?? null);
         self::assertSame('success_no_rows', $stored?->confirmation['result_summary']['result_type'] ?? null);
         self::assertSame(3, $stored?->confirmation['result_summary']['affected_rows'] ?? null);
         self::assertSame(0, $stored?->confirmation['result_summary']['rows_read'] ?? null);
         self::assertSame('completed', $result->debug['idempotency']['status'] ?? null);
+        self::assertSame('persisted_summary', $result->debug['idempotency']['confirmation']['replay_reproducibility'] ?? null);
         self::assertSame('success_no_rows', $result->debug['idempotency']['result_summary']['result_type'] ?? null);
     }
 
@@ -415,6 +418,7 @@ final class DatabaseOperationRuntimeTest extends TestCase
         self::assertSame('idempotency_confirmation', $result->debug['idempotency']['source'] ?? null);
         self::assertSame('completed', $result->debug['idempotency']['record']['status'] ?? null);
         self::assertSame('completed', $result->debug['idempotency']['confirmation']['outcome'] ?? null);
+        self::assertSame('legacy_reconstructed', $result->debug['idempotency']['replay_reproducibility'] ?? null);
         self::assertSame('success_no_rows', $result->debug['idempotency']['result_summary']['result_type'] ?? null);
         self::assertSame(1, $result->debug['idempotency']['result_summary']['affected_rows'] ?? null);
         self::assertSame(1, $result->debug['diagnostic']->affectedRows ?? null);

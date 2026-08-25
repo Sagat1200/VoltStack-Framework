@@ -16,16 +16,31 @@ use Quantum\Database\Dbal\Value\DriverInfo;
 use Quantum\Database\Dbal\Value\QueryResult;
 use Quantum\Database\Operation\DatabaseCircuitBreaker;
 use Quantum\Database\Operation\DatabaseExecutionPolicy;
+use Quantum\Database\Operation\DatabaseIdempotencyRecord;
 use Quantum\Database\Operation\DatabaseOperationException;
 use Quantum\Database\Operation\DatabaseOperationRuntime;
 use Quantum\Database\Operation\DatabaseTelemetryReport;
 use Quantum\Database\Operation\DatabaseTelemetryStore;
+use Quantum\Database\Operation\Engine\DirectoryDatabaseIdempotencyStore;
 use Quantum\Database\Operation\Engine\InMemoryDatabaseHealthStore;
 use Quantum\Database\Operation\OperationKind;
 use Quantum\Database\Operation\RawOperation;
 
 final class DatabaseOperationRuntimeTest extends TestCase
 {
+    private ?string $idempotencyBasePath = null;
+
+    protected function tearDown(): void
+    {
+        if (is_string($this->idempotencyBasePath) && is_dir($this->idempotencyBasePath)) {
+            $this->deleteDirectory($this->idempotencyBasePath);
+        }
+
+        $this->idempotencyBasePath = null;
+
+        parent::tearDown();
+    }
+
     public function test_runtime_retries_transient_raw_query_until_success(): void
     {
         $connection = new RuntimeTestConnection([
@@ -122,6 +137,63 @@ final class DatabaseOperationRuntimeTest extends TestCase
         }
 
         self::assertSame(1, $connection->statementCalls);
+    }
+
+    public function test_runtime_blocks_duplicate_idempotent_mutation_when_key_is_already_reserved(): void
+    {
+        $this->idempotencyBasePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-db-idempotency-runtime-' . uniqid('', true);
+        mkdir($this->idempotencyBasePath, 0777, true);
+
+        $store = new DirectoryDatabaseIdempotencyStore($this->idempotencyBasePath . DIRECTORY_SEPARATOR . 'idempotency');
+        $keyHash = hash('sha256', 'mutation-users-1');
+        $store->acquire(new DatabaseIdempotencyRecord(
+            keyHash: $keyHash,
+            operationFingerprint: 'existing-plan',
+            requestId: 'req-existing',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            createdAt: '2026-08-25T00:00:00+00:00',
+            nodeId: 'node-a',
+            status: 'pending',
+        ));
+
+        $connection = new RuntimeTestConnection(
+            statementQueue: [
+                RuntimeTestConnection::statementResult(1),
+            ],
+        );
+        $runtime = new DatabaseOperationRuntime(
+            new DatabaseCircuitBreaker(),
+            idempotencyStore: $store,
+        );
+        $context = DatabaseContext::empty()->withConnection($connection);
+        $policy = new DatabaseExecutionPolicy(
+            retryLimit: 1,
+            retryBackoffMs: 0,
+            retryMutationsWhenIdempotent: true,
+        );
+        $plan = $runtime->plan(
+            new RawOperation(
+                OperationKind::RawExecute,
+                'UPDATE users SET active = 1 WHERE id = 1',
+                [],
+                'primary',
+                'mutation-users-1',
+            ),
+            $context,
+            $policy,
+        );
+
+        try {
+            $runtime->execute($plan, $context);
+            self::fail('Reserved idempotency key should block duplicate execution.');
+        } catch (DatabaseOperationException $e) {
+            self::assertSame('duplicate', $e->failure->value);
+            self::assertSame('cancelled', $e->snapshot->outcome);
+            self::assertSame('idempotency_guard_conflict', $e->snapshot->events[1]->details['reason'] ?? null);
+        }
+
+        self::assertSame(0, $connection->statementCalls);
     }
 
     public function test_runtime_opens_circuit_after_repeated_transient_failures(): void
@@ -328,6 +400,30 @@ final class DatabaseOperationRuntimeTest extends TestCase
         self::assertSame(1, $summary['completed']);
         self::assertSame(0, $summary['cancelled']);
         self::assertSame(null, $summary['latest'][0]['failure']);
+    }
+
+    private function deleteDirectory(string $path): void
+    {
+        $items = scandir($path);
+        if ($items === false) {
+            return;
+        }
+
+        foreach ($items as $item) {
+            if (in_array($item, ['.', '..'], true)) {
+                continue;
+            }
+
+            $target = $path . DIRECTORY_SEPARATOR . $item;
+            if (is_dir($target)) {
+                $this->deleteDirectory($target);
+                continue;
+            }
+
+            @unlink($target);
+        }
+
+        @rmdir($path);
     }
 }
 

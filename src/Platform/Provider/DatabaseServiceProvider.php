@@ -16,6 +16,7 @@ use Quantum\Database\Migration\MigrationRecoveryStore;
 use Quantum\Database\Migration\MigrationRepository;
 use Quantum\Database\Migration\MigrationRunner;
 use Quantum\Database\Operation\Contracts\DatabaseHealthStoreInterface;
+use Quantum\Database\Operation\Contracts\DatabaseIdempotencyStoreInterface;
 use Quantum\Database\Operation\Contracts\DatabaseTelemetryDispatcherInterface;
 use Quantum\Database\Operation\DatabaseCircuitBreaker;
 use Quantum\Database\Operation\DatabaseHealthSnapshot;
@@ -23,12 +24,15 @@ use Quantum\Database\Operation\DatabaseOperationRuntime;
 use Quantum\Database\Operation\DatabaseTelemetryReport;
 use Quantum\Database\Operation\DatabaseTelemetryStore;
 use Quantum\Database\Operation\Engine\DirectoryDatabaseHealthStore;
+use Quantum\Database\Operation\Engine\DirectoryDatabaseIdempotencyStore;
 use Quantum\Database\Operation\Engine\InMemoryDatabaseHealthStore;
+use Quantum\Database\Operation\Engine\InMemoryDatabaseIdempotencyStore;
 use Quantum\Database\Operation\Engine\InMemoryDatabaseTelemetryDispatcher;
 use Quantum\Database\Operation\Engine\JsonFileDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\JsonLineDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\JsonLineDatabaseTelemetryDispatcher;
 use Quantum\Database\Operation\Engine\NullDatabaseHealthStore;
+use Quantum\Database\Operation\Engine\NullDatabaseIdempotencyStore;
 use Quantum\Database\Operation\Engine\NullDatabaseTelemetryDispatcher;
 use Quantum\Database\Schema\SchemaIntrospectorInterface;
 use Quantum\Database\Schema\SchemaManager;
@@ -181,6 +185,37 @@ final class DatabaseServiceProvider extends ServiceProvider
 
             return new InMemoryDatabaseHealthStore();
         });
+        $this->app->singleton(DatabaseIdempotencyStoreInterface::class, function (Application $app): DatabaseIdempotencyStoreInterface {
+            $mode = $app->config('database.idempotency.store', 'auto');
+
+            if ($mode === 'null') {
+                return new NullDatabaseIdempotencyStore();
+            }
+
+            if ($mode === 'in_memory') {
+                return new InMemoryDatabaseIdempotencyStore();
+            }
+
+            if ($mode === 'directory') {
+                $path = $app->config('database.idempotency.directory_path');
+
+                if (is_string($path) && trim($path) !== '') {
+                    return new DirectoryDatabaseIdempotencyStore(trim($path));
+                }
+
+                return new DirectoryDatabaseIdempotencyStore(
+                    $app->joinPath($app->storagePath('framework/database'), 'idempotency'),
+                );
+            }
+
+            if ($app->isProduction()) {
+                return new DirectoryDatabaseIdempotencyStore(
+                    $app->joinPath($app->storagePath('framework/database'), 'idempotency'),
+                );
+            }
+
+            return new InMemoryDatabaseIdempotencyStore();
+        });
         $this->app->singleton(DatabaseTelemetryDispatcherInterface::class, function (Application $app): DatabaseTelemetryDispatcherInterface {
             $mode = $app->config('database.observability.dispatcher', 'auto');
 
@@ -216,6 +251,7 @@ final class DatabaseServiceProvider extends ServiceProvider
             circuitBreaker: $app->make(DatabaseCircuitBreaker::class),
             telemetry: static fn() => $app->make(DatabaseTelemetryStore::class),
             healthStore: static fn() => $app->make(DatabaseHealthStoreInterface::class),
+            idempotencyStore: static fn() => $app->make(DatabaseIdempotencyStoreInterface::class),
         ));
 
         $this->app->singleton(SeederDiscovery::class, function (Application $app): SeederDiscovery {

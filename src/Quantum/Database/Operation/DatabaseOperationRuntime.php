@@ -10,6 +10,7 @@ use Quantum\Database\Dbal\Enum\DatabaseFailureKind;
 use Quantum\Database\Dbal\Exception\DbalException;
 use Quantum\Database\Dbal\Value\QueryResult;
 use Quantum\Database\Operation\Contracts\DatabaseHealthStoreInterface;
+use Quantum\Database\Operation\Contracts\DatabaseIdempotencyStoreInterface;
 use Quantum\Database\Trace\DatabaseDeadline;
 
 final class DatabaseOperationRuntime
@@ -18,6 +19,7 @@ final class DatabaseOperationRuntime
         private readonly DatabaseCircuitBreaker $circuitBreaker,
         private readonly DatabaseTelemetryStore|\Closure|null $telemetry = null,
         private readonly DatabaseHealthStoreInterface|\Closure|null $healthStore = null,
+        private readonly DatabaseIdempotencyStoreInterface|\Closure|null $idempotencyStore = null,
     ) {}
 
     public function plan(RawOperation $operation, DatabaseContext $context, DatabaseExecutionPolicy $policy): DatabaseOperationPlan
@@ -84,7 +86,6 @@ final class DatabaseOperationRuntime
                 'kind' => $plan->operation->kind->value,
             ]),
         ];
-
         $fallbackDecision = $this->resolveFallbackDecision($plan);
         if ($fallbackDecision !== null) {
             $snapshot = $this->snapshot(
@@ -148,6 +149,43 @@ final class DatabaseOperationRuntime
             );
         }
 
+        $idempotencyRecord = $this->buildIdempotencyRecord($plan, $context);
+        if ($idempotencyRecord instanceof DatabaseIdempotencyRecord) {
+            $acquire = $this->resolveIdempotencyStore()?->acquire($idempotencyRecord);
+            if ($acquire instanceof DatabaseIdempotencyAcquireResult && !$acquire->acquired) {
+                $snapshot = $this->snapshot(
+                    plan: $plan,
+                    attempts: 0,
+                    durationMs: 0,
+                    rowsRead: 0,
+                    affectedRows: 0,
+                    outcome: 'cancelled',
+                    failure: DatabaseOperationalFailure::Duplicate,
+                    retryable: false,
+                    circuitState: $this->circuitBreaker->currentState($plan->circuitSegment),
+                    events: array_merge($events, [
+                        new DatabaseDiagnosticEvent('cancelled', $this->timestampNow(), [
+                            'reason' => 'idempotency_guard_' . $acquire->reason,
+                            'status' => $acquire->record?->status,
+                        ]),
+                    ]),
+                );
+                $this->recordTelemetry($plan, $snapshot);
+
+                throw new DatabaseOperationException(
+                    failure: DatabaseOperationalFailure::Duplicate,
+                    snapshot: $snapshot,
+                    plan: $plan,
+                    message: sprintf(
+                        'Database idempotency guard blocked [%s] because key hash [%s] is already reserved with status [%s].',
+                        $plan->operation->kind->value,
+                        $idempotencyRecord->keyHash,
+                        $acquire->record?->status ?? 'unknown',
+                    ),
+                );
+            }
+        }
+
         $segment = $plan->circuitSegment;
         $attempt = 0;
         $startedAt = hrtime(true);
@@ -171,6 +209,9 @@ final class DatabaseOperationRuntime
                     ]),
                 );
                 $this->recordTelemetry($plan, $snapshot);
+                if ($idempotencyRecord instanceof DatabaseIdempotencyRecord) {
+                    $this->resolveIdempotencyStore()?->release($idempotencyRecord);
+                }
 
                 throw new DatabaseOperationException(
                     failure: DatabaseOperationalFailure::ResourceExhausted,
@@ -199,6 +240,9 @@ final class DatabaseOperationRuntime
                     ]),
                 );
                 $this->recordTelemetry($plan, $snapshot);
+                if ($idempotencyRecord instanceof DatabaseIdempotencyRecord) {
+                    $this->resolveIdempotencyStore()?->release($idempotencyRecord);
+                }
 
                 throw new DatabaseOperationException(
                     failure: DatabaseOperationalFailure::Transient,
@@ -237,6 +281,9 @@ final class DatabaseOperationRuntime
                         events: $events,
                     );
                     $this->recordTelemetry($plan, $snapshot);
+                    if ($idempotencyRecord instanceof DatabaseIdempotencyRecord) {
+                        $this->resolveIdempotencyStore()?->release($idempotencyRecord);
+                    }
 
                     throw new DatabaseOperationException(
                         failure: DatabaseOperationalFailure::ResourceExhausted,
@@ -266,6 +313,9 @@ final class DatabaseOperationRuntime
                     events: $events,
                 );
                 $this->recordTelemetry($plan, $snapshot);
+                if ($idempotencyRecord instanceof DatabaseIdempotencyRecord) {
+                    $this->resolveIdempotencyStore()?->complete($idempotencyRecord);
+                }
 
                 return DatabaseOperationResult::success(
                     kind: $plan->operation->kind,
@@ -314,6 +364,13 @@ final class DatabaseOperationRuntime
                     events: $events,
                 );
                 $this->recordTelemetry($plan, $snapshot);
+                if ($idempotencyRecord instanceof DatabaseIdempotencyRecord) {
+                    if ($failure === DatabaseOperationalFailure::Transient) {
+                        $this->resolveIdempotencyStore()?->release($idempotencyRecord);
+                    } else {
+                        $this->resolveIdempotencyStore()?->fail($idempotencyRecord);
+                    }
+                }
 
                 throw new DatabaseOperationException(
                     failure: $failure,
@@ -594,6 +651,21 @@ final class DatabaseOperationRuntime
         return null;
     }
 
+    private function resolveIdempotencyStore(): ?DatabaseIdempotencyStoreInterface
+    {
+        if ($this->idempotencyStore instanceof DatabaseIdempotencyStoreInterface) {
+            return $this->idempotencyStore;
+        }
+
+        if ($this->idempotencyStore instanceof \Closure) {
+            $resolved = ($this->idempotencyStore)();
+
+            return $resolved instanceof DatabaseIdempotencyStoreInterface ? $resolved : null;
+        }
+
+        return null;
+    }
+
     private function resolveHealthStore(): ?DatabaseHealthStoreInterface
     {
         if ($this->healthStore instanceof DatabaseHealthStoreInterface) {
@@ -646,6 +718,29 @@ final class DatabaseOperationRuntime
         }
 
         return hash('sha256', trim((string) $operation->idempotencyKey));
+    }
+
+    private function buildIdempotencyRecord(DatabaseOperationPlan $plan, DatabaseContext $context): ?DatabaseIdempotencyRecord
+    {
+        if (!$this->isMutatingOperation($plan->operation->kind)) {
+            return null;
+        }
+
+        $keyHash = $this->resolveIdempotencyKeyHash($plan->operation);
+        if ($keyHash === null) {
+            return null;
+        }
+
+        return new DatabaseIdempotencyRecord(
+            keyHash: $keyHash,
+            operationFingerprint: $plan->fingerprint,
+            requestId: $context->requestId,
+            connectionName: $plan->connectionName,
+            logicalTarget: $plan->logicalTarget,
+            createdAt: $this->timestampNow(),
+            nodeId: null,
+            status: 'pending',
+        );
     }
 
 

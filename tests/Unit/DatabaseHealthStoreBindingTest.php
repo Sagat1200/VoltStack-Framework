@@ -7,11 +7,15 @@ namespace VoltStack\Test\Unit;
 use PHPUnit\Framework\TestCase;
 use Quantum\Config\ConfigRepository;
 use Quantum\Database\Operation\Contracts\DatabaseHealthStoreInterface;
+use Quantum\Database\Operation\Contracts\DatabaseIdempotencyStoreInterface;
 use Quantum\Database\Operation\Engine\DirectoryDatabaseHealthStore;
+use Quantum\Database\Operation\Engine\DirectoryDatabaseIdempotencyStore;
 use Quantum\Database\Operation\Engine\InMemoryDatabaseHealthStore;
+use Quantum\Database\Operation\Engine\InMemoryDatabaseIdempotencyStore;
 use Quantum\Database\Operation\Engine\JsonFileDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\JsonLineDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\NullDatabaseHealthStore;
+use Quantum\Database\Operation\Engine\NullDatabaseIdempotencyStore;
 use VoltStack\Framework\Application;
 use VoltStack\Framework\Provider\DatabaseServiceProvider;
 
@@ -90,6 +94,40 @@ final class DatabaseHealthStoreBindingTest extends TestCase
         $store = $app->make(DatabaseHealthStoreInterface::class);
 
         self::assertInstanceOf(NullDatabaseHealthStore::class, $store);
+    }
+
+    public function test_it_resolves_in_memory_idempotency_store_when_configured(): void
+    {
+        $app = new Application($this->basePath);
+        $app->register(DatabaseServiceProvider::class);
+        $app->make(ConfigRepository::class)->set('database.idempotency.store', 'in_memory');
+
+        $store = $app->make(DatabaseIdempotencyStoreInterface::class);
+
+        self::assertInstanceOf(InMemoryDatabaseIdempotencyStore::class, $store);
+    }
+
+    public function test_it_resolves_directory_idempotency_store_when_configured(): void
+    {
+        $app = new Application($this->basePath);
+        $app->register(DatabaseServiceProvider::class);
+        $app->make(ConfigRepository::class)->set('database.idempotency.store', 'directory');
+        $app->make(ConfigRepository::class)->set('database.idempotency.directory_path', $this->basePath . DIRECTORY_SEPARATOR . 'idempotency');
+
+        $store = $app->make(DatabaseIdempotencyStoreInterface::class);
+
+        self::assertInstanceOf(DirectoryDatabaseIdempotencyStore::class, $store);
+    }
+
+    public function test_it_resolves_null_idempotency_store_when_configured(): void
+    {
+        $app = new Application($this->basePath);
+        $app->register(DatabaseServiceProvider::class);
+        $app->make(ConfigRepository::class)->set('database.idempotency.store', 'null');
+
+        $store = $app->make(DatabaseIdempotencyStoreInterface::class);
+
+        self::assertInstanceOf(NullDatabaseIdempotencyStore::class, $store);
     }
 
     private function deleteDirectory(string $path): void

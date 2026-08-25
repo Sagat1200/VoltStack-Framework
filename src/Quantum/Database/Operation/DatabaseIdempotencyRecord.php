@@ -16,6 +16,7 @@ final readonly class DatabaseIdempotencyRecord
         public ?string $nodeId = null,
         public string $status = 'pending',
         public ?string $expiresAt = null,
+        public array $confirmation = [],
     ) {}
 
     /**
@@ -33,6 +34,7 @@ final readonly class DatabaseIdempotencyRecord
             'node_id' => $this->nodeId,
             'status' => $this->status,
             'expires_at' => $this->expiresAt,
+            'confirmation' => $this->confirmation,
         ];
     }
 
@@ -51,10 +53,11 @@ final readonly class DatabaseIdempotencyRecord
             nodeId: isset($payload['node_id']) ? (string) $payload['node_id'] : null,
             status: (string) ($payload['status'] ?? 'pending'),
             expiresAt: isset($payload['expires_at']) ? (string) $payload['expires_at'] : null,
+            confirmation: is_array($payload['confirmation'] ?? null) ? $payload['confirmation'] : [],
         );
     }
 
-    public function withStatus(string $status): self
+    public function withStatus(string $status, array $confirmation = []): self
     {
         return new self(
             keyHash: $this->keyHash,
@@ -66,6 +69,7 @@ final readonly class DatabaseIdempotencyRecord
             nodeId: $this->nodeId,
             status: $status,
             expiresAt: $this->expiresAt,
+            confirmation: $confirmation !== [] ? $confirmation : $this->confirmation,
         );
     }
 

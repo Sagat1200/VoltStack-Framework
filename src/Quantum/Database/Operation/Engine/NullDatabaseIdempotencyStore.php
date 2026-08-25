@@ -16,7 +16,7 @@ final class NullDatabaseIdempotencyStore implements DatabaseIdempotencyStoreInte
         return DatabaseIdempotencyAcquireResult::acquired($record);
     }
 
-    public function complete(DatabaseIdempotencyRecord $record): void {}
+    public function complete(DatabaseIdempotencyRecord $record, array $confirmation = []): void {}
 
     public function fail(DatabaseIdempotencyRecord $record): void {}
 

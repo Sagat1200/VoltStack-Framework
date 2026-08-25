@@ -290,6 +290,51 @@ final class DatabaseOperationRuntimeTest extends TestCase
         self::assertSame('node-runtime-a', $store->find(hash('sha256', 'mutation-users-node'))?->nodeId);
     }
 
+    public function test_runtime_persists_confirmation_metadata_on_completed_idempotent_mutation(): void
+    {
+        $this->idempotencyBasePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-db-idempotency-runtime-' . uniqid('', true);
+        mkdir($this->idempotencyBasePath, 0777, true);
+
+        $store = new DirectoryDatabaseIdempotencyStore($this->idempotencyBasePath . DIRECTORY_SEPARATOR . 'idempotency');
+        $connection = new RuntimeTestConnection(
+            statementQueue: [
+                RuntimeTestConnection::statementResult(3),
+            ],
+        );
+        $runtime = new DatabaseOperationRuntime(
+            new DatabaseCircuitBreaker(),
+            idempotencyStore: $store,
+        );
+        $context = DatabaseContext::empty()->withConnection($connection);
+        $policy = new DatabaseExecutionPolicy(
+            retryLimit: 1,
+            retryBackoffMs: 0,
+            retryMutationsWhenIdempotent: true,
+            idempotencyPendingTtlSeconds: 300,
+        );
+        $plan = $runtime->plan(
+            new RawOperation(
+                OperationKind::RawExecute,
+                'UPDATE users SET active = 1 WHERE active = 0',
+                [],
+                'primary',
+                'mutation-users-confirmation',
+            ),
+            $context,
+            $policy,
+        );
+
+        $result = $runtime->execute($plan, $context);
+        $stored = $store->find(hash('sha256', 'mutation-users-confirmation'));
+
+        self::assertTrue($result->isSuccess);
+        self::assertSame('completed', $stored?->status);
+        self::assertSame('raw_execute', $stored?->confirmation['kind'] ?? null);
+        self::assertSame(3, $stored?->confirmation['affected_rows'] ?? null);
+        self::assertSame(0, $stored?->confirmation['rows_read'] ?? null);
+        self::assertSame('completed', $result->debug['idempotency']['status'] ?? null);
+    }
+
     public function test_runtime_short_circuits_confirmed_replay_without_touching_database(): void
     {
         $this->idempotencyBasePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-db-idempotency-runtime-' . uniqid('', true);
@@ -349,7 +394,13 @@ final class DatabaseOperationRuntimeTest extends TestCase
             status: 'pending',
             expiresAt: '2099-08-25T00:05:00+00:00',
         );
-        $store->complete($confirmed);
+        $store->complete($confirmed, [
+            'kind' => 'raw_execute',
+            'affected_rows' => 1,
+            'rows_read' => 0,
+            'outcome' => 'completed',
+            'confirmed_at' => '2026-08-25T00:00:05+00:00',
+        ]);
 
         $result = $runtime->execute($plan, $context);
 
@@ -357,6 +408,7 @@ final class DatabaseOperationRuntimeTest extends TestCase
         self::assertSame(0, $connection->statementCalls);
         self::assertSame('replayed_confirmed', $result->debug['idempotency']['status'] ?? null);
         self::assertSame('completed', $result->debug['idempotency']['record']['status'] ?? null);
+        self::assertSame('completed', $result->debug['idempotency']['confirmation']['outcome'] ?? null);
     }
 
     public function test_runtime_opens_circuit_after_repeated_transient_failures(): void

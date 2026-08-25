@@ -47,18 +47,26 @@ final class DatabaseIdempotencyCommandTest extends TestCase
             status: 'pending',
         );
         $store->acquire($record);
-        $store->complete($record);
+        $store->complete($record, [
+            'kind' => 'raw_execute',
+            'affected_rows' => 1,
+            'rows_read' => 0,
+            'outcome' => 'completed',
+            'confirmed_at' => '2026-08-25T07:00:10+00:00',
+        ]);
 
         $result = $this->runConsole(['volt', 'db:idempotency']);
         self::assertSame(0, $result['exit']);
         self::assertStringContainsString('Database idempotency: request=req-users-1 status=completed', $result['stdout']);
         self::assertStringContainsString('expires_at=n/a expired=no', $result['stdout']);
         self::assertStringContainsString('Operation: fingerprint=plan-users-1 connection=primary target=users', $result['stdout']);
+        self::assertStringContainsString('Confirmation: kind=raw_execute affected_rows=1 rows_read=0 outcome=completed confirmed_at=2026-08-25T07:00:10+00:00', $result['stdout']);
 
         $lookup = $this->runConsole(['volt', 'db:idempotency', '--key=mutation-users-1', '--json']);
         self::assertSame(0, $lookup['exit']);
         self::assertStringContainsString('"request_id": "req-users-1"', $lookup['stdout']);
         self::assertStringContainsString('"status": "completed"', $lookup['stdout']);
+        self::assertStringContainsString('"confirmation"', $lookup['stdout']);
     }
 
     public function test_cli_idempotency_can_aggregate_recent_records(): void

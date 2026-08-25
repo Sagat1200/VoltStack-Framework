@@ -55,10 +55,10 @@ final class DirectoryDatabaseIdempotencyStore implements DatabaseIdempotencyStor
         });
     }
 
-    public function complete(DatabaseIdempotencyRecord $record): void
+    public function complete(DatabaseIdempotencyRecord $record, array $confirmation = []): void
     {
-        $this->withKeyLock($record->keyHash, function () use ($record): void {
-            $this->writeRecord($this->filePathForHash($record->keyHash), $record->withStatus('completed'));
+        $this->withKeyLock($record->keyHash, function () use ($record, $confirmation): void {
+            $this->writeRecord($this->filePathForHash($record->keyHash), $record->withStatus('completed', $confirmation));
         });
     }
 

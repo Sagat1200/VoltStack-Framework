@@ -138,6 +138,16 @@ final class DbIdempotencyCommand extends Command
             $record->logicalTarget,
             $record->nodeId ?? 'n/a',
         ));
+        if ($record->confirmation !== []) {
+            $output->writeln(sprintf(
+                'Confirmation: kind=%s affected_rows=%d rows_read=%d outcome=%s confirmed_at=%s',
+                (string) ($record->confirmation['kind'] ?? 'n/a'),
+                (int) ($record->confirmation['affected_rows'] ?? 0),
+                (int) ($record->confirmation['rows_read'] ?? 0),
+                (string) ($record->confirmation['outcome'] ?? 'n/a'),
+                (string) ($record->confirmation['confirmed_at'] ?? 'n/a'),
+            ));
+        }
 
         return 0;
     }

@@ -42,9 +42,9 @@ final class InMemoryDatabaseIdempotencyStore implements DatabaseIdempotencyStore
         return DatabaseIdempotencyAcquireResult::conflict($existing);
     }
 
-    public function complete(DatabaseIdempotencyRecord $record): void
+    public function complete(DatabaseIdempotencyRecord $record, array $confirmation = []): void
     {
-        $this->records[$record->keyHash] = $record->withStatus('completed');
+        $this->records[$record->keyHash] = $record->withStatus('completed', $confirmation);
     }
 
     public function fail(DatabaseIdempotencyRecord $record): void

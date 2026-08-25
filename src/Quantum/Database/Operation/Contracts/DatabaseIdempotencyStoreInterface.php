@@ -11,7 +11,10 @@ interface DatabaseIdempotencyStoreInterface
 {
     public function acquire(DatabaseIdempotencyRecord $record): DatabaseIdempotencyAcquireResult;
 
-    public function complete(DatabaseIdempotencyRecord $record): void;
+    /**
+     * @param array<string, mixed> $confirmation
+     */
+    public function complete(DatabaseIdempotencyRecord $record, array $confirmation = []): void;
 
     public function fail(DatabaseIdempotencyRecord $record): void;
 

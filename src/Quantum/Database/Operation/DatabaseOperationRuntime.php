@@ -186,6 +186,7 @@ final class DatabaseOperationRuntime
                             'status' => 'replayed_confirmed',
                             'key_hash' => $idempotencyRecord->keyHash,
                             'record' => $existing->toArray(),
+                            'confirmation' => $existing->confirmation,
                         ],
                     ],
                 );
@@ -353,7 +354,13 @@ final class DatabaseOperationRuntime
                 );
                 $this->recordTelemetry($plan, $snapshot);
                 if ($idempotencyRecord instanceof DatabaseIdempotencyRecord) {
-                    $this->resolveIdempotencyStore()?->complete($idempotencyRecord);
+                    $this->resolveIdempotencyStore()?->complete($idempotencyRecord, [
+                        'kind' => $plan->operation->kind->value,
+                        'affected_rows' => $result->affectedRows,
+                        'rows_read' => $rowsRead,
+                        'outcome' => 'completed',
+                        'confirmed_at' => $this->timestampNow(),
+                    ]);
                 }
 
                 return DatabaseOperationResult::success(
@@ -362,6 +369,16 @@ final class DatabaseOperationRuntime
                     debug: [
                         'plan' => $plan,
                         'diagnostic' => $snapshot,
+                        'idempotency' => $idempotencyRecord instanceof DatabaseIdempotencyRecord ? [
+                            'status' => 'completed',
+                            'key_hash' => $idempotencyRecord->keyHash,
+                            'confirmation' => [
+                                'kind' => $plan->operation->kind->value,
+                                'affected_rows' => $result->affectedRows,
+                                'rows_read' => $rowsRead,
+                                'outcome' => 'completed',
+                            ],
+                        ] : null,
                     ],
                 );
             } catch (DbalException $e) {

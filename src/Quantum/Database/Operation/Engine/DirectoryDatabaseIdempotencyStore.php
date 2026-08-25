@@ -7,6 +7,7 @@ namespace Quantum\Database\Operation\Engine;
 use JsonException;
 use Quantum\Database\Operation\Contracts\DatabaseIdempotencyStoreInterface;
 use Quantum\Database\Operation\DatabaseIdempotencyAcquireResult;
+use Quantum\Database\Operation\DatabaseIdempotencyAggregation;
 use Quantum\Database\Operation\DatabaseIdempotencyRecord;
 
 final class DirectoryDatabaseIdempotencyStore implements DatabaseIdempotencyStoreInterface
@@ -58,6 +59,58 @@ final class DirectoryDatabaseIdempotencyStore implements DatabaseIdempotencyStor
         if (is_file($filePath)) {
             @unlink($filePath);
         }
+    }
+
+    public function latest(): ?DatabaseIdempotencyRecord
+    {
+        $records = $this->recent(1);
+        $latest = $records[array_key_last($records)] ?? null;
+
+        return $latest instanceof DatabaseIdempotencyRecord ? $latest : null;
+    }
+
+    public function find(string $keyHash): ?DatabaseIdempotencyRecord
+    {
+        $filePath = $this->filePathForHash($keyHash);
+        if (!is_file($filePath)) {
+            return null;
+        }
+
+        return $this->readRecord($filePath);
+    }
+
+    public function recent(int $limit = 10): array
+    {
+        if (!is_dir($this->directoryPath)) {
+            return [];
+        }
+
+        $files = glob($this->directoryPath . DIRECTORY_SEPARATOR . '*.json');
+        if (!is_array($files) || $files === []) {
+            return [];
+        }
+
+        $records = [];
+
+        foreach ($files as $file) {
+            if (!is_string($file) || !is_file($file)) {
+                continue;
+            }
+
+            $record = $this->readRecord($file);
+            if ($record instanceof DatabaseIdempotencyRecord) {
+                $records[] = $record;
+            }
+        }
+
+        usort($records, static fn(DatabaseIdempotencyRecord $left, DatabaseIdempotencyRecord $right): int => strcmp($left->createdAt, $right->createdAt));
+
+        return array_values(array_slice($records, -max(1, $limit)));
+    }
+
+    public function aggregate(int $limit = 50): array
+    {
+        return DatabaseIdempotencyAggregation::aggregate($this->recent($limit));
     }
 
     private function filePathForHash(string $keyHash): string

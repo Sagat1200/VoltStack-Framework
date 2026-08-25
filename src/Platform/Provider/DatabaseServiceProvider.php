@@ -413,6 +413,7 @@ final class DatabaseServiceProvider extends ServiceProvider
         return [
             \Quantum\Console\Commands\Database\DbPingCommand::class,
             \Quantum\Console\Commands\Database\DbHealthCommand::class,
+            \Quantum\Console\Commands\Database\DbIdempotencyCommand::class,
             \Quantum\Console\Commands\Database\DbQueryCommand::class,
             \Quantum\Console\Commands\Database\DbMigrateCommand::class,
             \Quantum\Console\Commands\Database\DbMigrateRecoverCommand::class,

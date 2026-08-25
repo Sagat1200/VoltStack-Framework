@@ -77,6 +77,13 @@ final class DirectoryDatabaseIdempotencyStoreTest extends TestCase
 
         $reacquired = $store->acquire($other);
         self::assertTrue($reacquired->acquired);
+        self::assertSame('req-c', $store->latest()?->requestId);
+        self::assertSame('req-c', $store->find($other->keyHash)?->requestId);
+        self::assertCount(1, $store->recent(10));
+
+        $aggregate = $store->aggregate(10);
+        self::assertSame(1, $aggregate['records']);
+        self::assertSame(1, $aggregate['statuses']['pending']);
     }
 
     private function deleteDirectory(string $path): void

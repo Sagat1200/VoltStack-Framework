@@ -6,6 +6,7 @@ namespace Quantum\Database\Operation\Engine;
 
 use Quantum\Database\Operation\Contracts\DatabaseIdempotencyStoreInterface;
 use Quantum\Database\Operation\DatabaseIdempotencyAcquireResult;
+use Quantum\Database\Operation\DatabaseIdempotencyAggregation;
 use Quantum\Database\Operation\DatabaseIdempotencyRecord;
 
 final class NullDatabaseIdempotencyStore implements DatabaseIdempotencyStoreInterface
@@ -15,15 +16,29 @@ final class NullDatabaseIdempotencyStore implements DatabaseIdempotencyStoreInte
         return DatabaseIdempotencyAcquireResult::acquired($record);
     }
 
-    public function complete(DatabaseIdempotencyRecord $record): void
+    public function complete(DatabaseIdempotencyRecord $record): void {}
+
+    public function fail(DatabaseIdempotencyRecord $record): void {}
+
+    public function release(DatabaseIdempotencyRecord $record): void {}
+
+    public function latest(): ?DatabaseIdempotencyRecord
     {
+        return null;
     }
 
-    public function fail(DatabaseIdempotencyRecord $record): void
+    public function find(string $keyHash): ?DatabaseIdempotencyRecord
     {
+        return null;
     }
 
-    public function release(DatabaseIdempotencyRecord $record): void
+    public function recent(int $limit = 10): array
     {
+        return [];
+    }
+
+    public function aggregate(int $limit = 50): array
+    {
+        return DatabaseIdempotencyAggregation::aggregate([]);
     }
 }

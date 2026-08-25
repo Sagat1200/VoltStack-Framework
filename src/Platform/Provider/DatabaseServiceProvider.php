@@ -215,6 +215,7 @@ final class DatabaseServiceProvider extends ServiceProvider
         $this->app->singleton(DatabaseOperationRuntime::class, fn(Application $app): DatabaseOperationRuntime => new DatabaseOperationRuntime(
             circuitBreaker: $app->make(DatabaseCircuitBreaker::class),
             telemetry: static fn() => $app->make(DatabaseTelemetryStore::class),
+            healthStore: static fn() => $app->make(DatabaseHealthStoreInterface::class),
         ));
 
         $this->app->singleton(SeederDiscovery::class, function (Application $app): SeederDiscovery {

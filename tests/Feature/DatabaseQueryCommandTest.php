@@ -66,6 +66,22 @@ final class DatabaseQueryCommandTest extends TestCase
         self::assertStringContainsString('Diagnostic: outcome=completed', $query['stdout']);
     }
 
+    public function test_cli_query_pretend_marks_idempotent_mutation_as_retryable_when_policy_allows_it(): void
+    {
+        $result = $this->runConsole([
+            'volt',
+            'db:query',
+            'UPDATE f36_logs SET message = 1 WHERE id = 1',
+            '--pretend',
+            '--idempotency-key=mutation-f36-1',
+        ]);
+
+        self::assertSame(0, $result['exit']);
+        self::assertStringContainsString('Plan: kind=raw_execute', $result['stdout']);
+        self::assertStringContainsString('retryable=yes', $result['stdout']);
+        self::assertStringContainsString('idempotency=present', $result['stdout']);
+    }
+
     /**
      * @param array<int, string> $argv
      * @return array{exit:int,stdout:string,stderr:string}
@@ -141,6 +157,7 @@ final class DatabaseQueryCommandTest extends TestCase
                 'resilience' => [
                     'retry_limit' => 1,
                     'retry_backoff_ms' => 0,
+                    'retry_mutations_when_idempotent' => true,
                     'circuit_breaker' => [
                         'failure_threshold' => 2,
                         'cooldown_ms' => 30000,

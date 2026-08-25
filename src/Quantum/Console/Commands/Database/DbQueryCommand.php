@@ -31,7 +31,7 @@ final class DbQueryCommand extends Command
 
     public function usage(): string
     {
-        return 'db:query "<sql>" [--connection=primary] [--json] [--pretend] [--timeout=30000] [--max-rows=1000]';
+        return 'db:query "<sql>" [--connection=primary] [--json] [--pretend] [--timeout=30000] [--max-rows=1000] [--idempotency-key=key]';
     }
 
     public function category(): string
@@ -55,6 +55,7 @@ final class DbQueryCommand extends Command
             '--sql=' => 'Alternativa al argumento posicional para pasar la sentencia SQL.',
             '--timeout=' => 'Override del deadline en milisegundos para esta ejecución.',
             '--max-rows=' => 'Override del máximo de filas permitidas para SELECT.',
+            '--idempotency-key=' => 'Marca una mutación como idempotente para permitir retries si la policy lo habilita.',
         ];
     }
 
@@ -97,6 +98,7 @@ final class DbQueryCommand extends Command
                 sql: $sql,
                 params: [],
                 comment: $resolvedConnectionName,
+                idempotencyKey: $this->resolveIdempotencyKey($input),
             );
             $plan = $runtime->plan($operation, $context, $policy);
 
@@ -187,7 +189,7 @@ final class DbQueryCommand extends Command
             $plan->safeSqlPreview,
         ));
         $output->writeln(sprintf(
-            'Budget: connection=%s driver=%s timeout_ms=%d max_rows=%d depth=%d/%d retry_limit=%d retryable=%s',
+            'Budget: connection=%s driver=%s timeout_ms=%d max_rows=%d depth=%d/%d retry_limit=%d retryable=%s idempotency=%s',
             $plan->connectionName !== '' ? $plan->connectionName : 'default',
             $plan->driver,
             $plan->deadline->remainingMs(),
@@ -196,6 +198,7 @@ final class DbQueryCommand extends Command
             $plan->maxDepth,
             $plan->retryLimit,
             $plan->retryable ? 'yes' : 'no',
+            $plan->operation->idempotencyKey !== null && trim($plan->operation->idempotencyKey) !== '' ? 'present' : 'absent',
         ));
     }
 
@@ -246,6 +249,18 @@ final class DbQueryCommand extends Command
 
         $int = (int) $value;
         return $int > 0 ? $int : null;
+    }
+
+    private function resolveIdempotencyKey(Input $input): ?string
+    {
+        $value = $input->option('idempotency-key');
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $normalized = trim($value);
+
+        return $normalized !== '' ? $normalized : null;
     }
 
     /**

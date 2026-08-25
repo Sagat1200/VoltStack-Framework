@@ -9,6 +9,7 @@ use Quantum\Database\Dbal\Contract\ConnectionInterface;
 use Quantum\Database\Dbal\Enum\DatabaseFailureKind;
 use Quantum\Database\Dbal\Exception\DbalException;
 use Quantum\Database\Dbal\Value\QueryResult;
+use Quantum\Database\Operation\Contracts\DatabaseHealthStoreInterface;
 use Quantum\Database\Trace\DatabaseDeadline;
 
 final class DatabaseOperationRuntime
@@ -16,6 +17,7 @@ final class DatabaseOperationRuntime
     public function __construct(
         private readonly DatabaseCircuitBreaker $circuitBreaker,
         private readonly DatabaseTelemetryStore|\Closure|null $telemetry = null,
+        private readonly DatabaseHealthStoreInterface|\Closure|null $healthStore = null,
     ) {}
 
     public function plan(RawOperation $operation, DatabaseContext $context, DatabaseExecutionPolicy $policy): DatabaseOperationPlan
@@ -30,8 +32,9 @@ final class DatabaseOperationRuntime
         $logicalTarget = $this->extractLogicalTarget($operation->sql);
         $deadline = $context->deadline ?? DatabaseDeadline::fromMs($policy->timeoutMs);
         $depth = $this->detectDepth($operation->sql);
-        $retryable = $this->isRetryableOperation($operation);
+        $retryable = $this->isRetryableOperation($operation, $policy);
         $retryLimit = $retryable ? $policy->retryLimit : 0;
+        $idempotencyKeyHash = $this->resolveIdempotencyKeyHash($operation);
         $circuitSegment = $this->segmentKey(
             connectionName: $connectionName,
             driver: $driver,
@@ -47,6 +50,8 @@ final class DatabaseOperationRuntime
             'max_rows' => $policy->maxRows,
             'max_depth' => $policy->maxDepth,
             'retry_limit' => $retryLimit,
+            'retry_mutations_when_idempotent' => $policy->retryMutationsWhenIdempotent,
+            'idempotency_key_hash' => $idempotencyKeyHash,
             'tenant' => $context->tenantId,
             'request_id' => $context->requestId,
         ];
@@ -79,6 +84,42 @@ final class DatabaseOperationRuntime
                 'kind' => $plan->operation->kind->value,
             ]),
         ];
+
+        $fallbackDecision = $this->resolveFallbackDecision($plan);
+        if ($fallbackDecision !== null) {
+            $snapshot = $this->snapshot(
+                plan: $plan,
+                attempts: 0,
+                durationMs: 0,
+                rowsRead: 0,
+                affectedRows: 0,
+                outcome: 'cancelled',
+                failure: DatabaseOperationalFailure::Degraded,
+                retryable: false,
+                circuitState: $this->circuitBreaker->currentState($plan->circuitSegment),
+                events: array_merge($events, [
+                    new DatabaseDiagnosticEvent('cancelled', $this->timestampNow(), [
+                        'reason' => 'fallback_policy_degraded',
+                        'mode' => $plan->policy->fallbackMode,
+                        'aggregate' => $fallbackDecision,
+                    ]),
+                ]),
+            );
+            $this->recordTelemetry($plan, $snapshot);
+
+            throw new DatabaseOperationException(
+                failure: DatabaseOperationalFailure::Degraded,
+                snapshot: $snapshot,
+                plan: $plan,
+                message: sprintf(
+                    'Database fallback policy [%s] blocked [%s] because aggregate health is degraded (open=%d, half_open=%d).',
+                    $plan->policy->fallbackMode,
+                    $plan->operation->kind->value,
+                    (int) ($fallbackDecision['health']['open_segments'] ?? 0),
+                    (int) ($fallbackDecision['health']['half_open_segments'] ?? 0),
+                ),
+            );
+        }
 
         if ($plan->detectedDepth > $plan->maxDepth) {
             $snapshot = $this->snapshot(
@@ -348,9 +389,22 @@ final class DatabaseOperationRuntime
         };
     }
 
-    private function isRetryableOperation(RawOperation $operation): bool
+    private function isRetryableOperation(RawOperation $operation, DatabaseExecutionPolicy $policy): bool
     {
-        return $operation->kind === OperationKind::RawQuery;
+        if ($operation->kind === OperationKind::RawQuery) {
+            return true;
+        }
+
+        if (
+            $policy->retryMutationsWhenIdempotent
+            && $policy->retryLimit > 0
+            && $this->isMutatingOperation($operation->kind)
+            && $this->hasIdempotencyKey($operation)
+        ) {
+            return true;
+        }
+
+        return false;
     }
 
     private function resolveConnectionName(RawOperation $operation, DatabaseContext $context): string
@@ -492,6 +546,39 @@ final class DatabaseOperationRuntime
         );
     }
 
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function resolveFallbackDecision(DatabaseOperationPlan $plan): ?array
+    {
+        if (!$plan->policy->fallbackEnabled || $plan->policy->fallbackMode === 'off') {
+            return null;
+        }
+
+        if ($plan->policy->fallbackMode === 'read_only_when_unhealthy' && $this->isReadOnlyOperation($plan->operation->kind)) {
+            return null;
+        }
+
+        $healthStore = $this->resolveHealthStore();
+        if (!$healthStore instanceof DatabaseHealthStoreInterface) {
+            return null;
+        }
+
+        $aggregate = $healthStore->aggregate($plan->policy->fallbackAggregateLimit);
+        $health = is_array($aggregate['health'] ?? null) ? $aggregate['health'] : [];
+        $openSegments = (int) ($health['open_segments'] ?? 0);
+        $halfOpenSegments = (int) ($health['half_open_segments'] ?? 0);
+
+        if (
+            $openSegments < $plan->policy->fallbackOpenSegmentsThreshold
+            && $halfOpenSegments < $plan->policy->fallbackHalfOpenSegmentsThreshold
+        ) {
+            return null;
+        }
+
+        return $aggregate;
+    }
+
     private function resolveTelemetryStore(): ?DatabaseTelemetryStore
     {
         if ($this->telemetry instanceof DatabaseTelemetryStore) {
@@ -505,6 +592,60 @@ final class DatabaseOperationRuntime
         }
 
         return null;
+    }
+
+    private function resolveHealthStore(): ?DatabaseHealthStoreInterface
+    {
+        if ($this->healthStore instanceof DatabaseHealthStoreInterface) {
+            return $this->healthStore;
+        }
+
+        if ($this->healthStore instanceof \Closure) {
+            $resolved = ($this->healthStore)();
+
+            return $resolved instanceof DatabaseHealthStoreInterface ? $resolved : null;
+        }
+
+        return null;
+    }
+
+    private function isReadOnlyOperation(OperationKind $kind): bool
+    {
+        return match ($kind) {
+            OperationKind::RawQuery,
+            OperationKind::SqgSelect,
+            OperationKind::OrmHydrate => true,
+            default => false,
+        };
+    }
+
+    private function isMutatingOperation(OperationKind $kind): bool
+    {
+        return match ($kind) {
+            OperationKind::RawExecute,
+            OperationKind::SqgInsert,
+            OperationKind::SqgUpdate,
+            OperationKind::SqgDelete,
+            OperationKind::OrmInsert,
+            OperationKind::OrmUpdate,
+            OperationKind::OrmDelete,
+            OperationKind::OrmBulkInsert => true,
+            default => false,
+        };
+    }
+
+    private function hasIdempotencyKey(RawOperation $operation): bool
+    {
+        return $operation->idempotencyKey !== null && trim($operation->idempotencyKey) !== '';
+    }
+
+    private function resolveIdempotencyKeyHash(RawOperation $operation): ?string
+    {
+        if (!$this->hasIdempotencyKey($operation)) {
+            return null;
+        }
+
+        return hash('sha256', trim((string) $operation->idempotencyKey));
     }
 
 

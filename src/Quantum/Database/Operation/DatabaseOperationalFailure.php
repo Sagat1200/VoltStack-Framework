@@ -8,6 +8,7 @@ enum DatabaseOperationalFailure: string
 {
     case InvalidPlan = 'invalid_plan';
     case Unauthorized = 'unauthorized';
+    case Degraded = 'degraded';
     case ResourceExhausted = 'resource_exhausted';
     case Transient = 'transient';
     case Permanent = 'permanent';

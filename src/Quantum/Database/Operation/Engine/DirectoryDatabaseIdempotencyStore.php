@@ -36,6 +36,12 @@ final class DirectoryDatabaseIdempotencyStore implements DatabaseIdempotencyStor
             return DatabaseIdempotencyAcquireResult::acquired($record);
         }
 
+        if ($existing->isExpired()) {
+            $this->writeRecord($filePath, $record);
+
+            return DatabaseIdempotencyAcquireResult::acquired($record, 'reclaimed_expired');
+        }
+
         if ($existing->operationFingerprint === $record->operationFingerprint) {
             return DatabaseIdempotencyAcquireResult::duplicate($existing);
         }

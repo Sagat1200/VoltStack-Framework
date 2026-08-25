@@ -13,6 +13,7 @@ final readonly class DatabaseExecutionPolicy
         public int $retryLimit = 1,
         public int $retryBackoffMs = 10,
         public bool $retryMutationsWhenIdempotent = false,
+        public int $idempotencyPendingTtlSeconds = 300,
         public int $circuitFailureThreshold = 3,
         public int $circuitCooldownMs = 30000,
         public int $slowQueryThresholdMs = 250,
@@ -35,6 +36,7 @@ final readonly class DatabaseExecutionPolicy
         $limits = is_array($databaseConfig['query_limits'] ?? null) ? $databaseConfig['query_limits'] : [];
         $observability = is_array($databaseConfig['observability'] ?? null) ? $databaseConfig['observability'] : [];
         $resilience = is_array($databaseConfig['resilience'] ?? null) ? $databaseConfig['resilience'] : [];
+        $idempotency = is_array($databaseConfig['idempotency'] ?? null) ? $databaseConfig['idempotency'] : [];
         $circuit = is_array($resilience['circuit_breaker'] ?? null) ? $resilience['circuit_breaker'] : [];
         $fallback = is_array($resilience['fallback'] ?? null) ? $resilience['fallback'] : [];
         $security = is_array($databaseConfig['security'] ?? null) ? $databaseConfig['security'] : [];
@@ -46,6 +48,7 @@ final readonly class DatabaseExecutionPolicy
             retryLimit: max(0, (int) ($resilience['retry_limit'] ?? 1)),
             retryBackoffMs: max(0, (int) ($resilience['retry_backoff_ms'] ?? 10)),
             retryMutationsWhenIdempotent: (bool) ($resilience['retry_mutations_when_idempotent'] ?? false),
+            idempotencyPendingTtlSeconds: max(1, (int) ($idempotency['pending_ttl_seconds'] ?? 300)),
             circuitFailureThreshold: max(1, (int) ($circuit['failure_threshold'] ?? 3)),
             circuitCooldownMs: max(1, (int) ($circuit['cooldown_ms'] ?? 30000)),
             slowQueryThresholdMs: max(1, (int) ($observability['slow_query_ms'] ?? 250)),
@@ -69,6 +72,7 @@ final readonly class DatabaseExecutionPolicy
             retryLimit: $this->retryLimit,
             retryBackoffMs: $this->retryBackoffMs,
             retryMutationsWhenIdempotent: $this->retryMutationsWhenIdempotent,
+            idempotencyPendingTtlSeconds: $this->idempotencyPendingTtlSeconds,
             circuitFailureThreshold: $this->circuitFailureThreshold,
             circuitCooldownMs: $this->circuitCooldownMs,
             slowQueryThresholdMs: $this->slowQueryThresholdMs,
@@ -92,6 +96,7 @@ final readonly class DatabaseExecutionPolicy
             retryLimit: $this->retryLimit,
             retryBackoffMs: $this->retryBackoffMs,
             retryMutationsWhenIdempotent: $this->retryMutationsWhenIdempotent,
+            idempotencyPendingTtlSeconds: $this->idempotencyPendingTtlSeconds,
             circuitFailureThreshold: $this->circuitFailureThreshold,
             circuitCooldownMs: $this->circuitCooldownMs,
             slowQueryThresholdMs: $this->slowQueryThresholdMs,

@@ -25,6 +25,12 @@ final class InMemoryDatabaseIdempotencyStore implements DatabaseIdempotencyStore
             return DatabaseIdempotencyAcquireResult::acquired($record);
         }
 
+        if ($existing->isExpired()) {
+            $this->records[$record->keyHash] = $record;
+
+            return DatabaseIdempotencyAcquireResult::acquired($record, 'reclaimed_expired');
+        }
+
         if ($existing->operationFingerprint === $record->operationFingerprint) {
             return DatabaseIdempotencyAcquireResult::duplicate($existing);
         }

@@ -86,10 +86,11 @@ final class DbIdempotencyCommand extends Command
                     (string) ($aggregate['latest_created_at'] ?? 'n/a'),
                 ));
                 $output->writeln(sprintf(
-                    'Statuses: pending=%d completed=%d failed=%d',
+                    'Statuses: pending=%d completed=%d failed=%d expired_pending=%d',
                     (int) ($statuses['pending'] ?? 0),
                     (int) ($statuses['completed'] ?? 0),
                     (int) ($statuses['failed'] ?? 0),
+                    (int) ($aggregate['expired_pending'] ?? 0),
                 ));
 
                 return 0;
@@ -119,10 +120,12 @@ final class DbIdempotencyCommand extends Command
         }
 
         $output->writeln(sprintf(
-            'Database idempotency: request=%s status=%s created_at=%s',
+            'Database idempotency: request=%s status=%s created_at=%s expires_at=%s expired=%s',
             $record->requestId,
             $record->status,
             $record->createdAt,
+            $record->expiresAt ?? 'n/a',
+            $record->isExpired() ? 'yes' : 'no',
         ));
         $output->writeln(sprintf(
             'Key hash: %s',

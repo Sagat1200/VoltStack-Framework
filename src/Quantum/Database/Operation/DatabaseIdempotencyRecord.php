@@ -15,6 +15,7 @@ final readonly class DatabaseIdempotencyRecord
         public string $createdAt,
         public ?string $nodeId = null,
         public string $status = 'pending',
+        public ?string $expiresAt = null,
     ) {}
 
     /**
@@ -31,6 +32,7 @@ final readonly class DatabaseIdempotencyRecord
             'created_at' => $this->createdAt,
             'node_id' => $this->nodeId,
             'status' => $this->status,
+            'expires_at' => $this->expiresAt,
         ];
     }
 
@@ -48,6 +50,7 @@ final readonly class DatabaseIdempotencyRecord
             createdAt: (string) ($payload['created_at'] ?? ''),
             nodeId: isset($payload['node_id']) ? (string) $payload['node_id'] : null,
             status: (string) ($payload['status'] ?? 'pending'),
+            expiresAt: isset($payload['expires_at']) ? (string) $payload['expires_at'] : null,
         );
     }
 
@@ -62,6 +65,23 @@ final readonly class DatabaseIdempotencyRecord
             createdAt: $this->createdAt,
             nodeId: $this->nodeId,
             status: $status,
+            expiresAt: $this->expiresAt,
         );
+    }
+
+    public function isExpired(?\DateTimeImmutable $now = null): bool
+    {
+        if ($this->expiresAt === null || trim($this->expiresAt) === '' || $this->status !== 'pending') {
+            return false;
+        }
+
+        try {
+            $expiresAt = new \DateTimeImmutable($this->expiresAt);
+            $reference = $now ?? new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        } catch (\Throwable) {
+            return false;
+        }
+
+        return $expiresAt <= $reference;
     }
 }

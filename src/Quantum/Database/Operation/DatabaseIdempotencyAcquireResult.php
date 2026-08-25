@@ -12,9 +12,9 @@ final readonly class DatabaseIdempotencyAcquireResult
         public ?DatabaseIdempotencyRecord $record = null,
     ) {}
 
-    public static function acquired(DatabaseIdempotencyRecord $record): self
+    public static function acquired(DatabaseIdempotencyRecord $record, string $reason = 'acquired'): self
     {
-        return new self(true, 'acquired', $record);
+        return new self(true, $reason, $record);
     }
 
     public static function duplicate(DatabaseIdempotencyRecord $record): self

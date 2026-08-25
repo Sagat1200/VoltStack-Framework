@@ -86,6 +86,43 @@ final class DirectoryDatabaseIdempotencyStoreTest extends TestCase
         self::assertSame(1, $aggregate['statuses']['pending']);
     }
 
+    public function test_it_reclaims_expired_pending_record(): void
+    {
+        $store = new DirectoryDatabaseIdempotencyStore($this->basePath . DIRECTORY_SEPARATOR . 'idempotency');
+        $expired = new DatabaseIdempotencyRecord(
+            keyHash: hash('sha256', 'mutation-expired'),
+            operationFingerprint: 'plan-expired-a',
+            requestId: 'req-expired-a',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            createdAt: '2026-08-24T00:00:00+00:00',
+            nodeId: 'node-a',
+            status: 'pending',
+            expiresAt: '2026-08-24T00:05:00+00:00',
+        );
+        $fresh = new DatabaseIdempotencyRecord(
+            keyHash: hash('sha256', 'mutation-expired'),
+            operationFingerprint: 'plan-expired-b',
+            requestId: 'req-expired-b',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            createdAt: '2026-08-25T00:00:00+00:00',
+            nodeId: 'node-b',
+            status: 'pending',
+            expiresAt: '2099-08-25T00:05:00+00:00',
+        );
+
+        $store->acquire($expired);
+        $reclaimed = $store->acquire($fresh);
+
+        self::assertTrue($reclaimed->acquired);
+        self::assertSame('reclaimed_expired', $reclaimed->reason);
+        self::assertSame('req-expired-b', $store->find($fresh->keyHash)?->requestId);
+
+        $aggregate = $store->aggregate(10);
+        self::assertSame(0, $aggregate['expired_pending']);
+    }
+
     private function deleteDirectory(string $path): void
     {
         if (!is_dir($path)) {

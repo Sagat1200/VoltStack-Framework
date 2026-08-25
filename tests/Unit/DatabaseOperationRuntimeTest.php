@@ -196,6 +196,59 @@ final class DatabaseOperationRuntimeTest extends TestCase
         self::assertSame(0, $connection->statementCalls);
     }
 
+    public function test_runtime_reclaims_expired_pending_idempotency_record_and_executes_mutation(): void
+    {
+        $this->idempotencyBasePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-db-idempotency-runtime-' . uniqid('', true);
+        mkdir($this->idempotencyBasePath, 0777, true);
+
+        $store = new DirectoryDatabaseIdempotencyStore($this->idempotencyBasePath . DIRECTORY_SEPARATOR . 'idempotency');
+        $store->acquire(new DatabaseIdempotencyRecord(
+            keyHash: hash('sha256', 'mutation-users-expired'),
+            operationFingerprint: 'expired-plan',
+            requestId: 'req-expired',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            createdAt: '2026-08-24T00:00:00+00:00',
+            nodeId: 'node-a',
+            status: 'pending',
+            expiresAt: '2026-08-24T00:05:00+00:00',
+        ));
+
+        $connection = new RuntimeTestConnection(
+            statementQueue: [
+                RuntimeTestConnection::statementResult(1),
+            ],
+        );
+        $runtime = new DatabaseOperationRuntime(
+            new DatabaseCircuitBreaker(),
+            idempotencyStore: $store,
+        );
+        $context = DatabaseContext::empty()->withConnection($connection);
+        $policy = new DatabaseExecutionPolicy(
+            retryLimit: 1,
+            retryBackoffMs: 0,
+            retryMutationsWhenIdempotent: true,
+            idempotencyPendingTtlSeconds: 300,
+        );
+        $plan = $runtime->plan(
+            new RawOperation(
+                OperationKind::RawExecute,
+                'UPDATE users SET active = 1 WHERE id = 1',
+                [],
+                'primary',
+                'mutation-users-expired',
+            ),
+            $context,
+            $policy,
+        );
+
+        $result = $runtime->execute($plan, $context);
+
+        self::assertTrue($result->isSuccess);
+        self::assertSame(1, $connection->statementCalls);
+        self::assertSame('completed', $store->find(hash('sha256', 'mutation-users-expired'))?->status);
+    }
+
     public function test_runtime_opens_circuit_after_repeated_transient_failures(): void
     {
         $connection = new RuntimeTestConnection([

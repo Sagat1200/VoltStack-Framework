@@ -53,6 +53,7 @@ final class DatabaseOperationRuntime
             'max_depth' => $policy->maxDepth,
             'retry_limit' => $retryLimit,
             'retry_mutations_when_idempotent' => $policy->retryMutationsWhenIdempotent,
+            'idempotency_pending_ttl_seconds' => $policy->idempotencyPendingTtlSeconds,
             'idempotency_key_hash' => $idempotencyKeyHash,
             'tenant' => $context->tenantId,
             'request_id' => $context->requestId,
@@ -740,6 +741,7 @@ final class DatabaseOperationRuntime
             createdAt: $this->timestampNow(),
             nodeId: null,
             status: 'pending',
+            expiresAt: $this->timestampAfterSeconds($plan->policy->idempotencyPendingTtlSeconds),
         );
     }
 
@@ -752,5 +754,12 @@ final class DatabaseOperationRuntime
     private function timestampNow(): string
     {
         return (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format(\DATE_ATOM);
+    }
+
+    private function timestampAfterSeconds(int $seconds): string
+    {
+        return (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))
+            ->modify(sprintf('+%d seconds', max(1, $seconds)))
+            ->format(\DATE_ATOM);
     }
 }

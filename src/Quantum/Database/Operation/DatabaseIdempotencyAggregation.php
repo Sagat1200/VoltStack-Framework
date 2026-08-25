@@ -21,6 +21,7 @@ final class DatabaseIdempotencyAggregation
             'completed' => 0,
             'failed' => 0,
         ];
+        $expiredPending = 0;
         $oldestAt = null;
         $latestAt = null;
 
@@ -36,6 +37,9 @@ final class DatabaseIdempotencyAggregation
                 $statuses[$record->status] = 0;
             }
             $statuses[$record->status]++;
+            if ($record->isExpired()) {
+                $expiredPending++;
+            }
 
             if ($oldestAt === null || strcmp($record->createdAt, $oldestAt) < 0) {
                 $oldestAt = $record->createdAt;
@@ -54,6 +58,7 @@ final class DatabaseIdempotencyAggregation
             'oldest_created_at' => $oldestAt,
             'latest_created_at' => $latestAt,
             'statuses' => $statuses,
+            'expired_pending' => $expiredPending,
         ];
     }
 }

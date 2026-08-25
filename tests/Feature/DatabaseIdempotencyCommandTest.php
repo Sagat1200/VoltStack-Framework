@@ -52,6 +52,7 @@ final class DatabaseIdempotencyCommandTest extends TestCase
         $result = $this->runConsole(['volt', 'db:idempotency']);
         self::assertSame(0, $result['exit']);
         self::assertStringContainsString('Database idempotency: request=req-users-1 status=completed', $result['stdout']);
+        self::assertStringContainsString('expires_at=n/a expired=no', $result['stdout']);
         self::assertStringContainsString('Operation: fingerprint=plan-users-1 connection=primary target=users', $result['stdout']);
 
         $lookup = $this->runConsole(['volt', 'db:idempotency', '--key=mutation-users-1', '--json']);
@@ -91,17 +92,29 @@ final class DatabaseIdempotencyCommandTest extends TestCase
         $store->complete($first);
         $store->acquire($second);
         $store->fail($second);
+        $store->acquire(new DatabaseIdempotencyRecord(
+            keyHash: hash('sha256', 'mutation-stale-1'),
+            operationFingerprint: 'plan-stale-1',
+            requestId: 'req-stale-1',
+            connectionName: 'primary',
+            logicalTarget: 'comments',
+            createdAt: '2026-08-24T07:00:00+00:00',
+            nodeId: 'node-c',
+            status: 'pending',
+            expiresAt: '2026-08-24T07:05:00+00:00',
+        ));
 
         $result = $this->runConsole(['volt', 'db:idempotency', '--aggregate', '--limit=10']);
         self::assertSame(0, $result['exit']);
-        self::assertStringContainsString('Database idempotency aggregate: records=2 requests=2 connections=1 targets=2 nodes=2', $result['stdout']);
-        self::assertStringContainsString('Statuses: pending=0 completed=1 failed=1', $result['stdout']);
+        self::assertStringContainsString('Database idempotency aggregate: records=3 requests=3 connections=1 targets=3 nodes=3', $result['stdout']);
+        self::assertStringContainsString('Statuses: pending=1 completed=1 failed=1 expired_pending=1', $result['stdout']);
 
         $json = $this->runConsole(['volt', 'db:idempotency', '--aggregate', '--json', '--limit=10']);
         self::assertSame(0, $json['exit']);
-        self::assertStringContainsString('"records": 2', $json['stdout']);
+        self::assertStringContainsString('"records": 3', $json['stdout']);
         self::assertStringContainsString('"completed": 1', $json['stdout']);
         self::assertStringContainsString('"failed": 1', $json['stdout']);
+        self::assertStringContainsString('"expired_pending": 1', $json['stdout']);
     }
 
     /**
@@ -175,6 +188,7 @@ final class DatabaseIdempotencyCommandTest extends TestCase
                 'idempotency' => [
                     'store' => 'directory',
                     'directory_path' => $basePath . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'database' . DIRECTORY_SEPARATOR . 'idempotency',
+                    'pending_ttl_seconds' => 300,
                 ],
                 'observability' => [
                     'dispatcher' => 'null',

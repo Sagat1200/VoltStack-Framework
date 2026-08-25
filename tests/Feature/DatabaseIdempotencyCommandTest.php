@@ -53,6 +53,14 @@ final class DatabaseIdempotencyCommandTest extends TestCase
             'rows_read' => 0,
             'outcome' => 'completed',
             'confirmed_at' => '2026-08-25T07:00:10+00:00',
+            'result_summary' => [
+                'kind' => 'raw_execute',
+                'is_select' => false,
+                'affected_rows' => 1,
+                'rows_read' => 0,
+                'column_count' => 0,
+                'result_type' => 'success_no_rows',
+            ],
         ]);
 
         $result = $this->runConsole(['volt', 'db:idempotency']);
@@ -61,12 +69,14 @@ final class DatabaseIdempotencyCommandTest extends TestCase
         self::assertStringContainsString('expires_at=n/a expired=no', $result['stdout']);
         self::assertStringContainsString('Operation: fingerprint=plan-users-1 connection=primary target=users', $result['stdout']);
         self::assertStringContainsString('Confirmation: kind=raw_execute affected_rows=1 rows_read=0 outcome=completed confirmed_at=2026-08-25T07:00:10+00:00', $result['stdout']);
+        self::assertStringContainsString('Result summary: type=success_no_rows is_select=no affected_rows=1 rows_read=0 column_count=0', $result['stdout']);
 
         $lookup = $this->runConsole(['volt', 'db:idempotency', '--key=mutation-users-1', '--json']);
         self::assertSame(0, $lookup['exit']);
         self::assertStringContainsString('"request_id": "req-users-1"', $lookup['stdout']);
         self::assertStringContainsString('"status": "completed"', $lookup['stdout']);
         self::assertStringContainsString('"confirmation"', $lookup['stdout']);
+        self::assertStringContainsString('"result_summary"', $lookup['stdout']);
     }
 
     public function test_cli_idempotency_can_aggregate_recent_records(): void

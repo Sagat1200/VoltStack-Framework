@@ -332,7 +332,11 @@ final class DatabaseOperationRuntimeTest extends TestCase
         self::assertSame('raw_execute', $stored?->confirmation['kind'] ?? null);
         self::assertSame(3, $stored?->confirmation['affected_rows'] ?? null);
         self::assertSame(0, $stored?->confirmation['rows_read'] ?? null);
+        self::assertSame('success_no_rows', $stored?->confirmation['result_summary']['result_type'] ?? null);
+        self::assertSame(3, $stored?->confirmation['result_summary']['affected_rows'] ?? null);
+        self::assertSame(0, $stored?->confirmation['result_summary']['rows_read'] ?? null);
         self::assertSame('completed', $result->debug['idempotency']['status'] ?? null);
+        self::assertSame('success_no_rows', $result->debug['idempotency']['result_summary']['result_type'] ?? null);
     }
 
     public function test_runtime_short_circuits_confirmed_replay_without_touching_database(): void
@@ -406,9 +410,14 @@ final class DatabaseOperationRuntimeTest extends TestCase
 
         self::assertTrue($result->isSuccess);
         self::assertSame(0, $connection->statementCalls);
+        self::assertSame(1, $result->affectedRows);
         self::assertSame('replayed_confirmed', $result->debug['idempotency']['status'] ?? null);
+        self::assertSame('idempotency_confirmation', $result->debug['idempotency']['source'] ?? null);
         self::assertSame('completed', $result->debug['idempotency']['record']['status'] ?? null);
         self::assertSame('completed', $result->debug['idempotency']['confirmation']['outcome'] ?? null);
+        self::assertSame('success_no_rows', $result->debug['idempotency']['result_summary']['result_type'] ?? null);
+        self::assertSame(1, $result->debug['idempotency']['result_summary']['affected_rows'] ?? null);
+        self::assertSame(1, $result->debug['diagnostic']->affectedRows ?? null);
     }
 
     public function test_runtime_opens_circuit_after_repeated_transient_failures(): void

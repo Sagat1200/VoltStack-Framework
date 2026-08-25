@@ -147,6 +147,17 @@ final class DbIdempotencyCommand extends Command
                 (string) ($record->confirmation['outcome'] ?? 'n/a'),
                 (string) ($record->confirmation['confirmed_at'] ?? 'n/a'),
             ));
+            $resultSummary = $this->normalizeResultSummary($record->confirmation);
+            if ($resultSummary !== []) {
+                $output->writeln(sprintf(
+                    'Result summary: type=%s is_select=%s affected_rows=%d rows_read=%d column_count=%d',
+                    (string) ($resultSummary['result_type'] ?? 'n/a'),
+                    ((bool) ($resultSummary['is_select'] ?? false)) ? 'yes' : 'no',
+                    (int) ($resultSummary['affected_rows'] ?? 0),
+                    (int) ($resultSummary['rows_read'] ?? 0),
+                    (int) ($resultSummary['column_count'] ?? 0),
+                ));
+            }
         }
 
         return 0;
@@ -171,5 +182,29 @@ final class DbIdempotencyCommand extends Command
 
         $int = (int) $value;
         return $int > 0 ? $int : null;
+    }
+
+    /**
+     * @param array<string, mixed> $confirmation
+     * @return array<string, mixed>
+     */
+    private function normalizeResultSummary(array $confirmation): array
+    {
+        $resultSummary = $confirmation['result_summary'] ?? null;
+        if (is_array($resultSummary) && $resultSummary !== []) {
+            return $resultSummary;
+        }
+
+        if ($confirmation === []) {
+            return [];
+        }
+
+        return [
+            'result_type' => 'success_no_rows',
+            'is_select' => false,
+            'affected_rows' => max(0, (int) ($confirmation['affected_rows'] ?? 0)),
+            'rows_read' => max(0, (int) ($confirmation['rows_read'] ?? 0)),
+            'column_count' => 0,
+        ];
     }
 }

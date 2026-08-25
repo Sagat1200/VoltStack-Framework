@@ -156,12 +156,14 @@ final class DatabaseOperationRuntime
             $acquire = $this->resolveIdempotencyStore()?->acquire($idempotencyRecord);
             if ($acquire instanceof DatabaseIdempotencyAcquireResult && $acquire->reason === 'replay') {
                 $existing = $acquire->record ?? $idempotencyRecord;
+                $confirmedAffectedRows = max(0, (int) ($existing->confirmation['affected_rows'] ?? 0));
+                $replayResultSummary = $this->normalizeIdempotencyResultSummary($existing->confirmation);
                 $snapshot = $this->snapshot(
                     plan: $plan,
                     attempts: 0,
                     durationMs: 0,
                     rowsRead: 0,
-                    affectedRows: 0,
+                    affectedRows: $confirmedAffectedRows,
                     outcome: 'completed',
                     failure: null,
                     retryable: false,
@@ -171,6 +173,8 @@ final class DatabaseOperationRuntime
                             'reason' => 'idempotency_guard_replayed_confirmed',
                             'status' => $existing->status,
                             'node_id' => $existing->nodeId,
+                            'confirmed_at' => $existing->confirmation['confirmed_at'] ?? null,
+                            'affected_rows' => $confirmedAffectedRows,
                         ]),
                     ]),
                 );
@@ -178,15 +182,17 @@ final class DatabaseOperationRuntime
 
                 return DatabaseOperationResult::successNoRows(
                     kind: $plan->operation->kind,
-                    affectedRows: 0,
+                    affectedRows: $confirmedAffectedRows,
                     debug: [
                         'plan' => $plan,
                         'diagnostic' => $snapshot,
                         'idempotency' => [
                             'status' => 'replayed_confirmed',
+                            'source' => 'idempotency_confirmation',
                             'key_hash' => $idempotencyRecord->keyHash,
                             'record' => $existing->toArray(),
                             'confirmation' => $existing->confirmation,
+                            'result_summary' => $replayResultSummary,
                         ],
                     ],
                 );
@@ -333,6 +339,7 @@ final class DatabaseOperationRuntime
                     );
                 }
 
+                $confirmation = null;
                 $this->circuitBreaker->recordSuccess($segment);
                 $events[] = new DatabaseDiagnosticEvent('completed', $this->timestampNow(), [
                     'attempt' => $attempt,
@@ -354,12 +361,21 @@ final class DatabaseOperationRuntime
                 );
                 $this->recordTelemetry($plan, $snapshot);
                 if ($idempotencyRecord instanceof DatabaseIdempotencyRecord) {
-                    $this->resolveIdempotencyStore()?->complete($idempotencyRecord, [
+                    $confirmation = [
                         'kind' => $plan->operation->kind->value,
                         'affected_rows' => $result->affectedRows,
                         'rows_read' => $rowsRead,
                         'outcome' => 'completed',
                         'confirmed_at' => $this->timestampNow(),
+                        'result_summary' => $this->buildIdempotencyResultSummary($plan, $result, $rowsRead),
+                    ];
+                    $this->resolveIdempotencyStore()?->complete($idempotencyRecord, [
+                        'kind' => $confirmation['kind'],
+                        'affected_rows' => $confirmation['affected_rows'],
+                        'rows_read' => $confirmation['rows_read'],
+                        'outcome' => $confirmation['outcome'],
+                        'confirmed_at' => $confirmation['confirmed_at'],
+                        'result_summary' => $confirmation['result_summary'],
                     ]);
                 }
 
@@ -372,12 +388,10 @@ final class DatabaseOperationRuntime
                         'idempotency' => $idempotencyRecord instanceof DatabaseIdempotencyRecord ? [
                             'status' => 'completed',
                             'key_hash' => $idempotencyRecord->keyHash,
-                            'confirmation' => [
-                                'kind' => $plan->operation->kind->value,
-                                'affected_rows' => $result->affectedRows,
-                                'rows_read' => $rowsRead,
-                                'outcome' => 'completed',
-                            ],
+                            'confirmation' => $confirmation ?? [],
+                            'result_summary' => is_array(($confirmation ?? [])['result_summary'] ?? null)
+                                ? $confirmation['result_summary']
+                                : [],
                         ] : null,
                     ],
                 );
@@ -837,5 +851,44 @@ final class DatabaseOperationRuntime
         return (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))
             ->modify(sprintf('+%d seconds', max(1, $seconds)))
             ->format(\DATE_ATOM);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function buildIdempotencyResultSummary(
+        DatabaseOperationPlan $plan,
+        DatabaseOperationResult $result,
+        int $rowsRead,
+    ): array {
+        return [
+            'kind' => $plan->operation->kind->value,
+            'is_select' => $result->queryResult?->isSelect() ?? false,
+            'affected_rows' => $result->affectedRows,
+            'rows_read' => $rowsRead,
+            'column_count' => $result->queryResult?->columnCount() ?? 0,
+            'result_type' => $result->queryResult?->isSelect() ? 'query_result' : 'success_no_rows',
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $confirmation
+     * @return array<string, mixed>
+     */
+    private function normalizeIdempotencyResultSummary(array $confirmation): array
+    {
+        $existing = $confirmation['result_summary'] ?? null;
+        if (is_array($existing) && $existing !== []) {
+            return $existing;
+        }
+
+        return [
+            'kind' => (string) ($confirmation['kind'] ?? 'unknown'),
+            'is_select' => false,
+            'affected_rows' => max(0, (int) ($confirmation['affected_rows'] ?? 0)),
+            'rows_read' => max(0, (int) ($confirmation['rows_read'] ?? 0)),
+            'column_count' => 0,
+            'result_type' => 'success_no_rows',
+        ];
     }
 }

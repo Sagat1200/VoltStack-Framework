@@ -81,6 +81,8 @@ final class DatabaseQueryCommandTest extends TestCase
         self::assertStringContainsString('retryable=yes', $result['stdout']);
         self::assertStringContainsString('idempotency=present', $result['stdout']);
         self::assertStringContainsString('legacy_replay_mode=allow', $result['stdout']);
+        self::assertStringContainsString('remote_replay_attestation_mode=allow', $result['stdout']);
+        self::assertStringContainsString('remote_replay_attestation_max_age_seconds=0', $result['stdout']);
     }
 
     /**
@@ -167,6 +169,8 @@ final class DatabaseQueryCommandTest extends TestCase
                 'idempotency' => [
                     'pending_ttl_seconds' => 300,
                     'legacy_replay_mode' => 'allow',
+                    'remote_replay_attestation_mode' => 'allow',
+                    'remote_replay_attestation_max_age_seconds' => 0,
                 ],
                 'security' => [
                     'redact_sensitive' => true,

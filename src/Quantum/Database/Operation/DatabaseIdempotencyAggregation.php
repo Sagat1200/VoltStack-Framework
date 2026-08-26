@@ -282,8 +282,8 @@ final class DatabaseIdempotencyAggregation
             && $sourceNodeId !== ''
             && $attestedBy === $sourceNodeId
             && $attestedAt !== ''
-                ? 'verified_source_node_attestation'
-                : 'mismatch_source_node_attestation';
+            ? 'verified_source_node_attestation'
+            : 'mismatch_source_node_attestation';
     }
 
     private static function computeAttestationFingerprint(DatabaseIdempotencyRecord $record): string

@@ -163,12 +163,25 @@ final class DatabaseOperationRuntime
                 $evidenceVerification = $this->verifyIdempotencyConfirmationEvidence($existing, $confirmationEvidence);
                 $currentNodeId = $this->resolveIdempotencyNodeId();
                 $replayOrigin = $this->resolveReplayOrigin($existing->nodeId, $currentNodeId);
+                $attestationFreshness = $this->resolveRemoteReplayAttestationFreshness(
+                    $evidenceVerification,
+                    $plan->policy->remoteReplayAttestationMaxAgeSeconds,
+                    $replayOrigin,
+                );
+                $evidenceVerification = array_merge($evidenceVerification, $attestationFreshness);
                 $evidenceTrustLevel = $this->resolveEvidenceTrustLevel(
                     $replayOrigin,
                     (string) ($evidenceVerification['verification_status'] ?? 'unknown'),
                     (string) ($evidenceVerification['attestation_verification_status'] ?? 'unknown'),
                 );
                 $evidenceVerification['trust_level'] = $evidenceTrustLevel;
+                $remoteReplayAttestationWarning = $this->buildRemoteReplayAttestationWarning(
+                    $existing,
+                    $replayOrigin,
+                    $plan->policy->remoteReplayAttestationMode,
+                    $plan->policy->remoteReplayAttestationMaxAgeSeconds,
+                    $evidenceVerification,
+                );
                 $legacyReplayWarning = $this->buildLegacyReplayWarning(
                     $existing,
                     $replayReproducibility,
@@ -239,6 +252,8 @@ final class DatabaseOperationRuntime
                                 'recomputed_attestation_fingerprint' => $evidenceVerification['recomputed_attestation_fingerprint'] ?? null,
                                 'attestation_mode' => $evidenceVerification['attestation_mode'] ?? null,
                                 'attestation_verification_status' => $evidenceVerification['attestation_verification_status'] ?? null,
+                                'attestation_freshness_status' => $evidenceVerification['attestation_freshness_status'] ?? null,
+                                'attestation_age_seconds' => $evidenceVerification['attestation_age_seconds'] ?? null,
                                 'evidence_trust_level' => $evidenceTrustLevel,
                             ]),
                         ]),
@@ -252,6 +267,96 @@ final class DatabaseOperationRuntime
                         message: sprintf(
                             'Database idempotency replay blocked for [%s] because source node attestation verification failed.',
                             $plan->operation->kind->value,
+                        ),
+                    );
+                }
+                if (
+                    $replayOrigin === 'federated_remote_node'
+                    && ($evidenceVerification['verification_status'] ?? null) === 'verified_persisted_evidence'
+                    && ($evidenceVerification['attestation_verification_status'] ?? null) === 'verified_source_node_attestation'
+                    && ($evidenceVerification['attestation_freshness_status'] ?? null) === 'stale_verified_attestation'
+                    && $plan->policy->remoteReplayAttestationMode === 'require'
+                ) {
+                    $snapshot = $this->snapshot(
+                        plan: $plan,
+                        attempts: 0,
+                        durationMs: 0,
+                        rowsRead: 0,
+                        affectedRows: 0,
+                        outcome: 'cancelled',
+                        failure: DatabaseOperationalFailure::VerificationFailed,
+                        retryable: false,
+                        circuitState: $this->circuitBreaker->currentState($plan->circuitSegment),
+                        events: array_merge($events, [
+                            new DatabaseDiagnosticEvent('cancelled', $this->timestampNow(), [
+                                'reason' => 'idempotency_guard_remote_replay_attestation_stale_required',
+                                'status' => $existing->status,
+                                'node_id' => $existing->nodeId,
+                                'current_node_id' => $currentNodeId,
+                                'replay_origin' => $replayOrigin,
+                                'remote_replay_attestation_mode' => $plan->policy->remoteReplayAttestationMode,
+                                'remote_replay_attestation_max_age_seconds' => $plan->policy->remoteReplayAttestationMaxAgeSeconds,
+                                'attestation_verification_status' => $evidenceVerification['attestation_verification_status'] ?? null,
+                                'attestation_freshness_status' => $evidenceVerification['attestation_freshness_status'] ?? null,
+                                'attestation_age_seconds' => $evidenceVerification['attestation_age_seconds'] ?? null,
+                                'evidence_trust_level' => $evidenceTrustLevel,
+                            ]),
+                        ]),
+                    );
+                    $this->recordTelemetry($plan, $snapshot);
+
+                    throw new DatabaseOperationException(
+                        failure: DatabaseOperationalFailure::VerificationFailed,
+                        snapshot: $snapshot,
+                        plan: $plan,
+                        message: sprintf(
+                            'Database idempotency replay blocked for [%s] because remote replay attestation age exceeded max age [%d] seconds.',
+                            $plan->operation->kind->value,
+                            $plan->policy->remoteReplayAttestationMaxAgeSeconds,
+                        ),
+                    );
+                }
+                if (
+                    $replayOrigin === 'federated_remote_node'
+                    && ($evidenceVerification['verification_status'] ?? null) === 'verified_persisted_evidence'
+                    && ($evidenceVerification['attestation_verification_status'] ?? null) !== 'verified_source_node_attestation'
+                    && $plan->policy->remoteReplayAttestationMode === 'require'
+                ) {
+                    $snapshot = $this->snapshot(
+                        plan: $plan,
+                        attempts: 0,
+                        durationMs: 0,
+                        rowsRead: 0,
+                        affectedRows: 0,
+                        outcome: 'cancelled',
+                        failure: DatabaseOperationalFailure::VerificationFailed,
+                        retryable: false,
+                        circuitState: $this->circuitBreaker->currentState($plan->circuitSegment),
+                        events: array_merge($events, [
+                            new DatabaseDiagnosticEvent('cancelled', $this->timestampNow(), [
+                                'reason' => 'idempotency_guard_remote_replay_attestation_required',
+                                'status' => $existing->status,
+                                'node_id' => $existing->nodeId,
+                                'current_node_id' => $currentNodeId,
+                                'replay_origin' => $replayOrigin,
+                                'remote_replay_attestation_mode' => $plan->policy->remoteReplayAttestationMode,
+                                'attestation_verification_status' => $evidenceVerification['attestation_verification_status'] ?? null,
+                                'attestation_freshness_status' => $evidenceVerification['attestation_freshness_status'] ?? null,
+                                'attestation_age_seconds' => $evidenceVerification['attestation_age_seconds'] ?? null,
+                                'evidence_trust_level' => $evidenceTrustLevel,
+                            ]),
+                        ]),
+                    );
+                    $this->recordTelemetry($plan, $snapshot);
+
+                    throw new DatabaseOperationException(
+                        failure: DatabaseOperationalFailure::VerificationFailed,
+                        snapshot: $snapshot,
+                        plan: $plan,
+                        message: sprintf(
+                            'Database idempotency replay blocked for [%s] because remote replay attestation mode [%s] requires verified source node attestation.',
+                            $plan->operation->kind->value,
+                            $plan->policy->remoteReplayAttestationMode,
                         ),
                     );
                 }
@@ -312,6 +417,9 @@ final class DatabaseOperationRuntime
                     circuitState: $this->circuitBreaker->currentState($plan->circuitSegment),
                     events: array_merge(
                         $events,
+                        $remoteReplayAttestationWarning !== null
+                            ? [new DatabaseDiagnosticEvent('warning', $this->timestampNow(), $remoteReplayAttestationWarning)]
+                            : [],
                         $legacyReplayWarning !== null
                             ? [new DatabaseDiagnosticEvent('warning', $this->timestampNow(), $legacyReplayWarning)]
                             : [],
@@ -325,11 +433,15 @@ final class DatabaseOperationRuntime
                                 'affected_rows' => $confirmedAffectedRows,
                                 'replay_reproducibility' => $replayReproducibility,
                                 'legacy_replay_mode' => $plan->policy->legacyReplayMode,
+                                'remote_replay_attestation_mode' => $plan->policy->remoteReplayAttestationMode,
+                                'remote_replay_attestation_max_age_seconds' => $plan->policy->remoteReplayAttestationMaxAgeSeconds,
                                 'replay_origin' => $replayOrigin,
                                 'confirmation_fingerprint' => $evidenceVerification['confirmation_fingerprint'] ?? null,
                                 'confirmation_evidence_mode' => $evidenceVerification['evidence_mode'] ?? null,
                                 'verification_status' => $evidenceVerification['verification_status'] ?? null,
                                 'attestation_verification_status' => $evidenceVerification['attestation_verification_status'] ?? null,
+                                'attestation_freshness_status' => $evidenceVerification['attestation_freshness_status'] ?? null,
+                                'attestation_age_seconds' => $evidenceVerification['attestation_age_seconds'] ?? null,
                                 'evidence_trust_level' => $evidenceTrustLevel,
                             ]),
                         ],
@@ -352,11 +464,14 @@ final class DatabaseOperationRuntime
                             'result_summary' => $replayResultSummary,
                             'replay_reproducibility' => $replayReproducibility,
                             'legacy_replay_mode' => $plan->policy->legacyReplayMode,
+                            'remote_replay_attestation_mode' => $plan->policy->remoteReplayAttestationMode,
+                            'remote_replay_attestation_max_age_seconds' => $plan->policy->remoteReplayAttestationMaxAgeSeconds,
                             'current_node_id' => $currentNodeId,
                             'source_node_id' => $existing->nodeId,
                             'replay_origin' => $replayOrigin,
                             'confirmation_evidence' => $evidenceVerification,
                             'evidence_trust_level' => $evidenceTrustLevel,
+                            'attestation_warning' => $remoteReplayAttestationWarning,
                             'warning' => $legacyReplayWarning,
                         ],
                     ],
@@ -1119,6 +1234,115 @@ final class DatabaseOperationRuntime
             'verification_status' => $confirmationEvidence['verification_status'] ?? null,
             'attestation_verification_status' => $confirmationEvidence['attestation_verification_status'] ?? null,
             'evidence_trust_level' => $confirmationEvidence['trust_level'] ?? null,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $confirmationEvidence
+     * @return array<string, mixed>|null
+     */
+    private function buildRemoteReplayAttestationWarning(
+        DatabaseIdempotencyRecord $record,
+        string $replayOrigin,
+        string $remoteReplayAttestationMode,
+        int $remoteReplayAttestationMaxAgeSeconds,
+        array $confirmationEvidence,
+    ): ?array {
+        if (
+            $replayOrigin !== 'federated_remote_node'
+            || $remoteReplayAttestationMode !== 'warn'
+            || ($confirmationEvidence['verification_status'] ?? null) !== 'verified_persisted_evidence'
+        ) {
+            return null;
+        }
+
+        if (($confirmationEvidence['attestation_verification_status'] ?? null) !== 'verified_source_node_attestation') {
+            return [
+                'reason' => 'idempotency_guard_remote_replay_attestation_warning',
+                'message' => 'Database idempotency replay used remote confirmation without verified source node attestation.',
+                'status' => $record->status,
+                'node_id' => $record->nodeId,
+                'replay_origin' => $replayOrigin,
+                'remote_replay_attestation_mode' => $remoteReplayAttestationMode,
+                'remote_replay_attestation_max_age_seconds' => $remoteReplayAttestationMaxAgeSeconds,
+                'attestation_verification_status' => $confirmationEvidence['attestation_verification_status'] ?? null,
+                'attestation_freshness_status' => $confirmationEvidence['attestation_freshness_status'] ?? null,
+                'attestation_age_seconds' => $confirmationEvidence['attestation_age_seconds'] ?? null,
+                'confirmation_evidence_mode' => $confirmationEvidence['evidence_mode'] ?? null,
+                'evidence_trust_level' => $confirmationEvidence['trust_level'] ?? null,
+            ];
+        }
+
+        if (($confirmationEvidence['attestation_freshness_status'] ?? null) !== 'stale_verified_attestation') {
+            return null;
+        }
+
+        return [
+            'reason' => 'idempotency_guard_remote_replay_attestation_stale_warning',
+            'message' => 'Database idempotency replay used remote confirmation with verified source node attestation older than the configured max age.',
+            'status' => $record->status,
+            'node_id' => $record->nodeId,
+            'replay_origin' => $replayOrigin,
+            'remote_replay_attestation_mode' => $remoteReplayAttestationMode,
+            'remote_replay_attestation_max_age_seconds' => $remoteReplayAttestationMaxAgeSeconds,
+            'attestation_verification_status' => $confirmationEvidence['attestation_verification_status'] ?? null,
+            'attestation_freshness_status' => $confirmationEvidence['attestation_freshness_status'] ?? null,
+            'attestation_age_seconds' => $confirmationEvidence['attestation_age_seconds'] ?? null,
+            'confirmation_evidence_mode' => $confirmationEvidence['evidence_mode'] ?? null,
+            'evidence_trust_level' => $confirmationEvidence['trust_level'] ?? null,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $confirmationEvidence
+     * @return array<string, int|string|null>
+     */
+    private function resolveRemoteReplayAttestationFreshness(
+        array $confirmationEvidence,
+        int $remoteReplayAttestationMaxAgeSeconds,
+        string $replayOrigin,
+    ): array {
+        if (
+            $replayOrigin !== 'federated_remote_node'
+            || ($confirmationEvidence['attestation_verification_status'] ?? null) !== 'verified_source_node_attestation'
+        ) {
+            return [
+                'attestation_freshness_status' => 'not_applicable',
+                'attestation_age_seconds' => null,
+            ];
+        }
+
+        $attestedAt = isset($confirmationEvidence['attested_at']) ? trim((string) $confirmationEvidence['attested_at']) : '';
+        if ($attestedAt === '') {
+            return [
+                'attestation_freshness_status' => 'unknown_attestation_age',
+                'attestation_age_seconds' => null,
+            ];
+        }
+
+        try {
+            $attestedAtDate = new \DateTimeImmutable($attestedAt);
+            $reference = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+            $ageSeconds = max(0, $reference->getTimestamp() - $attestedAtDate->getTimestamp());
+        } catch (\Throwable) {
+            return [
+                'attestation_freshness_status' => 'unknown_attestation_age',
+                'attestation_age_seconds' => null,
+            ];
+        }
+
+        if ($remoteReplayAttestationMaxAgeSeconds <= 0) {
+            return [
+                'attestation_freshness_status' => 'fresh_verified_attestation',
+                'attestation_age_seconds' => $ageSeconds,
+            ];
+        }
+
+        return [
+            'attestation_freshness_status' => $ageSeconds <= $remoteReplayAttestationMaxAgeSeconds
+                ? 'fresh_verified_attestation'
+                : 'stale_verified_attestation',
+            'attestation_age_seconds' => $ageSeconds,
         ];
     }
 

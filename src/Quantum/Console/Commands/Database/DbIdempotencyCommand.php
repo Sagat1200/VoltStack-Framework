@@ -51,6 +51,8 @@ final class DbIdempotencyCommand extends Command
             $store = $app->make(DatabaseIdempotencyStoreInterface::class);
             $currentNodeId = $this->resolveCurrentNodeId($app);
             $limit = $this->resolvePositiveIntOption($input, 'limit') ?? 50;
+            $remoteReplayAttestationMode = (string) $app->config('database.idempotency.remote_replay_attestation_mode', 'allow');
+            $remoteReplayAttestationMaxAgeSeconds = max(0, (int) $app->config('database.idempotency.remote_replay_attestation_max_age_seconds', 0));
 
             $lookupKey = $this->resolveLookupKeyHash($input);
             if ($lookupKey !== null) {
@@ -61,7 +63,14 @@ final class DbIdempotencyCommand extends Command
                     return 0;
                 }
 
-                return $this->renderRecord($record, $currentNodeId, $input, $output);
+                return $this->renderRecord(
+                    $record,
+                    $currentNodeId,
+                    $remoteReplayAttestationMode,
+                    $remoteReplayAttestationMaxAgeSeconds,
+                    $input,
+                    $output,
+                );
             }
 
             if ($input->hasOption('aggregate')) {
@@ -196,21 +205,38 @@ final class DbIdempotencyCommand extends Command
                 return 0;
             }
 
-            return $this->renderRecord($record, $currentNodeId, $input, $output);
+            return $this->renderRecord(
+                $record,
+                $currentNodeId,
+                $remoteReplayAttestationMode,
+                $remoteReplayAttestationMaxAgeSeconds,
+                $input,
+                $output,
+            );
         } catch (\Throwable $e) {
             $output->error(sprintf('db:idempotency failed: %s', $e->getMessage()));
             return 1;
         }
     }
 
-    private function renderRecord(DatabaseIdempotencyRecord $record, ?string $currentNodeId, Input $input, Output $output): int
-    {
+    private function renderRecord(
+        DatabaseIdempotencyRecord $record,
+        ?string $currentNodeId,
+        string $remoteReplayAttestationMode,
+        int $remoteReplayAttestationMaxAgeSeconds,
+        Input $input,
+        Output $output,
+    ): int {
         $replayOrigin = $this->resolveNodePerspective($record->nodeId, $currentNodeId);
         if ($input->hasOption('json')) {
             $payload = $record->toArray();
             $payload['current_node_id'] = $currentNodeId;
             $payload['replay_origin'] = $replayOrigin;
-            $payload['confirmation_evidence'] = $this->resolveConfirmationEvidence($record, $replayOrigin);
+            $payload['confirmation_evidence'] = $this->resolveConfirmationEvidence(
+                $record,
+                $replayOrigin,
+                $remoteReplayAttestationMaxAgeSeconds,
+            );
             $payload['evidence_trust_level'] = $payload['confirmation_evidence']['trust_level'] ?? null;
 
             $output->writeln((string) json_encode(
@@ -247,7 +273,11 @@ final class DbIdempotencyCommand extends Command
         ));
         if ($record->confirmation !== []) {
             $replayReproducibility = $this->resolveReplayReproducibility($record->confirmation);
-            $confirmationEvidence = $this->resolveConfirmationEvidence($record, $replayOrigin);
+            $confirmationEvidence = $this->resolveConfirmationEvidence(
+                $record,
+                $replayOrigin,
+                $remoteReplayAttestationMaxAgeSeconds,
+            );
             $output->writeln(sprintf(
                 'Confirmation: kind=%s affected_rows=%d rows_read=%d outcome=%s confirmed_at=%s',
                 (string) ($record->confirmation['kind'] ?? 'n/a'),
@@ -276,8 +306,12 @@ final class DbIdempotencyCommand extends Command
                 (string) ($confirmationEvidence['recomputed_confirmation_fingerprint'] ?? 'n/a'),
             ));
             $output->writeln(sprintf(
-                'Replay attestation: status=%s mode=%s attested_by=%s attested_at=%s fingerprint=%s recomputed_fingerprint=%s',
+                'Replay attestation: status=%s freshness=%s age_seconds=%s mode=%s attested_by=%s attested_at=%s fingerprint=%s recomputed_fingerprint=%s',
                 (string) ($confirmationEvidence['attestation_verification_status'] ?? 'n/a'),
+                (string) ($confirmationEvidence['attestation_freshness_status'] ?? 'n/a'),
+                isset($confirmationEvidence['attestation_age_seconds']) && $confirmationEvidence['attestation_age_seconds'] !== null
+                    ? (string) $confirmationEvidence['attestation_age_seconds']
+                    : 'n/a',
                 (string) ($confirmationEvidence['attestation_mode'] ?? 'n/a'),
                 (string) ($confirmationEvidence['attested_by_node_id'] ?? 'n/a'),
                 (string) ($confirmationEvidence['attested_at'] ?? 'n/a'),
@@ -295,6 +329,15 @@ final class DbIdempotencyCommand extends Command
             $verificationWarning = $this->resolveConfirmationVerificationWarning($confirmationEvidence);
             if ($verificationWarning !== null) {
                 $output->writeln(sprintf('Evidence warning: %s', $verificationWarning));
+            }
+            $attestationWarning = $this->resolveRemoteReplayAttestationWarning(
+                $confirmationEvidence,
+                $replayOrigin,
+                $remoteReplayAttestationMode,
+                $remoteReplayAttestationMaxAgeSeconds,
+            );
+            if ($attestationWarning !== null) {
+                $output->writeln(sprintf('Attestation warning: %s', $attestationWarning));
             }
             $resultSummary = $this->normalizeResultSummary($record->confirmation);
             if ($resultSummary !== []) {
@@ -370,8 +413,11 @@ final class DbIdempotencyCommand extends Command
     /**
      * @return array<string, mixed>
      */
-    private function resolveConfirmationEvidence(DatabaseIdempotencyRecord $record, ?string $replayOrigin = null): array
-    {
+    private function resolveConfirmationEvidence(
+        DatabaseIdempotencyRecord $record,
+        ?string $replayOrigin = null,
+        int $remoteReplayAttestationMaxAgeSeconds = 0,
+    ): array {
         $confirmation = $record->confirmation;
         $sourceNodeId = isset($confirmation['source_node_id']) && is_string($confirmation['source_node_id']) && trim($confirmation['source_node_id']) !== ''
             ? trim($confirmation['source_node_id'])
@@ -391,7 +437,12 @@ final class DbIdempotencyCommand extends Command
                 'attestation_fingerprint' => isset($confirmation['attestation_fingerprint']) ? (string) $confirmation['attestation_fingerprint'] : null,
             ];
 
-            return $this->verifyConfirmationEvidence($record, $payload, $replayOrigin);
+            return $this->verifyConfirmationEvidence(
+                $record,
+                $payload,
+                $replayOrigin,
+                $remoteReplayAttestationMaxAgeSeconds,
+            );
         }
 
         return $this->verifyConfirmationEvidence($record, [
@@ -420,15 +471,19 @@ final class DbIdempotencyCommand extends Command
             'attested_by_node_id' => null,
             'attested_at' => null,
             'attestation_fingerprint' => null,
-        ], $replayOrigin);
+        ], $replayOrigin, $remoteReplayAttestationMaxAgeSeconds);
     }
 
     /**
      * @param array<string, mixed> $evidence
      * @return array<string, mixed>
      */
-    private function verifyConfirmationEvidence(DatabaseIdempotencyRecord $record, array $evidence, ?string $replayOrigin = null): array
-    {
+    private function verifyConfirmationEvidence(
+        DatabaseIdempotencyRecord $record,
+        array $evidence,
+        ?string $replayOrigin = null,
+        int $remoteReplayAttestationMaxAgeSeconds = 0,
+    ): array {
         $recomputedFingerprint = $this->computeConfirmationEvidenceFingerprint(
             $record,
             $evidence['source_node_id'] ?? $record->nodeId,
@@ -441,6 +496,12 @@ final class DbIdempotencyCommand extends Command
                 ? 'verified_persisted_evidence'
                 : 'mismatch_persisted_evidence';
             $attestation = $this->verifyConfirmationAttestation($record, $evidence);
+            $freshness = $this->resolveAttestationFreshness(
+                $evidence,
+                $attestation['attestation_verification_status'],
+                $replayOrigin ?? $this->resolveNodePerspective($record->nodeId, null),
+                $remoteReplayAttestationMaxAgeSeconds,
+            );
 
             return array_merge($evidence, [
                 'verification_status' => $verificationStatus,
@@ -452,6 +513,8 @@ final class DbIdempotencyCommand extends Command
                 ),
                 'attestation_verification_status' => $attestation['attestation_verification_status'],
                 'recomputed_attestation_fingerprint' => $attestation['recomputed_attestation_fingerprint'],
+                'attestation_freshness_status' => $freshness['attestation_freshness_status'],
+                'attestation_age_seconds' => $freshness['attestation_age_seconds'],
             ]);
         }
 
@@ -465,6 +528,8 @@ final class DbIdempotencyCommand extends Command
             ),
             'attestation_verification_status' => 'not_attested_legacy',
             'recomputed_attestation_fingerprint' => null,
+            'attestation_freshness_status' => 'not_applicable',
+            'attestation_age_seconds' => null,
         ]);
     }
 
@@ -544,6 +609,60 @@ final class DbIdempotencyCommand extends Command
     }
 
     /**
+     * @param array<string, mixed> $evidence
+     * @return array{attestation_freshness_status:string,attestation_age_seconds:?int}
+     */
+    private function resolveAttestationFreshness(
+        array $evidence,
+        string $attestationVerificationStatus,
+        string $replayOrigin,
+        int $remoteReplayAttestationMaxAgeSeconds,
+    ): array {
+        if (
+            $replayOrigin !== 'federated_remote_node'
+            || $attestationVerificationStatus !== 'verified_source_node_attestation'
+        ) {
+            return [
+                'attestation_freshness_status' => 'not_applicable',
+                'attestation_age_seconds' => null,
+            ];
+        }
+
+        $attestedAt = isset($evidence['attested_at']) ? trim((string) $evidence['attested_at']) : '';
+        if ($attestedAt === '') {
+            return [
+                'attestation_freshness_status' => 'unknown_attestation_age',
+                'attestation_age_seconds' => null,
+            ];
+        }
+
+        try {
+            $attestedAtDate = new \DateTimeImmutable($attestedAt);
+            $reference = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+            $ageSeconds = max(0, $reference->getTimestamp() - $attestedAtDate->getTimestamp());
+        } catch (\Throwable) {
+            return [
+                'attestation_freshness_status' => 'unknown_attestation_age',
+                'attestation_age_seconds' => null,
+            ];
+        }
+
+        if ($remoteReplayAttestationMaxAgeSeconds <= 0) {
+            return [
+                'attestation_freshness_status' => 'fresh_verified_attestation',
+                'attestation_age_seconds' => $ageSeconds,
+            ];
+        }
+
+        return [
+            'attestation_freshness_status' => $ageSeconds <= $remoteReplayAttestationMaxAgeSeconds
+                ? 'fresh_verified_attestation'
+                : 'stale_verified_attestation',
+            'attestation_age_seconds' => $ageSeconds,
+        ];
+    }
+
+    /**
      * @param array<string, mixed> $confirmationEvidence
      */
     private function resolveConfirmationVerificationWarning(array $confirmationEvidence): ?string
@@ -551,6 +670,37 @@ final class DbIdempotencyCommand extends Command
         return ($confirmationEvidence['verification_status'] ?? null) === 'mismatch_persisted_evidence'
             ? 'persisted confirmation fingerprint does not match the recomputed evidence payload; inspect for drift or tampering.'
             : null;
+    }
+
+    /**
+     * @param array<string, mixed> $confirmationEvidence
+     */
+    private function resolveRemoteReplayAttestationWarning(
+        array $confirmationEvidence,
+        string $replayOrigin,
+        string $remoteReplayAttestationMode,
+        int $remoteReplayAttestationMaxAgeSeconds,
+    ): ?string {
+        if (
+            $replayOrigin !== 'federated_remote_node'
+            || $remoteReplayAttestationMode !== 'warn'
+            || ($confirmationEvidence['verification_status'] ?? null) !== 'verified_persisted_evidence'
+        ) {
+            return null;
+        }
+
+        if (($confirmationEvidence['attestation_verification_status'] ?? null) !== 'verified_source_node_attestation') {
+            return 'remote confirmation is persisted and consistent but lacks verified source node attestation; review before enforcing remote_replay_attestation_mode=require.';
+        }
+
+        if (($confirmationEvidence['attestation_freshness_status'] ?? null) !== 'stale_verified_attestation') {
+            return null;
+        }
+
+        return sprintf(
+            'remote confirmation uses verified source node attestation older than the configured max age (%d seconds).',
+            $remoteReplayAttestationMaxAgeSeconds,
+        );
     }
 
     /**

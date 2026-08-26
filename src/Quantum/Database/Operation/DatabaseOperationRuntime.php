@@ -159,10 +159,14 @@ final class DatabaseOperationRuntime
                 $confirmedAffectedRows = max(0, (int) ($existing->confirmation['affected_rows'] ?? 0));
                 $replayResultSummary = $this->normalizeIdempotencyResultSummary($existing->confirmation);
                 $replayReproducibility = $this->resolveReplayReproducibility($existing->confirmation);
+                $currentNodeId = $this->resolveIdempotencyNodeId();
+                $replayOrigin = $this->resolveReplayOrigin($existing->nodeId, $currentNodeId);
                 $legacyReplayWarning = $this->buildLegacyReplayWarning(
                     $existing,
                     $replayReproducibility,
                     $plan->policy->legacyReplayMode,
+                    $currentNodeId,
+                    $replayOrigin,
                 );
                 if (
                     $replayReproducibility === 'legacy_reconstructed'
@@ -183,6 +187,8 @@ final class DatabaseOperationRuntime
                                 'reason' => 'idempotency_guard_legacy_replay_blocked',
                                 'status' => $existing->status,
                                 'node_id' => $existing->nodeId,
+                                'current_node_id' => $currentNodeId,
+                                'replay_origin' => $replayOrigin,
                                 'legacy_replay_mode' => $plan->policy->legacyReplayMode,
                                 'replay_reproducibility' => $replayReproducibility,
                             ]),
@@ -222,10 +228,12 @@ final class DatabaseOperationRuntime
                                 'reason' => 'idempotency_guard_replayed_confirmed',
                                 'status' => $existing->status,
                                 'node_id' => $existing->nodeId,
+                                'current_node_id' => $currentNodeId,
                                 'confirmed_at' => $existing->confirmation['confirmed_at'] ?? null,
                                 'affected_rows' => $confirmedAffectedRows,
                                 'replay_reproducibility' => $replayReproducibility,
                                 'legacy_replay_mode' => $plan->policy->legacyReplayMode,
+                                'replay_origin' => $replayOrigin,
                             ]),
                         ],
                     ),
@@ -247,6 +255,9 @@ final class DatabaseOperationRuntime
                             'result_summary' => $replayResultSummary,
                             'replay_reproducibility' => $replayReproducibility,
                             'legacy_replay_mode' => $plan->policy->legacyReplayMode,
+                            'current_node_id' => $currentNodeId,
+                            'source_node_id' => $existing->nodeId,
+                            'replay_origin' => $replayOrigin,
                             'warning' => $legacyReplayWarning,
                         ],
                     ],
@@ -973,6 +984,8 @@ final class DatabaseOperationRuntime
         DatabaseIdempotencyRecord $record,
         string $replayReproducibility,
         string $legacyReplayMode,
+        ?string $currentNodeId,
+        string $replayOrigin,
     ): ?array {
         if ($replayReproducibility !== 'legacy_reconstructed' || $legacyReplayMode !== 'warn') {
             return null;
@@ -983,9 +996,25 @@ final class DatabaseOperationRuntime
             'message' => 'Database idempotency replay used a legacy confirmation reconstructed without persisted result_summary.',
             'status' => $record->status,
             'node_id' => $record->nodeId,
+            'current_node_id' => $currentNodeId,
             'confirmed_at' => $record->confirmation['confirmed_at'] ?? null,
             'replay_reproducibility' => $replayReproducibility,
             'legacy_replay_mode' => $legacyReplayMode,
+            'replay_origin' => $replayOrigin,
         ];
+    }
+
+    private function resolveReplayOrigin(?string $sourceNodeId, ?string $currentNodeId): string
+    {
+        $source = is_string($sourceNodeId) ? trim($sourceNodeId) : '';
+        $current = is_string($currentNodeId) ? trim($currentNodeId) : '';
+
+        if ($source === '' || $current === '') {
+            return 'unknown_node';
+        }
+
+        return $source === $current
+            ? 'local_node'
+            : 'federated_remote_node';
     }
 }

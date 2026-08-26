@@ -165,6 +165,7 @@ final class DatabaseOperationRuntimeTest extends TestCase
         $runtime = new DatabaseOperationRuntime(
             new DatabaseCircuitBreaker(),
             idempotencyStore: $store,
+            idempotencyNodeId: 'node-b',
         );
         $context = DatabaseContext::empty()->withConnection($connection);
         $policy = new DatabaseExecutionPolicy(
@@ -222,6 +223,7 @@ final class DatabaseOperationRuntimeTest extends TestCase
         $runtime = new DatabaseOperationRuntime(
             new DatabaseCircuitBreaker(),
             idempotencyStore: $store,
+            idempotencyNodeId: 'node-b',
         );
         $context = DatabaseContext::empty()->withConnection($connection);
         $policy = new DatabaseExecutionPolicy(
@@ -304,6 +306,7 @@ final class DatabaseOperationRuntimeTest extends TestCase
         $runtime = new DatabaseOperationRuntime(
             new DatabaseCircuitBreaker(),
             idempotencyStore: $store,
+            idempotencyNodeId: 'node-b',
         );
         $context = DatabaseContext::empty()->withConnection($connection);
         $policy = new DatabaseExecutionPolicy(
@@ -370,6 +373,7 @@ final class DatabaseOperationRuntimeTest extends TestCase
         $runtime = new DatabaseOperationRuntime(
             new DatabaseCircuitBreaker(),
             idempotencyStore: $store,
+            idempotencyNodeId: 'node-b',
         );
         $context = DatabaseContext::empty()->withConnection($connection);
         $policy = new DatabaseExecutionPolicy(
@@ -419,9 +423,21 @@ final class DatabaseOperationRuntimeTest extends TestCase
         self::assertSame('completed', $result->debug['idempotency']['record']['status'] ?? null);
         self::assertSame('completed', $result->debug['idempotency']['confirmation']['outcome'] ?? null);
         self::assertSame('legacy_reconstructed', $result->debug['idempotency']['replay_reproducibility'] ?? null);
+        self::assertSame('node-b', $result->debug['idempotency']['current_node_id'] ?? null);
+        self::assertSame('node-a', $result->debug['idempotency']['source_node_id'] ?? null);
+        self::assertSame('federated_remote_node', $result->debug['idempotency']['replay_origin'] ?? null);
         self::assertSame('success_no_rows', $result->debug['idempotency']['result_summary']['result_type'] ?? null);
         self::assertSame(1, $result->debug['idempotency']['result_summary']['affected_rows'] ?? null);
         self::assertSame(1, $result->debug['diagnostic']->affectedRows ?? null);
+        $completedEvents = array_values(array_filter(
+            $result->debug['diagnostic']->events ?? [],
+            static fn ($event): bool => is_object($event)
+                && isset($event->details)
+                && is_array($event->details)
+                && (($event->details['reason'] ?? null) === 'idempotency_guard_replayed_confirmed'),
+        ));
+        self::assertNotEmpty($completedEvents);
+        self::assertSame('federated_remote_node', $completedEvents[0]->details['replay_origin'] ?? null);
     }
 
     public function test_runtime_can_block_legacy_confirmed_replay_when_policy_requires_it(): void
@@ -438,6 +454,7 @@ final class DatabaseOperationRuntimeTest extends TestCase
         $runtime = new DatabaseOperationRuntime(
             new DatabaseCircuitBreaker(),
             idempotencyStore: $store,
+            idempotencyNodeId: 'node-b',
         );
         $context = DatabaseContext::empty()->withConnection($connection);
         $policy = new DatabaseExecutionPolicy(
@@ -510,6 +527,7 @@ final class DatabaseOperationRuntimeTest extends TestCase
         $runtime = new DatabaseOperationRuntime(
             new DatabaseCircuitBreaker(),
             idempotencyStore: $store,
+            idempotencyNodeId: 'node-b',
         );
         $context = DatabaseContext::empty()->withConnection($connection);
         $policy = new DatabaseExecutionPolicy(
@@ -567,6 +585,8 @@ final class DatabaseOperationRuntimeTest extends TestCase
         self::assertIsArray($warning);
         self::assertSame('idempotency_guard_legacy_replay_warning', $warning['reason'] ?? null);
         self::assertSame('warn', $warning['legacy_replay_mode'] ?? null);
+        self::assertSame('federated_remote_node', $warning['replay_origin'] ?? null);
+        self::assertSame('node-b', $warning['current_node_id'] ?? null);
         self::assertContains('idempotency_guard_legacy_replay_warning', $reasons);
         self::assertContains('idempotency_guard_replayed_confirmed', $reasons);
     }

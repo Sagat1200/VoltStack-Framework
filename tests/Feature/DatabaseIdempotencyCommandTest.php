@@ -70,6 +70,10 @@ final class DatabaseIdempotencyCommandTest extends TestCase
         self::assertStringContainsString('Database idempotency: request=req-users-1 status=completed', $result['stdout']);
         self::assertStringContainsString('expires_at=n/a expired=no', $result['stdout']);
         self::assertStringContainsString('Operation: fingerprint=plan-users-1 connection=primary target=users', $result['stdout']);
+        self::assertStringContainsString(
+            'Replay origin: perspective=local_node current_node=VoltStack Idempotency Command Feature Test source_node=VoltStack Idempotency Command Feature Test',
+            $result['stdout']
+        );
         self::assertStringContainsString('Confirmation: kind=raw_execute affected_rows=1 rows_read=0 outcome=completed confirmed_at=2026-08-25T07:00:10+00:00', $result['stdout']);
         self::assertStringContainsString('Replay support: reproducibility=persisted_summary summary_version=1', $result['stdout']);
         self::assertStringContainsString('Result summary: type=success_no_rows is_select=no affected_rows=1 rows_read=0 column_count=0', $result['stdout']);
@@ -81,6 +85,7 @@ final class DatabaseIdempotencyCommandTest extends TestCase
         self::assertStringContainsString('"confirmation"', $lookup['stdout']);
         self::assertStringContainsString('"result_summary"', $lookup['stdout']);
         self::assertStringContainsString('"replay_reproducibility": "persisted_summary"', $lookup['stdout']);
+        self::assertStringContainsString('"replay_origin": "local_node"', $lookup['stdout']);
     }
 
     public function test_cli_idempotency_can_aggregate_recent_records(): void
@@ -166,6 +171,10 @@ final class DatabaseIdempotencyCommandTest extends TestCase
         self::assertStringContainsString('Statuses: pending=1 completed=2 failed=1 expired_pending=1', $result['stdout']);
         self::assertStringContainsString('Confirmations: with_confirmation=2 without_confirmation=2 summary_version_1=1 legacy_without_summary=1', $result['stdout']);
         self::assertStringContainsString('Replay support: persisted_summary=1 legacy_reconstructed=1 warning_candidates=1', $result['stdout']);
+        self::assertStringContainsString(
+            'Perspective: current_node=VoltStack Idempotency Command Feature Test local_records=0 remote_records=4 unknown_records=0',
+            $result['stdout']
+        );
 
         $json = $this->runConsole(['volt', 'db:idempotency', '--aggregate', '--json', '--limit=10']);
         self::assertSame(0, $json['exit']);
@@ -178,6 +187,7 @@ final class DatabaseIdempotencyCommandTest extends TestCase
         self::assertStringContainsString('"persisted_summary": 1', $json['stdout']);
         self::assertStringContainsString('"legacy_reconstructed": 1', $json['stdout']);
         self::assertStringContainsString('"legacy_replay_warning_candidates": 1', $json['stdout']);
+        self::assertStringContainsString('"current_node_id": "VoltStack Idempotency Command Feature Test"', $json['stdout']);
     }
 
     public function test_cli_idempotency_reconstructs_replay_support_for_legacy_confirmation(): void
@@ -207,6 +217,10 @@ final class DatabaseIdempotencyCommandTest extends TestCase
         $result = $this->runConsole(['volt', 'db:idempotency', '--key=mutation-users-legacy']);
 
         self::assertSame(0, $result['exit']);
+        self::assertStringContainsString(
+            'Replay origin: perspective=federated_remote_node current_node=VoltStack Idempotency Command Feature Test source_node=node-legacy',
+            $result['stdout']
+        );
         self::assertStringContainsString('Replay support: reproducibility=legacy_reconstructed summary_version=n/a', $result['stdout']);
         self::assertStringContainsString(
             'Warning: legacy confirmation reconstructed without persisted result_summary; review before enforcing legacy_replay_mode=block.',

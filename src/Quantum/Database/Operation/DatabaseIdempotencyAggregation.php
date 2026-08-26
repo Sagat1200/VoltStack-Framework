@@ -36,6 +36,7 @@ final class DatabaseIdempotencyAggregation
             'summary_version_1' => 0,
             'legacy_without_summary' => 0,
         ];
+        $nodeDetails = [];
 
         foreach ($records as $record) {
             $requests[$record->requestId] = true;
@@ -44,22 +45,58 @@ final class DatabaseIdempotencyAggregation
             if ($record->nodeId !== null && $record->nodeId !== '') {
                 $nodes[$record->nodeId] = true;
             }
+            $nodeKey = $record->nodeId !== null && trim($record->nodeId) !== ''
+                ? $record->nodeId
+                : 'unknown-node';
+
+            if (!isset($nodeDetails[$nodeKey])) {
+                $nodeDetails[$nodeKey] = [
+                    'node_id' => $nodeKey,
+                    'records' => 0,
+                    'statuses' => [
+                        'pending' => 0,
+                        'completed' => 0,
+                        'failed' => 0,
+                    ],
+                    'confirmations' => [
+                        'with_confirmation' => 0,
+                        'without_confirmation' => 0,
+                        'legacy_without_summary' => 0,
+                    ],
+                    'replay_support' => [
+                        'persisted_summary' => 0,
+                        'legacy_reconstructed' => 0,
+                        'unknown' => 0,
+                    ],
+                    'legacy_replay_warning_candidates' => 0,
+                    'latest_created_at' => null,
+                ];
+            }
+
+            $nodeDetails[$nodeKey]['records']++;
 
             if (!array_key_exists($record->status, $statuses)) {
                 $statuses[$record->status] = 0;
             }
             $statuses[$record->status]++;
+            if (!array_key_exists($record->status, $nodeDetails[$nodeKey]['statuses'])) {
+                $nodeDetails[$nodeKey]['statuses'][$record->status] = 0;
+            }
+            $nodeDetails[$nodeKey]['statuses'][$record->status]++;
             if ($record->isExpired()) {
                 $expiredPending++;
             }
             if ($record->confirmation !== []) {
                 $confirmations['with_confirmation']++;
+                $nodeDetails[$nodeKey]['confirmations']['with_confirmation']++;
 
                 $reproducibility = self::resolveReplayReproducibility($record->confirmation);
                 if (!array_key_exists($reproducibility, $replaySupport)) {
                     $replaySupport['unknown']++;
+                    $nodeDetails[$nodeKey]['replay_support']['unknown']++;
                 } else {
                     $replaySupport[$reproducibility]++;
+                    $nodeDetails[$nodeKey]['replay_support'][$reproducibility]++;
                 }
 
                 if (isset($record->confirmation['summary_version']) && (int) $record->confirmation['summary_version'] === 1) {
@@ -69,9 +106,12 @@ final class DatabaseIdempotencyAggregation
                 if ($reproducibility === 'legacy_reconstructed') {
                     $legacyReplayWarningCandidates++;
                     $confirmations['legacy_without_summary']++;
+                    $nodeDetails[$nodeKey]['confirmations']['legacy_without_summary']++;
+                    $nodeDetails[$nodeKey]['legacy_replay_warning_candidates']++;
                 }
             } else {
                 $confirmations['without_confirmation']++;
+                $nodeDetails[$nodeKey]['confirmations']['without_confirmation']++;
             }
 
             if ($oldestAt === null || strcmp($record->createdAt, $oldestAt) < 0) {
@@ -80,7 +120,15 @@ final class DatabaseIdempotencyAggregation
             if ($latestAt === null || strcmp($record->createdAt, $latestAt) > 0) {
                 $latestAt = $record->createdAt;
             }
+            if (
+                $nodeDetails[$nodeKey]['latest_created_at'] === null
+                || strcmp($record->createdAt, (string) $nodeDetails[$nodeKey]['latest_created_at']) > 0
+            ) {
+                $nodeDetails[$nodeKey]['latest_created_at'] = $record->createdAt;
+            }
         }
+
+        ksort($nodeDetails);
 
         return [
             'records' => count($records),
@@ -95,6 +143,7 @@ final class DatabaseIdempotencyAggregation
             'confirmations' => $confirmations,
             'replay_support' => $replaySupport,
             'legacy_replay_warning_candidates' => $legacyReplayWarningCandidates,
+            'nodes_detail' => array_values($nodeDetails),
         ];
     }
 

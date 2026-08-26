@@ -49,6 +49,7 @@ final class DbIdempotencyCommand extends Command
         try {
             /** @var DatabaseIdempotencyStoreInterface $store */
             $store = $app->make(DatabaseIdempotencyStoreInterface::class);
+            $currentNodeId = $this->resolveCurrentNodeId($app);
             $limit = $this->resolvePositiveIntOption($input, 'limit') ?? 50;
 
             $lookupKey = $this->resolveLookupKeyHash($input);
@@ -60,11 +61,13 @@ final class DbIdempotencyCommand extends Command
                     return 0;
                 }
 
-                return $this->renderRecord($record, $input, $output);
+                return $this->renderRecord($record, $currentNodeId, $input, $output);
             }
 
             if ($input->hasOption('aggregate')) {
                 $aggregate = $store->aggregate($limit);
+                $aggregate['current_node_id'] = $currentNodeId;
+                $aggregate['node_perspective'] = $this->buildAggregateNodePerspective($aggregate, $currentNodeId);
 
                 if ($input->hasOption('json')) {
                     $output->writeln((string) json_encode(
@@ -77,6 +80,8 @@ final class DbIdempotencyCommand extends Command
                 $statuses = is_array($aggregate['statuses'] ?? null) ? $aggregate['statuses'] : [];
                 $confirmations = is_array($aggregate['confirmations'] ?? null) ? $aggregate['confirmations'] : [];
                 $replaySupport = is_array($aggregate['replay_support'] ?? null) ? $aggregate['replay_support'] : [];
+                $nodesDetail = is_array($aggregate['nodes_detail'] ?? null) ? $aggregate['nodes_detail'] : [];
+                $nodePerspective = is_array($aggregate['node_perspective'] ?? null) ? $aggregate['node_perspective'] : [];
                 $output->writeln(sprintf(
                     'Database idempotency aggregate: records=%d requests=%d connections=%d targets=%d nodes=%d window=%s..%s',
                     (int) ($aggregate['records'] ?? 0),
@@ -107,6 +112,38 @@ final class DbIdempotencyCommand extends Command
                     (int) ($replaySupport['legacy_reconstructed'] ?? 0),
                     (int) ($aggregate['legacy_replay_warning_candidates'] ?? 0),
                 ));
+                $output->writeln(sprintf(
+                    'Perspective: current_node=%s local_records=%d remote_records=%d unknown_records=%d',
+                    $currentNodeId ?? 'n/a',
+                    (int) ($nodePerspective['local_records'] ?? 0),
+                    (int) ($nodePerspective['remote_records'] ?? 0),
+                    (int) ($nodePerspective['unknown_records'] ?? 0),
+                ));
+                foreach ($nodesDetail as $node) {
+                    if (!is_array($node)) {
+                        continue;
+                    }
+
+                    $nodeStatuses = is_array($node['statuses'] ?? null) ? $node['statuses'] : [];
+                    $nodeReplaySupport = is_array($node['replay_support'] ?? null) ? $node['replay_support'] : [];
+                    $nodePerspectiveKind = $this->resolveNodePerspective(
+                        isset($node['node_id']) ? (string) $node['node_id'] : null,
+                        $currentNodeId,
+                    );
+                    $output->writeln(sprintf(
+                        'Node: %s perspective=%s records=%d completed=%d failed=%d pending=%d persisted_summary=%d legacy_reconstructed=%d warning_candidates=%d latest_created_at=%s',
+                        (string) ($node['node_id'] ?? 'unknown-node'),
+                        $nodePerspectiveKind,
+                        (int) ($node['records'] ?? 0),
+                        (int) ($nodeStatuses['completed'] ?? 0),
+                        (int) ($nodeStatuses['failed'] ?? 0),
+                        (int) ($nodeStatuses['pending'] ?? 0),
+                        (int) ($nodeReplaySupport['persisted_summary'] ?? 0),
+                        (int) ($nodeReplaySupport['legacy_reconstructed'] ?? 0),
+                        (int) ($node['legacy_replay_warning_candidates'] ?? 0),
+                        (string) ($node['latest_created_at'] ?? 'n/a'),
+                    ));
+                }
 
                 return 0;
             }
@@ -117,18 +154,23 @@ final class DbIdempotencyCommand extends Command
                 return 0;
             }
 
-            return $this->renderRecord($record, $input, $output);
+            return $this->renderRecord($record, $currentNodeId, $input, $output);
         } catch (\Throwable $e) {
             $output->error(sprintf('db:idempotency failed: %s', $e->getMessage()));
             return 1;
         }
     }
 
-    private function renderRecord(DatabaseIdempotencyRecord $record, Input $input, Output $output): int
+    private function renderRecord(DatabaseIdempotencyRecord $record, ?string $currentNodeId, Input $input, Output $output): int
     {
+        $replayOrigin = $this->resolveNodePerspective($record->nodeId, $currentNodeId);
         if ($input->hasOption('json')) {
+            $payload = $record->toArray();
+            $payload['current_node_id'] = $currentNodeId;
+            $payload['replay_origin'] = $replayOrigin;
+
             $output->writeln((string) json_encode(
-                $record->toArray(),
+                $payload,
                 JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
             ));
             return 0;
@@ -151,6 +193,12 @@ final class DbIdempotencyCommand extends Command
             $record->operationFingerprint,
             $record->connectionName,
             $record->logicalTarget,
+            $record->nodeId ?? 'n/a',
+        ));
+        $output->writeln(sprintf(
+            'Replay origin: perspective=%s current_node=%s source_node=%s',
+            $replayOrigin,
+            $currentNodeId ?? 'n/a',
             $record->nodeId ?? 'n/a',
         ));
         if ($record->confirmation !== []) {
@@ -210,6 +258,40 @@ final class DbIdempotencyCommand extends Command
     }
 
     /**
+     * @param array<string, mixed> $aggregate
+     * @return array<string, int>
+     */
+    private function buildAggregateNodePerspective(array $aggregate, ?string $currentNodeId): array
+    {
+        $summary = [
+            'local_records' => 0,
+            'remote_records' => 0,
+            'unknown_records' => 0,
+        ];
+        $nodesDetail = is_array($aggregate['nodes_detail'] ?? null) ? $aggregate['nodes_detail'] : [];
+
+        foreach ($nodesDetail as $node) {
+            if (!is_array($node)) {
+                continue;
+            }
+
+            $records = max(0, (int) ($node['records'] ?? 0));
+            $perspective = $this->resolveNodePerspective(
+                isset($node['node_id']) ? (string) $node['node_id'] : null,
+                $currentNodeId,
+            );
+
+            match ($perspective) {
+                'local_node' => $summary['local_records'] += $records,
+                'federated_remote_node' => $summary['remote_records'] += $records,
+                default => $summary['unknown_records'] += $records,
+            };
+        }
+
+        return $summary;
+    }
+
+    /**
      * @param array<string, mixed> $confirmation
      * @return array<string, mixed>
      */
@@ -258,5 +340,34 @@ final class DbIdempotencyCommand extends Command
         }
 
         return 'legacy confirmation reconstructed without persisted result_summary; review before enforcing legacy_replay_mode=block.';
+    }
+
+    private function resolveCurrentNodeId(object $app): ?string
+    {
+        if (!method_exists($app, 'config')) {
+            return null;
+        }
+
+        $value = (string) $app->config(
+            'database.idempotency.node_id',
+            (string) $app->config('database.health.node_id', (string) $app->config('app.name', 'app')),
+        );
+        $value = trim($value);
+
+        return $value !== '' ? $value : null;
+    }
+
+    private function resolveNodePerspective(?string $sourceNodeId, ?string $currentNodeId): string
+    {
+        $source = is_string($sourceNodeId) ? trim($sourceNodeId) : '';
+        $current = is_string($currentNodeId) ? trim($currentNodeId) : '';
+
+        if ($source === '' || $current === '') {
+            return 'unknown_node';
+        }
+
+        return $source === $current
+            ? 'local_node'
+            : 'federated_remote_node';
     }
 }

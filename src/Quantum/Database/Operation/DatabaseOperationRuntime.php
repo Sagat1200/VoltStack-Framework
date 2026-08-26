@@ -11,6 +11,7 @@ use Quantum\Database\Dbal\Exception\DbalException;
 use Quantum\Database\Dbal\Value\QueryResult;
 use Quantum\Database\Operation\Contracts\DatabaseHealthStoreInterface;
 use Quantum\Database\Operation\Contracts\DatabaseIdempotencyStoreInterface;
+use Quantum\Database\Operation\Contracts\DatabaseRemoteReplayValidatorInterface;
 use Quantum\Database\Trace\DatabaseDeadline;
 
 final class DatabaseOperationRuntime
@@ -20,6 +21,7 @@ final class DatabaseOperationRuntime
         private readonly DatabaseTelemetryStore|\Closure|null $telemetry = null,
         private readonly DatabaseHealthStoreInterface|\Closure|null $healthStore = null,
         private readonly DatabaseIdempotencyStoreInterface|\Closure|null $idempotencyStore = null,
+        private readonly DatabaseRemoteReplayValidatorInterface|\Closure|null $remoteReplayValidator = null,
         private readonly string|\Closure|null $idempotencyNodeId = null,
     ) {}
 
@@ -180,6 +182,13 @@ final class DatabaseOperationRuntime
                     $replayOrigin,
                     $plan->policy->remoteReplayAttestationMode,
                     $plan->policy->remoteReplayAttestationMaxAgeSeconds,
+                    $evidenceVerification,
+                );
+                $remoteReplayValidation = $this->validateRemoteReplay(
+                    $existing,
+                    $plan,
+                    $currentNodeId,
+                    $replayOrigin,
                     $evidenceVerification,
                 );
                 $legacyReplayWarning = $this->buildLegacyReplayWarning(
@@ -360,6 +369,88 @@ final class DatabaseOperationRuntime
                         ),
                     );
                 }
+                if (($remoteReplayValidation->status ?? null) === 'remote_validation_rejected') {
+                    $snapshot = $this->snapshot(
+                        plan: $plan,
+                        attempts: 0,
+                        durationMs: 0,
+                        rowsRead: 0,
+                        affectedRows: 0,
+                        outcome: 'cancelled',
+                        failure: DatabaseOperationalFailure::VerificationFailed,
+                        retryable: false,
+                        circuitState: $this->circuitBreaker->currentState($plan->circuitSegment),
+                        events: array_merge($events, [
+                            new DatabaseDiagnosticEvent('cancelled', $this->timestampNow(), array_merge([
+                                'reason' => 'idempotency_guard_remote_replay_validation_rejected',
+                                'status' => $existing->status,
+                                'node_id' => $existing->nodeId,
+                                'current_node_id' => $currentNodeId,
+                                'replay_origin' => $replayOrigin,
+                                'remote_replay_validation_mode' => $plan->policy->remoteReplayValidationMode,
+                                'remote_validation_status' => $remoteReplayValidation->status,
+                                'remote_validation_validator' => $remoteReplayValidation->validator,
+                                'remote_validation_message' => $remoteReplayValidation->message,
+                                'evidence_trust_level' => $evidenceTrustLevel,
+                            ], $remoteReplayValidation->details)),
+                        ]),
+                    );
+                    $this->recordTelemetry($plan, $snapshot);
+
+                    throw new DatabaseOperationException(
+                        failure: DatabaseOperationalFailure::VerificationFailed,
+                        snapshot: $snapshot,
+                        plan: $plan,
+                        message: sprintf(
+                            'Database idempotency replay blocked for [%s] because active remote replay validation rejected the replay.',
+                            $plan->operation->kind->value,
+                        ),
+                    );
+                }
+                if (
+                    $replayOrigin === 'federated_remote_node'
+                    && ($evidenceVerification['verification_status'] ?? null) === 'verified_persisted_evidence'
+                    && $plan->policy->remoteReplayValidationMode === 'require'
+                    && $remoteReplayValidation->status !== 'verified_remote_validation'
+                ) {
+                    $snapshot = $this->snapshot(
+                        plan: $plan,
+                        attempts: 0,
+                        durationMs: 0,
+                        rowsRead: 0,
+                        affectedRows: 0,
+                        outcome: 'cancelled',
+                        failure: DatabaseOperationalFailure::VerificationFailed,
+                        retryable: false,
+                        circuitState: $this->circuitBreaker->currentState($plan->circuitSegment),
+                        events: array_merge($events, [
+                            new DatabaseDiagnosticEvent('cancelled', $this->timestampNow(), array_merge([
+                                'reason' => 'idempotency_guard_remote_replay_validation_required',
+                                'status' => $existing->status,
+                                'node_id' => $existing->nodeId,
+                                'current_node_id' => $currentNodeId,
+                                'replay_origin' => $replayOrigin,
+                                'remote_replay_validation_mode' => $plan->policy->remoteReplayValidationMode,
+                                'remote_validation_status' => $remoteReplayValidation->status,
+                                'remote_validation_validator' => $remoteReplayValidation->validator,
+                                'remote_validation_message' => $remoteReplayValidation->message,
+                                'evidence_trust_level' => $evidenceTrustLevel,
+                            ], $remoteReplayValidation->details)),
+                        ]),
+                    );
+                    $this->recordTelemetry($plan, $snapshot);
+
+                    throw new DatabaseOperationException(
+                        failure: DatabaseOperationalFailure::VerificationFailed,
+                        snapshot: $snapshot,
+                        plan: $plan,
+                        message: sprintf(
+                            'Database idempotency replay blocked for [%s] because remote replay validation mode [%s] requires active validation success.',
+                            $plan->operation->kind->value,
+                            $plan->policy->remoteReplayValidationMode,
+                        ),
+                    );
+                }
                 if (
                     $replayReproducibility === 'legacy_reconstructed'
                     && $plan->policy->legacyReplayMode === 'block'
@@ -417,6 +508,14 @@ final class DatabaseOperationRuntime
                     circuitState: $this->circuitBreaker->currentState($plan->circuitSegment),
                     events: array_merge(
                         $events,
+                        $this->buildRemoteReplayValidationWarningEvent(
+                            $plan,
+                            $remoteReplayValidation,
+                            $existing,
+                            $currentNodeId,
+                            $replayOrigin,
+                            $evidenceTrustLevel,
+                        ),
                         $remoteReplayAttestationWarning !== null
                             ? [new DatabaseDiagnosticEvent('warning', $this->timestampNow(), $remoteReplayAttestationWarning)]
                             : [],
@@ -435,6 +534,7 @@ final class DatabaseOperationRuntime
                                 'legacy_replay_mode' => $plan->policy->legacyReplayMode,
                                 'remote_replay_attestation_mode' => $plan->policy->remoteReplayAttestationMode,
                                 'remote_replay_attestation_max_age_seconds' => $plan->policy->remoteReplayAttestationMaxAgeSeconds,
+                                'remote_replay_validation_mode' => $plan->policy->remoteReplayValidationMode,
                                 'replay_origin' => $replayOrigin,
                                 'confirmation_fingerprint' => $evidenceVerification['confirmation_fingerprint'] ?? null,
                                 'confirmation_evidence_mode' => $evidenceVerification['evidence_mode'] ?? null,
@@ -442,6 +542,8 @@ final class DatabaseOperationRuntime
                                 'attestation_verification_status' => $evidenceVerification['attestation_verification_status'] ?? null,
                                 'attestation_freshness_status' => $evidenceVerification['attestation_freshness_status'] ?? null,
                                 'attestation_age_seconds' => $evidenceVerification['attestation_age_seconds'] ?? null,
+                                'remote_validation_status' => $remoteReplayValidation->status,
+                                'remote_validation_validator' => $remoteReplayValidation->validator,
                                 'evidence_trust_level' => $evidenceTrustLevel,
                             ]),
                         ],
@@ -466,10 +568,12 @@ final class DatabaseOperationRuntime
                             'legacy_replay_mode' => $plan->policy->legacyReplayMode,
                             'remote_replay_attestation_mode' => $plan->policy->remoteReplayAttestationMode,
                             'remote_replay_attestation_max_age_seconds' => $plan->policy->remoteReplayAttestationMaxAgeSeconds,
+                            'remote_replay_validation_mode' => $plan->policy->remoteReplayValidationMode,
                             'current_node_id' => $currentNodeId,
                             'source_node_id' => $existing->nodeId,
                             'replay_origin' => $replayOrigin,
                             'confirmation_evidence' => $evidenceVerification,
+                            'remote_validation' => $remoteReplayValidation->toArray(),
                             'evidence_trust_level' => $evidenceTrustLevel,
                             'attestation_warning' => $remoteReplayAttestationWarning,
                             'warning' => $legacyReplayWarning,
@@ -1048,6 +1152,21 @@ final class DatabaseOperationRuntime
         return null;
     }
 
+    private function resolveRemoteReplayValidator(): ?DatabaseRemoteReplayValidatorInterface
+    {
+        if ($this->remoteReplayValidator instanceof DatabaseRemoteReplayValidatorInterface) {
+            return $this->remoteReplayValidator;
+        }
+
+        if ($this->remoteReplayValidator instanceof \Closure) {
+            $resolved = ($this->remoteReplayValidator)();
+
+            return $resolved instanceof DatabaseRemoteReplayValidatorInterface ? $resolved : null;
+        }
+
+        return null;
+    }
+
     private function isReadOnlyOperation(OperationKind $kind): bool
     {
         return match ($kind) {
@@ -1234,6 +1353,72 @@ final class DatabaseOperationRuntime
             'verification_status' => $confirmationEvidence['verification_status'] ?? null,
             'attestation_verification_status' => $confirmationEvidence['attestation_verification_status'] ?? null,
             'evidence_trust_level' => $confirmationEvidence['trust_level'] ?? null,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $confirmationEvidence
+     */
+    private function validateRemoteReplay(
+        DatabaseIdempotencyRecord $record,
+        DatabaseOperationPlan $plan,
+        ?string $currentNodeId,
+        string $replayOrigin,
+        array $confirmationEvidence,
+    ): DatabaseRemoteReplayValidationResult {
+        if (
+            $replayOrigin !== 'federated_remote_node'
+            || ($confirmationEvidence['verification_status'] ?? null) !== 'verified_persisted_evidence'
+        ) {
+            return DatabaseRemoteReplayValidationResult::verified(
+                validator: 'not_applicable',
+                message: 'Active remote replay validation is not required for this replay origin or evidence state.',
+            );
+        }
+
+        $validator = $this->resolveRemoteReplayValidator();
+        if (!$validator instanceof DatabaseRemoteReplayValidatorInterface) {
+            return DatabaseRemoteReplayValidationResult::unavailable(
+                validator: 'missing_remote_replay_validator',
+                message: 'Active remote replay validation service is not available.',
+            );
+        }
+
+        return $validator->validate($record, $plan, $currentNodeId, $confirmationEvidence);
+    }
+
+    /**
+     * @return list<DatabaseDiagnosticEvent>
+     */
+    private function buildRemoteReplayValidationWarningEvent(
+        DatabaseOperationPlan $plan,
+        DatabaseRemoteReplayValidationResult $validation,
+        DatabaseIdempotencyRecord $record,
+        ?string $currentNodeId,
+        string $replayOrigin,
+        string $evidenceTrustLevel,
+    ): array {
+        if (
+            $plan->policy->remoteReplayValidationMode !== 'warn'
+            || $replayOrigin !== 'federated_remote_node'
+            || $validation->status === 'verified_remote_validation'
+        ) {
+            return [];
+        }
+
+        return [
+            new DatabaseDiagnosticEvent('warning', $this->timestampNow(), array_merge([
+                'reason' => 'idempotency_guard_remote_replay_validation_warning',
+                'status' => $record->status,
+                'node_id' => $record->nodeId,
+                'current_node_id' => $currentNodeId,
+                'replay_origin' => $replayOrigin,
+                'remote_replay_validation_mode' => $plan->policy->remoteReplayValidationMode,
+                'remote_validation_status' => $validation->status,
+                'remote_validation_validator' => $validation->validator,
+                'remote_validation_message' => $validation->message,
+                'evidence_trust_level' => $evidenceTrustLevel,
+            ], $validation->details)),
         ];
     }
 

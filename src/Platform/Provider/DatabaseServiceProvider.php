@@ -17,6 +17,7 @@ use Quantum\Database\Migration\MigrationRepository;
 use Quantum\Database\Migration\MigrationRunner;
 use Quantum\Database\Operation\Contracts\DatabaseHealthStoreInterface;
 use Quantum\Database\Operation\Contracts\DatabaseIdempotencyStoreInterface;
+use Quantum\Database\Operation\Contracts\DatabaseRemoteReplayValidatorInterface;
 use Quantum\Database\Operation\Contracts\DatabaseTelemetryDispatcherInterface;
 use Quantum\Database\Operation\DatabaseCircuitBreaker;
 use Quantum\Database\Operation\DatabaseHealthSnapshot;
@@ -33,6 +34,7 @@ use Quantum\Database\Operation\Engine\JsonLineDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\JsonLineDatabaseTelemetryDispatcher;
 use Quantum\Database\Operation\Engine\NullDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\NullDatabaseIdempotencyStore;
+use Quantum\Database\Operation\Engine\NullDatabaseRemoteReplayValidator;
 use Quantum\Database\Operation\Engine\NullDatabaseTelemetryDispatcher;
 use Quantum\Database\Schema\SchemaIntrospectorInterface;
 use Quantum\Database\Schema\SchemaManager;
@@ -216,6 +218,10 @@ final class DatabaseServiceProvider extends ServiceProvider
 
             return new InMemoryDatabaseIdempotencyStore();
         });
+        $this->app->singleton(
+            DatabaseRemoteReplayValidatorInterface::class,
+            fn(Application $app): DatabaseRemoteReplayValidatorInterface => new NullDatabaseRemoteReplayValidator(),
+        );
         $this->app->singleton(DatabaseTelemetryDispatcherInterface::class, function (Application $app): DatabaseTelemetryDispatcherInterface {
             $mode = $app->config('database.observability.dispatcher', 'auto');
 
@@ -252,6 +258,7 @@ final class DatabaseServiceProvider extends ServiceProvider
             telemetry: static fn() => $app->make(DatabaseTelemetryStore::class),
             healthStore: static fn() => $app->make(DatabaseHealthStoreInterface::class),
             idempotencyStore: static fn() => $app->make(DatabaseIdempotencyStoreInterface::class),
+            remoteReplayValidator: static fn() => $app->make(DatabaseRemoteReplayValidatorInterface::class),
             idempotencyNodeId: static fn() => (string) $app->config(
                 'database.idempotency.node_id',
                 (string) $app->config('database.health.node_id', (string) $app->config('app.name', 'app')),

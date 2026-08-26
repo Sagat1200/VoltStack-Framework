@@ -14,11 +14,13 @@ use Quantum\Database\Dbal\Enum\TransactionIsolation;
 use Quantum\Database\Dbal\Exception\DbalException;
 use Quantum\Database\Dbal\Value\DriverInfo;
 use Quantum\Database\Dbal\Value\QueryResult;
+use Quantum\Database\Operation\Contracts\DatabaseRemoteReplayValidatorInterface;
 use Quantum\Database\Operation\DatabaseCircuitBreaker;
 use Quantum\Database\Operation\DatabaseExecutionPolicy;
 use Quantum\Database\Operation\DatabaseIdempotencyRecord;
 use Quantum\Database\Operation\DatabaseOperationException;
 use Quantum\Database\Operation\DatabaseOperationRuntime;
+use Quantum\Database\Operation\DatabaseRemoteReplayValidationResult;
 use Quantum\Database\Operation\DatabaseTelemetryReport;
 use Quantum\Database\Operation\DatabaseTelemetryStore;
 use Quantum\Database\Operation\Engine\DirectoryDatabaseIdempotencyStore;
@@ -924,6 +926,386 @@ final class DatabaseOperationRuntimeTest extends TestCase
         }
     }
 
+    public function test_runtime_emits_warning_when_active_remote_validation_is_unavailable_and_policy_is_warn(): void
+    {
+        $this->idempotencyBasePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-db-idempotency-runtime-' . uniqid('', true);
+        mkdir($this->idempotencyBasePath, 0777, true);
+
+        $store = new DirectoryDatabaseIdempotencyStore($this->idempotencyBasePath . DIRECTORY_SEPARATOR . 'idempotency');
+        $validator = new RuntimeRemoteReplayValidatorStub(
+            DatabaseRemoteReplayValidationResult::unavailable(
+                validator: 'stub-remote-validator',
+                message: 'Remote validator temporarily unavailable.',
+            ),
+        );
+        $connection = new RuntimeTestConnection(
+            statementQueue: [
+                RuntimeTestConnection::statementResult(1),
+            ],
+        );
+        $runtime = new DatabaseOperationRuntime(
+            new DatabaseCircuitBreaker(),
+            idempotencyStore: $store,
+            remoteReplayValidator: $validator,
+            idempotencyNodeId: 'node-b',
+        );
+        $context = DatabaseContext::empty()->withConnection($connection);
+        $policy = new DatabaseExecutionPolicy(
+            retryLimit: 1,
+            retryBackoffMs: 0,
+            retryMutationsWhenIdempotent: true,
+            idempotencyPendingTtlSeconds: 300,
+            remoteReplayAttestationMode: 'require',
+            remoteReplayValidationMode: 'warn',
+        );
+        $plan = $runtime->plan(
+            new RawOperation(
+                OperationKind::RawExecute,
+                'UPDATE users SET active = 1 WHERE id = 1',
+                [],
+                'primary',
+                'mutation-users-remote-validation-warn',
+            ),
+            $context,
+            $policy,
+        );
+
+        $record = new DatabaseIdempotencyRecord(
+            keyHash: hash('sha256', 'mutation-users-remote-validation-warn'),
+            operationFingerprint: $plan->fingerprint,
+            requestId: 'req-remote-validation-warn',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            createdAt: '2026-08-26T07:00:00+00:00',
+            nodeId: 'node-a',
+            status: 'pending',
+            expiresAt: '2099-08-26T07:05:00+00:00',
+        );
+        $store->acquire($record);
+        $confirmationFingerprint = $this->computeConfirmationFingerprintForTest(
+            $record,
+            'node-a',
+            [
+                'kind' => 'raw_execute',
+                'affected_rows' => 1,
+                'rows_read' => 0,
+                'outcome' => 'completed',
+                'confirmed_at' => '2026-08-26T07:00:05+00:00',
+                'replay_reproducibility' => 'persisted_summary',
+                'result_summary' => [
+                    'kind' => 'raw_execute',
+                    'is_select' => false,
+                    'affected_rows' => 1,
+                    'rows_read' => 0,
+                    'column_count' => 0,
+                    'result_type' => 'success_no_rows',
+                ],
+            ],
+        );
+        $store->complete($record, [
+            'kind' => 'raw_execute',
+            'affected_rows' => 1,
+            'rows_read' => 0,
+            'outcome' => 'completed',
+            'confirmed_at' => '2026-08-26T07:00:05+00:00',
+            'summary_version' => 1,
+            'replay_reproducibility' => 'persisted_summary',
+            'source_node_id' => 'node-a',
+            'evidence_version' => 1,
+            'evidence_mode' => 'persisted_evidence',
+            'confirmation_fingerprint' => $confirmationFingerprint,
+            'attestation_version' => 1,
+            'attestation_mode' => 'source_node_self_attested',
+            'attested_by_node_id' => 'node-a',
+            'attested_at' => '2026-08-26T07:00:05+00:00',
+            'attestation_fingerprint' => $this->computeAttestationFingerprintForTest(
+                $record,
+                'node-a',
+                $confirmationFingerprint,
+                'source_node_self_attested',
+                'node-a',
+                '2026-08-26T07:00:05+00:00',
+            ),
+            'result_summary' => [
+                'kind' => 'raw_execute',
+                'is_select' => false,
+                'affected_rows' => 1,
+                'rows_read' => 0,
+                'column_count' => 0,
+                'result_type' => 'success_no_rows',
+            ],
+        ]);
+
+        $result = $runtime->execute($plan, $context);
+        $reasons = array_map(
+            static fn ($event): ?string => is_object($event) && isset($event->details) && is_array($event->details)
+                ? ($event->details['reason'] ?? null)
+                : null,
+            $result->debug['diagnostic']->events ?? [],
+        );
+
+        self::assertTrue($result->isSuccess);
+        self::assertSame(0, $connection->statementCalls);
+        self::assertSame('remote_validation_unavailable', $result->debug['idempotency']['remote_validation']['status'] ?? null);
+        self::assertSame('stub-remote-validator', $result->debug['idempotency']['remote_validation']['validator'] ?? null);
+        self::assertContains('idempotency_guard_remote_replay_validation_warning', $reasons);
+    }
+
+    public function test_runtime_blocks_remote_replay_when_active_remote_validation_is_required_but_unavailable(): void
+    {
+        $this->idempotencyBasePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-db-idempotency-runtime-' . uniqid('', true);
+        mkdir($this->idempotencyBasePath, 0777, true);
+
+        $store = new DirectoryDatabaseIdempotencyStore($this->idempotencyBasePath . DIRECTORY_SEPARATOR . 'idempotency');
+        $validator = new RuntimeRemoteReplayValidatorStub(
+            DatabaseRemoteReplayValidationResult::unavailable(
+                validator: 'stub-remote-validator',
+                message: 'Remote validator temporarily unavailable.',
+            ),
+        );
+        $connection = new RuntimeTestConnection(
+            statementQueue: [
+                RuntimeTestConnection::statementResult(1),
+            ],
+        );
+        $runtime = new DatabaseOperationRuntime(
+            new DatabaseCircuitBreaker(),
+            idempotencyStore: $store,
+            remoteReplayValidator: $validator,
+            idempotencyNodeId: 'node-b',
+        );
+        $context = DatabaseContext::empty()->withConnection($connection);
+        $policy = new DatabaseExecutionPolicy(
+            retryLimit: 1,
+            retryBackoffMs: 0,
+            retryMutationsWhenIdempotent: true,
+            idempotencyPendingTtlSeconds: 300,
+            remoteReplayAttestationMode: 'require',
+            remoteReplayValidationMode: 'require',
+        );
+        $plan = $runtime->plan(
+            new RawOperation(
+                OperationKind::RawExecute,
+                'UPDATE users SET active = 1 WHERE id = 1',
+                [],
+                'primary',
+                'mutation-users-remote-validation-require',
+            ),
+            $context,
+            $policy,
+        );
+
+        $record = new DatabaseIdempotencyRecord(
+            keyHash: hash('sha256', 'mutation-users-remote-validation-require'),
+            operationFingerprint: $plan->fingerprint,
+            requestId: 'req-remote-validation-require',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            createdAt: '2026-08-26T08:00:00+00:00',
+            nodeId: 'node-a',
+            status: 'pending',
+            expiresAt: '2099-08-26T08:05:00+00:00',
+        );
+        $store->acquire($record);
+        $confirmationFingerprint = $this->computeConfirmationFingerprintForTest(
+            $record,
+            'node-a',
+            [
+                'kind' => 'raw_execute',
+                'affected_rows' => 1,
+                'rows_read' => 0,
+                'outcome' => 'completed',
+                'confirmed_at' => '2026-08-26T08:00:05+00:00',
+                'replay_reproducibility' => 'persisted_summary',
+                'result_summary' => [
+                    'kind' => 'raw_execute',
+                    'is_select' => false,
+                    'affected_rows' => 1,
+                    'rows_read' => 0,
+                    'column_count' => 0,
+                    'result_type' => 'success_no_rows',
+                ],
+            ],
+        );
+        $store->complete($record, [
+            'kind' => 'raw_execute',
+            'affected_rows' => 1,
+            'rows_read' => 0,
+            'outcome' => 'completed',
+            'confirmed_at' => '2026-08-26T08:00:05+00:00',
+            'summary_version' => 1,
+            'replay_reproducibility' => 'persisted_summary',
+            'source_node_id' => 'node-a',
+            'evidence_version' => 1,
+            'evidence_mode' => 'persisted_evidence',
+            'confirmation_fingerprint' => $confirmationFingerprint,
+            'attestation_version' => 1,
+            'attestation_mode' => 'source_node_self_attested',
+            'attested_by_node_id' => 'node-a',
+            'attested_at' => '2026-08-26T08:00:05+00:00',
+            'attestation_fingerprint' => $this->computeAttestationFingerprintForTest(
+                $record,
+                'node-a',
+                $confirmationFingerprint,
+                'source_node_self_attested',
+                'node-a',
+                '2026-08-26T08:00:05+00:00',
+            ),
+            'result_summary' => [
+                'kind' => 'raw_execute',
+                'is_select' => false,
+                'affected_rows' => 1,
+                'rows_read' => 0,
+                'column_count' => 0,
+                'result_type' => 'success_no_rows',
+            ],
+        ]);
+
+        try {
+            $runtime->execute($plan, $context);
+            self::fail('Remote replay should be blocked when active remote validation is required but unavailable.');
+        } catch (DatabaseOperationException $e) {
+            self::assertSame('verification_failed', $e->failure->value);
+            self::assertSame('cancelled', $e->snapshot->outcome);
+            self::assertSame(0, $connection->statementCalls);
+            $reasons = array_map(
+                static fn ($event): ?string => is_object($event) && isset($event->details) && is_array($event->details)
+                    ? ($event->details['reason'] ?? null)
+                    : null,
+                $e->snapshot->events,
+            );
+            self::assertContains('idempotency_guard_remote_replay_validation_required', $reasons);
+        }
+    }
+
+    public function test_runtime_blocks_remote_replay_when_active_remote_validation_rejects_it(): void
+    {
+        $this->idempotencyBasePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-db-idempotency-runtime-' . uniqid('', true);
+        mkdir($this->idempotencyBasePath, 0777, true);
+
+        $store = new DirectoryDatabaseIdempotencyStore($this->idempotencyBasePath . DIRECTORY_SEPARATOR . 'idempotency');
+        $validator = new RuntimeRemoteReplayValidatorStub(
+            DatabaseRemoteReplayValidationResult::rejected(
+                validator: 'stub-remote-validator',
+                message: 'Remote node rejected replay verification.',
+                details: ['challenge' => 'nonce-123'],
+            ),
+        );
+        $connection = new RuntimeTestConnection(
+            statementQueue: [
+                RuntimeTestConnection::statementResult(1),
+            ],
+        );
+        $runtime = new DatabaseOperationRuntime(
+            new DatabaseCircuitBreaker(),
+            idempotencyStore: $store,
+            remoteReplayValidator: $validator,
+            idempotencyNodeId: 'node-b',
+        );
+        $context = DatabaseContext::empty()->withConnection($connection);
+        $policy = new DatabaseExecutionPolicy(
+            retryLimit: 1,
+            retryBackoffMs: 0,
+            retryMutationsWhenIdempotent: true,
+            idempotencyPendingTtlSeconds: 300,
+            remoteReplayAttestationMode: 'require',
+            remoteReplayValidationMode: 'allow',
+        );
+        $plan = $runtime->plan(
+            new RawOperation(
+                OperationKind::RawExecute,
+                'UPDATE users SET active = 1 WHERE id = 1',
+                [],
+                'primary',
+                'mutation-users-remote-validation-rejected',
+            ),
+            $context,
+            $policy,
+        );
+
+        $record = new DatabaseIdempotencyRecord(
+            keyHash: hash('sha256', 'mutation-users-remote-validation-rejected'),
+            operationFingerprint: $plan->fingerprint,
+            requestId: 'req-remote-validation-rejected',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            createdAt: '2026-08-26T09:00:00+00:00',
+            nodeId: 'node-a',
+            status: 'pending',
+            expiresAt: '2099-08-26T09:05:00+00:00',
+        );
+        $store->acquire($record);
+        $confirmationFingerprint = $this->computeConfirmationFingerprintForTest(
+            $record,
+            'node-a',
+            [
+                'kind' => 'raw_execute',
+                'affected_rows' => 1,
+                'rows_read' => 0,
+                'outcome' => 'completed',
+                'confirmed_at' => '2026-08-26T09:00:05+00:00',
+                'replay_reproducibility' => 'persisted_summary',
+                'result_summary' => [
+                    'kind' => 'raw_execute',
+                    'is_select' => false,
+                    'affected_rows' => 1,
+                    'rows_read' => 0,
+                    'column_count' => 0,
+                    'result_type' => 'success_no_rows',
+                ],
+            ],
+        );
+        $store->complete($record, [
+            'kind' => 'raw_execute',
+            'affected_rows' => 1,
+            'rows_read' => 0,
+            'outcome' => 'completed',
+            'confirmed_at' => '2026-08-26T09:00:05+00:00',
+            'summary_version' => 1,
+            'replay_reproducibility' => 'persisted_summary',
+            'source_node_id' => 'node-a',
+            'evidence_version' => 1,
+            'evidence_mode' => 'persisted_evidence',
+            'confirmation_fingerprint' => $confirmationFingerprint,
+            'attestation_version' => 1,
+            'attestation_mode' => 'source_node_self_attested',
+            'attested_by_node_id' => 'node-a',
+            'attested_at' => '2026-08-26T09:00:05+00:00',
+            'attestation_fingerprint' => $this->computeAttestationFingerprintForTest(
+                $record,
+                'node-a',
+                $confirmationFingerprint,
+                'source_node_self_attested',
+                'node-a',
+                '2026-08-26T09:00:05+00:00',
+            ),
+            'result_summary' => [
+                'kind' => 'raw_execute',
+                'is_select' => false,
+                'affected_rows' => 1,
+                'rows_read' => 0,
+                'column_count' => 0,
+                'result_type' => 'success_no_rows',
+            ],
+        ]);
+
+        try {
+            $runtime->execute($plan, $context);
+            self::fail('Remote replay should be blocked when active remote validation rejects it.');
+        } catch (DatabaseOperationException $e) {
+            self::assertSame('verification_failed', $e->failure->value);
+            self::assertSame('cancelled', $e->snapshot->outcome);
+            self::assertSame(0, $connection->statementCalls);
+            $reasons = array_map(
+                static fn ($event): ?string => is_object($event) && isset($event->details) && is_array($event->details)
+                    ? ($event->details['reason'] ?? null)
+                    : null,
+                $e->snapshot->events,
+            );
+            self::assertContains('idempotency_guard_remote_replay_validation_rejected', $reasons);
+        }
+    }
+
     public function test_runtime_short_circuits_confirmed_replay_without_touching_database(): void
     {
         $this->idempotencyBasePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-db-idempotency-runtime-' . uniqid('', true);
@@ -1660,6 +2042,20 @@ final class DatabaseOperationRuntimeTest extends TestCase
             'attested_by_node_id' => $attestedByNodeId,
             'attested_at' => $attestedAt,
         ], JSON_THROW_ON_ERROR));
+    }
+}
+
+final class RuntimeRemoteReplayValidatorStub implements DatabaseRemoteReplayValidatorInterface
+{
+    public function __construct(private readonly DatabaseRemoteReplayValidationResult $result) {}
+
+    public function validate(
+        DatabaseIdempotencyRecord $record,
+        \Quantum\Database\Operation\DatabaseOperationPlan $plan,
+        ?string $currentNodeId,
+        array $confirmationEvidence,
+    ): DatabaseRemoteReplayValidationResult {
+        return $this->result;
     }
 }
 

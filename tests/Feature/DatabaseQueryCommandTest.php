@@ -83,6 +83,7 @@ final class DatabaseQueryCommandTest extends TestCase
         self::assertStringContainsString('legacy_replay_mode=allow', $result['stdout']);
         self::assertStringContainsString('remote_replay_attestation_mode=allow', $result['stdout']);
         self::assertStringContainsString('remote_replay_attestation_max_age_seconds=0', $result['stdout']);
+        self::assertStringContainsString('remote_replay_validation_mode=allow', $result['stdout']);
     }
 
     /**
@@ -171,6 +172,7 @@ final class DatabaseQueryCommandTest extends TestCase
                     'legacy_replay_mode' => 'allow',
                     'remote_replay_attestation_mode' => 'allow',
                     'remote_replay_attestation_max_age_seconds' => 0,
+                    'remote_replay_validation_mode' => 'allow',
                 ],
                 'security' => [
                     'redact_sensitive' => true,

@@ -168,6 +168,7 @@ final class DbIdempotencyCommand extends Command
             $payload = $record->toArray();
             $payload['current_node_id'] = $currentNodeId;
             $payload['replay_origin'] = $replayOrigin;
+            $payload['confirmation_evidence'] = $this->resolveConfirmationEvidence($record);
 
             $output->writeln((string) json_encode(
                 $payload,
@@ -203,6 +204,7 @@ final class DbIdempotencyCommand extends Command
         ));
         if ($record->confirmation !== []) {
             $replayReproducibility = $this->resolveReplayReproducibility($record->confirmation);
+            $confirmationEvidence = $this->resolveConfirmationEvidence($record);
             $output->writeln(sprintf(
                 'Confirmation: kind=%s affected_rows=%d rows_read=%d outcome=%s confirmed_at=%s',
                 (string) ($record->confirmation['kind'] ?? 'n/a'),
@@ -215,6 +217,15 @@ final class DbIdempotencyCommand extends Command
                 'Replay support: reproducibility=%s summary_version=%s',
                 $replayReproducibility,
                 isset($record->confirmation['summary_version']) ? (string) $record->confirmation['summary_version'] : 'n/a',
+            ));
+            $output->writeln(sprintf(
+                'Replay evidence: source_node=%s fingerprint=%s evidence_version=%s mode=%s',
+                (string) ($confirmationEvidence['source_node_id'] ?? 'n/a'),
+                (string) ($confirmationEvidence['confirmation_fingerprint'] ?? 'n/a'),
+                isset($confirmationEvidence['evidence_version']) && $confirmationEvidence['evidence_version'] !== null
+                    ? (string) $confirmationEvidence['evidence_version']
+                    : 'n/a',
+                (string) ($confirmationEvidence['evidence_mode'] ?? 'n/a'),
             ));
             $replayWarning = $this->resolveReplaySupportWarning($record->confirmation);
             if ($replayWarning !== null) {
@@ -289,6 +300,50 @@ final class DbIdempotencyCommand extends Command
         }
 
         return $summary;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function resolveConfirmationEvidence(DatabaseIdempotencyRecord $record): array
+    {
+        $confirmation = $record->confirmation;
+        $sourceNodeId = isset($confirmation['source_node_id']) && is_string($confirmation['source_node_id']) && trim($confirmation['source_node_id']) !== ''
+            ? trim($confirmation['source_node_id'])
+            : $record->nodeId;
+        $fingerprint = $confirmation['confirmation_fingerprint'] ?? null;
+
+        if (is_string($fingerprint) && trim($fingerprint) !== '') {
+            return [
+                'source_node_id' => $sourceNodeId,
+                'evidence_version' => isset($confirmation['evidence_version']) ? (int) $confirmation['evidence_version'] : null,
+                'evidence_mode' => (string) ($confirmation['evidence_mode'] ?? 'persisted_evidence'),
+                'confirmation_fingerprint' => trim($fingerprint),
+            ];
+        }
+
+        return [
+            'source_node_id' => $sourceNodeId,
+            'evidence_version' => null,
+            'evidence_mode' => 'legacy_reconstructed_evidence',
+            'confirmation_fingerprint' => hash('sha256', json_encode([
+                'key_hash' => $record->keyHash,
+                'operation_fingerprint' => $record->operationFingerprint,
+                'request_id' => $record->requestId,
+                'connection_name' => $record->connectionName,
+                'logical_target' => $record->logicalTarget,
+                'source_node_id' => $sourceNodeId,
+                'confirmation' => [
+                    'kind' => $confirmation['kind'] ?? null,
+                    'affected_rows' => $confirmation['affected_rows'] ?? null,
+                    'rows_read' => $confirmation['rows_read'] ?? null,
+                    'outcome' => $confirmation['outcome'] ?? null,
+                    'confirmed_at' => $confirmation['confirmed_at'] ?? null,
+                    'replay_reproducibility' => $this->resolveReplayReproducibility($confirmation),
+                    'result_summary' => $this->normalizeResultSummary($confirmation),
+                ],
+            ], JSON_THROW_ON_ERROR)),
+        ];
     }
 
     /**

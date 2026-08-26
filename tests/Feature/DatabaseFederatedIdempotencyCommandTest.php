@@ -110,6 +110,10 @@ final class DatabaseFederatedIdempotencyCommandTest extends TestCase
                 'confirmed_at' => '2026-08-25T09:00:10+00:00',
                 'summary_version' => 1,
                 'replay_reproducibility' => 'persisted_summary',
+                'source_node_id' => $nodeId,
+                'evidence_version' => 1,
+                'evidence_mode' => 'persisted_evidence',
+                'confirmation_fingerprint' => hash('sha256', $requestId . '-confirmation'),
                 'result_summary' => [
                     'kind' => 'raw_execute',
                     'is_select' => false,

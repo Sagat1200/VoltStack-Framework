@@ -159,6 +159,7 @@ final class DatabaseOperationRuntime
                 $confirmedAffectedRows = max(0, (int) ($existing->confirmation['affected_rows'] ?? 0));
                 $replayResultSummary = $this->normalizeIdempotencyResultSummary($existing->confirmation);
                 $replayReproducibility = $this->resolveReplayReproducibility($existing->confirmation);
+                $confirmationEvidence = $this->normalizeIdempotencyConfirmationEvidence($existing);
                 $currentNodeId = $this->resolveIdempotencyNodeId();
                 $replayOrigin = $this->resolveReplayOrigin($existing->nodeId, $currentNodeId);
                 $legacyReplayWarning = $this->buildLegacyReplayWarning(
@@ -167,6 +168,7 @@ final class DatabaseOperationRuntime
                     $plan->policy->legacyReplayMode,
                     $currentNodeId,
                     $replayOrigin,
+                    $confirmationEvidence,
                 );
                 if (
                     $replayReproducibility === 'legacy_reconstructed'
@@ -191,6 +193,8 @@ final class DatabaseOperationRuntime
                                 'replay_origin' => $replayOrigin,
                                 'legacy_replay_mode' => $plan->policy->legacyReplayMode,
                                 'replay_reproducibility' => $replayReproducibility,
+                                'confirmation_fingerprint' => $confirmationEvidence['confirmation_fingerprint'] ?? null,
+                                'confirmation_evidence_mode' => $confirmationEvidence['evidence_mode'] ?? null,
                             ]),
                         ]),
                     );
@@ -234,6 +238,8 @@ final class DatabaseOperationRuntime
                                 'replay_reproducibility' => $replayReproducibility,
                                 'legacy_replay_mode' => $plan->policy->legacyReplayMode,
                                 'replay_origin' => $replayOrigin,
+                                'confirmation_fingerprint' => $confirmationEvidence['confirmation_fingerprint'] ?? null,
+                                'confirmation_evidence_mode' => $confirmationEvidence['evidence_mode'] ?? null,
                             ]),
                         ],
                     ),
@@ -258,6 +264,7 @@ final class DatabaseOperationRuntime
                             'current_node_id' => $currentNodeId,
                             'source_node_id' => $existing->nodeId,
                             'replay_origin' => $replayOrigin,
+                            'confirmation_evidence' => $confirmationEvidence,
                             'warning' => $legacyReplayWarning,
                         ],
                     ],
@@ -437,6 +444,10 @@ final class DatabaseOperationRuntime
                         'replay_reproducibility' => 'persisted_summary',
                         'result_summary' => $this->buildIdempotencyResultSummary($plan, $result, $rowsRead),
                     ];
+                    $confirmation = array_merge(
+                        $confirmation,
+                        $this->buildIdempotencyConfirmationEvidence($idempotencyRecord, $confirmation),
+                    );
                     $this->resolveIdempotencyStore()?->complete($idempotencyRecord, [
                         'kind' => $confirmation['kind'],
                         'affected_rows' => $confirmation['affected_rows'],
@@ -446,6 +457,10 @@ final class DatabaseOperationRuntime
                         'summary_version' => $confirmation['summary_version'],
                         'replay_reproducibility' => $confirmation['replay_reproducibility'],
                         'result_summary' => $confirmation['result_summary'],
+                        'source_node_id' => $confirmation['source_node_id'],
+                        'evidence_version' => $confirmation['evidence_version'],
+                        'evidence_mode' => $confirmation['evidence_mode'],
+                        'confirmation_fingerprint' => $confirmation['confirmation_fingerprint'],
                     ]);
                 }
 
@@ -986,6 +1001,7 @@ final class DatabaseOperationRuntime
         string $legacyReplayMode,
         ?string $currentNodeId,
         string $replayOrigin,
+        array $confirmationEvidence,
     ): ?array {
         if ($replayReproducibility !== 'legacy_reconstructed' || $legacyReplayMode !== 'warn') {
             return null;
@@ -1001,6 +1017,8 @@ final class DatabaseOperationRuntime
             'replay_reproducibility' => $replayReproducibility,
             'legacy_replay_mode' => $legacyReplayMode,
             'replay_origin' => $replayOrigin,
+            'confirmation_fingerprint' => $confirmationEvidence['confirmation_fingerprint'] ?? null,
+            'confirmation_evidence_mode' => $confirmationEvidence['evidence_mode'] ?? null,
         ];
     }
 
@@ -1016,5 +1034,86 @@ final class DatabaseOperationRuntime
         return $source === $current
             ? 'local_node'
             : 'federated_remote_node';
+    }
+
+    /**
+     * @param array<string, mixed> $confirmation
+     * @return array<string, mixed>
+     */
+    private function buildIdempotencyConfirmationEvidence(
+        DatabaseIdempotencyRecord $record,
+        array $confirmation,
+    ): array {
+        $sourceNodeId = $record->nodeId;
+        $payload = [
+            'key_hash' => $record->keyHash,
+            'operation_fingerprint' => $record->operationFingerprint,
+            'request_id' => $record->requestId,
+            'connection_name' => $record->connectionName,
+            'logical_target' => $record->logicalTarget,
+            'source_node_id' => $sourceNodeId,
+            'confirmation' => [
+                'kind' => $confirmation['kind'] ?? null,
+                'affected_rows' => $confirmation['affected_rows'] ?? null,
+                'rows_read' => $confirmation['rows_read'] ?? null,
+                'outcome' => $confirmation['outcome'] ?? null,
+                'confirmed_at' => $confirmation['confirmed_at'] ?? null,
+                'replay_reproducibility' => $confirmation['replay_reproducibility'] ?? null,
+                'result_summary' => $confirmation['result_summary'] ?? null,
+            ],
+        ];
+
+        return [
+            'source_node_id' => $sourceNodeId,
+            'evidence_version' => 1,
+            'evidence_mode' => 'persisted_evidence',
+            'confirmation_fingerprint' => hash('sha256', json_encode($payload, JSON_THROW_ON_ERROR)),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function normalizeIdempotencyConfirmationEvidence(DatabaseIdempotencyRecord $record): array
+    {
+        $confirmation = $record->confirmation;
+        $sourceNodeId = isset($confirmation['source_node_id']) && is_string($confirmation['source_node_id']) && trim($confirmation['source_node_id']) !== ''
+            ? trim($confirmation['source_node_id'])
+            : $record->nodeId;
+        $fingerprint = $confirmation['confirmation_fingerprint'] ?? null;
+
+        if (is_string($fingerprint) && trim($fingerprint) !== '') {
+            return [
+                'source_node_id' => $sourceNodeId,
+                'evidence_version' => isset($confirmation['evidence_version']) ? (int) $confirmation['evidence_version'] : null,
+                'evidence_mode' => (string) ($confirmation['evidence_mode'] ?? 'persisted_evidence'),
+                'confirmation_fingerprint' => trim($fingerprint),
+            ];
+        }
+
+        $payload = [
+            'key_hash' => $record->keyHash,
+            'operation_fingerprint' => $record->operationFingerprint,
+            'request_id' => $record->requestId,
+            'connection_name' => $record->connectionName,
+            'logical_target' => $record->logicalTarget,
+            'source_node_id' => $sourceNodeId,
+            'confirmation' => [
+                'kind' => $confirmation['kind'] ?? null,
+                'affected_rows' => $confirmation['affected_rows'] ?? null,
+                'rows_read' => $confirmation['rows_read'] ?? null,
+                'outcome' => $confirmation['outcome'] ?? null,
+                'confirmed_at' => $confirmation['confirmed_at'] ?? null,
+                'replay_reproducibility' => $this->resolveReplayReproducibility($confirmation),
+                'result_summary' => $this->normalizeIdempotencyResultSummary($confirmation),
+            ],
+        ];
+
+        return [
+            'source_node_id' => $sourceNodeId,
+            'evidence_version' => null,
+            'evidence_mode' => 'legacy_reconstructed_evidence',
+            'confirmation_fingerprint' => hash('sha256', json_encode($payload, JSON_THROW_ON_ERROR)),
+        ];
     }
 }

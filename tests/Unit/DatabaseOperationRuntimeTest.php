@@ -340,8 +340,13 @@ final class DatabaseOperationRuntimeTest extends TestCase
         self::assertSame('success_no_rows', $stored?->confirmation['result_summary']['result_type'] ?? null);
         self::assertSame(3, $stored?->confirmation['result_summary']['affected_rows'] ?? null);
         self::assertSame(0, $stored?->confirmation['result_summary']['rows_read'] ?? null);
+        self::assertSame('node-b', $stored?->confirmation['source_node_id'] ?? null);
+        self::assertSame(1, $stored?->confirmation['evidence_version'] ?? null);
+        self::assertSame('persisted_evidence', $stored?->confirmation['evidence_mode'] ?? null);
+        self::assertIsString($stored?->confirmation['confirmation_fingerprint'] ?? null);
         self::assertSame('completed', $result->debug['idempotency']['status'] ?? null);
         self::assertSame('persisted_summary', $result->debug['idempotency']['confirmation']['replay_reproducibility'] ?? null);
+        self::assertSame('persisted_evidence', $result->debug['idempotency']['confirmation']['evidence_mode'] ?? null);
         self::assertSame('success_no_rows', $result->debug['idempotency']['result_summary']['result_type'] ?? null);
     }
 
@@ -426,6 +431,9 @@ final class DatabaseOperationRuntimeTest extends TestCase
         self::assertSame('node-b', $result->debug['idempotency']['current_node_id'] ?? null);
         self::assertSame('node-a', $result->debug['idempotency']['source_node_id'] ?? null);
         self::assertSame('federated_remote_node', $result->debug['idempotency']['replay_origin'] ?? null);
+        self::assertSame('legacy_reconstructed_evidence', $result->debug['idempotency']['confirmation_evidence']['evidence_mode'] ?? null);
+        self::assertSame('node-a', $result->debug['idempotency']['confirmation_evidence']['source_node_id'] ?? null);
+        self::assertIsString($result->debug['idempotency']['confirmation_evidence']['confirmation_fingerprint'] ?? null);
         self::assertSame('success_no_rows', $result->debug['idempotency']['result_summary']['result_type'] ?? null);
         self::assertSame(1, $result->debug['idempotency']['result_summary']['affected_rows'] ?? null);
         self::assertSame(1, $result->debug['diagnostic']->affectedRows ?? null);
@@ -587,6 +595,8 @@ final class DatabaseOperationRuntimeTest extends TestCase
         self::assertSame('warn', $warning['legacy_replay_mode'] ?? null);
         self::assertSame('federated_remote_node', $warning['replay_origin'] ?? null);
         self::assertSame('node-b', $warning['current_node_id'] ?? null);
+        self::assertSame('legacy_reconstructed_evidence', $warning['confirmation_evidence_mode'] ?? null);
+        self::assertIsString($warning['confirmation_fingerprint'] ?? null);
         self::assertContains('idempotency_guard_legacy_replay_warning', $reasons);
         self::assertContains('idempotency_guard_replayed_confirmed', $reasons);
     }

@@ -159,6 +159,11 @@ final class DatabaseOperationRuntime
                 $confirmedAffectedRows = max(0, (int) ($existing->confirmation['affected_rows'] ?? 0));
                 $replayResultSummary = $this->normalizeIdempotencyResultSummary($existing->confirmation);
                 $replayReproducibility = $this->resolveReplayReproducibility($existing->confirmation);
+                $legacyReplayWarning = $this->buildLegacyReplayWarning(
+                    $existing,
+                    $replayReproducibility,
+                    $plan->policy->legacyReplayMode,
+                );
                 if (
                     $replayReproducibility === 'legacy_reconstructed'
                     && $plan->policy->legacyReplayMode === 'block'
@@ -207,17 +212,23 @@ final class DatabaseOperationRuntime
                     failure: null,
                     retryable: false,
                     circuitState: $this->circuitBreaker->currentState($plan->circuitSegment),
-                    events: array_merge($events, [
-                        new DatabaseDiagnosticEvent('completed', $this->timestampNow(), [
-                            'reason' => 'idempotency_guard_replayed_confirmed',
-                            'status' => $existing->status,
-                            'node_id' => $existing->nodeId,
-                            'confirmed_at' => $existing->confirmation['confirmed_at'] ?? null,
-                            'affected_rows' => $confirmedAffectedRows,
-                            'replay_reproducibility' => $replayReproducibility,
-                            'legacy_replay_mode' => $plan->policy->legacyReplayMode,
-                        ]),
-                    ]),
+                    events: array_merge(
+                        $events,
+                        $legacyReplayWarning !== null
+                            ? [new DatabaseDiagnosticEvent('warning', $this->timestampNow(), $legacyReplayWarning)]
+                            : [],
+                        [
+                            new DatabaseDiagnosticEvent('completed', $this->timestampNow(), [
+                                'reason' => 'idempotency_guard_replayed_confirmed',
+                                'status' => $existing->status,
+                                'node_id' => $existing->nodeId,
+                                'confirmed_at' => $existing->confirmation['confirmed_at'] ?? null,
+                                'affected_rows' => $confirmedAffectedRows,
+                                'replay_reproducibility' => $replayReproducibility,
+                                'legacy_replay_mode' => $plan->policy->legacyReplayMode,
+                            ]),
+                        ],
+                    ),
                 );
                 $this->recordTelemetry($plan, $snapshot);
 
@@ -236,6 +247,7 @@ final class DatabaseOperationRuntime
                             'result_summary' => $replayResultSummary,
                             'replay_reproducibility' => $replayReproducibility,
                             'legacy_replay_mode' => $plan->policy->legacyReplayMode,
+                            'warning' => $legacyReplayWarning,
                         ],
                     ],
                 );
@@ -952,5 +964,28 @@ final class DatabaseOperationRuntime
         return is_array($confirmation['result_summary'] ?? null)
             ? 'persisted_summary'
             : 'legacy_reconstructed';
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function buildLegacyReplayWarning(
+        DatabaseIdempotencyRecord $record,
+        string $replayReproducibility,
+        string $legacyReplayMode,
+    ): ?array {
+        if ($replayReproducibility !== 'legacy_reconstructed' || $legacyReplayMode !== 'warn') {
+            return null;
+        }
+
+        return [
+            'reason' => 'idempotency_guard_legacy_replay_warning',
+            'message' => 'Database idempotency replay used a legacy confirmation reconstructed without persisted result_summary.',
+            'status' => $record->status,
+            'node_id' => $record->nodeId,
+            'confirmed_at' => $record->confirmation['confirmed_at'] ?? null,
+            'replay_reproducibility' => $replayReproducibility,
+            'legacy_replay_mode' => $legacyReplayMode,
+        ];
     }
 }

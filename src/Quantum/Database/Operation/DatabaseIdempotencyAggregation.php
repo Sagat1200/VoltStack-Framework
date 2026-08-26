@@ -24,6 +24,18 @@ final class DatabaseIdempotencyAggregation
         $expiredPending = 0;
         $oldestAt = null;
         $latestAt = null;
+        $replaySupport = [
+            'persisted_summary' => 0,
+            'legacy_reconstructed' => 0,
+            'unknown' => 0,
+        ];
+        $legacyReplayWarningCandidates = 0;
+        $confirmations = [
+            'with_confirmation' => 0,
+            'without_confirmation' => 0,
+            'summary_version_1' => 0,
+            'legacy_without_summary' => 0,
+        ];
 
         foreach ($records as $record) {
             $requests[$record->requestId] = true;
@@ -39,6 +51,27 @@ final class DatabaseIdempotencyAggregation
             $statuses[$record->status]++;
             if ($record->isExpired()) {
                 $expiredPending++;
+            }
+            if ($record->confirmation !== []) {
+                $confirmations['with_confirmation']++;
+
+                $reproducibility = self::resolveReplayReproducibility($record->confirmation);
+                if (!array_key_exists($reproducibility, $replaySupport)) {
+                    $replaySupport['unknown']++;
+                } else {
+                    $replaySupport[$reproducibility]++;
+                }
+
+                if (isset($record->confirmation['summary_version']) && (int) $record->confirmation['summary_version'] === 1) {
+                    $confirmations['summary_version_1']++;
+                }
+
+                if ($reproducibility === 'legacy_reconstructed') {
+                    $legacyReplayWarningCandidates++;
+                    $confirmations['legacy_without_summary']++;
+                }
+            } else {
+                $confirmations['without_confirmation']++;
             }
 
             if ($oldestAt === null || strcmp($record->createdAt, $oldestAt) < 0) {
@@ -59,6 +92,24 @@ final class DatabaseIdempotencyAggregation
             'latest_created_at' => $latestAt,
             'statuses' => $statuses,
             'expired_pending' => $expiredPending,
+            'confirmations' => $confirmations,
+            'replay_support' => $replaySupport,
+            'legacy_replay_warning_candidates' => $legacyReplayWarningCandidates,
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $confirmation
+     */
+    private static function resolveReplayReproducibility(array $confirmation): string
+    {
+        $value = $confirmation['replay_reproducibility'] ?? null;
+        if (is_string($value) && trim($value) !== '') {
+            return $value;
+        }
+
+        return is_array($confirmation['result_summary'] ?? null)
+            ? 'persisted_summary'
+            : 'legacy_reconstructed';
     }
 }

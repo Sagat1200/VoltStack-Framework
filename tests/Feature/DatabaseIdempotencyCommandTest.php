@@ -109,34 +109,75 @@ final class DatabaseIdempotencyCommandTest extends TestCase
             nodeId: 'node-b',
             status: 'pending',
         );
+        $third = new DatabaseIdempotencyRecord(
+            keyHash: hash('sha256', 'mutation-legacy-1'),
+            operationFingerprint: 'plan-legacy-1',
+            requestId: 'req-legacy-1',
+            connectionName: 'primary',
+            logicalTarget: 'comments',
+            createdAt: '2026-08-25T07:02:00+00:00',
+            nodeId: 'node-c',
+            status: 'pending',
+        );
 
         $store->acquire($first);
-        $store->complete($first);
+        $store->complete($first, [
+            'kind' => 'raw_execute',
+            'affected_rows' => 1,
+            'rows_read' => 0,
+            'outcome' => 'completed',
+            'confirmed_at' => '2026-08-25T07:00:10+00:00',
+            'summary_version' => 1,
+            'replay_reproducibility' => 'persisted_summary',
+            'result_summary' => [
+                'kind' => 'raw_execute',
+                'is_select' => false,
+                'affected_rows' => 1,
+                'rows_read' => 0,
+                'column_count' => 0,
+                'result_type' => 'success_no_rows',
+            ],
+        ]);
         $store->acquire($second);
         $store->fail($second);
+        $store->acquire($third);
+        $store->complete($third, [
+            'kind' => 'raw_execute',
+            'affected_rows' => 2,
+            'rows_read' => 0,
+            'outcome' => 'completed',
+            'confirmed_at' => '2026-08-25T07:02:10+00:00',
+        ]);
         $store->acquire(new DatabaseIdempotencyRecord(
             keyHash: hash('sha256', 'mutation-stale-1'),
             operationFingerprint: 'plan-stale-1',
             requestId: 'req-stale-1',
             connectionName: 'primary',
-            logicalTarget: 'comments',
+            logicalTarget: 'likes',
             createdAt: '2026-08-24T07:00:00+00:00',
-            nodeId: 'node-c',
+            nodeId: 'node-d',
             status: 'pending',
             expiresAt: '2026-08-24T07:05:00+00:00',
         ));
 
         $result = $this->runConsole(['volt', 'db:idempotency', '--aggregate', '--limit=10']);
         self::assertSame(0, $result['exit']);
-        self::assertStringContainsString('Database idempotency aggregate: records=3 requests=3 connections=1 targets=3 nodes=3', $result['stdout']);
-        self::assertStringContainsString('Statuses: pending=1 completed=1 failed=1 expired_pending=1', $result['stdout']);
+        self::assertStringContainsString('Database idempotency aggregate: records=4 requests=4 connections=1 targets=4 nodes=4', $result['stdout']);
+        self::assertStringContainsString('Statuses: pending=1 completed=2 failed=1 expired_pending=1', $result['stdout']);
+        self::assertStringContainsString('Confirmations: with_confirmation=2 without_confirmation=2 summary_version_1=1 legacy_without_summary=1', $result['stdout']);
+        self::assertStringContainsString('Replay support: persisted_summary=1 legacy_reconstructed=1 warning_candidates=1', $result['stdout']);
 
         $json = $this->runConsole(['volt', 'db:idempotency', '--aggregate', '--json', '--limit=10']);
         self::assertSame(0, $json['exit']);
-        self::assertStringContainsString('"records": 3', $json['stdout']);
-        self::assertStringContainsString('"completed": 1', $json['stdout']);
+        self::assertStringContainsString('"records": 4', $json['stdout']);
+        self::assertStringContainsString('"completed": 2', $json['stdout']);
         self::assertStringContainsString('"failed": 1', $json['stdout']);
         self::assertStringContainsString('"expired_pending": 1', $json['stdout']);
+        self::assertStringContainsString('"with_confirmation": 2', $json['stdout']);
+        self::assertStringContainsString('"legacy_without_summary": 1', $json['stdout']);
+        self::assertStringContainsString('"persisted_summary": 1', $json['stdout']);
+        self::assertStringContainsString('"legacy_reconstructed": 1', $json['stdout']);
+        self::assertStringContainsString('"legacy_replay_warning_candidates": 1', $json['stdout']);
     }
 
     public function test_cli_idempotency_reconstructs_replay_support_for_legacy_confirmation(): void
@@ -167,6 +208,10 @@ final class DatabaseIdempotencyCommandTest extends TestCase
 
         self::assertSame(0, $result['exit']);
         self::assertStringContainsString('Replay support: reproducibility=legacy_reconstructed summary_version=n/a', $result['stdout']);
+        self::assertStringContainsString(
+            'Warning: legacy confirmation reconstructed without persisted result_summary; review before enforcing legacy_replay_mode=block.',
+            $result['stdout']
+        );
         self::assertStringContainsString('Result summary: type=success_no_rows is_select=no affected_rows=2 rows_read=0 column_count=0', $result['stdout']);
     }
 

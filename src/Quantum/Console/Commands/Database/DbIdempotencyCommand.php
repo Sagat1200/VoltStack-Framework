@@ -75,6 +75,8 @@ final class DbIdempotencyCommand extends Command
                 }
 
                 $statuses = is_array($aggregate['statuses'] ?? null) ? $aggregate['statuses'] : [];
+                $confirmations = is_array($aggregate['confirmations'] ?? null) ? $aggregate['confirmations'] : [];
+                $replaySupport = is_array($aggregate['replay_support'] ?? null) ? $aggregate['replay_support'] : [];
                 $output->writeln(sprintf(
                     'Database idempotency aggregate: records=%d requests=%d connections=%d targets=%d nodes=%d window=%s..%s',
                     (int) ($aggregate['records'] ?? 0),
@@ -91,6 +93,19 @@ final class DbIdempotencyCommand extends Command
                     (int) ($statuses['completed'] ?? 0),
                     (int) ($statuses['failed'] ?? 0),
                     (int) ($aggregate['expired_pending'] ?? 0),
+                ));
+                $output->writeln(sprintf(
+                    'Confirmations: with_confirmation=%d without_confirmation=%d summary_version_1=%d legacy_without_summary=%d',
+                    (int) ($confirmations['with_confirmation'] ?? 0),
+                    (int) ($confirmations['without_confirmation'] ?? 0),
+                    (int) ($confirmations['summary_version_1'] ?? 0),
+                    (int) ($confirmations['legacy_without_summary'] ?? 0),
+                ));
+                $output->writeln(sprintf(
+                    'Replay support: persisted_summary=%d legacy_reconstructed=%d warning_candidates=%d',
+                    (int) ($replaySupport['persisted_summary'] ?? 0),
+                    (int) ($replaySupport['legacy_reconstructed'] ?? 0),
+                    (int) ($aggregate['legacy_replay_warning_candidates'] ?? 0),
                 ));
 
                 return 0;
@@ -139,6 +154,7 @@ final class DbIdempotencyCommand extends Command
             $record->nodeId ?? 'n/a',
         ));
         if ($record->confirmation !== []) {
+            $replayReproducibility = $this->resolveReplayReproducibility($record->confirmation);
             $output->writeln(sprintf(
                 'Confirmation: kind=%s affected_rows=%d rows_read=%d outcome=%s confirmed_at=%s',
                 (string) ($record->confirmation['kind'] ?? 'n/a'),
@@ -149,9 +165,13 @@ final class DbIdempotencyCommand extends Command
             ));
             $output->writeln(sprintf(
                 'Replay support: reproducibility=%s summary_version=%s',
-                $this->resolveReplayReproducibility($record->confirmation),
+                $replayReproducibility,
                 isset($record->confirmation['summary_version']) ? (string) $record->confirmation['summary_version'] : 'n/a',
             ));
+            $replayWarning = $this->resolveReplaySupportWarning($record->confirmation);
+            if ($replayWarning !== null) {
+                $output->writeln(sprintf('Warning: %s', $replayWarning));
+            }
             $resultSummary = $this->normalizeResultSummary($record->confirmation);
             if ($resultSummary !== []) {
                 $output->writeln(sprintf(
@@ -226,5 +246,17 @@ final class DbIdempotencyCommand extends Command
         return is_array($confirmation['result_summary'] ?? null)
             ? 'persisted_summary'
             : 'legacy_reconstructed';
+    }
+
+    /**
+     * @param array<string, mixed> $confirmation
+     */
+    private function resolveReplaySupportWarning(array $confirmation): ?string
+    {
+        if ($this->resolveReplayReproducibility($confirmation) !== 'legacy_reconstructed') {
+            return null;
+        }
+
+        return 'legacy confirmation reconstructed without persisted result_summary; review before enforcing legacy_replay_mode=block.';
     }
 }

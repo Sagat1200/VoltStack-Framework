@@ -159,6 +159,44 @@ final class DatabaseOperationRuntime
                 $confirmedAffectedRows = max(0, (int) ($existing->confirmation['affected_rows'] ?? 0));
                 $replayResultSummary = $this->normalizeIdempotencyResultSummary($existing->confirmation);
                 $replayReproducibility = $this->resolveReplayReproducibility($existing->confirmation);
+                if (
+                    $replayReproducibility === 'legacy_reconstructed'
+                    && $plan->policy->legacyReplayMode === 'block'
+                ) {
+                    $snapshot = $this->snapshot(
+                        plan: $plan,
+                        attempts: 0,
+                        durationMs: 0,
+                        rowsRead: 0,
+                        affectedRows: 0,
+                        outcome: 'cancelled',
+                        failure: DatabaseOperationalFailure::VerificationFailed,
+                        retryable: false,
+                        circuitState: $this->circuitBreaker->currentState($plan->circuitSegment),
+                        events: array_merge($events, [
+                            new DatabaseDiagnosticEvent('cancelled', $this->timestampNow(), [
+                                'reason' => 'idempotency_guard_legacy_replay_blocked',
+                                'status' => $existing->status,
+                                'node_id' => $existing->nodeId,
+                                'legacy_replay_mode' => $plan->policy->legacyReplayMode,
+                                'replay_reproducibility' => $replayReproducibility,
+                            ]),
+                        ]),
+                    );
+                    $this->recordTelemetry($plan, $snapshot);
+
+                    throw new DatabaseOperationException(
+                        failure: DatabaseOperationalFailure::VerificationFailed,
+                        snapshot: $snapshot,
+                        plan: $plan,
+                        message: sprintf(
+                            'Database idempotency replay blocked for [%s] because confirmation reproducibility [%s] is incompatible with legacy replay mode [%s].',
+                            $plan->operation->kind->value,
+                            $replayReproducibility,
+                            $plan->policy->legacyReplayMode,
+                        ),
+                    );
+                }
                 $snapshot = $this->snapshot(
                     plan: $plan,
                     attempts: 0,
@@ -177,6 +215,7 @@ final class DatabaseOperationRuntime
                             'confirmed_at' => $existing->confirmation['confirmed_at'] ?? null,
                             'affected_rows' => $confirmedAffectedRows,
                             'replay_reproducibility' => $replayReproducibility,
+                            'legacy_replay_mode' => $plan->policy->legacyReplayMode,
                         ]),
                     ]),
                 );
@@ -196,6 +235,7 @@ final class DatabaseOperationRuntime
                             'confirmation' => $existing->confirmation,
                             'result_summary' => $replayResultSummary,
                             'replay_reproducibility' => $replayReproducibility,
+                            'legacy_replay_mode' => $plan->policy->legacyReplayMode,
                         ],
                     ],
                 );

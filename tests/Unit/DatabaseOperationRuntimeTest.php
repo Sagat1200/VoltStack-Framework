@@ -424,6 +424,78 @@ final class DatabaseOperationRuntimeTest extends TestCase
         self::assertSame(1, $result->debug['diagnostic']->affectedRows ?? null);
     }
 
+    public function test_runtime_can_block_legacy_confirmed_replay_when_policy_requires_it(): void
+    {
+        $this->idempotencyBasePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-db-idempotency-runtime-' . uniqid('', true);
+        mkdir($this->idempotencyBasePath, 0777, true);
+
+        $store = new DirectoryDatabaseIdempotencyStore($this->idempotencyBasePath . DIRECTORY_SEPARATOR . 'idempotency');
+        $connection = new RuntimeTestConnection(
+            statementQueue: [
+                RuntimeTestConnection::statementResult(1),
+            ],
+        );
+        $runtime = new DatabaseOperationRuntime(
+            new DatabaseCircuitBreaker(),
+            idempotencyStore: $store,
+        );
+        $context = DatabaseContext::empty()->withConnection($connection);
+        $policy = new DatabaseExecutionPolicy(
+            retryLimit: 1,
+            retryBackoffMs: 0,
+            retryMutationsWhenIdempotent: true,
+            idempotencyPendingTtlSeconds: 300,
+            legacyReplayMode: 'block',
+        );
+        $plan = $runtime->plan(
+            new RawOperation(
+                OperationKind::RawExecute,
+                'UPDATE users SET active = 1 WHERE id = 1',
+                [],
+                'primary',
+                'mutation-users-legacy-blocked',
+            ),
+            $context,
+            $policy,
+        );
+
+        $legacy = new DatabaseIdempotencyRecord(
+            keyHash: hash('sha256', 'mutation-users-legacy-blocked'),
+            operationFingerprint: $plan->fingerprint,
+            requestId: 'req-legacy-blocked',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            createdAt: '2026-08-25T00:00:00+00:00',
+            nodeId: 'node-a',
+            status: 'pending',
+            expiresAt: '2099-08-25T00:05:00+00:00',
+        );
+        $store->acquire($legacy);
+        $store->complete($legacy, [
+            'kind' => 'raw_execute',
+            'affected_rows' => 1,
+            'rows_read' => 0,
+            'outcome' => 'completed',
+            'confirmed_at' => '2026-08-25T00:00:05+00:00',
+        ]);
+
+        try {
+            $runtime->execute($plan, $context);
+            self::fail('Legacy replay should be blocked when policy mode is block.');
+        } catch (DatabaseOperationException $e) {
+            self::assertSame('verification_failed', $e->failure->value);
+            self::assertSame('cancelled', $e->snapshot->outcome);
+            self::assertSame(0, $connection->statementCalls);
+            $reasons = array_map(
+                static fn ($event): ?string => is_object($event) && isset($event->details) && is_array($event->details)
+                    ? ($event->details['reason'] ?? null)
+                    : null,
+                $e->snapshot->events,
+            );
+            self::assertContains('idempotency_guard_legacy_replay_blocked', $reasons);
+        }
+    }
+
     public function test_runtime_opens_circuit_after_repeated_transient_failures(): void
     {
         $connection = new RuntimeTestConnection([

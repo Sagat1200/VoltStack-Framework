@@ -189,7 +189,7 @@ final class DbQueryCommand extends Command
             $plan->safeSqlPreview,
         ));
         $output->writeln(sprintf(
-            'Budget: connection=%s driver=%s timeout_ms=%d max_rows=%d depth=%d/%d retry_limit=%d retryable=%s idempotency=%s',
+            'Budget: connection=%s driver=%s timeout_ms=%d max_rows=%d depth=%d/%d retry_limit=%d retryable=%s idempotency=%s legacy_replay_mode=%s',
             $plan->connectionName !== '' ? $plan->connectionName : 'default',
             $plan->driver,
             $plan->deadline->remainingMs(),
@@ -199,6 +199,7 @@ final class DbQueryCommand extends Command
             $plan->retryLimit,
             $plan->retryable ? 'yes' : 'no',
             $plan->operation->idempotencyKey !== null && trim($plan->operation->idempotencyKey) !== '' ? 'present' : 'absent',
+            $plan->policy->legacyReplayMode,
         ));
     }
 

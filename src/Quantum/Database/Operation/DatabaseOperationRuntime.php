@@ -160,16 +160,101 @@ final class DatabaseOperationRuntime
                 $replayResultSummary = $this->normalizeIdempotencyResultSummary($existing->confirmation);
                 $replayReproducibility = $this->resolveReplayReproducibility($existing->confirmation);
                 $confirmationEvidence = $this->normalizeIdempotencyConfirmationEvidence($existing);
+                $evidenceVerification = $this->verifyIdempotencyConfirmationEvidence($existing, $confirmationEvidence);
                 $currentNodeId = $this->resolveIdempotencyNodeId();
                 $replayOrigin = $this->resolveReplayOrigin($existing->nodeId, $currentNodeId);
+                $evidenceTrustLevel = $this->resolveEvidenceTrustLevel(
+                    $replayOrigin,
+                    (string) ($evidenceVerification['verification_status'] ?? 'unknown'),
+                    (string) ($evidenceVerification['attestation_verification_status'] ?? 'unknown'),
+                );
+                $evidenceVerification['trust_level'] = $evidenceTrustLevel;
                 $legacyReplayWarning = $this->buildLegacyReplayWarning(
                     $existing,
                     $replayReproducibility,
                     $plan->policy->legacyReplayMode,
                     $currentNodeId,
                     $replayOrigin,
-                    $confirmationEvidence,
+                    $evidenceVerification,
                 );
+                if (($evidenceVerification['verification_status'] ?? null) === 'mismatch_persisted_evidence') {
+                    $snapshot = $this->snapshot(
+                        plan: $plan,
+                        attempts: 0,
+                        durationMs: 0,
+                        rowsRead: 0,
+                        affectedRows: 0,
+                        outcome: 'cancelled',
+                        failure: DatabaseOperationalFailure::VerificationFailed,
+                        retryable: false,
+                        circuitState: $this->circuitBreaker->currentState($plan->circuitSegment),
+                        events: array_merge($events, [
+                            new DatabaseDiagnosticEvent('cancelled', $this->timestampNow(), [
+                                'reason' => 'idempotency_guard_confirmation_evidence_mismatch',
+                                'status' => $existing->status,
+                                'node_id' => $existing->nodeId,
+                                'current_node_id' => $currentNodeId,
+                                'replay_origin' => $replayOrigin,
+                                'confirmation_fingerprint' => $evidenceVerification['confirmation_fingerprint'] ?? null,
+                                'recomputed_confirmation_fingerprint' => $evidenceVerification['recomputed_confirmation_fingerprint'] ?? null,
+                                'confirmation_evidence_mode' => $evidenceVerification['evidence_mode'] ?? null,
+                                'verification_status' => $evidenceVerification['verification_status'] ?? null,
+                                'attestation_verification_status' => $evidenceVerification['attestation_verification_status'] ?? null,
+                                'evidence_trust_level' => $evidenceTrustLevel,
+                            ]),
+                        ]),
+                    );
+                    $this->recordTelemetry($plan, $snapshot);
+
+                    throw new DatabaseOperationException(
+                        failure: DatabaseOperationalFailure::VerificationFailed,
+                        snapshot: $snapshot,
+                        plan: $plan,
+                        message: sprintf(
+                            'Database idempotency replay blocked for [%s] because persisted confirmation evidence fingerprint verification failed.',
+                            $plan->operation->kind->value,
+                        ),
+                    );
+                }
+                if (($evidenceVerification['attestation_verification_status'] ?? null) === 'mismatch_source_node_attestation') {
+                    $snapshot = $this->snapshot(
+                        plan: $plan,
+                        attempts: 0,
+                        durationMs: 0,
+                        rowsRead: 0,
+                        affectedRows: 0,
+                        outcome: 'cancelled',
+                        failure: DatabaseOperationalFailure::VerificationFailed,
+                        retryable: false,
+                        circuitState: $this->circuitBreaker->currentState($plan->circuitSegment),
+                        events: array_merge($events, [
+                            new DatabaseDiagnosticEvent('cancelled', $this->timestampNow(), [
+                                'reason' => 'idempotency_guard_source_node_attestation_mismatch',
+                                'status' => $existing->status,
+                                'node_id' => $existing->nodeId,
+                                'current_node_id' => $currentNodeId,
+                                'replay_origin' => $replayOrigin,
+                                'confirmation_fingerprint' => $evidenceVerification['confirmation_fingerprint'] ?? null,
+                                'attestation_fingerprint' => $evidenceVerification['attestation_fingerprint'] ?? null,
+                                'recomputed_attestation_fingerprint' => $evidenceVerification['recomputed_attestation_fingerprint'] ?? null,
+                                'attestation_mode' => $evidenceVerification['attestation_mode'] ?? null,
+                                'attestation_verification_status' => $evidenceVerification['attestation_verification_status'] ?? null,
+                                'evidence_trust_level' => $evidenceTrustLevel,
+                            ]),
+                        ]),
+                    );
+                    $this->recordTelemetry($plan, $snapshot);
+
+                    throw new DatabaseOperationException(
+                        failure: DatabaseOperationalFailure::VerificationFailed,
+                        snapshot: $snapshot,
+                        plan: $plan,
+                        message: sprintf(
+                            'Database idempotency replay blocked for [%s] because source node attestation verification failed.',
+                            $plan->operation->kind->value,
+                        ),
+                    );
+                }
                 if (
                     $replayReproducibility === 'legacy_reconstructed'
                     && $plan->policy->legacyReplayMode === 'block'
@@ -193,8 +278,11 @@ final class DatabaseOperationRuntime
                                 'replay_origin' => $replayOrigin,
                                 'legacy_replay_mode' => $plan->policy->legacyReplayMode,
                                 'replay_reproducibility' => $replayReproducibility,
-                                'confirmation_fingerprint' => $confirmationEvidence['confirmation_fingerprint'] ?? null,
-                                'confirmation_evidence_mode' => $confirmationEvidence['evidence_mode'] ?? null,
+                                'confirmation_fingerprint' => $evidenceVerification['confirmation_fingerprint'] ?? null,
+                                'confirmation_evidence_mode' => $evidenceVerification['evidence_mode'] ?? null,
+                                'verification_status' => $evidenceVerification['verification_status'] ?? null,
+                                'attestation_verification_status' => $evidenceVerification['attestation_verification_status'] ?? null,
+                                'evidence_trust_level' => $evidenceTrustLevel,
                             ]),
                         ]),
                     );
@@ -238,8 +326,11 @@ final class DatabaseOperationRuntime
                                 'replay_reproducibility' => $replayReproducibility,
                                 'legacy_replay_mode' => $plan->policy->legacyReplayMode,
                                 'replay_origin' => $replayOrigin,
-                                'confirmation_fingerprint' => $confirmationEvidence['confirmation_fingerprint'] ?? null,
-                                'confirmation_evidence_mode' => $confirmationEvidence['evidence_mode'] ?? null,
+                                'confirmation_fingerprint' => $evidenceVerification['confirmation_fingerprint'] ?? null,
+                                'confirmation_evidence_mode' => $evidenceVerification['evidence_mode'] ?? null,
+                                'verification_status' => $evidenceVerification['verification_status'] ?? null,
+                                'attestation_verification_status' => $evidenceVerification['attestation_verification_status'] ?? null,
+                                'evidence_trust_level' => $evidenceTrustLevel,
                             ]),
                         ],
                     ),
@@ -264,7 +355,8 @@ final class DatabaseOperationRuntime
                             'current_node_id' => $currentNodeId,
                             'source_node_id' => $existing->nodeId,
                             'replay_origin' => $replayOrigin,
-                            'confirmation_evidence' => $confirmationEvidence,
+                            'confirmation_evidence' => $evidenceVerification,
+                            'evidence_trust_level' => $evidenceTrustLevel,
                             'warning' => $legacyReplayWarning,
                         ],
                     ],
@@ -461,6 +553,11 @@ final class DatabaseOperationRuntime
                         'evidence_version' => $confirmation['evidence_version'],
                         'evidence_mode' => $confirmation['evidence_mode'],
                         'confirmation_fingerprint' => $confirmation['confirmation_fingerprint'],
+                        'attestation_version' => $confirmation['attestation_version'],
+                        'attestation_mode' => $confirmation['attestation_mode'],
+                        'attested_by_node_id' => $confirmation['attested_by_node_id'],
+                        'attested_at' => $confirmation['attested_at'],
+                        'attestation_fingerprint' => $confirmation['attestation_fingerprint'],
                     ]);
                 }
 
@@ -1019,6 +1116,9 @@ final class DatabaseOperationRuntime
             'replay_origin' => $replayOrigin,
             'confirmation_fingerprint' => $confirmationEvidence['confirmation_fingerprint'] ?? null,
             'confirmation_evidence_mode' => $confirmationEvidence['evidence_mode'] ?? null,
+            'verification_status' => $confirmationEvidence['verification_status'] ?? null,
+            'attestation_verification_status' => $confirmationEvidence['attestation_verification_status'] ?? null,
+            'evidence_trust_level' => $confirmationEvidence['trust_level'] ?? null,
         ];
     }
 
@@ -1063,12 +1163,22 @@ final class DatabaseOperationRuntime
             ],
         ];
 
-        return [
+        $confirmationFingerprint = hash('sha256', json_encode($payload, JSON_THROW_ON_ERROR));
+
+        $evidence = [
             'source_node_id' => $sourceNodeId,
             'evidence_version' => 1,
             'evidence_mode' => 'persisted_evidence',
-            'confirmation_fingerprint' => hash('sha256', json_encode($payload, JSON_THROW_ON_ERROR)),
+            'confirmation_fingerprint' => $confirmationFingerprint,
+            'attestation_version' => 1,
+            'attestation_mode' => 'source_node_self_attested',
+            'attested_by_node_id' => $sourceNodeId,
+            'attested_at' => $confirmation['confirmed_at'] ?? null,
         ];
+
+        $evidence['attestation_fingerprint'] = $this->computeIdempotencyConfirmationAttestationFingerprint($record, $evidence);
+
+        return $evidence;
     }
 
     /**
@@ -1088,6 +1198,11 @@ final class DatabaseOperationRuntime
                 'evidence_version' => isset($confirmation['evidence_version']) ? (int) $confirmation['evidence_version'] : null,
                 'evidence_mode' => (string) ($confirmation['evidence_mode'] ?? 'persisted_evidence'),
                 'confirmation_fingerprint' => trim($fingerprint),
+                'attestation_version' => isset($confirmation['attestation_version']) ? (int) $confirmation['attestation_version'] : null,
+                'attestation_mode' => isset($confirmation['attestation_mode']) ? (string) $confirmation['attestation_mode'] : null,
+                'attested_by_node_id' => isset($confirmation['attested_by_node_id']) ? (string) $confirmation['attested_by_node_id'] : null,
+                'attested_at' => isset($confirmation['attested_at']) ? (string) $confirmation['attested_at'] : null,
+                'attestation_fingerprint' => isset($confirmation['attestation_fingerprint']) ? (string) $confirmation['attestation_fingerprint'] : null,
             ];
         }
 
@@ -1114,6 +1229,155 @@ final class DatabaseOperationRuntime
             'evidence_version' => null,
             'evidence_mode' => 'legacy_reconstructed_evidence',
             'confirmation_fingerprint' => hash('sha256', json_encode($payload, JSON_THROW_ON_ERROR)),
+            'attestation_version' => null,
+            'attestation_mode' => null,
+            'attested_by_node_id' => null,
+            'attested_at' => null,
+            'attestation_fingerprint' => null,
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $confirmationEvidence
+     * @return array<string, mixed>
+     */
+    private function verifyIdempotencyConfirmationEvidence(
+        DatabaseIdempotencyRecord $record,
+        array $confirmationEvidence,
+    ): array {
+        $recomputedFingerprint = $this->computeIdempotencyConfirmationFingerprint(
+            $record,
+            $confirmationEvidence['source_node_id'] ?? $record->nodeId,
+        );
+        $storedFingerprint = $confirmationEvidence['confirmation_fingerprint'] ?? null;
+        $evidenceMode = (string) ($confirmationEvidence['evidence_mode'] ?? 'unknown');
+
+        if ($evidenceMode === 'persisted_evidence') {
+            $verificationStatus = is_string($storedFingerprint) && trim($storedFingerprint) !== '' && trim($storedFingerprint) === $recomputedFingerprint
+                ? 'verified_persisted_evidence'
+                : 'mismatch_persisted_evidence';
+            $attestationVerification = $this->verifyIdempotencyConfirmationAttestation($record, $confirmationEvidence);
+
+            return array_merge($confirmationEvidence, [
+                'verification_status' => $verificationStatus,
+                'recomputed_confirmation_fingerprint' => $recomputedFingerprint,
+                'attestation_verification_status' => $attestationVerification['attestation_verification_status'],
+                'recomputed_attestation_fingerprint' => $attestationVerification['recomputed_attestation_fingerprint'],
+            ]);
+        }
+
+        return array_merge($confirmationEvidence, [
+            'verification_status' => 'reconstructed_legacy_evidence',
+            'recomputed_confirmation_fingerprint' => $recomputedFingerprint,
+            'attestation_verification_status' => 'not_attested_legacy',
+            'recomputed_attestation_fingerprint' => null,
+        ]);
+    }
+
+    private function computeIdempotencyConfirmationFingerprint(
+        DatabaseIdempotencyRecord $record,
+        mixed $sourceNodeId,
+    ): string {
+        $payload = [
+            'key_hash' => $record->keyHash,
+            'operation_fingerprint' => $record->operationFingerprint,
+            'request_id' => $record->requestId,
+            'connection_name' => $record->connectionName,
+            'logical_target' => $record->logicalTarget,
+            'source_node_id' => is_string($sourceNodeId) && trim($sourceNodeId) !== '' ? trim($sourceNodeId) : $record->nodeId,
+            'confirmation' => [
+                'kind' => $record->confirmation['kind'] ?? null,
+                'affected_rows' => $record->confirmation['affected_rows'] ?? null,
+                'rows_read' => $record->confirmation['rows_read'] ?? null,
+                'outcome' => $record->confirmation['outcome'] ?? null,
+                'confirmed_at' => $record->confirmation['confirmed_at'] ?? null,
+                'replay_reproducibility' => $this->resolveReplayReproducibility($record->confirmation),
+                'result_summary' => $this->normalizeIdempotencyResultSummary($record->confirmation),
+            ],
+        ];
+
+        return hash('sha256', json_encode($payload, JSON_THROW_ON_ERROR));
+    }
+
+    /**
+     * @param array<string, mixed> $confirmationEvidence
+     * @return array{attestation_verification_status:string,recomputed_attestation_fingerprint:?string}
+     */
+    private function verifyIdempotencyConfirmationAttestation(
+        DatabaseIdempotencyRecord $record,
+        array $confirmationEvidence,
+    ): array {
+        $mode = isset($confirmationEvidence['attestation_mode']) ? trim((string) $confirmationEvidence['attestation_mode']) : '';
+        if ($mode === '') {
+            return [
+                'attestation_verification_status' => 'no_attestation',
+                'recomputed_attestation_fingerprint' => null,
+            ];
+        }
+
+        $recomputedFingerprint = $this->computeIdempotencyConfirmationAttestationFingerprint($record, $confirmationEvidence);
+        $storedFingerprint = $confirmationEvidence['attestation_fingerprint'] ?? null;
+        $attestedBy = isset($confirmationEvidence['attested_by_node_id']) ? trim((string) $confirmationEvidence['attested_by_node_id']) : '';
+        $sourceNodeId = isset($confirmationEvidence['source_node_id']) ? trim((string) $confirmationEvidence['source_node_id']) : '';
+        $attestedAt = isset($confirmationEvidence['attested_at']) ? trim((string) $confirmationEvidence['attested_at']) : '';
+
+        $verified = $mode === 'source_node_self_attested'
+            && $attestedBy !== ''
+            && $sourceNodeId !== ''
+            && $attestedBy === $sourceNodeId
+            && $attestedAt !== ''
+            && is_string($storedFingerprint)
+            && trim($storedFingerprint) !== ''
+            && trim($storedFingerprint) === $recomputedFingerprint;
+
+        return [
+            'attestation_verification_status' => $verified
+                ? 'verified_source_node_attestation'
+                : 'mismatch_source_node_attestation',
+            'recomputed_attestation_fingerprint' => $recomputedFingerprint,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $confirmationEvidence
+     */
+    private function computeIdempotencyConfirmationAttestationFingerprint(
+        DatabaseIdempotencyRecord $record,
+        array $confirmationEvidence,
+    ): string {
+        $payload = [
+            'key_hash' => $record->keyHash,
+            'operation_fingerprint' => $record->operationFingerprint,
+            'source_node_id' => $confirmationEvidence['source_node_id'] ?? $record->nodeId,
+            'confirmation_fingerprint' => $confirmationEvidence['confirmation_fingerprint'] ?? null,
+            'attestation_mode' => $confirmationEvidence['attestation_mode'] ?? null,
+            'attested_by_node_id' => $confirmationEvidence['attested_by_node_id'] ?? null,
+            'attested_at' => $confirmationEvidence['attested_at'] ?? null,
+        ];
+
+        return hash('sha256', json_encode($payload, JSON_THROW_ON_ERROR));
+    }
+
+    private function resolveEvidenceTrustLevel(
+        string $replayOrigin,
+        string $verificationStatus,
+        string $attestationVerificationStatus,
+    ): string {
+        if ($attestationVerificationStatus === 'mismatch_source_node_attestation') {
+            return 'untrusted_attestation_mismatch';
+        }
+
+        return match ($verificationStatus) {
+            'verified_persisted_evidence' => match ($replayOrigin) {
+                'local_node' => 'local_verified_persisted',
+                'federated_remote_node' => $attestationVerificationStatus === 'verified_source_node_attestation'
+                    ? 'remote_attested_persisted'
+                    : 'remote_verified_persisted',
+                default => 'unknown_verified_persisted',
+            },
+            'reconstructed_legacy_evidence' => 'legacy_reconstructed',
+            'mismatch_persisted_evidence' => 'untrusted_mismatch',
+            default => 'unknown_trust',
+        };
     }
 }

@@ -48,16 +48,19 @@ final class DatabaseFederatedIdempotencyCommandTest extends TestCase
         self::assertSame(0, $result['exit']);
         self::assertStringContainsString('Database idempotency aggregate: records=2 requests=2 connections=1 targets=1 nodes=2', $result['stdout']);
         self::assertStringContainsString('Replay support: persisted_summary=1 legacy_reconstructed=1 warning_candidates=1', $result['stdout']);
+        self::assertStringContainsString('Verification: verified=1 reconstructed_legacy=1 mismatch=0', $result['stdout']);
+        self::assertStringContainsString('Attestation: verified=1 missing=0 legacy=1 mismatch=0', $result['stdout']);
         self::assertStringContainsString(
             'Perspective: current_node=node-a local_records=1 remote_records=1 unknown_records=0',
             $result['stdout']
         );
+        self::assertStringContainsString('Trust: local_verified=1 remote_attested=0 remote_verified=0 legacy_reconstructed=1 untrusted_mismatch=0 untrusted_attestation=0 unknown=0', $result['stdout']);
         self::assertStringContainsString(
-            'Node: node-a perspective=local_node records=1 completed=1 failed=0 pending=0 persisted_summary=1 legacy_reconstructed=0 warning_candidates=0',
+            'Node: node-a perspective=local_node records=1 completed=1 failed=0 pending=0 persisted_summary=1 legacy_reconstructed=0 verified=1 mismatch=0 attested=1 attestation_mismatch=0 trust_local=1 trust_remote_attested=0 trust_remote_verified=0 trust_legacy=0 warning_candidates=0',
             $result['stdout']
         );
         self::assertStringContainsString(
-            'Node: node-b perspective=federated_remote_node records=1 completed=1 failed=0 pending=0 persisted_summary=0 legacy_reconstructed=1 warning_candidates=1',
+            'Node: node-b perspective=federated_remote_node records=1 completed=1 failed=0 pending=0 persisted_summary=0 legacy_reconstructed=1 verified=0 mismatch=0 attested=0 attestation_mismatch=0 trust_local=0 trust_remote_attested=0 trust_remote_verified=0 trust_legacy=1 warning_candidates=1',
             $result['stdout']
         );
 
@@ -71,6 +74,15 @@ final class DatabaseFederatedIdempotencyCommandTest extends TestCase
         self::assertStringContainsString('"node_id": "node-a"', $json['stdout']);
         self::assertStringContainsString('"node_id": "node-b"', $json['stdout']);
         self::assertStringContainsString('"legacy_replay_warning_candidates": 1', $json['stdout']);
+        self::assertStringContainsString('"local_verified_persisted": 1', $json['stdout']);
+        self::assertStringContainsString('"legacy_reconstructed": 1', $json['stdout']);
+
+        $remotePerspective = $this->runConsole($this->basePath . DIRECTORY_SEPARATOR . 'node-b', ['volt', 'db:idempotency', '--aggregate', '--limit=10']);
+        self::assertSame(0, $remotePerspective['exit']);
+        self::assertStringContainsString(
+            'Trust: local_verified=0 remote_attested=1 remote_verified=0 legacy_reconstructed=1 untrusted_mismatch=0 untrusted_attestation=0 unknown=0',
+            $remotePerspective['stdout']
+        );
     }
 
     private function seedCompletedRecord(
@@ -113,7 +125,38 @@ final class DatabaseFederatedIdempotencyCommandTest extends TestCase
                 'source_node_id' => $nodeId,
                 'evidence_version' => 1,
                 'evidence_mode' => 'persisted_evidence',
-                'confirmation_fingerprint' => hash('sha256', $requestId . '-confirmation'),
+                'confirmation_fingerprint' => $confirmationFingerprint = $this->computeConfirmationFingerprint(
+                    $record,
+                    $nodeId,
+                    [
+                        'kind' => 'raw_execute',
+                        'affected_rows' => 1,
+                        'rows_read' => 0,
+                        'outcome' => 'completed',
+                        'confirmed_at' => '2026-08-25T09:00:10+00:00',
+                        'replay_reproducibility' => 'persisted_summary',
+                        'result_summary' => [
+                            'kind' => 'raw_execute',
+                            'is_select' => false,
+                            'affected_rows' => 1,
+                            'rows_read' => 0,
+                            'column_count' => 0,
+                            'result_type' => 'success_no_rows',
+                        ],
+                    ],
+                ),
+                'attestation_version' => 1,
+                'attestation_mode' => 'source_node_self_attested',
+                'attested_by_node_id' => $nodeId,
+                'attested_at' => '2026-08-25T09:00:10+00:00',
+                'attestation_fingerprint' => $this->computeAttestationFingerprint(
+                    $record,
+                    $nodeId,
+                    $confirmationFingerprint,
+                    'source_node_self_attested',
+                    $nodeId,
+                    '2026-08-25T09:00:10+00:00',
+                ),
                 'result_summary' => [
                     'kind' => 'raw_execute',
                     'is_select' => false,
@@ -147,6 +190,52 @@ final class DatabaseFederatedIdempotencyCommandTest extends TestCase
         $app = require $projectPath . DIRECTORY_SEPARATOR . 'bootstrap' . DIRECTORY_SEPARATOR . 'app.php';
 
         return $app;
+    }
+
+    /**
+     * @param array<string, mixed> $confirmation
+     */
+    private function computeConfirmationFingerprint(
+        DatabaseIdempotencyRecord $record,
+        string $sourceNodeId,
+        array $confirmation,
+    ): string {
+        return hash('sha256', json_encode([
+            'key_hash' => $record->keyHash,
+            'operation_fingerprint' => $record->operationFingerprint,
+            'request_id' => $record->requestId,
+            'connection_name' => $record->connectionName,
+            'logical_target' => $record->logicalTarget,
+            'source_node_id' => $sourceNodeId,
+            'confirmation' => [
+                'kind' => $confirmation['kind'] ?? null,
+                'affected_rows' => $confirmation['affected_rows'] ?? null,
+                'rows_read' => $confirmation['rows_read'] ?? null,
+                'outcome' => $confirmation['outcome'] ?? null,
+                'confirmed_at' => $confirmation['confirmed_at'] ?? null,
+                'replay_reproducibility' => $confirmation['replay_reproducibility'] ?? null,
+                'result_summary' => $confirmation['result_summary'] ?? null,
+            ],
+        ], JSON_THROW_ON_ERROR));
+    }
+
+    private function computeAttestationFingerprint(
+        DatabaseIdempotencyRecord $record,
+        string $sourceNodeId,
+        string $confirmationFingerprint,
+        string $attestationMode,
+        string $attestedByNodeId,
+        string $attestedAt,
+    ): string {
+        return hash('sha256', json_encode([
+            'key_hash' => $record->keyHash,
+            'operation_fingerprint' => $record->operationFingerprint,
+            'source_node_id' => $sourceNodeId,
+            'confirmation_fingerprint' => $confirmationFingerprint,
+            'attestation_mode' => $attestationMode,
+            'attested_by_node_id' => $attestedByNodeId,
+            'attested_at' => $attestedAt,
+        ], JSON_THROW_ON_ERROR));
     }
 
     private function makeTempProject(string $basePath, string $nodeId): void

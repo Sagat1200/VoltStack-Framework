@@ -344,10 +344,125 @@ final class DatabaseOperationRuntimeTest extends TestCase
         self::assertSame(1, $stored?->confirmation['evidence_version'] ?? null);
         self::assertSame('persisted_evidence', $stored?->confirmation['evidence_mode'] ?? null);
         self::assertIsString($stored?->confirmation['confirmation_fingerprint'] ?? null);
+        self::assertSame(1, $stored?->confirmation['attestation_version'] ?? null);
+        self::assertSame('source_node_self_attested', $stored?->confirmation['attestation_mode'] ?? null);
+        self::assertSame('node-b', $stored?->confirmation['attested_by_node_id'] ?? null);
+        self::assertSame($stored?->confirmation['confirmed_at'] ?? null, $stored?->confirmation['attested_at'] ?? null);
+        self::assertIsString($stored?->confirmation['attestation_fingerprint'] ?? null);
         self::assertSame('completed', $result->debug['idempotency']['status'] ?? null);
         self::assertSame('persisted_summary', $result->debug['idempotency']['confirmation']['replay_reproducibility'] ?? null);
         self::assertSame('persisted_evidence', $result->debug['idempotency']['confirmation']['evidence_mode'] ?? null);
         self::assertSame('success_no_rows', $result->debug['idempotency']['result_summary']['result_type'] ?? null);
+    }
+
+    public function test_runtime_classifies_remote_replay_as_attested_when_source_node_attestation_verifies(): void
+    {
+        $this->idempotencyBasePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-db-idempotency-runtime-' . uniqid('', true);
+        mkdir($this->idempotencyBasePath, 0777, true);
+
+        $store = new DirectoryDatabaseIdempotencyStore($this->idempotencyBasePath . DIRECTORY_SEPARATOR . 'idempotency');
+        $connection = new RuntimeTestConnection(
+            statementQueue: [
+                RuntimeTestConnection::statementResult(1),
+            ],
+        );
+        $runtime = new DatabaseOperationRuntime(
+            new DatabaseCircuitBreaker(),
+            idempotencyStore: $store,
+            idempotencyNodeId: 'node-b',
+        );
+        $context = DatabaseContext::empty()->withConnection($connection);
+        $policy = new DatabaseExecutionPolicy(
+            retryLimit: 1,
+            retryBackoffMs: 0,
+            retryMutationsWhenIdempotent: true,
+            idempotencyPendingTtlSeconds: 300,
+        );
+        $plan = $runtime->plan(
+            new RawOperation(
+                OperationKind::RawExecute,
+                'UPDATE users SET active = 1 WHERE id = 1',
+                [],
+                'primary',
+                'mutation-users-remote-attested',
+            ),
+            $context,
+            $policy,
+        );
+
+        $record = new DatabaseIdempotencyRecord(
+            keyHash: hash('sha256', 'mutation-users-remote-attested'),
+            operationFingerprint: $plan->fingerprint,
+            requestId: 'req-remote-attested',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            createdAt: '2026-08-26T01:00:00+00:00',
+            nodeId: 'node-a',
+            status: 'pending',
+            expiresAt: '2099-08-26T01:05:00+00:00',
+        );
+        $store->acquire($record);
+        $confirmationFingerprint = $this->computeConfirmationFingerprintForTest(
+            $record,
+            'node-a',
+            [
+                'kind' => 'raw_execute',
+                'affected_rows' => 1,
+                'rows_read' => 0,
+                'outcome' => 'completed',
+                'confirmed_at' => '2026-08-26T01:00:05+00:00',
+                'replay_reproducibility' => 'persisted_summary',
+                'result_summary' => [
+                    'kind' => 'raw_execute',
+                    'is_select' => false,
+                    'affected_rows' => 1,
+                    'rows_read' => 0,
+                    'column_count' => 0,
+                    'result_type' => 'success_no_rows',
+                ],
+            ],
+        );
+        $store->complete($record, [
+            'kind' => 'raw_execute',
+            'affected_rows' => 1,
+            'rows_read' => 0,
+            'outcome' => 'completed',
+            'confirmed_at' => '2026-08-26T01:00:05+00:00',
+            'summary_version' => 1,
+            'replay_reproducibility' => 'persisted_summary',
+            'source_node_id' => 'node-a',
+            'evidence_version' => 1,
+            'evidence_mode' => 'persisted_evidence',
+            'confirmation_fingerprint' => $confirmationFingerprint,
+            'attestation_version' => 1,
+            'attestation_mode' => 'source_node_self_attested',
+            'attested_by_node_id' => 'node-a',
+            'attested_at' => '2026-08-26T01:00:05+00:00',
+            'attestation_fingerprint' => $this->computeAttestationFingerprintForTest(
+                $record,
+                'node-a',
+                $confirmationFingerprint,
+                'source_node_self_attested',
+                'node-a',
+                '2026-08-26T01:00:05+00:00',
+            ),
+            'result_summary' => [
+                'kind' => 'raw_execute',
+                'is_select' => false,
+                'affected_rows' => 1,
+                'rows_read' => 0,
+                'column_count' => 0,
+                'result_type' => 'success_no_rows',
+            ],
+        ]);
+
+        $result = $runtime->execute($plan, $context);
+
+        self::assertTrue($result->isSuccess);
+        self::assertSame(0, $connection->statementCalls);
+        self::assertSame('remote_attested_persisted', $result->debug['idempotency']['evidence_trust_level'] ?? null);
+        self::assertSame('verified_persisted_evidence', $result->debug['idempotency']['confirmation_evidence']['verification_status'] ?? null);
+        self::assertSame('verified_source_node_attestation', $result->debug['idempotency']['confirmation_evidence']['attestation_verification_status'] ?? null);
     }
 
     public function test_runtime_short_circuits_confirmed_replay_without_touching_database(): void
@@ -434,6 +549,9 @@ final class DatabaseOperationRuntimeTest extends TestCase
         self::assertSame('legacy_reconstructed_evidence', $result->debug['idempotency']['confirmation_evidence']['evidence_mode'] ?? null);
         self::assertSame('node-a', $result->debug['idempotency']['confirmation_evidence']['source_node_id'] ?? null);
         self::assertIsString($result->debug['idempotency']['confirmation_evidence']['confirmation_fingerprint'] ?? null);
+        self::assertSame('reconstructed_legacy_evidence', $result->debug['idempotency']['confirmation_evidence']['verification_status'] ?? null);
+        self::assertSame('legacy_reconstructed', $result->debug['idempotency']['confirmation_evidence']['trust_level'] ?? null);
+        self::assertSame('legacy_reconstructed', $result->debug['idempotency']['evidence_trust_level'] ?? null);
         self::assertSame('success_no_rows', $result->debug['idempotency']['result_summary']['result_type'] ?? null);
         self::assertSame(1, $result->debug['idempotency']['result_summary']['affected_rows'] ?? null);
         self::assertSame(1, $result->debug['diagnostic']->affectedRows ?? null);
@@ -596,9 +714,217 @@ final class DatabaseOperationRuntimeTest extends TestCase
         self::assertSame('federated_remote_node', $warning['replay_origin'] ?? null);
         self::assertSame('node-b', $warning['current_node_id'] ?? null);
         self::assertSame('legacy_reconstructed_evidence', $warning['confirmation_evidence_mode'] ?? null);
+        self::assertSame('reconstructed_legacy_evidence', $warning['verification_status'] ?? null);
+        self::assertSame('legacy_reconstructed', $warning['evidence_trust_level'] ?? null);
         self::assertIsString($warning['confirmation_fingerprint'] ?? null);
         self::assertContains('idempotency_guard_legacy_replay_warning', $reasons);
         self::assertContains('idempotency_guard_replayed_confirmed', $reasons);
+    }
+
+    public function test_runtime_blocks_replay_when_persisted_confirmation_evidence_is_inconsistent(): void
+    {
+        $this->idempotencyBasePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-db-idempotency-runtime-' . uniqid('', true);
+        mkdir($this->idempotencyBasePath, 0777, true);
+
+        $store = new DirectoryDatabaseIdempotencyStore($this->idempotencyBasePath . DIRECTORY_SEPARATOR . 'idempotency');
+        $connection = new RuntimeTestConnection(
+            statementQueue: [
+                RuntimeTestConnection::statementResult(1),
+            ],
+        );
+        $runtime = new DatabaseOperationRuntime(
+            new DatabaseCircuitBreaker(),
+            idempotencyStore: $store,
+            idempotencyNodeId: 'node-b',
+        );
+        $context = DatabaseContext::empty()->withConnection($connection);
+        $policy = new DatabaseExecutionPolicy(
+            retryLimit: 1,
+            retryBackoffMs: 0,
+            retryMutationsWhenIdempotent: true,
+            idempotencyPendingTtlSeconds: 300,
+        );
+        $plan = $runtime->plan(
+            new RawOperation(
+                OperationKind::RawExecute,
+                'UPDATE users SET active = 1 WHERE id = 1',
+                [],
+                'primary',
+                'mutation-users-evidence-mismatch',
+            ),
+            $context,
+            $policy,
+        );
+
+        $record = new DatabaseIdempotencyRecord(
+            keyHash: hash('sha256', 'mutation-users-evidence-mismatch'),
+            operationFingerprint: $plan->fingerprint,
+            requestId: 'req-evidence-mismatch',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            createdAt: '2026-08-26T00:00:00+00:00',
+            nodeId: 'node-a',
+            status: 'pending',
+            expiresAt: '2099-08-26T00:05:00+00:00',
+        );
+        $store->acquire($record);
+        $store->complete($record, [
+            'kind' => 'raw_execute',
+            'affected_rows' => 1,
+            'rows_read' => 0,
+            'outcome' => 'completed',
+            'confirmed_at' => '2026-08-26T00:00:05+00:00',
+            'summary_version' => 1,
+            'replay_reproducibility' => 'persisted_summary',
+            'source_node_id' => 'node-a',
+            'evidence_version' => 1,
+            'evidence_mode' => 'persisted_evidence',
+            'confirmation_fingerprint' => 'mismatch-fingerprint',
+            'result_summary' => [
+                'kind' => 'raw_execute',
+                'is_select' => false,
+                'affected_rows' => 1,
+                'rows_read' => 0,
+                'column_count' => 0,
+                'result_type' => 'success_no_rows',
+            ],
+        ]);
+
+        try {
+            $runtime->execute($plan, $context);
+            self::fail('Replay should be blocked when persisted confirmation evidence does not verify.');
+        } catch (DatabaseOperationException $e) {
+            self::assertSame('verification_failed', $e->failure->value);
+            self::assertSame('cancelled', $e->snapshot->outcome);
+            self::assertSame(0, $connection->statementCalls);
+            $reasons = array_map(
+                static fn ($event): ?string => is_object($event) && isset($event->details) && is_array($event->details)
+                    ? ($event->details['reason'] ?? null)
+                    : null,
+                $e->snapshot->events,
+            );
+            self::assertContains('idempotency_guard_confirmation_evidence_mismatch', $reasons);
+            $mismatchEvents = array_values(array_filter(
+                $e->snapshot->events,
+                static fn ($event): bool => is_object($event)
+                    && isset($event->details)
+                    && is_array($event->details)
+                    && (($event->details['reason'] ?? null) === 'idempotency_guard_confirmation_evidence_mismatch'),
+            ));
+            self::assertNotEmpty($mismatchEvents);
+            self::assertSame('untrusted_mismatch', $mismatchEvents[0]->details['evidence_trust_level'] ?? null);
+        }
+    }
+
+    public function test_runtime_blocks_replay_when_source_node_attestation_is_inconsistent(): void
+    {
+        $this->idempotencyBasePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-db-idempotency-runtime-' . uniqid('', true);
+        mkdir($this->idempotencyBasePath, 0777, true);
+
+        $store = new DirectoryDatabaseIdempotencyStore($this->idempotencyBasePath . DIRECTORY_SEPARATOR . 'idempotency');
+        $connection = new RuntimeTestConnection(
+            statementQueue: [
+                RuntimeTestConnection::statementResult(1),
+            ],
+        );
+        $runtime = new DatabaseOperationRuntime(
+            new DatabaseCircuitBreaker(),
+            idempotencyStore: $store,
+            idempotencyNodeId: 'node-b',
+        );
+        $context = DatabaseContext::empty()->withConnection($connection);
+        $policy = new DatabaseExecutionPolicy(
+            retryLimit: 1,
+            retryBackoffMs: 0,
+            retryMutationsWhenIdempotent: true,
+            idempotencyPendingTtlSeconds: 300,
+        );
+        $plan = $runtime->plan(
+            new RawOperation(
+                OperationKind::RawExecute,
+                'UPDATE users SET active = 1 WHERE id = 1',
+                [],
+                'primary',
+                'mutation-users-attestation-mismatch',
+            ),
+            $context,
+            $policy,
+        );
+
+        $record = new DatabaseIdempotencyRecord(
+            keyHash: hash('sha256', 'mutation-users-attestation-mismatch'),
+            operationFingerprint: $plan->fingerprint,
+            requestId: 'req-attestation-mismatch',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            createdAt: '2026-08-26T02:00:00+00:00',
+            nodeId: 'node-a',
+            status: 'pending',
+            expiresAt: '2099-08-26T02:05:00+00:00',
+        );
+        $store->acquire($record);
+        $confirmationFingerprint = $this->computeConfirmationFingerprintForTest(
+            $record,
+            'node-a',
+            [
+                'kind' => 'raw_execute',
+                'affected_rows' => 1,
+                'rows_read' => 0,
+                'outcome' => 'completed',
+                'confirmed_at' => '2026-08-26T02:00:05+00:00',
+                'replay_reproducibility' => 'persisted_summary',
+                'result_summary' => [
+                    'kind' => 'raw_execute',
+                    'is_select' => false,
+                    'affected_rows' => 1,
+                    'rows_read' => 0,
+                    'column_count' => 0,
+                    'result_type' => 'success_no_rows',
+                ],
+            ],
+        );
+        $store->complete($record, [
+            'kind' => 'raw_execute',
+            'affected_rows' => 1,
+            'rows_read' => 0,
+            'outcome' => 'completed',
+            'confirmed_at' => '2026-08-26T02:00:05+00:00',
+            'summary_version' => 1,
+            'replay_reproducibility' => 'persisted_summary',
+            'source_node_id' => 'node-a',
+            'evidence_version' => 1,
+            'evidence_mode' => 'persisted_evidence',
+            'confirmation_fingerprint' => $confirmationFingerprint,
+            'attestation_version' => 1,
+            'attestation_mode' => 'source_node_self_attested',
+            'attested_by_node_id' => 'node-a',
+            'attested_at' => '2026-08-26T02:00:05+00:00',
+            'attestation_fingerprint' => 'mismatch-attestation',
+            'result_summary' => [
+                'kind' => 'raw_execute',
+                'is_select' => false,
+                'affected_rows' => 1,
+                'rows_read' => 0,
+                'column_count' => 0,
+                'result_type' => 'success_no_rows',
+            ],
+        ]);
+
+        try {
+            $runtime->execute($plan, $context);
+            self::fail('Replay should be blocked when source node attestation does not verify.');
+        } catch (DatabaseOperationException $e) {
+            self::assertSame('verification_failed', $e->failure->value);
+            self::assertSame('cancelled', $e->snapshot->outcome);
+            self::assertSame(0, $connection->statementCalls);
+            $reasons = array_map(
+                static fn ($event): ?string => is_object($event) && isset($event->details) && is_array($event->details)
+                    ? ($event->details['reason'] ?? null)
+                    : null,
+                $e->snapshot->events,
+            );
+            self::assertContains('idempotency_guard_source_node_attestation_mismatch', $reasons);
+        }
     }
 
     public function test_runtime_opens_circuit_after_repeated_transient_failures(): void
@@ -829,6 +1155,52 @@ final class DatabaseOperationRuntimeTest extends TestCase
         }
 
         @rmdir($path);
+    }
+
+    /**
+     * @param array<string, mixed> $confirmation
+     */
+    private function computeConfirmationFingerprintForTest(
+        DatabaseIdempotencyRecord $record,
+        string $sourceNodeId,
+        array $confirmation,
+    ): string {
+        return hash('sha256', json_encode([
+            'key_hash' => $record->keyHash,
+            'operation_fingerprint' => $record->operationFingerprint,
+            'request_id' => $record->requestId,
+            'connection_name' => $record->connectionName,
+            'logical_target' => $record->logicalTarget,
+            'source_node_id' => $sourceNodeId,
+            'confirmation' => [
+                'kind' => $confirmation['kind'] ?? null,
+                'affected_rows' => $confirmation['affected_rows'] ?? null,
+                'rows_read' => $confirmation['rows_read'] ?? null,
+                'outcome' => $confirmation['outcome'] ?? null,
+                'confirmed_at' => $confirmation['confirmed_at'] ?? null,
+                'replay_reproducibility' => $confirmation['replay_reproducibility'] ?? null,
+                'result_summary' => $confirmation['result_summary'] ?? null,
+            ],
+        ], JSON_THROW_ON_ERROR));
+    }
+
+    private function computeAttestationFingerprintForTest(
+        DatabaseIdempotencyRecord $record,
+        string $sourceNodeId,
+        string $confirmationFingerprint,
+        string $attestationMode,
+        string $attestedByNodeId,
+        string $attestedAt,
+    ): string {
+        return hash('sha256', json_encode([
+            'key_hash' => $record->keyHash,
+            'operation_fingerprint' => $record->operationFingerprint,
+            'source_node_id' => $sourceNodeId,
+            'confirmation_fingerprint' => $confirmationFingerprint,
+            'attestation_mode' => $attestationMode,
+            'attested_by_node_id' => $attestedByNodeId,
+            'attested_at' => $attestedAt,
+        ], JSON_THROW_ON_ERROR));
     }
 }
 

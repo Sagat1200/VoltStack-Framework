@@ -1,78 +1,170 @@
 # VoltStack Framework
 
-VoltStack es un framework PHP con un runtime reactivo guiado por servidor, efectos de protocolo granulares y una DSL fluida en backend para transiciones, efectos manuales y politicas de runtime.
+VoltStack es un framework PHP fullstack orientado a aplicaciones reactivas y SPA server-driven.
 
-## Vision General Del Protocolo Reactivo
+Su propuesta combina:
 
-VoltStack usa un protocolo reactivo guiado por servidor entre el runtime de frontend y el runtime de backend.
+- experiencia de desarrollo estilo Laravel,
+- componentes reactivos impulsados por PHP,
+- navegación SPA sin depender de un framework frontend pesado,
+- compatibilidad con runtimes persistentes como FrankenPHP,
+- y un núcleo modular propio para HTTP, routing, views, seguridad, consola y base de datos.
 
-- El cliente envia un snapshot del componente, el nombre de la accion, parametros opcionales y cualquier actualizacion de estado pendiente.
-- El servidor hidrata el componente, aplica cambios, ejecuta la accion, vuelve a renderizar y genera los efectos del protocolo.
-- La respuesta puede incluir HTML, efectos granulares como `text.update` o `attribute.set`, instrucciones de navegacion y efectos de politicas de runtime.
-- El runtime de frontend aplica esos efectos de forma conservadora, preservando foco, seleccion, scroll y la semantica del ciclo de vida de las requests cuando es posible.
+## Qué hace diferente a VoltStack
 
-Flujo tipico:
+VoltStack no intenta ser solo un micro-framework HTTP con utilidades añadidas después. Su arquitectura nace con estas ideas desde el core:
 
-```txt
-Interaccion del usuario
--> Request del runtime frontend
--> Hidratacion del componente
--> Ejecucion de la accion
--> Generacion de diff/efectos
--> Aplicacion de patch/efectos en frontend
-```
+- `PHP First`: la mayor parte de la aplicación se construye en PHP.
+- `Reactive Native`: la reactividad forma parte del framework, no es un addon externo.
+- `SPA by Default`: el runtime frontend y el protocolo reactivo forman parte del stack.
+- `Persistent Runtime Aware`: está pensado para ejecutarse de forma segura sobre workers persistentes.
+- `Operationally Minded`: incluye capacidades reales para observabilidad, salud e idempotencia en operaciones de base de datos.
 
-## Patrones Recomendados Para Builders
+## Capacidades llamativas del framework
 
-Cuando uses builders basados en callbacks, conviene preferir closures tipadas para que el autocompletado del IDE pueda resolver correctamente los metodos del builder.
+### Runtime reactivo integrado
 
-### Efectos Manuales
+VoltStack incluye:
 
-```php
-use VoltStack\Runtime\Protocol\ActionEffectOptions;
-use VoltStack\Runtime\Protocol\ActionManualEffectBuilder;
+- componentes server-driven,
+- hydration/dehydration,
+- snapshots con checksum,
+- ejecución de acciones reactivas,
+- protocolo interno `/_volt/action`,
+- runtime frontend para navegación y actualización parcial del DOM,
+- endpoints internos para runtime asset y manifest de rutas.
 
-return ActionEffectOptions::make()
-    ->effects(fn(ActionManualEffectBuilder $effects) => $effects
-        ->onTarget('title-input')
-        ->focusAndSetAttribute('data-last-save', (string) time())
-        ->event('demo.saved', ['count' => $this->count]));
-```
+Esto permite construir interfaces reactivas sin montar un stack separado con React o Vue para casos donde PHP debe seguir siendo el centro.
 
-### Transiciones
+### Navegación SPA y runtime frontend
 
-```php
-use VoltStack\Runtime\Protocol\ActionEffectOptions;
-use VoltStack\Runtime\Protocol\ActionTransitionBuilder;
+El framework incorpora un runtime JavaScript propio en `frontend/runtime/volt.js` y un protocolo de navegación/reactividad para:
 
-return ActionEffectOptions::make()
-    ->transitions(fn(ActionTransitionBuilder $transitions) => $transitions
-        ->onTarget('count')
-        ->forTextUpdate()
-        ->pop(220)
-        ->onTarget('count')
-        ->forTextUpdate()
-        ->updateAs('glow', className: 'volt-transition-soft-edge'));
-```
+- navegación SPA,
+- preserve state,
+- preserve scroll,
+- render parcial,
+- sincronización de estado entre frontend y backend,
+- aplicación de efectos y patches sobre el DOM.
 
-### Politicas De Runtime
+### Routing con artifacts compilados
 
-```php
-use VoltStack\Runtime\Protocol\ActionEffectOptions;
-use VoltStack\Runtime\Protocol\ActionRuntimePolicyBuilder;
+El router soporta:
 
-return ActionEffectOptions::make()
-    ->policies(fn(ActionRuntimePolicyBuilder $policies) => $policies
-        ->onTarget('title')
-        ->dirty('200ms')
-        ->onTarget('save-form')
-        ->forSave()
-        ->success('200ms', '1.2s')
-        ->error('3s'));
-```
+- rutas HTTP clásicas,
+- grupos, prefijos, domains y middleware,
+- resource y apiResource,
+- generación de URLs,
+- signed URLs y temporary signed URLs,
+- artifacts compilados de rutas, metadata, tree y pipeline,
+- manifest para consumo frontend.
 
-### Por Que Usar Callbacks Tipados
+Es una de las piezas más maduras del repo y está pensada para minimizar trabajo en runtime cuando la app está desplegada.
 
-- Mejora el autocompletado del IDE para los metodos fluidos del builder.
-- Evita falsos avisos de `Undefined method` en atajos como `forSave()`.
-- Mantiene los bloques basados en callbacks consistentes con los tests del protocolo reactivo y con los ejemplos de la app.
+### Capa HTTP y kernel propios
+
+VoltStack implementa su propia base para:
+
+- `Request`,
+- `Response`,
+- `JsonResponse`,
+- `RedirectResponse`,
+- `HttpKernel`,
+- middlewares,
+- normalización de respuestas,
+- manejo centralizado de excepciones.
+
+Esto permite controlar mejor el ciclo completo de request/response y adaptarlo a un entorno reactivo y persistente.
+
+### Container y bootstrap del framework
+
+El core incluye:
+
+- container con `bind`, `singleton`, `scoped`, `instance` y `alias`,
+- autowiring por reflection,
+- service providers,
+- bootstrapper para carga de configuración y arranque,
+- aislamiento por scope para cada request.
+
+Ese aislamiento es importante para evitar fugas de estado en workers persistentes.
+
+### Sistema de vistas y compilación
+
+VoltStack trae:
+
+- motor de vistas PHP,
+- compilación y cache de vistas,
+- layouts,
+- includes,
+- directivas,
+- pipeline de compilación de templates.
+
+También incorpora un sistema de compilación de controladores y artifacts para reducir trabajo repetitivo en runtime.
+
+### Seguridad de controladores y runtime
+
+El framework integra varias piezas de seguridad:
+
+- CSRF middleware,
+- validación backend-first,
+- signed routes,
+- checksums de snapshots,
+- manejo de errores HTML/JSON/reactivo,
+- engine de políticas de seguridad para controladores,
+- sandbox endurecido para evaluación de políticas,
+- limpieza de scope al terminar cada request.
+
+La seguridad no está tratada como un detalle de middleware suelto, sino como parte del modelo operativo del framework.
+
+### Subsistema de base de datos orientado a operación real
+
+Una de las capacidades más distintivas del proyecto hoy está en base de datos. VoltStack incluye:
+
+- DBAL multi-driver,
+- schema introspection para `sqlite`, `pgsql`, `mysql` y `mariadb`,
+- migraciones,
+- rollback y recovery plan,
+- seeders,
+- factories,
+- ORM/metadata layer en desarrollo activo,
+- runtime operacional para queries y mutaciones.
+
+Ese runtime de base de datos añade además:
+
+- circuit breaker,
+- deadlines y presupuestos,
+- límites de profundidad y filas,
+- telemetry,
+- health stores,
+- idempotencia persistente,
+- replay confirmado,
+- verificación de evidencia de confirmación,
+- soporte para replays federados entre nodos.
+
+Para un framework PHP joven, este nivel de preocupación operativa es especialmente llamativo.
+
+### Consola y tooling
+
+VoltStack incluye CLI propia con comandos para:
+
+- `serve`,
+- cache de vistas,
+- cache de rutas,
+- generación de controllers, actions, pages, components, layouts y views,
+- migraciones,
+- health/idempotency de DB,
+- schema diff/describe/status,
+- seeders y factories.
+
+## Filosofía de diseño
+
+VoltStack busca equilibrar:
+
+- productividad,
+- control del runtime,
+- seguridad,
+- modularidad,
+- observabilidad,
+- y una experiencia moderna para construir UI reactiva desde PHP.
+
+En resumen: **VoltStack quiere que PHP siga siendo el centro de una aplicación moderna, reactiva y operativamente seria.**

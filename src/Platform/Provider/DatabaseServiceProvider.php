@@ -28,9 +28,11 @@ use Quantum\Database\Operation\DatabaseTelemetryStore;
 use Quantum\Database\Operation\Engine\DirectoryDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\DirectoryDatabaseIdempotencyStore;
 use Quantum\Database\Operation\Engine\ChallengeDatabaseRemoteReplayValidator;
+use Quantum\Database\Operation\Engine\DatabaseRemoteReplayChallengeSigner;
 use Quantum\Database\Operation\Engine\InMemoryDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\InMemoryDatabaseIdempotencyStore;
 use Quantum\Database\Operation\Engine\InMemoryDatabaseTelemetryDispatcher;
+use Quantum\Database\Operation\Engine\HttpDatabaseRemoteReplayChallenger;
 use Quantum\Database\Operation\Engine\JsonFileDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\JsonLineDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\JsonLineDatabaseTelemetryDispatcher;
@@ -50,9 +52,11 @@ use Quantum\Database\Security\DatabaseSecurityContext;
 use Quantum\Database\Support\ConnectionRegistry;
 use Quantum\Database\Trace\DatabaseDeadline;
 use Quantum\Database\Trace\DatabaseTraceContext;
+use Quantum\Routing\Router;
 use VoltStack\Framework\Application;
 use VoltStack\Framework\ServiceProvider;
 use VoltStack\Runtime\Context\RuntimeContext;
+use VoltStack\Runtime\Protocol\DatabaseRemoteReplayChallengeController;
 
 final class DatabaseServiceProvider extends ServiceProvider
 {
@@ -221,8 +225,38 @@ final class DatabaseServiceProvider extends ServiceProvider
             return new InMemoryDatabaseIdempotencyStore();
         });
         $this->app->singleton(
+            DatabaseRemoteReplayChallengeSigner::class,
+            fn(Application $app): DatabaseRemoteReplayChallengeSigner => new DatabaseRemoteReplayChallengeSigner($app),
+        );
+        $this->app->singleton(
             DatabaseRemoteReplayChallengerInterface::class,
-            fn(Application $app): DatabaseRemoteReplayChallengerInterface => new NullDatabaseRemoteReplayChallenger(),
+            function (Application $app): DatabaseRemoteReplayChallengerInterface {
+                $transport = strtolower((string) $app->config('database.idempotency.remote_replay_challenge.transport', 'auto'));
+                $endpointMap = $app->config('database.idempotency.remote_replay_challenge.endpoint_map', []);
+                if (! is_array($endpointMap)) {
+                    $endpointMap = [];
+                }
+
+                if ($transport === 'null') {
+                    return new NullDatabaseRemoteReplayChallenger();
+                }
+
+                if ($transport === 'http' || ($transport === 'auto' && $endpointMap !== [])) {
+                    return new HttpDatabaseRemoteReplayChallenger(
+                        signer: $app->make(DatabaseRemoteReplayChallengeSigner::class),
+                        endpointMap: array_filter(array_map(
+                            static fn(mixed $value): string => is_string($value) ? trim($value) : '',
+                            $endpointMap,
+                        )),
+                        requestTimeoutMs: max(250, (int) $app->config(
+                            'database.idempotency.remote_replay_challenge.request_timeout_ms',
+                            2000,
+                        )),
+                    );
+                }
+
+                return new NullDatabaseRemoteReplayChallenger();
+            },
         );
         $this->app->singleton(
             DatabaseRemoteReplayValidatorInterface::class,
@@ -369,6 +403,19 @@ final class DatabaseServiceProvider extends ServiceProvider
 
     public function boot(): void
     {
+        $challengePath = trim((string) $this->app->config(
+            'database.idempotency.remote_replay_challenge.path',
+            '/_volt/db/remote-replay/challenge',
+        ));
+        if ($challengePath !== '') {
+            $this->app->make(Router::class)->post($challengePath, DatabaseRemoteReplayChallengeController::class)->meta([
+                'context' => 'api',
+                'transport' => 'internal',
+                'endpoint' => 'volt.database.remote_replay.challenge',
+                'protocol' => 'volt-db',
+            ]);
+        }
+
         $this->app->onScopeStart(function (Application $app, RuntimeContext $context): void {
             $registry = $app->make(ConnectionRegistry::class);
             $maxIdleMs = (int) $app->config('database.timeouts.max_idle_ms_before_ping', 30000);

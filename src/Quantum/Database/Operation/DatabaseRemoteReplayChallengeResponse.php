@@ -124,4 +124,25 @@ final readonly class DatabaseRemoteReplayChallengeResponse
             'details' => $this->details,
         ];
     }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    public static function fromArray(array $payload): self
+    {
+        return new self(
+            status: (string) ($payload['status'] ?? 'unavailable'),
+            challenger: (string) ($payload['challenger'] ?? 'unknown'),
+            message: isset($payload['message']) ? (string) $payload['message'] : null,
+            challengedNodeId: isset($payload['challenged_node_id']) ? (string) $payload['challenged_node_id'] : null,
+            challengeId: isset($payload['challenge_id']) ? (string) $payload['challenge_id'] : null,
+            challengeNonce: isset($payload['challenge_nonce']) ? (string) $payload['challenge_nonce'] : null,
+            respondedAt: isset($payload['responded_at']) ? (string) $payload['responded_at'] : null,
+            operationFingerprint: isset($payload['operation_fingerprint']) ? (string) $payload['operation_fingerprint'] : null,
+            confirmationFingerprint: isset($payload['confirmation_fingerprint']) ? (string) $payload['confirmation_fingerprint'] : null,
+            proofType: isset($payload['proof_type']) ? (string) $payload['proof_type'] : null,
+            proofFingerprint: isset($payload['proof_fingerprint']) ? (string) $payload['proof_fingerprint'] : null,
+            details: is_array($payload['details'] ?? null) ? $payload['details'] : [],
+        );
+    }
 }

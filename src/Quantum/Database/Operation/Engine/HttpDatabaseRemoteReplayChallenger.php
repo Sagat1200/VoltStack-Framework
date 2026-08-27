@@ -42,13 +42,11 @@ final class HttpDatabaseRemoteReplayChallenger implements DatabaseRemoteReplayCh
             );
         }
 
-        $payload = $request->toArray();
-        $headers = [
+        $payload = $this->signer->decorateRequestPayload($request->toArray());
+        $headers = array_merge([
             'Content-Type' => 'application/json',
             'Accept' => 'application/json',
-            DatabaseRemoteReplayChallengeSigner::PROTOCOL_HEADER => DatabaseRemoteReplayChallengeSigner::PROTOCOL,
-            DatabaseRemoteReplayChallengeSigner::SIGNATURE_HEADER => $this->signer->signRequest($payload),
-        ];
+        ], $this->signer->requestHeaders($payload));
 
         try {
             $response = $this->dispatch($endpoint, $payload, $headers);
@@ -108,8 +106,9 @@ final class HttpDatabaseRemoteReplayChallenger implements DatabaseRemoteReplayCh
             );
         }
 
+        $responseKeyId = trim((string) ($response['headers'][strtolower(DatabaseRemoteReplayChallengeSigner::KEY_ID_HEADER)] ?? ($payload['details']['key_id'] ?? '')));
         $signature = trim((string) ($response['headers'][strtolower(DatabaseRemoteReplayChallengeSigner::SIGNATURE_HEADER)] ?? ''));
-        if ($signature === '' || ! $this->signer->verifyResponse($payload, $signature)) {
+        if ($signature === '' || ! $this->signer->verifyResponse($payload, $signature, $responseKeyId !== '' ? $responseKeyId : null)) {
             return DatabaseRemoteReplayChallengeResponse::rejected(
                 challenger: 'http_remote_replay_challenger',
                 message: 'Remote replay challenge response signature could not be verified.',
@@ -126,12 +125,47 @@ final class HttpDatabaseRemoteReplayChallenger implements DatabaseRemoteReplayCh
                     'endpoint' => $endpoint,
                     'endpoint_strategy' => $resolution->strategy,
                     'http_status' => $response['status'],
+                    'response_key_id' => $responseKeyId !== '' ? $responseKeyId : null,
                     'response_signature_verification' => 'failed',
                 ],
             );
         }
 
         $challengeResponse = DatabaseRemoteReplayChallengeResponse::fromArray($payload);
+        $responseProtocol = trim((string) ($response['headers'][strtolower(DatabaseRemoteReplayChallengeSigner::PROTOCOL_HEADER)] ?? ($challengeResponse->details['protocol'] ?? '')));
+        $responseCapabilities = $this->normalizeCapabilities(
+            (string) ($response['headers'][strtolower(DatabaseRemoteReplayChallengeSigner::CAPABILITIES_HEADER)] ?? ''),
+            $challengeResponse->details['capabilities'] ?? [],
+        );
+
+        if ($responseProtocol !== '' && ! $this->signer->supportsProtocol($responseProtocol)) {
+            return DatabaseRemoteReplayChallengeResponse::rejected(
+                challenger: $challengeResponse->challenger !== 'unknown'
+                    ? $challengeResponse->challenger
+                    : 'http_remote_replay_challenger',
+                message: 'Remote replay challenge responder uses an incompatible protocol.',
+                challengedNodeId: $challengeResponse->challengedNodeId ?? $sourceNodeId,
+                challengeId: $challengeResponse->challengeId ?? $request->challengeId,
+                challengeNonce: $challengeResponse->challengeNonce ?? $request->challengeNonce,
+                respondedAt: $challengeResponse->respondedAt,
+                operationFingerprint: $challengeResponse->operationFingerprint,
+                confirmationFingerprint: $challengeResponse->confirmationFingerprint,
+                proofType: $challengeResponse->proofType,
+                proofFingerprint: $challengeResponse->proofFingerprint,
+                details: array_merge($challengeResponse->details, [
+                    'source_node_id' => $sourceNodeId,
+                    'endpoint' => $endpoint,
+                    'endpoint_strategy' => $resolution->strategy,
+                    'http_status' => $response['status'],
+                    'response_protocol' => $responseProtocol,
+                    'response_capabilities' => $responseCapabilities,
+                    'response_key_id' => $responseKeyId !== '' ? $responseKeyId : null,
+                    'protocol_compatibility' => 'incompatible',
+                    'protocol_negotiation_reason' => 'response_protocol_unsupported',
+                    'response_signature_verification' => 'verified',
+                ]),
+            );
+        }
 
         return new DatabaseRemoteReplayChallengeResponse(
             status: $challengeResponse->status,
@@ -152,6 +186,9 @@ final class HttpDatabaseRemoteReplayChallenger implements DatabaseRemoteReplayCh
                 'endpoint' => $endpoint,
                 'endpoint_strategy' => $resolution->strategy,
                 'http_status' => $response['status'],
+                'response_protocol' => $responseProtocol !== '' ? $responseProtocol : null,
+                'response_capabilities' => $responseCapabilities,
+                'response_key_id' => $responseKeyId !== '' ? $responseKeyId : null,
                 'response_signature_verification' => 'verified',
             ]),
         );
@@ -215,5 +252,26 @@ final class HttpDatabaseRemoteReplayChallenger implements DatabaseRemoteReplayCh
             'headers' => $normalizedHeaders,
             'body' => $rawBody,
         ];
+    }
+
+    /**
+     * @param mixed $payloadCapabilities
+     * @return list<string>
+     */
+    private function normalizeCapabilities(string $headerCapabilities, mixed $payloadCapabilities): array
+    {
+        $values = array_filter(array_map('trim', explode(',', $headerCapabilities)));
+        if (is_array($payloadCapabilities)) {
+            foreach ($payloadCapabilities as $capability) {
+                $candidate = trim((string) $capability);
+                if ($candidate === '') {
+                    continue;
+                }
+
+                $values[] = $candidate;
+            }
+        }
+
+        return array_values(array_unique($values));
     }
 }

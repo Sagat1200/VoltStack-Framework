@@ -37,13 +37,21 @@ final class DatabaseRemoteReplayHttpChallengeFlowTest extends TestCase
 
     public function test_http_challenger_completes_signed_end_to_end_handshake(): void
     {
-        $app = new Application($this->basePath);
-        $app->make(ConfigRepository::class)->set('app.key', 'cluster-secret');
-        $app->make(ConfigRepository::class)->set('database.idempotency.node_id', 'node-a');
+        $requesterApp = new Application($this->basePath . DIRECTORY_SEPARATOR . 'requester');
+        $requesterApp->make(ConfigRepository::class)->set('app.key', 'cluster-secret');
+        $requesterApp->make(ConfigRepository::class)->set('database.idempotency.node_id', 'node-b');
 
-        $signer = new DatabaseRemoteReplayChallengeSigner($app);
+        $responderApp = new Application($this->basePath . DIRECTORY_SEPARATOR . 'responder');
+        $responderApp->make(ConfigRepository::class)->set('app.key', 'cluster-secret');
+        $responderApp->make(ConfigRepository::class)->set('database.idempotency.node_id', 'node-a');
+
+        $signer = new DatabaseRemoteReplayChallengeSigner($requesterApp);
         $store = new InMemoryDatabaseIdempotencyStore();
-        $controller = new DatabaseRemoteReplayChallengeController($app, $store, $signer);
+        $controller = new DatabaseRemoteReplayChallengeController(
+            $responderApp,
+            $store,
+            new DatabaseRemoteReplayChallengeSigner($responderApp),
+        );
 
         $record = new DatabaseIdempotencyRecord(
             keyHash: hash('sha256', 'mutation-challenge-http'),
@@ -81,6 +89,9 @@ final class DatabaseRemoteReplayHttpChallengeFlowTest extends TestCase
                     [],
                     [
                         'CONTENT_TYPE' => 'application/json',
+                        'HTTP_X_VOLTSTACK_REMOTE_REPLAY_PROTOCOL' => $headers[DatabaseRemoteReplayChallengeSigner::PROTOCOL_HEADER] ?? '',
+                        'HTTP_X_VOLTSTACK_REMOTE_REPLAY_KEY_ID' => $headers[DatabaseRemoteReplayChallengeSigner::KEY_ID_HEADER] ?? '',
+                        'HTTP_X_VOLTSTACK_REMOTE_REPLAY_CAPABILITIES' => $headers[DatabaseRemoteReplayChallengeSigner::CAPABILITIES_HEADER] ?? '',
                         'HTTP_X_VOLTSTACK_REMOTE_REPLAY_SIGNATURE' => $headers[DatabaseRemoteReplayChallengeSigner::SIGNATURE_HEADER] ?? '',
                     ],
                     json_encode($payload, JSON_THROW_ON_ERROR),
@@ -119,7 +130,192 @@ final class DatabaseRemoteReplayHttpChallengeFlowTest extends TestCase
         self::assertSame('remote_replay_challenge_controller', $result->challenger);
         self::assertSame('node-a', $result->challengedNodeId);
         self::assertSame('challenge_proof_hmac_sha256', $result->proofType);
+        self::assertSame('remote_replay_node_challenge_v1', $result->details['protocol_negotiated'] ?? null);
+        self::assertSame('app-default', $result->details['response_key_id'] ?? null);
         self::assertSame('verified', $result->details['response_signature_verification'] ?? null);
+    }
+
+    public function test_http_challenger_accepts_rotating_key_ids_during_rollout(): void
+    {
+        $requesterApp = new Application($this->basePath . DIRECTORY_SEPARATOR . 'requester-rotation');
+        $requesterConfig = $requesterApp->make(ConfigRepository::class);
+        $requesterConfig->set('database.idempotency.node_id', 'node-b');
+        $requesterConfig->set('database.idempotency.remote_replay_challenge.key_id', 'key-2026-08');
+        $requesterConfig->set('database.idempotency.remote_replay_challenge.shared_secret_map', [
+            'key-2026-08' => 'secret-august',
+            'key-2026-09' => 'secret-september',
+        ]);
+
+        $responderApp = new Application($this->basePath . DIRECTORY_SEPARATOR . 'responder-rotation');
+        $responderConfig = $responderApp->make(ConfigRepository::class);
+        $responderConfig->set('database.idempotency.node_id', 'node-a');
+        $responderConfig->set('database.idempotency.remote_replay_challenge.key_id', 'key-2026-09');
+        $responderConfig->set('database.idempotency.remote_replay_challenge.shared_secret_map', [
+            'key-2026-08' => 'secret-august',
+            'key-2026-09' => 'secret-september',
+        ]);
+
+        $requesterSigner = new DatabaseRemoteReplayChallengeSigner($requesterApp);
+        $responderSigner = new DatabaseRemoteReplayChallengeSigner($responderApp);
+
+        $store = new InMemoryDatabaseIdempotencyStore();
+        $controller = new DatabaseRemoteReplayChallengeController($responderApp, $store, $responderSigner);
+
+        $record = new DatabaseIdempotencyRecord(
+            keyHash: hash('sha256', 'mutation-challenge-rotation'),
+            operationFingerprint: 'ofp-rotation',
+            requestId: 'req-rotation',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            createdAt: '2026-08-27T12:00:00+00:00',
+            nodeId: 'node-a',
+            status: 'pending',
+        );
+        $store->acquire($record);
+        $store->complete($record, [
+            'confirmation_fingerprint' => 'cfp-rotation',
+            'result_summary' => ['result_type' => 'success_no_rows'],
+        ]);
+
+        $challenger = new HttpDatabaseRemoteReplayChallenger(
+            signer: $requesterSigner,
+            endpointResolver: new DatabaseRemoteReplayChallengeEndpointResolver(
+                endpointMap: ['node-a' => 'http://node-a.internal/_volt/db/remote-replay/challenge'],
+            ),
+            sender: function (string $endpoint, array $payload, array $headers, int $timeoutMs) use ($controller): array {
+                $request = Request::create(
+                    '/_volt/db/remote-replay/challenge',
+                    'POST',
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [
+                        'CONTENT_TYPE' => 'application/json',
+                        'HTTP_X_VOLTSTACK_REMOTE_REPLAY_PROTOCOL' => $headers[DatabaseRemoteReplayChallengeSigner::PROTOCOL_HEADER] ?? '',
+                        'HTTP_X_VOLTSTACK_REMOTE_REPLAY_KEY_ID' => $headers[DatabaseRemoteReplayChallengeSigner::KEY_ID_HEADER] ?? '',
+                        'HTTP_X_VOLTSTACK_REMOTE_REPLAY_CAPABILITIES' => $headers[DatabaseRemoteReplayChallengeSigner::CAPABILITIES_HEADER] ?? '',
+                        'HTTP_X_VOLTSTACK_REMOTE_REPLAY_SIGNATURE' => $headers[DatabaseRemoteReplayChallengeSigner::SIGNATURE_HEADER] ?? '',
+                    ],
+                    json_encode($payload, JSON_THROW_ON_ERROR),
+                );
+                $response = $controller($request);
+
+                $normalizedHeaders = [];
+                foreach ($response->headers() as $name => $value) {
+                    $normalizedHeaders[strtolower($name)] = $value;
+                }
+
+                return [
+                    'status' => $response->statusCode(),
+                    'headers' => $normalizedHeaders,
+                    'body' => $response->content(),
+                ];
+            },
+        );
+
+        $result = $challenger->challenge(new DatabaseRemoteReplayChallengeRequest(
+            challengeId: 'challenge-rotation',
+            challengeNonce: 'nonce-rotation',
+            requestedAt: '2026-08-27T12:00:01+00:00',
+            currentNodeId: 'node-b',
+            sourceNodeId: 'node-a',
+            keyHash: hash('sha256', 'mutation-challenge-rotation'),
+            requestId: 'req-rotation',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            operationFingerprint: 'ofp-rotation',
+            confirmationFingerprint: 'cfp-rotation',
+            validationMode: 'require',
+        ));
+
+        self::assertSame('verified', $result->status);
+        self::assertSame('key-2026-09', $result->details['response_key_id'] ?? null);
+        self::assertSame('verified', $result->details['response_signature_verification'] ?? null);
+    }
+
+    public function test_http_challenger_reports_protocol_incompatibility(): void
+    {
+        $requesterApp = new Application($this->basePath . DIRECTORY_SEPARATOR . 'requester-protocol');
+        $requesterConfig = $requesterApp->make(ConfigRepository::class);
+        $requesterConfig->set('app.key', 'cluster-secret');
+        $requesterConfig->set('database.idempotency.remote_replay_challenge.protocol', 'remote_replay_node_challenge_v1');
+        $requesterConfig->set('database.idempotency.remote_replay_challenge.supported_protocols', [
+            'remote_replay_node_challenge_v1',
+        ]);
+
+        $responderApp = new Application($this->basePath . DIRECTORY_SEPARATOR . 'responder-protocol');
+        $responderConfig = $responderApp->make(ConfigRepository::class);
+        $responderConfig->set('app.key', 'cluster-secret');
+        $responderConfig->set('database.idempotency.node_id', 'node-a');
+        $responderConfig->set('database.idempotency.remote_replay_challenge.protocol', 'remote_replay_node_challenge_v2');
+        $responderConfig->set('database.idempotency.remote_replay_challenge.supported_protocols', [
+            'remote_replay_node_challenge_v2',
+        ]);
+
+        $challenger = new HttpDatabaseRemoteReplayChallenger(
+            signer: new DatabaseRemoteReplayChallengeSigner($requesterApp),
+            endpointResolver: new DatabaseRemoteReplayChallengeEndpointResolver(
+                endpointMap: ['node-a' => 'http://node-a.internal/_volt/db/remote-replay/challenge'],
+            ),
+            sender: function (string $endpoint, array $payload, array $headers, int $timeoutMs) use ($responderApp): array {
+                $controller = new DatabaseRemoteReplayChallengeController(
+                    $responderApp,
+                    new InMemoryDatabaseIdempotencyStore(),
+                    new DatabaseRemoteReplayChallengeSigner($responderApp),
+                );
+
+                $request = Request::create(
+                    '/_volt/db/remote-replay/challenge',
+                    'POST',
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [
+                        'CONTENT_TYPE' => 'application/json',
+                        'HTTP_X_VOLTSTACK_REMOTE_REPLAY_PROTOCOL' => $headers[DatabaseRemoteReplayChallengeSigner::PROTOCOL_HEADER] ?? '',
+                        'HTTP_X_VOLTSTACK_REMOTE_REPLAY_KEY_ID' => $headers[DatabaseRemoteReplayChallengeSigner::KEY_ID_HEADER] ?? '',
+                        'HTTP_X_VOLTSTACK_REMOTE_REPLAY_CAPABILITIES' => $headers[DatabaseRemoteReplayChallengeSigner::CAPABILITIES_HEADER] ?? '',
+                        'HTTP_X_VOLTSTACK_REMOTE_REPLAY_SIGNATURE' => $headers[DatabaseRemoteReplayChallengeSigner::SIGNATURE_HEADER] ?? '',
+                    ],
+                    json_encode($payload, JSON_THROW_ON_ERROR),
+                );
+                $response = $controller($request);
+
+                $normalizedHeaders = [];
+                foreach ($response->headers() as $name => $value) {
+                    $normalizedHeaders[strtolower($name)] = $value;
+                }
+
+                return [
+                    'status' => $response->statusCode(),
+                    'headers' => $normalizedHeaders,
+                    'body' => $response->content(),
+                ];
+            },
+        );
+
+        $result = $challenger->challenge(new DatabaseRemoteReplayChallengeRequest(
+            challengeId: 'challenge-protocol',
+            challengeNonce: 'nonce-protocol',
+            requestedAt: '2026-08-27T12:15:01+00:00',
+            currentNodeId: 'node-b',
+            sourceNodeId: 'node-a',
+            keyHash: hash('sha256', 'mutation-challenge-protocol'),
+            requestId: 'req-protocol',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            operationFingerprint: 'ofp-protocol',
+            confirmationFingerprint: 'cfp-protocol',
+            validationMode: 'require',
+        ));
+
+        self::assertSame('rejected', $result->status);
+        self::assertSame('incompatible', $result->details['protocol_compatibility'] ?? null);
+        self::assertSame('response_protocol_unsupported', $result->details['protocol_negotiation_reason'] ?? null);
     }
 
     public function test_controller_rejects_invalid_request_signature(): void
@@ -149,6 +345,8 @@ final class DatabaseRemoteReplayHttpChallengeFlowTest extends TestCase
             [],
             [
                 'CONTENT_TYPE' => 'application/json',
+                'HTTP_X_VOLTSTACK_REMOTE_REPLAY_PROTOCOL' => $signer->protocol(),
+                'HTTP_X_VOLTSTACK_REMOTE_REPLAY_KEY_ID' => $signer->activeKeyId(),
                 'HTTP_X_VOLTSTACK_REMOTE_REPLAY_SIGNATURE' => 'invalid-signature',
             ],
             json_encode($payload, JSON_THROW_ON_ERROR),
@@ -159,7 +357,11 @@ final class DatabaseRemoteReplayHttpChallengeFlowTest extends TestCase
         self::assertSame(401, $response->statusCode());
         self::assertIsArray($body);
         self::assertSame('rejected', $body['status'] ?? null);
-        self::assertTrue($signer->verifyResponse($body, (string) $response->headers()[DatabaseRemoteReplayChallengeSigner::SIGNATURE_HEADER]));
+        self::assertTrue($signer->verifyResponse(
+            $body,
+            (string) $response->headers()[DatabaseRemoteReplayChallengeSigner::SIGNATURE_HEADER],
+            (string) ($response->headers()[DatabaseRemoteReplayChallengeSigner::KEY_ID_HEADER] ?? ''),
+        ));
     }
 
     public function test_http_challenger_rejects_invalid_response_signature(): void

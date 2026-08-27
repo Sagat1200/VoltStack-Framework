@@ -127,6 +127,10 @@ final class DatabaseIdempotencyCommandTest extends TestCase
             'Replay origin: perspective=local_node current_node=VoltStack Idempotency Command Feature Test source_node=VoltStack Idempotency Command Feature Test',
             $result['stdout']
         );
+        self::assertStringContainsString(
+            'Remote challenge endpoint: status=resolved strategy=endpoint_template endpoint=https://cluster.internal/VoltStack%20Idempotency%20Command%20Feature%20Test/_volt/db/remote-replay/challenge',
+            $result['stdout']
+        );
         self::assertStringContainsString('Confirmation: kind=raw_execute affected_rows=1 rows_read=0 outcome=completed confirmed_at=2026-08-25T07:00:10+00:00', $result['stdout']);
         self::assertStringContainsString('Replay support: reproducibility=persisted_summary summary_version=1', $result['stdout']);
         self::assertStringContainsString(
@@ -164,6 +168,8 @@ final class DatabaseIdempotencyCommandTest extends TestCase
         self::assertStringContainsString('"evidence_trust_level": "local_verified_persisted"', $lookup['stdout']);
         self::assertStringContainsString('"remote_validation_receipt"', $lookup['stdout']);
         self::assertStringContainsString('"status": "verified_remote_validation"', $lookup['stdout']);
+        self::assertStringContainsString('"remote_challenge_resolution"', $lookup['stdout']);
+        self::assertStringContainsString('"endpoint_template"', $lookup['stdout']);
     }
 
     public function test_cli_idempotency_can_aggregate_recent_records(): void
@@ -303,7 +309,12 @@ final class DatabaseIdempotencyCommandTest extends TestCase
             $result['stdout']
         );
         self::assertStringContainsString('Trust: local_verified=0 remote_attested=1 remote_verified=0 legacy_reconstructed=1 untrusted_mismatch=0 untrusted_attestation=0 unknown=0', $result['stdout']);
+        self::assertStringContainsString(
+            'Remote challenge cluster: current_node=VoltStack Idempotency Command Feature Test configured_nodes=4 resolved_nodes=4 template=https://cluster.internal/{node_id}{path} path=/_volt/db/remote-replay/challenge',
+            $result['stdout']
+        );
         self::assertStringContainsString('rv_verified=1 rv_unavailable=0 rv_without_receipt=0', $result['stdout']);
+        self::assertStringContainsString('challenge_status=resolved challenge_strategy=endpoint_template', $result['stdout']);
 
         $json = $this->runConsole(['volt', 'db:idempotency', '--aggregate', '--json', '--limit=10']);
         self::assertSame(0, $json['exit']);
@@ -322,6 +333,8 @@ final class DatabaseIdempotencyCommandTest extends TestCase
         self::assertStringContainsString('"remote_attested_persisted": 1', $json['stdout']);
         self::assertStringContainsString('"remote_validation_receipts"', $json['stdout']);
         self::assertStringContainsString('"verified_remote_validation": 1', $json['stdout']);
+        self::assertStringContainsString('"remote_challenge_cluster"', $json['stdout']);
+        self::assertStringContainsString('"remote_challenge_resolution"', $json['stdout']);
     }
 
     public function test_cli_idempotency_reconstructs_replay_support_for_legacy_confirmation(): void
@@ -353,6 +366,10 @@ final class DatabaseIdempotencyCommandTest extends TestCase
         self::assertSame(0, $result['exit']);
         self::assertStringContainsString(
             'Replay origin: perspective=federated_remote_node current_node=VoltStack Idempotency Command Feature Test source_node=node-legacy',
+            $result['stdout']
+        );
+        self::assertStringContainsString(
+            'Remote challenge endpoint: status=resolved strategy=endpoint_template endpoint=https://cluster.internal/node-legacy/_volt/db/remote-replay/challenge',
             $result['stdout']
         );
         self::assertStringContainsString('Replay support: reproducibility=legacy_reconstructed summary_version=n/a', $result['stdout']);
@@ -486,6 +503,17 @@ final class DatabaseIdempotencyCommandTest extends TestCase
                     'store' => 'directory',
                     'directory_path' => $basePath . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'database' . DIRECTORY_SEPARATOR . 'idempotency',
                     'pending_ttl_seconds' => 300,
+                    'remote_replay_challenge' => [
+                        'transport' => 'auto',
+                        'path' => '/_volt/db/remote-replay/challenge',
+                        'endpoint_template' => 'https://cluster.internal/{node_id}{path}',
+                        'known_nodes' => [
+                            'node-a',
+                            'node-b',
+                            'node-c',
+                            'node-d',
+                        ],
+                    ],
                 ],
                 'observability' => [
                     'dispatcher' => 'null',

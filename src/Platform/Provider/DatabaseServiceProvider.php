@@ -28,6 +28,7 @@ use Quantum\Database\Operation\DatabaseTelemetryStore;
 use Quantum\Database\Operation\Engine\DirectoryDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\DirectoryDatabaseIdempotencyStore;
 use Quantum\Database\Operation\Engine\ChallengeDatabaseRemoteReplayValidator;
+use Quantum\Database\Operation\Engine\DatabaseRemoteReplayChallengeEndpointResolver;
 use Quantum\Database\Operation\Engine\DatabaseRemoteReplayChallengeSigner;
 use Quantum\Database\Operation\Engine\InMemoryDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\InMemoryDatabaseIdempotencyStore;
@@ -225,6 +226,38 @@ final class DatabaseServiceProvider extends ServiceProvider
             return new InMemoryDatabaseIdempotencyStore();
         });
         $this->app->singleton(
+            DatabaseRemoteReplayChallengeEndpointResolver::class,
+            function (Application $app): DatabaseRemoteReplayChallengeEndpointResolver {
+                $endpointMap = $app->config('database.idempotency.remote_replay_challenge.endpoint_map', []);
+                if (! is_array($endpointMap)) {
+                    $endpointMap = [];
+                }
+                $knownNodes = $app->config('database.idempotency.remote_replay_challenge.known_nodes', []);
+                if (! is_array($knownNodes)) {
+                    $knownNodes = [];
+                }
+
+                return new DatabaseRemoteReplayChallengeEndpointResolver(
+                    endpointMap: array_filter(array_map(
+                        static fn(mixed $value): string => is_string($value) ? trim($value) : '',
+                        $endpointMap,
+                    )),
+                    endpointTemplate: trim((string) $app->config(
+                        'database.idempotency.remote_replay_challenge.endpoint_template',
+                        '',
+                    )) ?: null,
+                    defaultPath: trim((string) $app->config(
+                        'database.idempotency.remote_replay_challenge.path',
+                        '/_volt/db/remote-replay/challenge',
+                    )) ?: null,
+                    knownNodes: array_values(array_filter(array_map(
+                        static fn(mixed $value): string => is_string($value) ? trim($value) : '',
+                        $knownNodes,
+                    ))),
+                );
+            },
+        );
+        $this->app->singleton(
             DatabaseRemoteReplayChallengeSigner::class,
             fn(Application $app): DatabaseRemoteReplayChallengeSigner => new DatabaseRemoteReplayChallengeSigner($app),
         );
@@ -236,18 +269,19 @@ final class DatabaseServiceProvider extends ServiceProvider
                 if (! is_array($endpointMap)) {
                     $endpointMap = [];
                 }
+                $endpointTemplate = trim((string) $app->config(
+                    'database.idempotency.remote_replay_challenge.endpoint_template',
+                    '',
+                ));
 
                 if ($transport === 'null') {
                     return new NullDatabaseRemoteReplayChallenger();
                 }
 
-                if ($transport === 'http' || ($transport === 'auto' && $endpointMap !== [])) {
+                if ($transport === 'http' || ($transport === 'auto' && ($endpointMap !== [] || $endpointTemplate !== ''))) {
                     return new HttpDatabaseRemoteReplayChallenger(
                         signer: $app->make(DatabaseRemoteReplayChallengeSigner::class),
-                        endpointMap: array_filter(array_map(
-                            static fn(mixed $value): string => is_string($value) ? trim($value) : '',
-                            $endpointMap,
-                        )),
+                        endpointResolver: $app->make(DatabaseRemoteReplayChallengeEndpointResolver::class),
                         requestTimeoutMs: max(250, (int) $app->config(
                             'database.idempotency.remote_replay_challenge.request_timeout_ms',
                             2000,

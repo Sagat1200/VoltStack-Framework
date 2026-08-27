@@ -9,6 +9,7 @@ use Quantum\Console\Input;
 use Quantum\Console\Output;
 use Quantum\Database\Operation\Contracts\DatabaseIdempotencyStoreInterface;
 use Quantum\Database\Operation\DatabaseIdempotencyRecord;
+use Quantum\Database\Operation\Engine\DatabaseRemoteReplayChallengeEndpointResolver;
 
 final class DbIdempotencyCommand extends Command
 {
@@ -53,6 +54,9 @@ final class DbIdempotencyCommand extends Command
             $limit = $this->resolvePositiveIntOption($input, 'limit') ?? 50;
             $remoteReplayAttestationMode = (string) $app->config('database.idempotency.remote_replay_attestation_mode', 'allow');
             $remoteReplayAttestationMaxAgeSeconds = max(0, (int) $app->config('database.idempotency.remote_replay_attestation_max_age_seconds', 0));
+            /** @var DatabaseRemoteReplayChallengeEndpointResolver $challengeEndpointResolver */
+            $challengeEndpointResolver = $app->make(DatabaseRemoteReplayChallengeEndpointResolver::class);
+            $remoteChallengeCluster = $challengeEndpointResolver->diagnostics($currentNodeId);
 
             $lookupKey = $this->resolveLookupKeyHash($input);
             if ($lookupKey !== null) {
@@ -68,6 +72,8 @@ final class DbIdempotencyCommand extends Command
                     $currentNodeId,
                     $remoteReplayAttestationMode,
                     $remoteReplayAttestationMaxAgeSeconds,
+                    $remoteChallengeCluster,
+                    $challengeEndpointResolver,
                     $input,
                     $output,
                 );
@@ -78,6 +84,11 @@ final class DbIdempotencyCommand extends Command
                 $aggregate['current_node_id'] = $currentNodeId;
                 $aggregate['node_perspective'] = $this->buildAggregateNodePerspective($aggregate, $currentNodeId);
                 $aggregate['evidence_trust_summary'] = $this->buildAggregateEvidenceTrustSummary($aggregate, $currentNodeId);
+                $aggregate['remote_challenge_cluster'] = $remoteChallengeCluster;
+                $aggregate['nodes_detail'] = $this->decorateNodesWithRemoteChallengeResolution(
+                    is_array($aggregate['nodes_detail'] ?? null) ? $aggregate['nodes_detail'] : [],
+                    $challengeEndpointResolver,
+                );
 
                 if ($input->hasOption('json')) {
                     $output->writeln((string) json_encode(
@@ -96,6 +107,7 @@ final class DbIdempotencyCommand extends Command
                 $nodesDetail = is_array($aggregate['nodes_detail'] ?? null) ? $aggregate['nodes_detail'] : [];
                 $nodePerspective = is_array($aggregate['node_perspective'] ?? null) ? $aggregate['node_perspective'] : [];
                 $evidenceTrustSummary = is_array($aggregate['evidence_trust_summary'] ?? null) ? $aggregate['evidence_trust_summary'] : [];
+                $challengeClusterSummary = is_array($aggregate['remote_challenge_cluster'] ?? null) ? $aggregate['remote_challenge_cluster'] : [];
                 $output->writeln(sprintf(
                     'Database idempotency aggregate: records=%d requests=%d connections=%d targets=%d nodes=%d window=%s..%s',
                     (int) ($aggregate['records'] ?? 0),
@@ -164,6 +176,14 @@ final class DbIdempotencyCommand extends Command
                     (int) ($evidenceTrustSummary['untrusted_attestation_mismatch'] ?? 0),
                     (int) ($evidenceTrustSummary['unknown_trust'] ?? 0),
                 ));
+                $output->writeln(sprintf(
+                    'Remote challenge cluster: current_node=%s configured_nodes=%d resolved_nodes=%d template=%s path=%s',
+                    $currentNodeId ?? 'n/a',
+                    (int) ($challengeClusterSummary['configured_nodes'] ?? 0),
+                    (int) ($challengeClusterSummary['resolved_count'] ?? 0),
+                    (string) (($challengeClusterSummary['endpoint_template'] ?? null) ?: 'n/a'),
+                    (string) (($challengeClusterSummary['default_path'] ?? null) ?: 'n/a'),
+                ));
                 foreach ($nodesDetail as $node) {
                     if (!is_array($node)) {
                         continue;
@@ -183,8 +203,11 @@ final class DbIdempotencyCommand extends Command
                         $nodeAttestationVerification,
                         $nodePerspectiveKind,
                     );
+                    $nodeChallengeResolution = is_array($node['remote_challenge_resolution'] ?? null)
+                        ? $node['remote_challenge_resolution']
+                        : [];
                     $output->writeln(sprintf(
-                        'Node: %s perspective=%s records=%d completed=%d failed=%d pending=%d persisted_summary=%d legacy_reconstructed=%d verified=%d mismatch=%d attested=%d attestation_mismatch=%d rv_verified=%d rv_unavailable=%d rv_without_receipt=%d trust_local=%d trust_remote_attested=%d trust_remote_verified=%d trust_legacy=%d warning_candidates=%d latest_created_at=%s',
+                        'Node: %s perspective=%s records=%d completed=%d failed=%d pending=%d persisted_summary=%d legacy_reconstructed=%d verified=%d mismatch=%d attested=%d attestation_mismatch=%d rv_verified=%d rv_unavailable=%d rv_without_receipt=%d trust_local=%d trust_remote_attested=%d trust_remote_verified=%d trust_legacy=%d warning_candidates=%d latest_created_at=%s challenge_status=%s challenge_strategy=%s',
                         (string) ($node['node_id'] ?? 'unknown-node'),
                         $nodePerspectiveKind,
                         (int) ($node['records'] ?? 0),
@@ -206,6 +229,8 @@ final class DbIdempotencyCommand extends Command
                         (int) ($nodeTrustSummary['legacy_reconstructed'] ?? 0),
                         (int) ($node['legacy_replay_warning_candidates'] ?? 0),
                         (string) ($node['latest_created_at'] ?? 'n/a'),
+                        (string) ($nodeChallengeResolution['status'] ?? 'n/a'),
+                        (string) (($nodeChallengeResolution['strategy'] ?? null) ?: 'n/a'),
                     ));
                 }
 
@@ -223,6 +248,8 @@ final class DbIdempotencyCommand extends Command
                 $currentNodeId,
                 $remoteReplayAttestationMode,
                 $remoteReplayAttestationMaxAgeSeconds,
+                $remoteChallengeCluster,
+                $challengeEndpointResolver,
                 $input,
                 $output,
             );
@@ -237,10 +264,13 @@ final class DbIdempotencyCommand extends Command
         ?string $currentNodeId,
         string $remoteReplayAttestationMode,
         int $remoteReplayAttestationMaxAgeSeconds,
+        array $remoteChallengeCluster,
+        DatabaseRemoteReplayChallengeEndpointResolver $challengeEndpointResolver,
         Input $input,
         Output $output,
     ): int {
         $replayOrigin = $this->resolveNodePerspective($record->nodeId, $currentNodeId);
+        $remoteChallengeResolution = $challengeEndpointResolver->resolve($record->nodeId)->toArray();
         if ($input->hasOption('json')) {
             $payload = $record->toArray();
             $payload['current_node_id'] = $currentNodeId;
@@ -252,6 +282,8 @@ final class DbIdempotencyCommand extends Command
             );
             $payload['evidence_trust_level'] = $payload['confirmation_evidence']['trust_level'] ?? null;
             $payload['remote_validation_receipt'] = $this->resolveRemoteValidationReceipt($record);
+            $payload['remote_challenge_resolution'] = $remoteChallengeResolution;
+            $payload['remote_challenge_cluster'] = $remoteChallengeCluster;
 
             $output->writeln((string) json_encode(
                 $payload,
@@ -284,6 +316,12 @@ final class DbIdempotencyCommand extends Command
             $replayOrigin,
             $currentNodeId ?? 'n/a',
             $record->nodeId ?? 'n/a',
+        ));
+        $output->writeln(sprintf(
+            'Remote challenge endpoint: status=%s strategy=%s endpoint=%s',
+            (string) ($remoteChallengeResolution['status'] ?? 'n/a'),
+            (string) (($remoteChallengeResolution['strategy'] ?? null) ?: 'n/a'),
+            (string) (($remoteChallengeResolution['endpoint'] ?? null) ?: 'n/a'),
         ));
         if ($record->confirmation !== []) {
             $replayReproducibility = $this->resolveReplayReproducibility($record->confirmation);
@@ -396,6 +434,27 @@ final class DbIdempotencyCommand extends Command
         }
 
         return 0;
+    }
+
+    /**
+     * @param array<int, mixed> $nodesDetail
+     * @return array<int, mixed>
+     */
+    private function decorateNodesWithRemoteChallengeResolution(
+        array $nodesDetail,
+        DatabaseRemoteReplayChallengeEndpointResolver $challengeEndpointResolver,
+    ): array {
+        foreach ($nodesDetail as $index => $node) {
+            if (!is_array($node)) {
+                continue;
+            }
+
+            $nodesDetail[$index]['remote_challenge_resolution'] = $challengeEndpointResolver
+                ->resolve(isset($node['node_id']) ? (string) $node['node_id'] : null)
+                ->toArray();
+        }
+
+        return $nodesDetail;
     }
 
     private function resolveLookupKeyHash(Input $input): ?string

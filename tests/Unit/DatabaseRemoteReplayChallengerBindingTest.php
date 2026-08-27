@@ -48,6 +48,19 @@ final class DatabaseRemoteReplayChallengerBindingTest extends TestCase
         self::assertInstanceOf(HttpDatabaseRemoteReplayChallenger::class, $challenger);
     }
 
+    public function test_it_resolves_http_challenger_when_template_is_configured_in_auto_mode(): void
+    {
+        $app = new Application($this->basePath);
+        $app->register(DatabaseServiceProvider::class);
+        $config = $app->make(ConfigRepository::class);
+        $config->set('database.idempotency.remote_replay_challenge.transport', 'auto');
+        $config->set('database.idempotency.remote_replay_challenge.endpoint_template', 'https://cluster.internal/{node_id}{path}');
+
+        $challenger = $app->make(DatabaseRemoteReplayChallengerInterface::class);
+
+        self::assertInstanceOf(HttpDatabaseRemoteReplayChallenger::class, $challenger);
+    }
+
     public function test_it_falls_back_to_null_challenger_without_endpoint_map(): void
     {
         $app = new Application($this->basePath);

@@ -11,12 +11,11 @@ use Quantum\Database\Operation\DatabaseRemoteReplayChallengeResponse;
 final class HttpDatabaseRemoteReplayChallenger implements DatabaseRemoteReplayChallengerInterface
 {
     /**
-     * @param array<string, string> $endpointMap
      * @param null|\Closure(string, array<string, mixed>, array<string, string>, int): array{status:int, headers:array<string, string>, body:string} $sender
      */
     public function __construct(
         private readonly DatabaseRemoteReplayChallengeSigner $signer,
-        private readonly array $endpointMap,
+        private readonly DatabaseRemoteReplayChallengeEndpointResolver $endpointResolver,
         private readonly int $requestTimeoutMs = 2000,
         private readonly ?\Closure $sender = null,
     ) {}
@@ -31,12 +30,15 @@ final class HttpDatabaseRemoteReplayChallenger implements DatabaseRemoteReplayCh
             );
         }
 
-        $endpoint = trim((string) ($this->endpointMap[$sourceNodeId] ?? ''));
-        if ($endpoint === '') {
+        $resolution = $this->endpointResolver->resolve($sourceNodeId);
+        $endpoint = trim((string) ($resolution->endpoint ?? ''));
+        if ($resolution->status !== 'resolved' || $endpoint === '') {
             return DatabaseRemoteReplayChallengeResponse::unavailable(
                 challenger: 'http_remote_replay_challenger',
                 message: sprintf('No remote replay challenge endpoint is configured for node [%s].', $sourceNodeId),
-                details: ['source_node_id' => $sourceNodeId],
+                details: array_merge([
+                    'source_node_id' => $sourceNodeId,
+                ], $resolution->toArray()),
             );
         }
 
@@ -57,6 +59,7 @@ final class HttpDatabaseRemoteReplayChallenger implements DatabaseRemoteReplayCh
                 details: [
                     'source_node_id' => $sourceNodeId,
                     'endpoint' => $endpoint,
+                    'endpoint_strategy' => $resolution->strategy,
                     'transport_error' => $exception->getMessage(),
                 ],
             );
@@ -70,6 +73,7 @@ final class HttpDatabaseRemoteReplayChallenger implements DatabaseRemoteReplayCh
                 details: [
                     'source_node_id' => $sourceNodeId,
                     'endpoint' => $endpoint,
+                    'endpoint_strategy' => $resolution->strategy,
                     'http_status' => $response['status'],
                 ],
             );
@@ -84,6 +88,7 @@ final class HttpDatabaseRemoteReplayChallenger implements DatabaseRemoteReplayCh
                 details: [
                     'source_node_id' => $sourceNodeId,
                     'endpoint' => $endpoint,
+                    'endpoint_strategy' => $resolution->strategy,
                     'http_status' => $response['status'],
                     'transport_error' => $exception->getMessage(),
                 ],
@@ -97,6 +102,7 @@ final class HttpDatabaseRemoteReplayChallenger implements DatabaseRemoteReplayCh
                 details: [
                     'source_node_id' => $sourceNodeId,
                     'endpoint' => $endpoint,
+                    'endpoint_strategy' => $resolution->strategy,
                     'http_status' => $response['status'],
                 ],
             );
@@ -118,6 +124,7 @@ final class HttpDatabaseRemoteReplayChallenger implements DatabaseRemoteReplayCh
                 details: [
                     'source_node_id' => $sourceNodeId,
                     'endpoint' => $endpoint,
+                    'endpoint_strategy' => $resolution->strategy,
                     'http_status' => $response['status'],
                     'response_signature_verification' => 'failed',
                 ],
@@ -143,6 +150,7 @@ final class HttpDatabaseRemoteReplayChallenger implements DatabaseRemoteReplayCh
             details: array_merge($challengeResponse->details, [
                 'source_node_id' => $sourceNodeId,
                 'endpoint' => $endpoint,
+                'endpoint_strategy' => $resolution->strategy,
                 'http_status' => $response['status'],
                 'response_signature_verification' => 'verified',
             ]),

@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use Quantum\Config\ConfigRepository;
 use Quantum\Database\Operation\DatabaseIdempotencyRecord;
 use Quantum\Database\Operation\DatabaseRemoteReplayChallengeRequest;
+use Quantum\Database\Operation\Engine\DatabaseRemoteReplayChallengeEndpointResolver;
 use Quantum\Database\Operation\Engine\DatabaseRemoteReplayChallengeSigner;
 use Quantum\Database\Operation\Engine\HttpDatabaseRemoteReplayChallenger;
 use Quantum\Database\Operation\Engine\InMemoryDatabaseIdempotencyStore;
@@ -62,7 +63,9 @@ final class DatabaseRemoteReplayHttpChallengeFlowTest extends TestCase
 
         $challenger = new HttpDatabaseRemoteReplayChallenger(
             signer: $signer,
-            endpointMap: ['node-a' => 'http://node-a.internal/_volt/db/remote-replay/challenge'],
+            endpointResolver: new DatabaseRemoteReplayChallengeEndpointResolver(
+                endpointMap: ['node-a' => 'http://node-a.internal/_volt/db/remote-replay/challenge'],
+            ),
             requestTimeoutMs: 1000,
             sender: function (string $endpoint, array $payload, array $headers, int $timeoutMs) use ($controller): array {
                 self::assertSame('http://node-a.internal/_volt/db/remote-replay/challenge', $endpoint);
@@ -167,7 +170,9 @@ final class DatabaseRemoteReplayHttpChallengeFlowTest extends TestCase
         $signer = new DatabaseRemoteReplayChallengeSigner($app);
         $challenger = new HttpDatabaseRemoteReplayChallenger(
             signer: $signer,
-            endpointMap: ['node-a' => 'http://node-a.internal/_volt/db/remote-replay/challenge'],
+            endpointResolver: new DatabaseRemoteReplayChallengeEndpointResolver(
+                endpointMap: ['node-a' => 'http://node-a.internal/_volt/db/remote-replay/challenge'],
+            ),
             sender: static fn(string $endpoint, array $payload, array $headers, int $timeoutMs): array => [
                 'status' => 200,
                 'headers' => [

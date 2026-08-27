@@ -57,9 +57,14 @@ final class DatabaseFederatedIdempotencyCommandTest extends TestCase
         );
         self::assertStringContainsString('Trust: local_verified=1 remote_attested=0 remote_verified=0 legacy_reconstructed=1 untrusted_mismatch=0 untrusted_attestation=0 unknown=0', $result['stdout']);
         self::assertStringContainsString(
+            'Remote challenge cluster: current_node=node-a configured_nodes=2 resolved_nodes=2 template=https://cluster.internal/{node_id}{path} path=/_volt/db/remote-replay/challenge',
+            $result['stdout']
+        );
+        self::assertStringContainsString(
             'Node: node-a perspective=local_node records=1 completed=1 failed=0 pending=0 persisted_summary=1 legacy_reconstructed=0 verified=1 mismatch=0 attested=1 attestation_mismatch=0 rv_verified=1 rv_unavailable=0 rv_without_receipt=0 trust_local=1 trust_remote_attested=0 trust_remote_verified=0 trust_legacy=0 warning_candidates=0',
             $result['stdout']
         );
+        self::assertStringContainsString('challenge_status=resolved challenge_strategy=endpoint_template', $result['stdout']);
         self::assertStringContainsString(
             'Node: node-b perspective=federated_remote_node records=1 completed=1 failed=0 pending=0 persisted_summary=0 legacy_reconstructed=1 verified=0 mismatch=0 attested=0 attestation_mismatch=0 rv_verified=0 rv_unavailable=0 rv_without_receipt=1 trust_local=0 trust_remote_attested=0 trust_remote_verified=0 trust_legacy=1 warning_candidates=1',
             $result['stdout']
@@ -79,6 +84,8 @@ final class DatabaseFederatedIdempotencyCommandTest extends TestCase
         self::assertStringContainsString('"legacy_reconstructed": 1', $json['stdout']);
         self::assertStringContainsString('"remote_validation_receipts"', $json['stdout']);
         self::assertStringContainsString('"verified_remote_validation": 1', $json['stdout']);
+        self::assertStringContainsString('"remote_challenge_cluster"', $json['stdout']);
+        self::assertStringContainsString('"remote_challenge_resolution"', $json['stdout']);
 
         $remotePerspective = $this->runConsole($this->basePath . DIRECTORY_SEPARATOR . 'node-b', ['volt', 'db:idempotency', '--aggregate', '--limit=10']);
         self::assertSame(0, $remotePerspective['exit']);
@@ -301,6 +308,15 @@ final class DatabaseFederatedIdempotencyCommandTest extends TestCase
                     'directory_path' => $this->sharedIdempotencyDirectory,
                     'node_id' => $nodeId,
                     'pending_ttl_seconds' => 300,
+                    'remote_replay_challenge' => [
+                        'transport' => 'auto',
+                        'path' => '/_volt/db/remote-replay/challenge',
+                        'endpoint_template' => 'https://cluster.internal/{node_id}{path}',
+                        'known_nodes' => [
+                            'node-a',
+                            'node-b',
+                        ],
+                    ],
                 ],
                 'observability' => [
                     'dispatcher' => 'null',

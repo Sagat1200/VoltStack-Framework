@@ -352,6 +352,18 @@ final class DbIdempotencyCommand extends Command
                         (string) $remoteValidationReceipt['message'],
                     ));
                 }
+                $remoteChallengeReceipt = $this->resolveRemoteChallengeReceipt($remoteValidationReceipt);
+                if ($remoteChallengeReceipt !== null) {
+                    $output->writeln(sprintf(
+                        'Remote challenge: protocol=%s challenge_id=%s challenged_node=%s responded_at=%s proof_type=%s proof_fingerprint=%s',
+                        (string) ($remoteChallengeReceipt['challenge_protocol'] ?? 'n/a'),
+                        (string) ($remoteChallengeReceipt['challenge_id'] ?? 'n/a'),
+                        (string) ($remoteChallengeReceipt['challenged_node_id'] ?? 'n/a'),
+                        (string) ($remoteChallengeReceipt['responded_at'] ?? 'n/a'),
+                        (string) ($remoteChallengeReceipt['proof_type'] ?? 'n/a'),
+                        (string) ($remoteChallengeReceipt['proof_fingerprint'] ?? 'n/a'),
+                    ));
+                }
             }
             $replayWarning = $this->resolveReplaySupportWarning($record->confirmation);
             if ($replayWarning !== null) {
@@ -824,6 +836,24 @@ final class DbIdempotencyCommand extends Command
         return is_array($receipt) && $receipt !== []
             ? $receipt
             : null;
+    }
+
+    /**
+     * @param array<string, mixed> $remoteValidationReceipt
+     * @return array<string, mixed>|null
+     */
+    private function resolveRemoteChallengeReceipt(array $remoteValidationReceipt): ?array
+    {
+        $details = $remoteValidationReceipt['details'] ?? null;
+        if (!is_array($details) || $details === []) {
+            return null;
+        }
+
+        if (!isset($details['challenge_protocol'])) {
+            return null;
+        }
+
+        return $details;
     }
 
     private function resolveEvidenceTrustLevel(

@@ -108,7 +108,12 @@ final class DatabaseIdempotencyCommandTest extends TestCase
                 'validated_by_node_id' => 'node-runtime-b',
                 'source_node_id' => 'VoltStack Idempotency Command Feature Test',
                 'details' => [
-                    'challenge' => 'nonce-123',
+                    'challenge_protocol' => 'remote_replay_node_challenge_v1',
+                    'challenge_id' => 'challenge-123',
+                    'challenged_node_id' => 'VoltStack Idempotency Command Feature Test',
+                    'responded_at' => '2026-08-25T07:00:12+00:00',
+                    'proof_type' => 'hmac_sha256',
+                    'proof_fingerprint' => 'proof-123',
                 ],
             ],
         ]);
@@ -137,6 +142,10 @@ final class DatabaseIdempotencyCommandTest extends TestCase
             $result['stdout']
         );
         self::assertStringContainsString('Remote validation message: Remote validation accepted the replay.', $result['stdout']);
+        self::assertStringContainsString(
+            'Remote challenge: protocol=remote_replay_node_challenge_v1 challenge_id=challenge-123 challenged_node=VoltStack Idempotency Command Feature Test responded_at=2026-08-25T07:00:12+00:00 proof_type=hmac_sha256 proof_fingerprint=proof-123',
+            $result['stdout']
+        );
         self::assertStringContainsString('Result summary: type=success_no_rows is_select=no affected_rows=1 rows_read=0 column_count=0', $result['stdout']);
 
         $lookup = $this->runConsole(['volt', 'db:idempotency', '--key=mutation-users-1', '--json']);

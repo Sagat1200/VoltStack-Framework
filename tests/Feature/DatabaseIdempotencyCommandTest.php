@@ -98,6 +98,19 @@ final class DatabaseIdempotencyCommandTest extends TestCase
                 'column_count' => 0,
                 'result_type' => 'success_no_rows',
             ],
+            'remote_validation_receipt' => [
+                'version' => 1,
+                'status' => 'verified_remote_validation',
+                'validator' => 'stub-remote-validator',
+                'message' => 'Remote validation accepted the replay.',
+                'validation_mode' => 'require',
+                'validated_at' => '2026-08-25T07:00:12+00:00',
+                'validated_by_node_id' => 'node-runtime-b',
+                'source_node_id' => 'VoltStack Idempotency Command Feature Test',
+                'details' => [
+                    'challenge' => 'nonce-123',
+                ],
+            ],
         ]);
 
         $result = $this->runConsole(['volt', 'db:idempotency']);
@@ -119,6 +132,11 @@ final class DatabaseIdempotencyCommandTest extends TestCase
         self::assertStringContainsString('Replay verification: status=verified_persisted_evidence', $result['stdout']);
         self::assertStringContainsString('Replay attestation: status=verified_source_node_attestation', $result['stdout']);
         self::assertStringContainsString('Replay trust: level=local_verified_persisted', $result['stdout']);
+        self::assertStringContainsString(
+            'Remote validation receipt: status=verified_remote_validation validator=stub-remote-validator validated_by=node-runtime-b validated_at=2026-08-25T07:00:12+00:00 mode=require',
+            $result['stdout']
+        );
+        self::assertStringContainsString('Remote validation message: Remote validation accepted the replay.', $result['stdout']);
         self::assertStringContainsString('Result summary: type=success_no_rows is_select=no affected_rows=1 rows_read=0 column_count=0', $result['stdout']);
 
         $lookup = $this->runConsole(['volt', 'db:idempotency', '--key=mutation-users-1', '--json']);
@@ -135,6 +153,8 @@ final class DatabaseIdempotencyCommandTest extends TestCase
         self::assertStringContainsString('"attestation_verification_status": "verified_source_node_attestation"', $lookup['stdout']);
         self::assertStringContainsString('"trust_level": "local_verified_persisted"', $lookup['stdout']);
         self::assertStringContainsString('"evidence_trust_level": "local_verified_persisted"', $lookup['stdout']);
+        self::assertStringContainsString('"remote_validation_receipt"', $lookup['stdout']);
+        self::assertStringContainsString('"status": "verified_remote_validation"', $lookup['stdout']);
     }
 
     public function test_cli_idempotency_can_aggregate_recent_records(): void
@@ -226,6 +246,17 @@ final class DatabaseIdempotencyCommandTest extends TestCase
                 'column_count' => 0,
                 'result_type' => 'success_no_rows',
             ],
+            'remote_validation_receipt' => [
+                'version' => 1,
+                'status' => 'verified_remote_validation',
+                'validator' => 'stub-remote-validator',
+                'message' => 'Remote replay validated successfully.',
+                'validation_mode' => 'require',
+                'validated_at' => '2026-08-25T07:00:12+00:00',
+                'validated_by_node_id' => 'node-runtime-b',
+                'source_node_id' => 'node-a',
+                'details' => [],
+            ],
         ]);
         $store->acquire($second);
         $store->fail($second);
@@ -257,11 +288,13 @@ final class DatabaseIdempotencyCommandTest extends TestCase
         self::assertStringContainsString('Replay support: persisted_summary=1 legacy_reconstructed=1 warning_candidates=1', $result['stdout']);
         self::assertStringContainsString('Verification: verified=1 reconstructed_legacy=1 mismatch=0', $result['stdout']);
         self::assertStringContainsString('Attestation: verified=1 missing=0 legacy=1 mismatch=0', $result['stdout']);
+        self::assertStringContainsString('Remote validation receipts: verified=1 unavailable=0 rejected=0 not_applicable=0 without_receipt=1', $result['stdout']);
         self::assertStringContainsString(
             'Perspective: current_node=VoltStack Idempotency Command Feature Test local_records=0 remote_records=4 unknown_records=0',
             $result['stdout']
         );
         self::assertStringContainsString('Trust: local_verified=0 remote_attested=1 remote_verified=0 legacy_reconstructed=1 untrusted_mismatch=0 untrusted_attestation=0 unknown=0', $result['stdout']);
+        self::assertStringContainsString('rv_verified=1 rv_unavailable=0 rv_without_receipt=0', $result['stdout']);
 
         $json = $this->runConsole(['volt', 'db:idempotency', '--aggregate', '--json', '--limit=10']);
         self::assertSame(0, $json['exit']);
@@ -278,6 +311,8 @@ final class DatabaseIdempotencyCommandTest extends TestCase
         self::assertStringContainsString('"verified_persisted_evidence": 1', $json['stdout']);
         self::assertStringContainsString('"verified_source_node_attestation": 1', $json['stdout']);
         self::assertStringContainsString('"remote_attested_persisted": 1', $json['stdout']);
+        self::assertStringContainsString('"remote_validation_receipts"', $json['stdout']);
+        self::assertStringContainsString('"verified_remote_validation": 1', $json['stdout']);
     }
 
     public function test_cli_idempotency_reconstructs_replay_support_for_legacy_confirmation(): void

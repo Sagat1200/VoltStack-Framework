@@ -18,6 +18,7 @@ final readonly class DatabaseExecutionPolicy
         public string $remoteReplayAttestationMode = 'allow',
         public int $remoteReplayAttestationMaxAgeSeconds = 0,
         public string $remoteReplayValidationMode = 'allow',
+        public int $remoteReplayValidationReceiptMaxAgeSeconds = 0,
         public int $circuitFailureThreshold = 3,
         public int $circuitCooldownMs = 30000,
         public int $slowQueryThresholdMs = 250,
@@ -57,6 +58,7 @@ final readonly class DatabaseExecutionPolicy
         if (!in_array($remoteReplayValidationMode, ['allow', 'warn', 'require'], true)) {
             $remoteReplayValidationMode = 'allow';
         }
+        $remoteReplayValidationReceiptMaxAgeSeconds = max(0, (int) ($idempotency['remote_replay_validation_receipt_max_age_seconds'] ?? 0));
 
         return new self(
             timeoutMs: max(1, (int) ($timeouts['soft_timeout_ms'] ?? 30000)),
@@ -70,6 +72,7 @@ final readonly class DatabaseExecutionPolicy
             remoteReplayAttestationMode: $remoteReplayAttestationMode,
             remoteReplayAttestationMaxAgeSeconds: $remoteReplayAttestationMaxAgeSeconds,
             remoteReplayValidationMode: $remoteReplayValidationMode,
+            remoteReplayValidationReceiptMaxAgeSeconds: $remoteReplayValidationReceiptMaxAgeSeconds,
             circuitFailureThreshold: max(1, (int) ($circuit['failure_threshold'] ?? 3)),
             circuitCooldownMs: max(1, (int) ($circuit['cooldown_ms'] ?? 30000)),
             slowQueryThresholdMs: max(1, (int) ($observability['slow_query_ms'] ?? 250)),
@@ -98,6 +101,7 @@ final readonly class DatabaseExecutionPolicy
             remoteReplayAttestationMode: $this->remoteReplayAttestationMode,
             remoteReplayAttestationMaxAgeSeconds: $this->remoteReplayAttestationMaxAgeSeconds,
             remoteReplayValidationMode: $this->remoteReplayValidationMode,
+            remoteReplayValidationReceiptMaxAgeSeconds: $this->remoteReplayValidationReceiptMaxAgeSeconds,
             circuitFailureThreshold: $this->circuitFailureThreshold,
             circuitCooldownMs: $this->circuitCooldownMs,
             slowQueryThresholdMs: $this->slowQueryThresholdMs,
@@ -126,6 +130,7 @@ final readonly class DatabaseExecutionPolicy
             remoteReplayAttestationMode: $this->remoteReplayAttestationMode,
             remoteReplayAttestationMaxAgeSeconds: $this->remoteReplayAttestationMaxAgeSeconds,
             remoteReplayValidationMode: $this->remoteReplayValidationMode,
+            remoteReplayValidationReceiptMaxAgeSeconds: $this->remoteReplayValidationReceiptMaxAgeSeconds,
             circuitFailureThreshold: $this->circuitFailureThreshold,
             circuitCooldownMs: $this->circuitCooldownMs,
             slowQueryThresholdMs: $this->slowQueryThresholdMs,

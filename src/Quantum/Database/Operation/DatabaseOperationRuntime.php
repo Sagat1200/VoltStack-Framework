@@ -184,7 +184,13 @@ final class DatabaseOperationRuntime
                     $plan->policy->remoteReplayAttestationMaxAgeSeconds,
                     $evidenceVerification,
                 );
-                $remoteReplayValidation = $this->validateRemoteReplay(
+                $remoteReplayValidation = $this->reuseRemoteReplayValidationReceipt(
+                    $existing,
+                    $plan,
+                    $currentNodeId,
+                    $replayOrigin,
+                    $evidenceVerification,
+                ) ?? $this->validateRemoteReplay(
                     $existing,
                     $plan,
                     $currentNodeId,
@@ -496,6 +502,14 @@ final class DatabaseOperationRuntime
                         ),
                     );
                 }
+                $existing = $this->persistRemoteReplayValidationReceipt(
+                    $existing,
+                    $plan,
+                    $currentNodeId,
+                    $replayOrigin,
+                    $evidenceVerification,
+                    $remoteReplayValidation,
+                );
                 $snapshot = $this->snapshot(
                     plan: $plan,
                     attempts: 0,
@@ -1388,6 +1402,70 @@ final class DatabaseOperationRuntime
     }
 
     /**
+     * @param array<string, mixed> $confirmationEvidence
+     */
+    private function reuseRemoteReplayValidationReceipt(
+        DatabaseIdempotencyRecord $record,
+        DatabaseOperationPlan $plan,
+        ?string $currentNodeId,
+        string $replayOrigin,
+        array $confirmationEvidence,
+    ): ?DatabaseRemoteReplayValidationResult {
+        if (
+            $replayOrigin !== 'federated_remote_node'
+            || ($confirmationEvidence['verification_status'] ?? null) !== 'verified_persisted_evidence'
+            || $plan->policy->remoteReplayValidationReceiptMaxAgeSeconds <= 0
+        ) {
+            return null;
+        }
+
+        $receipt = $record->confirmation['remote_validation_receipt'] ?? null;
+        if (!is_array($receipt) || $receipt === []) {
+            return null;
+        }
+
+        $status = trim((string) ($receipt['status'] ?? ''));
+        $validatedByNodeId = trim((string) ($receipt['validated_by_node_id'] ?? ''));
+        $normalizedCurrentNodeId = trim((string) ($currentNodeId ?? ''));
+        $validatedAt = trim((string) ($receipt['validated_at'] ?? ''));
+
+        if (
+            $status !== 'verified_remote_validation'
+            || $validatedByNodeId === ''
+            || $normalizedCurrentNodeId === ''
+            || $validatedByNodeId !== $normalizedCurrentNodeId
+            || $validatedAt === ''
+        ) {
+            return null;
+        }
+
+        try {
+            $validatedAtDate = new \DateTimeImmutable($validatedAt);
+            $reference = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+            $ageSeconds = max(0, $reference->getTimestamp() - $validatedAtDate->getTimestamp());
+        } catch (\Throwable) {
+            return null;
+        }
+
+        if ($ageSeconds > $plan->policy->remoteReplayValidationReceiptMaxAgeSeconds) {
+            return null;
+        }
+
+        return DatabaseRemoteReplayValidationResult::verified(
+            validator: 'cached_remote_validation_receipt',
+            message: 'Reused a fresh remote validation receipt previously issued by the current node.',
+            details: [
+                'receipt_reuse' => 'reused_fresh_receipt',
+                'receipt_age_seconds' => $ageSeconds,
+                'receipt_validated_at' => $validatedAt,
+                'receipt_validated_by_node_id' => $validatedByNodeId,
+                'receipt_original_validator' => isset($receipt['validator']) ? (string) $receipt['validator'] : null,
+                'remote_replay_validation_receipt_max_age_seconds' => $plan->policy->remoteReplayValidationReceiptMaxAgeSeconds,
+            ],
+        );
+    }
+
+    /**
      * @return list<DatabaseDiagnosticEvent>
      */
     private function buildRemoteReplayValidationWarningEvent(
@@ -1420,6 +1498,44 @@ final class DatabaseOperationRuntime
                 'evidence_trust_level' => $evidenceTrustLevel,
             ], $validation->details)),
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $confirmationEvidence
+     */
+    private function persistRemoteReplayValidationReceipt(
+        DatabaseIdempotencyRecord $record,
+        DatabaseOperationPlan $plan,
+        ?string $currentNodeId,
+        string $replayOrigin,
+        array $confirmationEvidence,
+        DatabaseRemoteReplayValidationResult $validation,
+    ): DatabaseIdempotencyRecord {
+        if (
+            $replayOrigin !== 'federated_remote_node'
+            || ($confirmationEvidence['verification_status'] ?? null) !== 'verified_persisted_evidence'
+            || (($validation->details['receipt_reuse'] ?? null) === 'reused_fresh_receipt')
+        ) {
+            return $record;
+        }
+
+        $confirmation = $record->confirmation;
+        $confirmation['remote_validation_receipt'] = [
+            'version' => 1,
+            'status' => $validation->status,
+            'validator' => $validation->validator,
+            'message' => $validation->message,
+            'validation_mode' => $plan->policy->remoteReplayValidationMode,
+            'validated_at' => $this->timestampNow(),
+            'validated_by_node_id' => $currentNodeId,
+            'source_node_id' => $record->nodeId,
+            'details' => $validation->details,
+        ];
+
+        $updated = $record->withStatus('completed', $confirmation);
+        $this->resolveIdempotencyStore()?->complete($updated, $confirmation);
+
+        return $updated;
     }
 
     /**

@@ -92,6 +92,7 @@ final class DbIdempotencyCommand extends Command
                 $replaySupport = is_array($aggregate['replay_support'] ?? null) ? $aggregate['replay_support'] : [];
                 $evidenceVerification = is_array($aggregate['evidence_verification'] ?? null) ? $aggregate['evidence_verification'] : [];
                 $attestationVerification = is_array($aggregate['attestation_verification'] ?? null) ? $aggregate['attestation_verification'] : [];
+                $remoteValidationReceipts = is_array($aggregate['remote_validation_receipts'] ?? null) ? $aggregate['remote_validation_receipts'] : [];
                 $nodesDetail = is_array($aggregate['nodes_detail'] ?? null) ? $aggregate['nodes_detail'] : [];
                 $nodePerspective = is_array($aggregate['node_perspective'] ?? null) ? $aggregate['node_perspective'] : [];
                 $evidenceTrustSummary = is_array($aggregate['evidence_trust_summary'] ?? null) ? $aggregate['evidence_trust_summary'] : [];
@@ -139,6 +140,14 @@ final class DbIdempotencyCommand extends Command
                     (int) ($attestationVerification['mismatch_source_node_attestation'] ?? 0),
                 ));
                 $output->writeln(sprintf(
+                    'Remote validation receipts: verified=%d unavailable=%d rejected=%d not_applicable=%d without_receipt=%d',
+                    (int) ($remoteValidationReceipts['verified_remote_validation'] ?? 0),
+                    (int) ($remoteValidationReceipts['remote_validation_unavailable'] ?? 0),
+                    (int) ($remoteValidationReceipts['remote_validation_rejected'] ?? 0),
+                    (int) ($remoteValidationReceipts['not_applicable'] ?? 0),
+                    (int) ($remoteValidationReceipts['without_receipt'] ?? 0),
+                ));
+                $output->writeln(sprintf(
                     'Perspective: current_node=%s local_records=%d remote_records=%d unknown_records=%d',
                     $currentNodeId ?? 'n/a',
                     (int) ($nodePerspective['local_records'] ?? 0),
@@ -164,6 +173,7 @@ final class DbIdempotencyCommand extends Command
                     $nodeReplaySupport = is_array($node['replay_support'] ?? null) ? $node['replay_support'] : [];
                     $nodeEvidenceVerification = is_array($node['evidence_verification'] ?? null) ? $node['evidence_verification'] : [];
                     $nodeAttestationVerification = is_array($node['attestation_verification'] ?? null) ? $node['attestation_verification'] : [];
+                    $nodeRemoteValidationReceipts = is_array($node['remote_validation_receipts'] ?? null) ? $node['remote_validation_receipts'] : [];
                     $nodePerspectiveKind = $this->resolveNodePerspective(
                         isset($node['node_id']) ? (string) $node['node_id'] : null,
                         $currentNodeId,
@@ -174,7 +184,7 @@ final class DbIdempotencyCommand extends Command
                         $nodePerspectiveKind,
                     );
                     $output->writeln(sprintf(
-                        'Node: %s perspective=%s records=%d completed=%d failed=%d pending=%d persisted_summary=%d legacy_reconstructed=%d verified=%d mismatch=%d attested=%d attestation_mismatch=%d trust_local=%d trust_remote_attested=%d trust_remote_verified=%d trust_legacy=%d warning_candidates=%d latest_created_at=%s',
+                        'Node: %s perspective=%s records=%d completed=%d failed=%d pending=%d persisted_summary=%d legacy_reconstructed=%d verified=%d mismatch=%d attested=%d attestation_mismatch=%d rv_verified=%d rv_unavailable=%d rv_without_receipt=%d trust_local=%d trust_remote_attested=%d trust_remote_verified=%d trust_legacy=%d warning_candidates=%d latest_created_at=%s',
                         (string) ($node['node_id'] ?? 'unknown-node'),
                         $nodePerspectiveKind,
                         (int) ($node['records'] ?? 0),
@@ -187,6 +197,9 @@ final class DbIdempotencyCommand extends Command
                         (int) ($nodeEvidenceVerification['mismatch_persisted_evidence'] ?? 0),
                         (int) ($nodeAttestationVerification['verified_source_node_attestation'] ?? 0),
                         (int) ($nodeAttestationVerification['mismatch_source_node_attestation'] ?? 0),
+                        (int) ($nodeRemoteValidationReceipts['verified_remote_validation'] ?? 0),
+                        (int) ($nodeRemoteValidationReceipts['remote_validation_unavailable'] ?? 0),
+                        (int) ($nodeRemoteValidationReceipts['without_receipt'] ?? 0),
                         (int) ($nodeTrustSummary['local_verified_persisted'] ?? 0),
                         (int) ($nodeTrustSummary['remote_attested_persisted'] ?? 0),
                         (int) ($nodeTrustSummary['remote_verified_persisted'] ?? 0),
@@ -238,6 +251,7 @@ final class DbIdempotencyCommand extends Command
                 $remoteReplayAttestationMaxAgeSeconds,
             );
             $payload['evidence_trust_level'] = $payload['confirmation_evidence']['trust_level'] ?? null;
+            $payload['remote_validation_receipt'] = $this->resolveRemoteValidationReceipt($record);
 
             $output->writeln((string) json_encode(
                 $payload,
@@ -322,6 +336,23 @@ final class DbIdempotencyCommand extends Command
                 'Replay trust: level=%s',
                 (string) ($confirmationEvidence['trust_level'] ?? 'n/a'),
             ));
+            $remoteValidationReceipt = $this->resolveRemoteValidationReceipt($record);
+            if ($remoteValidationReceipt !== null) {
+                $output->writeln(sprintf(
+                    'Remote validation receipt: status=%s validator=%s validated_by=%s validated_at=%s mode=%s',
+                    (string) ($remoteValidationReceipt['status'] ?? 'n/a'),
+                    (string) ($remoteValidationReceipt['validator'] ?? 'n/a'),
+                    (string) ($remoteValidationReceipt['validated_by_node_id'] ?? 'n/a'),
+                    (string) ($remoteValidationReceipt['validated_at'] ?? 'n/a'),
+                    (string) ($remoteValidationReceipt['validation_mode'] ?? 'n/a'),
+                ));
+                if (isset($remoteValidationReceipt['message']) && trim((string) $remoteValidationReceipt['message']) !== '') {
+                    $output->writeln(sprintf(
+                        'Remote validation message: %s',
+                        (string) $remoteValidationReceipt['message'],
+                    ));
+                }
+            }
             $replayWarning = $this->resolveReplaySupportWarning($record->confirmation);
             if ($replayWarning !== null) {
                 $output->writeln(sprintf('Warning: %s', $replayWarning));
@@ -781,6 +812,18 @@ final class DbIdempotencyCommand extends Command
         return $source === $current
             ? 'local_node'
             : 'federated_remote_node';
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function resolveRemoteValidationReceipt(DatabaseIdempotencyRecord $record): ?array
+    {
+        $receipt = $record->confirmation['remote_validation_receipt'] ?? null;
+
+        return is_array($receipt) && $receipt !== []
+            ? $receipt
+            : null;
     }
 
     private function resolveEvidenceTrustLevel(

@@ -50,17 +50,18 @@ final class DatabaseFederatedIdempotencyCommandTest extends TestCase
         self::assertStringContainsString('Replay support: persisted_summary=1 legacy_reconstructed=1 warning_candidates=1', $result['stdout']);
         self::assertStringContainsString('Verification: verified=1 reconstructed_legacy=1 mismatch=0', $result['stdout']);
         self::assertStringContainsString('Attestation: verified=1 missing=0 legacy=1 mismatch=0', $result['stdout']);
+        self::assertStringContainsString('Remote validation receipts: verified=1 unavailable=0 rejected=0 not_applicable=0 without_receipt=1', $result['stdout']);
         self::assertStringContainsString(
             'Perspective: current_node=node-a local_records=1 remote_records=1 unknown_records=0',
             $result['stdout']
         );
         self::assertStringContainsString('Trust: local_verified=1 remote_attested=0 remote_verified=0 legacy_reconstructed=1 untrusted_mismatch=0 untrusted_attestation=0 unknown=0', $result['stdout']);
         self::assertStringContainsString(
-            'Node: node-a perspective=local_node records=1 completed=1 failed=0 pending=0 persisted_summary=1 legacy_reconstructed=0 verified=1 mismatch=0 attested=1 attestation_mismatch=0 trust_local=1 trust_remote_attested=0 trust_remote_verified=0 trust_legacy=0 warning_candidates=0',
+            'Node: node-a perspective=local_node records=1 completed=1 failed=0 pending=0 persisted_summary=1 legacy_reconstructed=0 verified=1 mismatch=0 attested=1 attestation_mismatch=0 rv_verified=1 rv_unavailable=0 rv_without_receipt=0 trust_local=1 trust_remote_attested=0 trust_remote_verified=0 trust_legacy=0 warning_candidates=0',
             $result['stdout']
         );
         self::assertStringContainsString(
-            'Node: node-b perspective=federated_remote_node records=1 completed=1 failed=0 pending=0 persisted_summary=0 legacy_reconstructed=1 verified=0 mismatch=0 attested=0 attestation_mismatch=0 trust_local=0 trust_remote_attested=0 trust_remote_verified=0 trust_legacy=1 warning_candidates=1',
+            'Node: node-b perspective=federated_remote_node records=1 completed=1 failed=0 pending=0 persisted_summary=0 legacy_reconstructed=1 verified=0 mismatch=0 attested=0 attestation_mismatch=0 rv_verified=0 rv_unavailable=0 rv_without_receipt=1 trust_local=0 trust_remote_attested=0 trust_remote_verified=0 trust_legacy=1 warning_candidates=1',
             $result['stdout']
         );
 
@@ -76,6 +77,8 @@ final class DatabaseFederatedIdempotencyCommandTest extends TestCase
         self::assertStringContainsString('"legacy_replay_warning_candidates": 1', $json['stdout']);
         self::assertStringContainsString('"local_verified_persisted": 1', $json['stdout']);
         self::assertStringContainsString('"legacy_reconstructed": 1', $json['stdout']);
+        self::assertStringContainsString('"remote_validation_receipts"', $json['stdout']);
+        self::assertStringContainsString('"verified_remote_validation": 1', $json['stdout']);
 
         $remotePerspective = $this->runConsole($this->basePath . DIRECTORY_SEPARATOR . 'node-b', ['volt', 'db:idempotency', '--aggregate', '--limit=10']);
         self::assertSame(0, $remotePerspective['exit']);
@@ -164,6 +167,17 @@ final class DatabaseFederatedIdempotencyCommandTest extends TestCase
                     'rows_read' => 0,
                     'column_count' => 0,
                     'result_type' => 'success_no_rows',
+                ],
+                'remote_validation_receipt' => [
+                    'version' => 1,
+                    'status' => 'verified_remote_validation',
+                    'validator' => 'stub-remote-validator',
+                    'message' => 'Remote replay validated successfully.',
+                    'validation_mode' => 'require',
+                    'validated_at' => '2026-08-25T09:00:12+00:00',
+                    'validated_by_node_id' => 'node-runtime-b',
+                    'source_node_id' => $nodeId,
+                    'details' => [],
                 ],
             ]);
     }

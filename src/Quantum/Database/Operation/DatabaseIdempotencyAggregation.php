@@ -42,6 +42,14 @@ final class DatabaseIdempotencyAggregation
             'mismatch_source_node_attestation' => 0,
             'unknown' => 0,
         ];
+        $remoteValidationReceipts = [
+            'verified_remote_validation' => 0,
+            'remote_validation_unavailable' => 0,
+            'remote_validation_rejected' => 0,
+            'not_applicable' => 0,
+            'without_receipt' => 0,
+            'unknown' => 0,
+        ];
         $legacyReplayWarningCandidates = 0;
         $confirmations = [
             'with_confirmation' => 0,
@@ -92,6 +100,14 @@ final class DatabaseIdempotencyAggregation
                         'no_attestation' => 0,
                         'not_attested_legacy' => 0,
                         'mismatch_source_node_attestation' => 0,
+                        'unknown' => 0,
+                    ],
+                    'remote_validation_receipts' => [
+                        'verified_remote_validation' => 0,
+                        'remote_validation_unavailable' => 0,
+                        'remote_validation_rejected' => 0,
+                        'not_applicable' => 0,
+                        'without_receipt' => 0,
                         'unknown' => 0,
                     ],
                     'legacy_replay_warning_candidates' => 0,
@@ -147,6 +163,15 @@ final class DatabaseIdempotencyAggregation
                     $nodeDetails[$nodeKey]['attestation_verification'][$attestation]++;
                 }
 
+                $remoteValidationReceipt = self::resolveRemoteValidationReceiptStatus($record);
+                if (!array_key_exists($remoteValidationReceipt, $remoteValidationReceipts)) {
+                    $remoteValidationReceipts['unknown']++;
+                    $nodeDetails[$nodeKey]['remote_validation_receipts']['unknown']++;
+                } else {
+                    $remoteValidationReceipts[$remoteValidationReceipt]++;
+                    $nodeDetails[$nodeKey]['remote_validation_receipts'][$remoteValidationReceipt]++;
+                }
+
                 if ($reproducibility === 'legacy_reconstructed') {
                     $legacyReplayWarningCandidates++;
                     $confirmations['legacy_without_summary']++;
@@ -188,6 +213,7 @@ final class DatabaseIdempotencyAggregation
             'replay_support' => $replaySupport,
             'evidence_verification' => $evidenceVerification,
             'attestation_verification' => $attestationVerification,
+            'remote_validation_receipts' => $remoteValidationReceipts,
             'legacy_replay_warning_candidates' => $legacyReplayWarningCandidates,
             'nodes_detail' => array_values($nodeDetails),
         ];
@@ -284,6 +310,18 @@ final class DatabaseIdempotencyAggregation
             && $attestedAt !== ''
             ? 'verified_source_node_attestation'
             : 'mismatch_source_node_attestation';
+    }
+
+    private static function resolveRemoteValidationReceiptStatus(DatabaseIdempotencyRecord $record): string
+    {
+        $receipt = $record->confirmation['remote_validation_receipt'] ?? null;
+        if (!is_array($receipt) || $receipt === []) {
+            return 'without_receipt';
+        }
+
+        $status = isset($receipt['status']) ? trim((string) $receipt['status']) : '';
+
+        return $status !== '' ? $status : 'unknown';
     }
 
     private static function computeAttestationFingerprint(DatabaseIdempotencyRecord $record): string

@@ -104,6 +104,7 @@ final class DbIdempotencyCommand extends Command
                 $evidenceVerification = is_array($aggregate['evidence_verification'] ?? null) ? $aggregate['evidence_verification'] : [];
                 $attestationVerification = is_array($aggregate['attestation_verification'] ?? null) ? $aggregate['attestation_verification'] : [];
                 $remoteValidationReceipts = is_array($aggregate['remote_validation_receipts'] ?? null) ? $aggregate['remote_validation_receipts'] : [];
+                $remoteChallengeTelemetry = is_array($aggregate['remote_challenge_telemetry'] ?? null) ? $aggregate['remote_challenge_telemetry'] : [];
                 $nodesDetail = is_array($aggregate['nodes_detail'] ?? null) ? $aggregate['nodes_detail'] : [];
                 $nodePerspective = is_array($aggregate['node_perspective'] ?? null) ? $aggregate['node_perspective'] : [];
                 $evidenceTrustSummary = is_array($aggregate['evidence_trust_summary'] ?? null) ? $aggregate['evidence_trust_summary'] : [];
@@ -184,6 +185,16 @@ final class DbIdempotencyCommand extends Command
                     (string) (($challengeClusterSummary['endpoint_template'] ?? null) ?: 'n/a'),
                     (string) (($challengeClusterSummary['default_path'] ?? null) ?: 'n/a'),
                 ));
+                $output->writeln(sprintf(
+                    'Remote challenge telemetry: with_details=%d without_details=%d compatible=%d incompatible=%d protocols=%s request_key_ids=%s response_key_ids=%s',
+                    (int) ($remoteChallengeTelemetry['with_details'] ?? 0),
+                    (int) ($remoteChallengeTelemetry['without_details'] ?? 0),
+                    (int) (($remoteChallengeTelemetry['compatibility']['compatible'] ?? 0)),
+                    (int) (($remoteChallengeTelemetry['compatibility']['incompatible'] ?? 0)),
+                    $this->formatCountMap(is_array($remoteChallengeTelemetry['protocols'] ?? null) ? $remoteChallengeTelemetry['protocols'] : []),
+                    $this->formatCountMap(is_array($remoteChallengeTelemetry['request_key_ids'] ?? null) ? $remoteChallengeTelemetry['request_key_ids'] : []),
+                    $this->formatCountMap(is_array($remoteChallengeTelemetry['response_key_ids'] ?? null) ? $remoteChallengeTelemetry['response_key_ids'] : []),
+                ));
                 foreach ($nodesDetail as $node) {
                     if (!is_array($node)) {
                         continue;
@@ -206,8 +217,11 @@ final class DbIdempotencyCommand extends Command
                     $nodeChallengeResolution = is_array($node['remote_challenge_resolution'] ?? null)
                         ? $node['remote_challenge_resolution']
                         : [];
+                    $nodeChallengeTelemetry = is_array($node['remote_challenge_telemetry'] ?? null)
+                        ? $node['remote_challenge_telemetry']
+                        : [];
                     $output->writeln(sprintf(
-                        'Node: %s perspective=%s records=%d completed=%d failed=%d pending=%d persisted_summary=%d legacy_reconstructed=%d verified=%d mismatch=%d attested=%d attestation_mismatch=%d rv_verified=%d rv_unavailable=%d rv_without_receipt=%d trust_local=%d trust_remote_attested=%d trust_remote_verified=%d trust_legacy=%d warning_candidates=%d latest_created_at=%s challenge_status=%s challenge_strategy=%s',
+                        'Node: %s perspective=%s records=%d completed=%d failed=%d pending=%d persisted_summary=%d legacy_reconstructed=%d verified=%d mismatch=%d attested=%d attestation_mismatch=%d rv_verified=%d rv_unavailable=%d rv_without_receipt=%d trust_local=%d trust_remote_attested=%d trust_remote_verified=%d trust_legacy=%d warning_candidates=%d latest_created_at=%s challenge_status=%s challenge_strategy=%s challenge_protocol=%s challenge_request_key_id=%s challenge_response_key_id=%s challenge_compatibility=%s',
                         (string) ($node['node_id'] ?? 'unknown-node'),
                         $nodePerspectiveKind,
                         (int) ($node['records'] ?? 0),
@@ -231,6 +245,10 @@ final class DbIdempotencyCommand extends Command
                         (string) ($node['latest_created_at'] ?? 'n/a'),
                         (string) ($nodeChallengeResolution['status'] ?? 'n/a'),
                         (string) (($nodeChallengeResolution['strategy'] ?? null) ?: 'n/a'),
+                        (string) (($nodeChallengeTelemetry['latest_protocol'] ?? null) ?: 'n/a'),
+                        (string) (($nodeChallengeTelemetry['latest_request_key_id'] ?? null) ?: 'n/a'),
+                        (string) (($nodeChallengeTelemetry['latest_response_key_id'] ?? null) ?: 'n/a'),
+                        (string) (($nodeChallengeTelemetry['latest_compatibility'] ?? null) ?: 'n/a'),
                     ));
                 }
 
@@ -400,6 +418,15 @@ final class DbIdempotencyCommand extends Command
                         (string) ($remoteChallengeReceipt['responded_at'] ?? 'n/a'),
                         (string) ($remoteChallengeReceipt['proof_type'] ?? 'n/a'),
                         (string) ($remoteChallengeReceipt['proof_fingerprint'] ?? 'n/a'),
+                    ));
+                    $output->writeln(sprintf(
+                        'Remote challenge transport: negotiated_protocol=%s request_protocol=%s response_protocol=%s request_key_id=%s response_key_id=%s compatibility=%s',
+                        (string) (($remoteChallengeReceipt['protocol_negotiated'] ?? $remoteChallengeReceipt['challenge_protocol'] ?? 'n/a')),
+                        (string) (($remoteChallengeReceipt['request_protocol'] ?? $remoteChallengeReceipt['challenge_protocol'] ?? 'n/a')),
+                        (string) (($remoteChallengeReceipt['response_protocol'] ?? $remoteChallengeReceipt['protocol'] ?? 'n/a')),
+                        (string) (($remoteChallengeReceipt['request_key_id'] ?? 'n/a')),
+                        (string) (($remoteChallengeReceipt['response_key_id'] ?? $remoteChallengeReceipt['key_id'] ?? 'n/a')),
+                        (string) (($remoteChallengeReceipt['protocol_compatibility'] ?? 'n/a')),
                     ));
                 }
             }
@@ -1011,5 +1038,24 @@ final class DbIdempotencyCommand extends Command
         $summary['unknown_trust'] += (int) ($verification['unknown'] ?? 0);
 
         return $summary;
+    }
+
+    /**
+     * @param array<string, int> $counts
+     */
+    private function formatCountMap(array $counts): string
+    {
+        if ($counts === []) {
+            return 'n/a';
+        }
+
+        ksort($counts);
+
+        $pairs = [];
+        foreach ($counts as $key => $value) {
+            $pairs[] = sprintf('%s:%d', $key, (int) $value);
+        }
+
+        return implode(',', $pairs);
     }
 }

@@ -61,10 +61,17 @@ final class DatabaseFederatedIdempotencyCommandTest extends TestCase
             $result['stdout']
         );
         self::assertStringContainsString(
+            'Remote challenge telemetry: with_details=1 without_details=1 compatible=1 incompatible=0 protocols=remote_replay_node_challenge_v1:1 request_key_ids=key-2026-08:1 response_key_ids=key-2026-09:1',
+            $result['stdout']
+        );
+        self::assertStringContainsString(
             'Node: node-a perspective=local_node records=1 completed=1 failed=0 pending=0 persisted_summary=1 legacy_reconstructed=0 verified=1 mismatch=0 attested=1 attestation_mismatch=0 rv_verified=1 rv_unavailable=0 rv_without_receipt=0 trust_local=1 trust_remote_attested=0 trust_remote_verified=0 trust_legacy=0 warning_candidates=0',
             $result['stdout']
         );
-        self::assertStringContainsString('challenge_status=resolved challenge_strategy=endpoint_template', $result['stdout']);
+        self::assertStringContainsString(
+            'challenge_status=resolved challenge_strategy=endpoint_template challenge_protocol=remote_replay_node_challenge_v1 challenge_request_key_id=key-2026-08 challenge_response_key_id=key-2026-09 challenge_compatibility=compatible',
+            $result['stdout']
+        );
         self::assertStringContainsString(
             'Node: node-b perspective=federated_remote_node records=1 completed=1 failed=0 pending=0 persisted_summary=0 legacy_reconstructed=1 verified=0 mismatch=0 attested=0 attestation_mismatch=0 rv_verified=0 rv_unavailable=0 rv_without_receipt=1 trust_local=0 trust_remote_attested=0 trust_remote_verified=0 trust_legacy=1 warning_candidates=1',
             $result['stdout']
@@ -84,6 +91,8 @@ final class DatabaseFederatedIdempotencyCommandTest extends TestCase
         self::assertStringContainsString('"legacy_reconstructed": 1', $json['stdout']);
         self::assertStringContainsString('"remote_validation_receipts"', $json['stdout']);
         self::assertStringContainsString('"verified_remote_validation": 1', $json['stdout']);
+        self::assertStringContainsString('"remote_challenge_telemetry"', $json['stdout']);
+        self::assertStringContainsString('"response_key_ids"', $json['stdout']);
         self::assertStringContainsString('"remote_challenge_cluster"', $json['stdout']);
         self::assertStringContainsString('"remote_challenge_resolution"', $json['stdout']);
 
@@ -184,7 +193,13 @@ final class DatabaseFederatedIdempotencyCommandTest extends TestCase
                     'validated_at' => '2026-08-25T09:00:12+00:00',
                     'validated_by_node_id' => 'node-runtime-b',
                     'source_node_id' => $nodeId,
-                    'details' => [],
+                'details' => [
+                    'challenge_protocol' => 'remote_replay_node_challenge_v1',
+                    'protocol_negotiated' => 'remote_replay_node_challenge_v1',
+                    'protocol_compatibility' => 'compatible',
+                    'request_key_id' => 'key-2026-08',
+                    'response_key_id' => 'key-2026-09',
+                ],
                 ],
             ]);
     }

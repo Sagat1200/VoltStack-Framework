@@ -114,6 +114,12 @@ final class DatabaseIdempotencyCommandTest extends TestCase
                     'responded_at' => '2026-08-25T07:00:12+00:00',
                     'proof_type' => 'hmac_sha256',
                     'proof_fingerprint' => 'proof-123',
+                    'request_protocol' => 'remote_replay_node_challenge_v1',
+                    'response_protocol' => 'remote_replay_node_challenge_v1',
+                    'protocol_negotiated' => 'remote_replay_node_challenge_v1',
+                    'protocol_compatibility' => 'compatible',
+                    'request_key_id' => 'key-2026-08',
+                    'response_key_id' => 'key-2026-09',
                 ],
             ],
         ]);
@@ -150,6 +156,10 @@ final class DatabaseIdempotencyCommandTest extends TestCase
             'Remote challenge: protocol=remote_replay_node_challenge_v1 challenge_id=challenge-123 challenged_node=VoltStack Idempotency Command Feature Test responded_at=2026-08-25T07:00:12+00:00 proof_type=hmac_sha256 proof_fingerprint=proof-123',
             $result['stdout']
         );
+        self::assertStringContainsString(
+            'Remote challenge transport: negotiated_protocol=remote_replay_node_challenge_v1 request_protocol=remote_replay_node_challenge_v1 response_protocol=remote_replay_node_challenge_v1 request_key_id=key-2026-08 response_key_id=key-2026-09 compatibility=compatible',
+            $result['stdout']
+        );
         self::assertStringContainsString('Result summary: type=success_no_rows is_select=no affected_rows=1 rows_read=0 column_count=0', $result['stdout']);
 
         $lookup = $this->runConsole(['volt', 'db:idempotency', '--key=mutation-users-1', '--json']);
@@ -168,6 +178,8 @@ final class DatabaseIdempotencyCommandTest extends TestCase
         self::assertStringContainsString('"evidence_trust_level": "local_verified_persisted"', $lookup['stdout']);
         self::assertStringContainsString('"remote_validation_receipt"', $lookup['stdout']);
         self::assertStringContainsString('"status": "verified_remote_validation"', $lookup['stdout']);
+        self::assertStringContainsString('"protocol_negotiated": "remote_replay_node_challenge_v1"', $lookup['stdout']);
+        self::assertStringContainsString('"response_key_id": "key-2026-09"', $lookup['stdout']);
         self::assertStringContainsString('"remote_challenge_resolution"', $lookup['stdout']);
         self::assertStringContainsString('"endpoint_template"', $lookup['stdout']);
     }
@@ -270,7 +282,13 @@ final class DatabaseIdempotencyCommandTest extends TestCase
                 'validated_at' => '2026-08-25T07:00:12+00:00',
                 'validated_by_node_id' => 'node-runtime-b',
                 'source_node_id' => 'node-a',
-                'details' => [],
+                'details' => [
+                    'challenge_protocol' => 'remote_replay_node_challenge_v1',
+                    'protocol_negotiated' => 'remote_replay_node_challenge_v1',
+                    'protocol_compatibility' => 'compatible',
+                    'request_key_id' => 'key-2026-08',
+                    'response_key_id' => 'key-2026-09',
+                ],
             ],
         ]);
         $store->acquire($second);
@@ -313,8 +331,15 @@ final class DatabaseIdempotencyCommandTest extends TestCase
             'Remote challenge cluster: current_node=VoltStack Idempotency Command Feature Test configured_nodes=4 resolved_nodes=4 template=https://cluster.internal/{node_id}{path} path=/_volt/db/remote-replay/challenge',
             $result['stdout']
         );
+        self::assertStringContainsString(
+            'Remote challenge telemetry: with_details=1 without_details=1 compatible=1 incompatible=0 protocols=remote_replay_node_challenge_v1:1 request_key_ids=key-2026-08:1 response_key_ids=key-2026-09:1',
+            $result['stdout']
+        );
         self::assertStringContainsString('rv_verified=1 rv_unavailable=0 rv_without_receipt=0', $result['stdout']);
-        self::assertStringContainsString('challenge_status=resolved challenge_strategy=endpoint_template', $result['stdout']);
+        self::assertStringContainsString(
+            'challenge_status=resolved challenge_strategy=endpoint_template challenge_protocol=remote_replay_node_challenge_v1 challenge_request_key_id=key-2026-08 challenge_response_key_id=key-2026-09 challenge_compatibility=compatible',
+            $result['stdout']
+        );
 
         $json = $this->runConsole(['volt', 'db:idempotency', '--aggregate', '--json', '--limit=10']);
         self::assertSame(0, $json['exit']);
@@ -333,6 +358,9 @@ final class DatabaseIdempotencyCommandTest extends TestCase
         self::assertStringContainsString('"remote_attested_persisted": 1', $json['stdout']);
         self::assertStringContainsString('"remote_validation_receipts"', $json['stdout']);
         self::assertStringContainsString('"verified_remote_validation": 1', $json['stdout']);
+        self::assertStringContainsString('"remote_challenge_telemetry"', $json['stdout']);
+        self::assertStringContainsString('"request_key_ids"', $json['stdout']);
+        self::assertStringContainsString('"response_key_ids"', $json['stdout']);
         self::assertStringContainsString('"remote_challenge_cluster"', $json['stdout']);
         self::assertStringContainsString('"remote_challenge_resolution"', $json['stdout']);
     }

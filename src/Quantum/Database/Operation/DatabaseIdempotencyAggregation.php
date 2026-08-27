@@ -50,6 +50,19 @@ final class DatabaseIdempotencyAggregation
             'without_receipt' => 0,
             'unknown' => 0,
         ];
+        $remoteChallengeTelemetry = [
+            'with_details' => 0,
+            'without_details' => 0,
+            'protocols' => [],
+            'compatibility' => [
+                'compatible' => 0,
+                'incompatible' => 0,
+                'unknown' => 0,
+                'not_applicable' => 0,
+            ],
+            'request_key_ids' => [],
+            'response_key_ids' => [],
+        ];
         $legacyReplayWarningCandidates = 0;
         $confirmations = [
             'with_confirmation' => 0,
@@ -109,6 +122,23 @@ final class DatabaseIdempotencyAggregation
                         'not_applicable' => 0,
                         'without_receipt' => 0,
                         'unknown' => 0,
+                    ],
+                    'remote_challenge_telemetry' => [
+                        'with_details' => 0,
+                        'without_details' => 0,
+                        'protocols' => [],
+                        'compatibility' => [
+                            'compatible' => 0,
+                            'incompatible' => 0,
+                            'unknown' => 0,
+                            'not_applicable' => 0,
+                        ],
+                        'request_key_ids' => [],
+                        'response_key_ids' => [],
+                        'latest_protocol' => null,
+                        'latest_request_key_id' => null,
+                        'latest_response_key_id' => null,
+                        'latest_compatibility' => null,
                     ],
                     'legacy_replay_warning_candidates' => 0,
                     'latest_created_at' => null,
@@ -172,6 +202,12 @@ final class DatabaseIdempotencyAggregation
                     $nodeDetails[$nodeKey]['remote_validation_receipts'][$remoteValidationReceipt]++;
                 }
 
+                self::recordRemoteChallengeTelemetry(
+                    $remoteChallengeTelemetry,
+                    $nodeDetails[$nodeKey]['remote_challenge_telemetry'],
+                    self::resolveRemoteChallengeTelemetry($record),
+                );
+
                 if ($reproducibility === 'legacy_reconstructed') {
                     $legacyReplayWarningCandidates++;
                     $confirmations['legacy_without_summary']++;
@@ -214,6 +250,7 @@ final class DatabaseIdempotencyAggregation
             'evidence_verification' => $evidenceVerification,
             'attestation_verification' => $attestationVerification,
             'remote_validation_receipts' => $remoteValidationReceipts,
+            'remote_challenge_telemetry' => $remoteChallengeTelemetry,
             'legacy_replay_warning_candidates' => $legacyReplayWarningCandidates,
             'nodes_detail' => array_values($nodeDetails),
         ];
@@ -324,6 +361,98 @@ final class DatabaseIdempotencyAggregation
         return $status !== '' ? $status : 'unknown';
     }
 
+    /**
+     * @return array{protocol:?string,compatibility:string,request_key_id:?string,response_key_id:?string}|null
+     */
+    private static function resolveRemoteChallengeTelemetry(DatabaseIdempotencyRecord $record): ?array
+    {
+        $receipt = $record->confirmation['remote_validation_receipt'] ?? null;
+        if (!is_array($receipt) || $receipt === []) {
+            return null;
+        }
+
+        $details = $receipt['details'] ?? null;
+        if (!is_array($details) || $details === []) {
+            return [
+                'protocol' => null,
+                'compatibility' => 'not_applicable',
+                'request_key_id' => null,
+                'response_key_id' => null,
+            ];
+        }
+
+        $protocol = self::normalizeString(
+            $details['protocol_negotiated']
+                ?? $details['response_protocol']
+                ?? $details['challenge_protocol']
+                ?? $details['protocol']
+                ?? null,
+        );
+        $compatibility = self::normalizeString($details['protocol_compatibility'] ?? null) ?? 'unknown';
+
+        return [
+            'protocol' => $protocol,
+            'compatibility' => $compatibility,
+            'request_key_id' => self::normalizeString($details['request_key_id'] ?? null),
+            'response_key_id' => self::normalizeString($details['response_key_id'] ?? ($details['key_id'] ?? null)),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $aggregateTelemetry
+     * @param array<string, mixed> $nodeTelemetry
+     * @param array{protocol:?string,compatibility:string,request_key_id:?string,response_key_id:?string}|null $telemetry
+     */
+    private static function recordRemoteChallengeTelemetry(
+        array &$aggregateTelemetry,
+        array &$nodeTelemetry,
+        ?array $telemetry,
+    ): void {
+        if ($telemetry === null) {
+            $aggregateTelemetry['without_details']++;
+            $nodeTelemetry['without_details']++;
+            $aggregateTelemetry['compatibility']['not_applicable']++;
+            $nodeTelemetry['compatibility']['not_applicable']++;
+
+            return;
+        }
+
+        $aggregateTelemetry['with_details']++;
+        $nodeTelemetry['with_details']++;
+
+        $compatibility = self::normalizeString($telemetry['compatibility'] ?? null) ?? 'unknown';
+        if (!isset($aggregateTelemetry['compatibility'][$compatibility])) {
+            $aggregateTelemetry['compatibility'][$compatibility] = 0;
+        }
+        if (!isset($nodeTelemetry['compatibility'][$compatibility])) {
+            $nodeTelemetry['compatibility'][$compatibility] = 0;
+        }
+        $aggregateTelemetry['compatibility'][$compatibility]++;
+        $nodeTelemetry['compatibility'][$compatibility]++;
+        $nodeTelemetry['latest_compatibility'] = $compatibility;
+
+        $protocol = self::normalizeString($telemetry['protocol'] ?? null);
+        if ($protocol !== null) {
+            $aggregateTelemetry['protocols'][$protocol] = (int) ($aggregateTelemetry['protocols'][$protocol] ?? 0) + 1;
+            $nodeTelemetry['protocols'][$protocol] = (int) ($nodeTelemetry['protocols'][$protocol] ?? 0) + 1;
+            $nodeTelemetry['latest_protocol'] = $protocol;
+        }
+
+        $requestKeyId = self::normalizeString($telemetry['request_key_id'] ?? null);
+        if ($requestKeyId !== null) {
+            $aggregateTelemetry['request_key_ids'][$requestKeyId] = (int) ($aggregateTelemetry['request_key_ids'][$requestKeyId] ?? 0) + 1;
+            $nodeTelemetry['request_key_ids'][$requestKeyId] = (int) ($nodeTelemetry['request_key_ids'][$requestKeyId] ?? 0) + 1;
+            $nodeTelemetry['latest_request_key_id'] = $requestKeyId;
+        }
+
+        $responseKeyId = self::normalizeString($telemetry['response_key_id'] ?? null);
+        if ($responseKeyId !== null) {
+            $aggregateTelemetry['response_key_ids'][$responseKeyId] = (int) ($aggregateTelemetry['response_key_ids'][$responseKeyId] ?? 0) + 1;
+            $nodeTelemetry['response_key_ids'][$responseKeyId] = (int) ($nodeTelemetry['response_key_ids'][$responseKeyId] ?? 0) + 1;
+            $nodeTelemetry['latest_response_key_id'] = $responseKeyId;
+        }
+    }
+
     private static function computeAttestationFingerprint(DatabaseIdempotencyRecord $record): string
     {
         $confirmation = $record->confirmation;
@@ -343,6 +472,17 @@ final class DatabaseIdempotencyAggregation
             'attested_by_node_id' => $confirmation['attested_by_node_id'] ?? null,
             'attested_at' => $confirmation['attested_at'] ?? null,
         ], JSON_THROW_ON_ERROR));
+    }
+
+    private static function normalizeString(mixed $value): ?string
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $value = trim($value);
+
+        return $value !== '' ? $value : null;
     }
 
     /**

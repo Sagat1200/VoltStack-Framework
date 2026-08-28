@@ -30,6 +30,7 @@ use Quantum\Database\Operation\Engine\DirectoryDatabaseIdempotencyStore;
 use Quantum\Database\Operation\Engine\ChallengeDatabaseRemoteReplayValidator;
 use Quantum\Database\Operation\Engine\DatabaseRemoteReplayChallengeEndpointResolver;
 use Quantum\Database\Operation\Engine\DatabaseRemoteReplayChallengeSigner;
+use Quantum\Database\Operation\Engine\HttpDatabaseTelemetryDispatcher;
 use Quantum\Database\Operation\Engine\InMemoryDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\InMemoryDatabaseIdempotencyStore;
 use Quantum\Database\Operation\Engine\InMemoryDatabaseTelemetryDispatcher;
@@ -318,6 +319,35 @@ final class DatabaseServiceProvider extends ServiceProvider
 
                 return new JsonLineDatabaseTelemetryDispatcher(
                     $app->joinPath($app->storagePath('framework/logs'), 'database-telemetry.jsonl'),
+                );
+            }
+
+            if ($mode === 'webhook') {
+                $endpoint = trim((string) $app->config('database.observability.webhook_url', ''));
+                if ($endpoint === '') {
+                    throw new \RuntimeException('Database telemetry webhook dispatcher requires [database.observability.webhook_url].');
+                }
+
+                $headers = $app->config('database.observability.webhook_headers', []);
+                if (!is_array($headers)) {
+                    $headers = [];
+                }
+
+                $normalizedHeaders = [];
+                foreach ($headers as $name => $value) {
+                    $headerName = trim((string) $name);
+                    $headerValue = trim((string) $value);
+                    if ($headerName === '' || $headerValue === '') {
+                        continue;
+                    }
+
+                    $normalizedHeaders[$headerName] = $headerValue;
+                }
+
+                return new HttpDatabaseTelemetryDispatcher(
+                    endpoint: $endpoint,
+                    headers: $normalizedHeaders,
+                    requestTimeoutMs: max(250, (int) $app->config('database.observability.webhook_timeout_ms', 2000)),
                 );
             }
 

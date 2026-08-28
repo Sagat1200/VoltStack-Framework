@@ -7,6 +7,7 @@ namespace VoltStack\Test\Unit;
 use PHPUnit\Framework\TestCase;
 use Quantum\Config\ConfigRepository;
 use Quantum\Database\Operation\Contracts\DatabaseTelemetryDispatcherInterface;
+use Quantum\Database\Operation\Engine\HttpDatabaseTelemetryDispatcher;
 use Quantum\Database\Operation\Engine\InMemoryDatabaseTelemetryDispatcher;
 use Quantum\Database\Operation\Engine\JsonLineDatabaseTelemetryDispatcher;
 use Quantum\Database\Operation\Engine\NullDatabaseTelemetryDispatcher;
@@ -64,6 +65,23 @@ final class DatabaseTelemetryDispatcherBindingTest extends TestCase
         $dispatcher = $app->make(DatabaseTelemetryDispatcherInterface::class);
 
         self::assertInstanceOf(NullDatabaseTelemetryDispatcher::class, $dispatcher);
+    }
+
+    public function test_it_resolves_webhook_dispatcher_when_configured(): void
+    {
+        $app = new Application($this->basePath);
+        $app->register(DatabaseServiceProvider::class);
+        $app->make(ConfigRepository::class)->set('database.observability.dispatcher', 'webhook');
+        $app->make(ConfigRepository::class)->set('database.observability.webhook_url', 'https://monitoring.internal/voltstack/database');
+        $app->make(ConfigRepository::class)->set('database.observability.webhook_timeout_ms', 5000);
+        $app->make(ConfigRepository::class)->set('database.observability.webhook_headers', [
+            'Authorization' => 'Bearer token',
+        ]);
+
+        $dispatcher = $app->make(DatabaseTelemetryDispatcherInterface::class);
+
+        self::assertInstanceOf(HttpDatabaseTelemetryDispatcher::class, $dispatcher);
+        self::assertSame('https://monitoring.internal/voltstack/database', $dispatcher->endpoint());
     }
 
     private function deleteDirectory(string $path): void

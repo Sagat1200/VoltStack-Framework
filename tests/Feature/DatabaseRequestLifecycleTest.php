@@ -59,12 +59,18 @@ final class DatabaseRequestLifecycleTest extends TestCase
         self::assertSame(0, $payload['count_during_request']);
         self::assertSame(1, $payload['telemetry']['total_operations']);
         self::assertSame(1, $payload['telemetry']['completed']);
+        self::assertIsArray($payload['telemetry']['remote_replay_challenge'] ?? null);
+        self::assertSame(0, $payload['telemetry']['remote_replay_challenge']['observed_operations'] ?? null);
         self::assertSame(1, $payload['health']['total_segments']);
         self::assertSame('closed', $payload['health']['segments'][0]['state']);
         $dispatcher = $app->make(DatabaseTelemetryDispatcherInterface::class);
         self::assertInstanceOf(InMemoryDatabaseTelemetryDispatcher::class, $dispatcher);
         self::assertSame(1, count($dispatcher->reports()));
         self::assertSame($payload['telemetry']['total_operations'], $dispatcher->last()?->summary['total_operations'] ?? null);
+        self::assertSame(
+            $payload['telemetry']['remote_replay_challenge']['observed_operations'] ?? null,
+            $dispatcher->last()?->summary['remote_replay_challenge']['observed_operations'] ?? null,
+        );
         self::assertSame(1, $this->countPersistedRecords($app));
     }
 
@@ -85,6 +91,8 @@ final class DatabaseRequestLifecycleTest extends TestCase
         self::assertSame(0, $payload['count_during_request']);
         self::assertSame(1, $payload['telemetry']['total_operations']);
         self::assertSame(1, $payload['telemetry']['completed']);
+        self::assertIsArray($payload['telemetry']['remote_replay_challenge'] ?? null);
+        self::assertSame(0, $payload['telemetry']['remote_replay_challenge']['observed_operations'] ?? null);
         self::assertSame(0, $this->countPersistedRecords($app));
     }
 
@@ -108,6 +116,8 @@ final class DatabaseRequestLifecycleTest extends TestCase
         self::assertIsInt($id);
         self::assertSame($createPayload['runtime_request_id'], $createPayload['database_request_id']);
         self::assertSame(1, $createPayload['telemetry']['completed']);
+        self::assertIsArray($createPayload['telemetry']['remote_replay_challenge'] ?? null);
+        self::assertSame(0, $createPayload['telemetry']['remote_replay_challenge']['observed_operations'] ?? null);
         self::assertSame('test_auto_flush_records', $createPayload['telemetry']['latest'][0]['logical_target']);
 
         $readResponse = $kernel->handle(Request::create('/records/' . $id));
@@ -120,6 +130,7 @@ final class DatabaseRequestLifecycleTest extends TestCase
         self::assertSame('created-from-request', $readPayload['name']);
         self::assertSame($readPayload['runtime_request_id'], $readPayload['database_request_id']);
         self::assertGreaterThanOrEqual(1, (int) $readPayload['telemetry']['completed']);
+        self::assertIsArray($readPayload['telemetry']['remote_replay_challenge'] ?? null);
         self::assertGreaterThanOrEqual(1, (int) $readPayload['health']['closed_segments']);
         self::assertNotSame($createPayload['runtime_request_id'], $readPayload['runtime_request_id']);
     }

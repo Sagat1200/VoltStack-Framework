@@ -43,8 +43,33 @@ final class JsonLineDatabaseTelemetryDispatcherTest extends TestCase
                 'failed' => 0,
                 'cancelled' => 0,
                 'slow_queries' => 1,
+                'remote_replay_challenge' => [
+                    'observed_operations' => 1,
+                    'verified' => 1,
+                    'unavailable' => 0,
+                    'rejected' => 0,
+                    'reused_receipts' => 1,
+                    'compatible' => 1,
+                    'incompatible' => 0,
+                    'protocols' => [
+                        'remote_replay_node_challenge_v1' => 1,
+                    ],
+                    'request_key_ids' => [
+                        'key-2026-08' => 1,
+                    ],
+                    'response_key_ids' => [
+                        'key-2026-09' => 1,
+                    ],
+                ],
                 'latest' => [
-                    ['logical_target' => 'users'],
+                    [
+                        'logical_target' => 'users',
+                        'remote_validation_status' => 'verified_remote_validation',
+                        'challenge_protocol' => 'remote_replay_node_challenge_v1',
+                        'challenge_request_key_id' => 'key-2026-08',
+                        'challenge_response_key_id' => 'key-2026-09',
+                        'challenge_receipt_reuse' => 'reused_fresh_receipt',
+                    ],
                 ],
             ],
             health: [
@@ -72,6 +97,9 @@ final class JsonLineDatabaseTelemetryDispatcherTest extends TestCase
         self::assertSame('node-a', $payload['payload']['node_id']);
         self::assertSame(2, $payload['payload']['summary']['total_operations']);
         self::assertSame(1, $payload['payload']['health']['closed_segments']);
+        self::assertSame(1, $payload['payload']['summary']['remote_replay_challenge']['observed_operations']);
+        self::assertSame('verified_remote_validation', $payload['payload']['summary']['latest'][0]['remote_validation_status']);
+        self::assertSame('key-2026-09', $payload['payload']['summary']['latest'][0]['challenge_response_key_id']);
     }
 
     private function deleteDirectory(string $path): void

@@ -467,6 +467,18 @@ final class DatabaseServiceProvider extends ServiceProvider
                 'failed' => 0,
                 'cancelled' => 0,
                 'slow_queries' => 0,
+                'remote_replay_challenge' => [
+                    'observed_operations' => 0,
+                    'verified' => 0,
+                    'unavailable' => 0,
+                    'rejected' => 0,
+                    'reused_receipts' => 0,
+                    'compatible' => 0,
+                    'incompatible' => 0,
+                    'protocols' => [],
+                    'request_key_ids' => [],
+                    'response_key_ids' => [],
+                ],
                 'latest' => [],
             ]);
             $context->set('database.health', (new DatabaseHealthSnapshot(

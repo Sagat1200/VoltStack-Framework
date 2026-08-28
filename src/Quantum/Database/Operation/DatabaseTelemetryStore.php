@@ -18,8 +18,7 @@ final class DatabaseTelemetryStore
      */
     public function __construct(
         private array $segments = [],
-    ) {
-    }
+    ) {}
 
     public function record(
         DatabaseOperationPlan $plan,
@@ -66,6 +65,7 @@ final class DatabaseTelemetryStore
      *   failed:int,
      *   cancelled:int,
      *   slow_queries:int,
+     *   remote_replay_challenge:array<string, mixed>,
      *   latest:list<array<string, scalar|null|array<int, string>>>
      * }
      */
@@ -75,6 +75,18 @@ final class DatabaseTelemetryStore
         $failed = 0;
         $cancelled = 0;
         $slow = 0;
+        $remoteReplayChallenge = [
+            'observed_operations' => 0,
+            'verified' => 0,
+            'unavailable' => 0,
+            'rejected' => 0,
+            'reused_receipts' => 0,
+            'compatible' => 0,
+            'incompatible' => 0,
+            'protocols' => [],
+            'request_key_ids' => [],
+            'response_key_ids' => [],
+        ];
 
         foreach ($this->entries as $entry) {
             $snapshot = $entry['snapshot'];
@@ -89,6 +101,11 @@ final class DatabaseTelemetryStore
             if ($snapshot->slowQuery) {
                 $slow++;
             }
+
+            self::collectRemoteReplayChallengeSummary(
+                $remoteReplayChallenge,
+                self::extractRemoteReplayChallengeTelemetry($snapshot),
+            );
         }
 
         $latest = array_slice($this->entries, -max(1, $limit));
@@ -99,6 +116,7 @@ final class DatabaseTelemetryStore
             'failed' => $failed,
             'cancelled' => $cancelled,
             'slow_queries' => $slow,
+            'remote_replay_challenge' => $remoteReplayChallenge,
             'latest' => array_values(array_map(
                 static fn(array $entry): array => self::entryToArray($entry['plan'], $entry['snapshot']),
                 $latest,
@@ -122,6 +140,8 @@ final class DatabaseTelemetryStore
      */
     private static function entryToArray(DatabaseOperationPlan $plan, DatabaseDiagnosticSnapshot $snapshot): array
     {
+        $challenge = self::extractRemoteReplayChallengeTelemetry($snapshot) ?? [];
+
         return [
             'fingerprint' => $snapshot->fingerprint,
             'connection_name' => $snapshot->connectionName,
@@ -135,6 +155,140 @@ final class DatabaseTelemetryStore
             'affected_rows' => $snapshot->affectedRows,
             'slow_query' => $snapshot->slowQuery ? 'yes' : 'no',
             'circuit_state' => $snapshot->circuitState,
+            'remote_validation_status' => $challenge['remote_validation_status'] ?? null,
+            'remote_validation_validator' => $challenge['remote_validation_validator'] ?? null,
+            'challenge_protocol' => $challenge['challenge_protocol'] ?? null,
+            'challenge_compatibility' => $challenge['challenge_compatibility'] ?? null,
+            'challenge_request_key_id' => $challenge['challenge_request_key_id'] ?? null,
+            'challenge_response_key_id' => $challenge['challenge_response_key_id'] ?? null,
+            'challenge_receipt_reuse' => $challenge['challenge_receipt_reuse'] ?? null,
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $summary
+     * @param array<string, string|int|null>|null $telemetry
+     */
+    private static function collectRemoteReplayChallengeSummary(array &$summary, ?array $telemetry): void
+    {
+        if ($telemetry === null) {
+            return;
+        }
+
+        $summary['observed_operations']++;
+
+        $status = self::normalizeString($telemetry['remote_validation_status'] ?? null);
+        match ($status) {
+            'verified_remote_validation' => $summary['verified']++,
+            'remote_validation_unavailable' => $summary['unavailable']++,
+            'remote_validation_rejected' => $summary['rejected']++,
+            default => null,
+        };
+
+        $compatibility = self::normalizeString($telemetry['challenge_compatibility'] ?? null);
+        match ($compatibility) {
+            'compatible' => $summary['compatible']++,
+            'incompatible' => $summary['incompatible']++,
+            default => null,
+        };
+
+        if (self::normalizeString($telemetry['challenge_receipt_reuse'] ?? null) === 'reused_fresh_receipt') {
+            $summary['reused_receipts']++;
+        }
+
+        self::incrementCountMap($summary['protocols'], self::normalizeString($telemetry['challenge_protocol'] ?? null));
+        self::incrementCountMap($summary['request_key_ids'], self::normalizeString($telemetry['challenge_request_key_id'] ?? null));
+        self::incrementCountMap($summary['response_key_ids'], self::normalizeString($telemetry['challenge_response_key_id'] ?? null));
+    }
+
+    /**
+     * @return array<string, string|int|null>|null
+     */
+    private static function extractRemoteReplayChallengeTelemetry(DatabaseDiagnosticSnapshot $snapshot): ?array
+    {
+        $telemetry = [];
+
+        foreach ($snapshot->events as $event) {
+            if (!$event instanceof DatabaseDiagnosticEvent) {
+                continue;
+            }
+
+            $details = $event->details;
+            if (!is_array($details) || $details === []) {
+                continue;
+            }
+
+            $relevant = false;
+            foreach (
+                [
+                    'remote_validation_status',
+                    'remote_validation_validator',
+                    'challenge_protocol',
+                    'protocol',
+                    'request_protocol',
+                    'response_protocol',
+                    'protocol_negotiated',
+                    'protocol_compatibility',
+                    'request_key_id',
+                    'response_key_id',
+                    'key_id',
+                    'receipt_reuse',
+                ] as $key
+            ) {
+                if (array_key_exists($key, $details)) {
+                    $relevant = true;
+                    break;
+                }
+            }
+
+            if (!$relevant) {
+                continue;
+            }
+
+            $telemetry['remote_validation_status'] = self::normalizeString($details['remote_validation_status'] ?? null)
+                ?? ($telemetry['remote_validation_status'] ?? null);
+            $telemetry['remote_validation_validator'] = self::normalizeString($details['remote_validation_validator'] ?? null)
+                ?? ($telemetry['remote_validation_validator'] ?? null);
+            $telemetry['challenge_protocol'] = self::normalizeString(
+                $details['protocol_negotiated']
+                    ?? $details['response_protocol']
+                    ?? $details['challenge_protocol']
+                    ?? $details['protocol']
+                    ?? null,
+            ) ?? ($telemetry['challenge_protocol'] ?? null);
+            $telemetry['challenge_compatibility'] = self::normalizeString($details['protocol_compatibility'] ?? null)
+                ?? ($telemetry['challenge_compatibility'] ?? null);
+            $telemetry['challenge_request_key_id'] = self::normalizeString($details['request_key_id'] ?? null)
+                ?? ($telemetry['challenge_request_key_id'] ?? null);
+            $telemetry['challenge_response_key_id'] = self::normalizeString($details['response_key_id'] ?? ($details['key_id'] ?? null))
+                ?? ($telemetry['challenge_response_key_id'] ?? null);
+            $telemetry['challenge_receipt_reuse'] = self::normalizeString($details['receipt_reuse'] ?? null)
+                ?? ($telemetry['challenge_receipt_reuse'] ?? null);
+        }
+
+        return $telemetry === [] ? null : $telemetry;
+    }
+
+    /**
+     * @param array<string, int> $counts
+     */
+    private static function incrementCountMap(array &$counts, ?string $key): void
+    {
+        if ($key === null) {
+            return;
+        }
+
+        $counts[$key] = (int) ($counts[$key] ?? 0) + 1;
+    }
+
+    private static function normalizeString(mixed $value): ?string
+    {
+        if (!is_scalar($value)) {
+            return null;
+        }
+
+        $normalized = trim((string) $value);
+
+        return $normalized !== '' ? $normalized : null;
     }
 }

@@ -1069,6 +1069,7 @@ final class DatabaseOperationRuntimeTest extends TestCase
                 message: 'Validator should not be called when a fresh receipt is reusable.',
             ),
         );
+        $telemetry = new DatabaseTelemetryStore();
         $connection = new RuntimeTestConnection(
             statementQueue: [
                 RuntimeTestConnection::statementResult(1),
@@ -1076,6 +1077,7 @@ final class DatabaseOperationRuntimeTest extends TestCase
         );
         $runtime = new DatabaseOperationRuntime(
             new DatabaseCircuitBreaker(),
+            telemetry: $telemetry,
             idempotencyStore: $store,
             remoteReplayValidator: $validator,
             idempotencyNodeId: 'node-b',
@@ -1176,21 +1178,36 @@ final class DatabaseOperationRuntimeTest extends TestCase
                 'validated_at' => $freshValidatedAt,
                 'validated_by_node_id' => 'node-b',
                 'source_node_id' => 'node-a',
-                'details' => [],
+                'details' => [
+                    'challenge_protocol' => 'remote_replay_node_challenge_v1',
+                    'protocol_negotiated' => 'remote_replay_node_challenge_v1',
+                    'protocol_compatibility' => 'compatible',
+                    'request_key_id' => 'key-2026-08',
+                    'response_key_id' => 'key-2026-09',
+                ],
             ],
         ]);
 
         $result = $runtime->execute($plan, $context);
         $persisted = $store->find(hash('sha256', 'mutation-users-remote-validation-receipt-reuse'));
+        $summary = $telemetry->summary();
 
         self::assertTrue($result->isSuccess);
         self::assertSame(0, $connection->statementCalls);
         self::assertSame(0, $validator->calls);
         self::assertSame('cached_remote_validation_receipt', $result->debug['idempotency']['remote_validation']['validator'] ?? null);
         self::assertSame('reused_fresh_receipt', $result->debug['idempotency']['remote_validation']['details']['receipt_reuse'] ?? null);
+        self::assertSame('remote_replay_node_challenge_v1', $result->debug['idempotency']['remote_validation']['details']['protocol_negotiated'] ?? null);
         self::assertInstanceOf(DatabaseIdempotencyRecord::class, $persisted);
         self::assertSame('remote-validator-original', $persisted->confirmation['remote_validation_receipt']['validator'] ?? null);
         self::assertSame($freshValidatedAt, $persisted->confirmation['remote_validation_receipt']['validated_at'] ?? null);
+        self::assertSame(1, $summary['remote_replay_challenge']['observed_operations'] ?? null);
+        self::assertSame(1, $summary['remote_replay_challenge']['verified'] ?? null);
+        self::assertSame(1, $summary['remote_replay_challenge']['reused_receipts'] ?? null);
+        self::assertSame(1, $summary['remote_replay_challenge']['compatible'] ?? null);
+        self::assertSame(1, $summary['remote_replay_challenge']['protocols']['remote_replay_node_challenge_v1'] ?? null);
+        self::assertSame('key-2026-08', $summary['latest'][0]['challenge_request_key_id'] ?? null);
+        self::assertSame('reused_fresh_receipt', $summary['latest'][0]['challenge_receipt_reuse'] ?? null);
     }
 
     public function test_runtime_falls_back_to_active_remote_validation_when_cached_receipt_is_stale(): void

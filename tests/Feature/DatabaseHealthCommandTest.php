@@ -8,7 +8,9 @@ use PHPUnit\Framework\TestCase;
 use Quantum\Console\ConsoleApplication;
 use Quantum\Console\Output;
 use Quantum\Database\DatabaseContext;
+use Quantum\Database\Operation\Contracts\DatabaseIdempotencyStoreInterface;
 use Quantum\Database\Operation\DatabaseExecutionPolicy;
+use Quantum\Database\Operation\DatabaseIdempotencyRecord;
 use Quantum\Database\Operation\DatabaseOperationRuntime;
 use Quantum\Database\Operation\OperationKind;
 use Quantum\Database\Operation\RawOperation;
@@ -114,6 +116,148 @@ final class DatabaseHealthCommandTest extends TestCase
         self::assertStringContainsString('"total_operations": 2', $json['stdout']);
     }
 
+    public function test_cli_health_reports_remote_replay_challenge_telemetry(): void
+    {
+        $app = $this->loadApp();
+        $router = $app->make(Router::class);
+        $router->get('/health-remote-replay', function () use ($app): string {
+            /** @var DatabaseContext $context */
+            $context = $app->make(DatabaseContext::class);
+            /** @var DatabaseOperationRuntime $runtime */
+            $runtime = $app->make(DatabaseOperationRuntime::class);
+            /** @var DatabaseIdempotencyStoreInterface $store */
+            $store = $app->make(DatabaseIdempotencyStoreInterface::class);
+            $policy = DatabaseExecutionPolicy::fromConfig((array) $app->config('database', []));
+            $plan = $runtime->plan(
+                new RawOperation(
+                    OperationKind::RawExecute,
+                    'UPDATE users SET active = 1 WHERE id = 1',
+                    [],
+                    'primary',
+                    'mutation-health-remote-replay',
+                ),
+                $context,
+                $policy,
+            );
+
+            $record = new DatabaseIdempotencyRecord(
+                keyHash: hash('sha256', 'mutation-health-remote-replay'),
+                operationFingerprint: $plan->fingerprint,
+                requestId: 'req-health-remote-replay',
+                connectionName: 'primary',
+                logicalTarget: 'users',
+                createdAt: '2026-08-27T10:00:00+00:00',
+                nodeId: 'node-remote',
+                status: 'pending',
+                expiresAt: '2099-08-27T10:05:00+00:00',
+            );
+            $store->acquire($record);
+
+            $confirmationFingerprint = $this->computeConfirmationFingerprint(
+                $record,
+                'node-remote',
+                [
+                    'kind' => 'raw_execute',
+                    'affected_rows' => 1,
+                    'rows_read' => 0,
+                    'outcome' => 'completed',
+                    'confirmed_at' => '2026-08-27T10:00:05+00:00',
+                    'replay_reproducibility' => 'persisted_summary',
+                    'result_summary' => [
+                        'kind' => 'raw_execute',
+                        'is_select' => false,
+                        'affected_rows' => 1,
+                        'rows_read' => 0,
+                        'column_count' => 0,
+                        'result_type' => 'success_no_rows',
+                    ],
+                ],
+            );
+            $validatedAt = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format(DATE_ATOM);
+            $store->complete($record, [
+                'kind' => 'raw_execute',
+                'affected_rows' => 1,
+                'rows_read' => 0,
+                'outcome' => 'completed',
+                'confirmed_at' => '2026-08-27T10:00:05+00:00',
+                'summary_version' => 1,
+                'replay_reproducibility' => 'persisted_summary',
+                'source_node_id' => 'node-remote',
+                'evidence_version' => 1,
+                'evidence_mode' => 'persisted_evidence',
+                'confirmation_fingerprint' => $confirmationFingerprint,
+                'attestation_version' => 1,
+                'attestation_mode' => 'source_node_self_attested',
+                'attested_by_node_id' => 'node-remote',
+                'attested_at' => '2026-08-27T10:00:05+00:00',
+                'attestation_fingerprint' => $this->computeAttestationFingerprint(
+                    $record,
+                    'node-remote',
+                    $confirmationFingerprint,
+                    'source_node_self_attested',
+                    'node-remote',
+                    '2026-08-27T10:00:05+00:00',
+                ),
+                'result_summary' => [
+                    'kind' => 'raw_execute',
+                    'is_select' => false,
+                    'affected_rows' => 1,
+                    'rows_read' => 0,
+                    'column_count' => 0,
+                    'result_type' => 'success_no_rows',
+                ],
+                'remote_validation_receipt' => [
+                    'version' => 1,
+                    'status' => 'verified_remote_validation',
+                    'validator' => 'remote-validator-original',
+                    'message' => 'Previously validated by the current node.',
+                    'validation_mode' => 'require',
+                    'validated_at' => $validatedAt,
+                    'validated_by_node_id' => 'node-local',
+                    'source_node_id' => 'node-remote',
+                    'details' => [
+                        'challenge_protocol' => 'remote_replay_node_challenge_v1',
+                        'protocol_negotiated' => 'remote_replay_node_challenge_v1',
+                        'protocol_compatibility' => 'compatible',
+                        'request_key_id' => 'key-2026-08',
+                        'response_key_id' => 'key-2026-09',
+                    ],
+                ],
+            ]);
+
+            $runtime->execute($plan, $context);
+
+            return 'ok';
+        });
+
+        $response = $app->make(HttpKernel::class)->handle(Request::create('/health-remote-replay'));
+        self::assertSame('ok', $response->content());
+
+        $result = $this->runConsole(['volt', 'db:health']);
+        self::assertSame(0, $result['exit']);
+        self::assertStringContainsString(
+            'Remote replay challenge: observed=1 verified=1 unavailable=0 rejected=0 compatible=1 incompatible=0 reused_receipts=1 protocols=remote_replay_node_challenge_v1:1 request_key_ids=key-2026-08:1 response_key_ids=key-2026-09:1',
+            $result['stdout']
+        );
+        self::assertStringContainsString(
+            'rv=verified_remote_validation challenge=remote_replay_node_challenge_v1 compat=compatible key=key-2026-08/key-2026-09 reuse=reused_fresh_receipt',
+            $result['stdout']
+        );
+
+        $aggregate = $this->runConsole(['volt', 'db:health', '--aggregate', '--limit=10']);
+        self::assertSame(0, $aggregate['exit']);
+        self::assertStringContainsString(
+            'Remote replay challenge: observed=1 verified=1 unavailable=0 rejected=0 compatible=1 incompatible=0 reused_receipts=1 protocols=remote_replay_node_challenge_v1:1 request_key_ids=key-2026-08:1 response_key_ids=key-2026-09:1',
+            $aggregate['stdout']
+        );
+
+        $json = $this->runConsole(['volt', 'db:health', '--json']);
+        self::assertSame(0, $json['exit']);
+        self::assertStringContainsString('"remote_replay_challenge"', $json['stdout']);
+        self::assertStringContainsString('"reused_receipts": 1', $json['stdout']);
+        self::assertStringContainsString('"challenge_receipt_reuse": "reused_fresh_receipt"', $json['stdout']);
+    }
+
     /**
      * @param array<int, string> $argv
      * @return array{exit:int,stdout:string,stderr:string}
@@ -136,6 +280,52 @@ final class DatabaseHealthCommandTest extends TestCase
         $app = require $this->basePath . DIRECTORY_SEPARATOR . 'bootstrap' . DIRECTORY_SEPARATOR . 'app.php';
 
         return $app;
+    }
+
+    /**
+     * @param array<string, mixed> $confirmation
+     */
+    private function computeConfirmationFingerprint(
+        DatabaseIdempotencyRecord $record,
+        string $sourceNodeId,
+        array $confirmation,
+    ): string {
+        return hash('sha256', json_encode([
+            'key_hash' => $record->keyHash,
+            'operation_fingerprint' => $record->operationFingerprint,
+            'request_id' => $record->requestId,
+            'connection_name' => $record->connectionName,
+            'logical_target' => $record->logicalTarget,
+            'source_node_id' => $sourceNodeId,
+            'confirmation' => [
+                'kind' => $confirmation['kind'] ?? null,
+                'affected_rows' => $confirmation['affected_rows'] ?? null,
+                'rows_read' => $confirmation['rows_read'] ?? null,
+                'outcome' => $confirmation['outcome'] ?? null,
+                'confirmed_at' => $confirmation['confirmed_at'] ?? null,
+                'replay_reproducibility' => $confirmation['replay_reproducibility'] ?? null,
+                'result_summary' => $confirmation['result_summary'] ?? null,
+            ],
+        ], JSON_THROW_ON_ERROR));
+    }
+
+    private function computeAttestationFingerprint(
+        DatabaseIdempotencyRecord $record,
+        string $sourceNodeId,
+        string $confirmationFingerprint,
+        string $attestationMode,
+        string $attestedByNodeId,
+        string $attestedAt,
+    ): string {
+        return hash('sha256', json_encode([
+            'key_hash' => $record->keyHash,
+            'operation_fingerprint' => $record->operationFingerprint,
+            'source_node_id' => $sourceNodeId,
+            'confirmation_fingerprint' => $confirmationFingerprint,
+            'attestation_mode' => $attestationMode,
+            'attested_by_node_id' => $attestedByNodeId,
+            'attested_at' => $attestedAt,
+        ], JSON_THROW_ON_ERROR));
     }
 
     private function makeTempProject(string $basePath): void
@@ -181,6 +371,15 @@ final class DatabaseHealthCommandTest extends TestCase
                 'query_limits' => [
                     'max_rows' => 100000,
                     'max_depth' => 32,
+                ],
+                'idempotency' => [
+                    'store' => 'directory',
+                    'directory_path' => $basePath . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'database' . DIRECTORY_SEPARATOR . 'idempotency',
+                    'node_id' => 'node-local',
+                    'pending_ttl_seconds' => 300,
+                    'remote_replay_attestation_mode' => 'require',
+                    'remote_replay_validation_mode' => 'require',
+                    'remote_replay_validation_receipt_max_age_seconds' => 600,
                 ],
                 'observability' => [
                     'dispatcher' => 'null',

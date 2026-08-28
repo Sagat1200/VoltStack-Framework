@@ -559,7 +559,7 @@ final class DatabaseOperationRuntime
                                 'remote_validation_status' => $remoteReplayValidation->status,
                                 'remote_validation_validator' => $remoteReplayValidation->validator,
                                 'evidence_trust_level' => $evidenceTrustLevel,
-                            ]),
+                            ] + $this->extractRemoteReplayValidationTelemetryDetails($remoteReplayValidation)),
                         ],
                     ),
                 );
@@ -1454,14 +1454,17 @@ final class DatabaseOperationRuntime
         return DatabaseRemoteReplayValidationResult::verified(
             validator: 'cached_remote_validation_receipt',
             message: 'Reused a fresh remote validation receipt previously issued by the current node.',
-            details: [
-                'receipt_reuse' => 'reused_fresh_receipt',
-                'receipt_age_seconds' => $ageSeconds,
-                'receipt_validated_at' => $validatedAt,
-                'receipt_validated_by_node_id' => $validatedByNodeId,
-                'receipt_original_validator' => isset($receipt['validator']) ? (string) $receipt['validator'] : null,
-                'remote_replay_validation_receipt_max_age_seconds' => $plan->policy->remoteReplayValidationReceiptMaxAgeSeconds,
-            ],
+            details: array_merge(
+                is_array($receipt['details'] ?? null) ? $receipt['details'] : [],
+                [
+                    'receipt_reuse' => 'reused_fresh_receipt',
+                    'receipt_age_seconds' => $ageSeconds,
+                    'receipt_validated_at' => $validatedAt,
+                    'receipt_validated_by_node_id' => $validatedByNodeId,
+                    'receipt_original_validator' => isset($receipt['validator']) ? (string) $receipt['validator'] : null,
+                    'remote_replay_validation_receipt_max_age_seconds' => $plan->policy->remoteReplayValidationReceiptMaxAgeSeconds,
+                ],
+            ),
         );
     }
 
@@ -1904,5 +1907,44 @@ final class DatabaseOperationRuntime
             'mismatch_persisted_evidence' => 'untrusted_mismatch',
             default => 'unknown_trust',
         };
+    }
+
+    /**
+     * @return array<string, scalar|null>
+     */
+    private function extractRemoteReplayValidationTelemetryDetails(
+        DatabaseRemoteReplayValidationResult $validation,
+    ): array {
+        $details = is_array($validation->details) ? $validation->details : [];
+
+        $telemetry = [];
+        foreach (
+            [
+                'challenge_protocol',
+                'protocol',
+                'request_protocol',
+                'response_protocol',
+                'protocol_negotiated',
+                'protocol_compatibility',
+                'request_key_id',
+                'response_key_id',
+                'key_id',
+                'receipt_reuse',
+                'receipt_age_seconds',
+                'endpoint',
+                'endpoint_strategy',
+                'http_status',
+                'response_signature_verification',
+                'challenge_validation',
+                'challenge_validation_failure',
+            ] as $key
+        ) {
+            $value = $details[$key] ?? null;
+            if (is_scalar($value) || $value === null) {
+                $telemetry[$key] = $value;
+            }
+        }
+
+        return $telemetry;
     }
 }

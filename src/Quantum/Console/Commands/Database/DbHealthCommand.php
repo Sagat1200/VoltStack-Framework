@@ -74,6 +74,9 @@ final class DbHealthCommand extends Command
 
                 $summary = is_array($aggregate['summary'] ?? null) ? $aggregate['summary'] : [];
                 $health = is_array($aggregate['health'] ?? null) ? $aggregate['health'] : [];
+                $remoteReplayChallenge = is_array($summary['remote_replay_challenge'] ?? null)
+                    ? $summary['remote_replay_challenge']
+                    : [];
 
                 $output->writeln(sprintf(
                     'Summary: total=%d completed=%d failed=%d cancelled=%d slow=%d',
@@ -88,6 +91,19 @@ final class DbHealthCommand extends Command
                     (int) ($health['closed_segments'] ?? 0),
                     (int) ($health['half_open_segments'] ?? 0),
                     (int) ($health['open_segments'] ?? 0),
+                ));
+                $output->writeln(sprintf(
+                    'Remote replay challenge: observed=%d verified=%d unavailable=%d rejected=%d compatible=%d incompatible=%d reused_receipts=%d protocols=%s request_key_ids=%s response_key_ids=%s',
+                    (int) ($remoteReplayChallenge['observed_operations'] ?? 0),
+                    (int) ($remoteReplayChallenge['verified'] ?? 0),
+                    (int) ($remoteReplayChallenge['unavailable'] ?? 0),
+                    (int) ($remoteReplayChallenge['rejected'] ?? 0),
+                    (int) ($remoteReplayChallenge['compatible'] ?? 0),
+                    (int) ($remoteReplayChallenge['incompatible'] ?? 0),
+                    (int) ($remoteReplayChallenge['reused_receipts'] ?? 0),
+                    $this->formatCountMap(is_array($remoteReplayChallenge['protocols'] ?? null) ? $remoteReplayChallenge['protocols'] : []),
+                    $this->formatCountMap(is_array($remoteReplayChallenge['request_key_ids'] ?? null) ? $remoteReplayChallenge['request_key_ids'] : []),
+                    $this->formatCountMap(is_array($remoteReplayChallenge['response_key_ids'] ?? null) ? $remoteReplayChallenge['response_key_ids'] : []),
                 ));
 
                 return 0;
@@ -110,6 +126,9 @@ final class DbHealthCommand extends Command
 
             $summary = $report->summary;
             $health = $report->health;
+            $remoteReplayChallenge = is_array($summary['remote_replay_challenge'] ?? null)
+                ? $summary['remote_replay_challenge']
+                : [];
 
             $output->writeln(sprintf(
                 'Database health: request=%s tenant=%s trace=%s generated_at=%s',
@@ -134,6 +153,19 @@ final class DbHealthCommand extends Command
                 (int) ($health['half_open_segments'] ?? 0),
                 (int) ($health['open_segments'] ?? 0),
             ));
+            $output->writeln(sprintf(
+                'Remote replay challenge: observed=%d verified=%d unavailable=%d rejected=%d compatible=%d incompatible=%d reused_receipts=%d protocols=%s request_key_ids=%s response_key_ids=%s',
+                (int) ($remoteReplayChallenge['observed_operations'] ?? 0),
+                (int) ($remoteReplayChallenge['verified'] ?? 0),
+                (int) ($remoteReplayChallenge['unavailable'] ?? 0),
+                (int) ($remoteReplayChallenge['rejected'] ?? 0),
+                (int) ($remoteReplayChallenge['compatible'] ?? 0),
+                (int) ($remoteReplayChallenge['incompatible'] ?? 0),
+                (int) ($remoteReplayChallenge['reused_receipts'] ?? 0),
+                $this->formatCountMap(is_array($remoteReplayChallenge['protocols'] ?? null) ? $remoteReplayChallenge['protocols'] : []),
+                $this->formatCountMap(is_array($remoteReplayChallenge['request_key_ids'] ?? null) ? $remoteReplayChallenge['request_key_ids'] : []),
+                $this->formatCountMap(is_array($remoteReplayChallenge['response_key_ids'] ?? null) ? $remoteReplayChallenge['response_key_ids'] : []),
+            ));
 
             $latest = is_array($summary['latest'] ?? null) ? $summary['latest'] : [];
             foreach ($latest as $entry) {
@@ -141,12 +173,14 @@ final class DbHealthCommand extends Command
                     continue;
                 }
 
+                $remoteReplaySuffix = $this->formatRemoteReplayLatestEntry($entry);
                 $output->writeln(sprintf(
-                    '  - kind=%s target=%s outcome=%s connection=%s',
+                    '  - kind=%s target=%s outcome=%s connection=%s%s',
                     (string) ($entry['operation_kind'] ?? 'n/a'),
                     (string) ($entry['logical_target'] ?? 'n/a'),
                     (string) ($entry['outcome'] ?? 'n/a'),
                     (string) ($entry['connection_name'] ?? 'n/a'),
+                    $remoteReplaySuffix,
                 ));
             }
 
@@ -166,5 +200,58 @@ final class DbHealthCommand extends Command
 
         $int = (int) $value;
         return $int > 0 ? $int : null;
+    }
+
+    /**
+     * @param array<string, int> $counts
+     */
+    private function formatCountMap(array $counts): string
+    {
+        if ($counts === []) {
+            return 'n/a';
+        }
+
+        ksort($counts);
+
+        $pairs = [];
+        foreach ($counts as $key => $value) {
+            $pairs[] = sprintf('%s:%d', $key, (int) $value);
+        }
+
+        return implode(',', $pairs);
+    }
+
+    /**
+     * @param array<string, mixed> $entry
+     */
+    private function formatRemoteReplayLatestEntry(array $entry): string
+    {
+        $status = isset($entry['remote_validation_status']) ? trim((string) $entry['remote_validation_status']) : '';
+        $protocol = isset($entry['challenge_protocol']) ? trim((string) $entry['challenge_protocol']) : '';
+        $compatibility = isset($entry['challenge_compatibility']) ? trim((string) $entry['challenge_compatibility']) : '';
+        $requestKeyId = isset($entry['challenge_request_key_id']) ? trim((string) $entry['challenge_request_key_id']) : '';
+        $responseKeyId = isset($entry['challenge_response_key_id']) ? trim((string) $entry['challenge_response_key_id']) : '';
+        $receiptReuse = isset($entry['challenge_receipt_reuse']) ? trim((string) $entry['challenge_receipt_reuse']) : '';
+
+        if (
+            $status === ''
+            && $protocol === ''
+            && $compatibility === ''
+            && $requestKeyId === ''
+            && $responseKeyId === ''
+            && $receiptReuse === ''
+        ) {
+            return '';
+        }
+
+        return sprintf(
+            ' rv=%s challenge=%s compat=%s key=%s/%s reuse=%s',
+            $status !== '' ? $status : 'n/a',
+            $protocol !== '' ? $protocol : 'n/a',
+            $compatibility !== '' ? $compatibility : 'n/a',
+            $requestKeyId !== '' ? $requestKeyId : 'n/a',
+            $responseKeyId !== '' ? $responseKeyId : 'n/a',
+            $receiptReuse !== '' ? $receiptReuse : 'n/a',
+        );
     }
 }

@@ -76,4 +76,66 @@ final class DatabaseRemoteReplayChallengeEndpointResolverTest extends TestCase
         self::assertSame('remote_replay_node_challenge_v1', $resolution->details['protocol'] ?? null);
         self::assertSame('key-2026-09', $resolution->details['key_id'] ?? null);
     }
+
+    public function test_it_blocks_stale_health_advertisement_in_require_mode(): void
+    {
+        $resolver = new DatabaseRemoteReplayChallengeEndpointResolver(
+            endpointMap: [],
+            healthDiscoveryMode: 'require',
+            healthAdvertisementMaxAgeSeconds: 60,
+            advertisedEndpointProvider: static fn(): array => [
+                'node-a' => [
+                    'endpoint' => 'https://node-a.example.com/_volt/db/remote-replay/challenge',
+                    'generated_at' => '2026-08-29T19:00:00+00:00',
+                ],
+            ],
+            clock: static fn(): \DateTimeImmutable => new \DateTimeImmutable('2026-08-29T19:10:01+00:00'),
+        );
+
+        $resolution = $resolver->resolve('node-a');
+
+        self::assertSame('stale_advertisement', $resolution->status);
+        self::assertSame('health_advertisement', $resolution->strategy);
+        self::assertSame('stale', $resolution->details['advertisement_freshness'] ?? null);
+    }
+
+    public function test_it_blocks_untrusted_health_advertisement_in_require_mode(): void
+    {
+        $resolver = new DatabaseRemoteReplayChallengeEndpointResolver(
+            endpointMap: [],
+            trustedNodes: ['node-b'],
+            healthDiscoveryMode: 'require',
+            advertisedEndpointProvider: static fn(): array => [
+                'node-a' => [
+                    'endpoint' => 'https://node-a.example.com/_volt/db/remote-replay/challenge',
+                    'generated_at' => '2026-08-29T19:10:00+00:00',
+                ],
+            ],
+            clock: static fn(): \DateTimeImmutable => new \DateTimeImmutable('2026-08-29T19:10:30+00:00'),
+        );
+
+        $resolution = $resolver->resolve('node-a');
+
+        self::assertSame('untrusted_advertisement', $resolution->status);
+        self::assertSame('untrusted', $resolution->details['advertisement_trust'] ?? null);
+    }
+
+    public function test_it_blocks_health_advertisement_with_unknown_age_in_require_mode(): void
+    {
+        $resolver = new DatabaseRemoteReplayChallengeEndpointResolver(
+            endpointMap: [],
+            healthDiscoveryMode: 'require',
+            healthAdvertisementMaxAgeSeconds: 60,
+            advertisedEndpointProvider: static fn(): array => [
+                'node-a' => [
+                    'endpoint' => 'https://node-a.example.com/_volt/db/remote-replay/challenge',
+                ],
+            ],
+        );
+
+        $resolution = $resolver->resolve('node-a');
+
+        self::assertSame('unknown_advertisement_age', $resolution->status);
+        self::assertSame('unknown', $resolution->details['advertisement_freshness'] ?? null);
+    }
 }

@@ -246,6 +246,18 @@ final class DatabaseServiceProvider extends ServiceProvider
                     'database.idempotency.remote_replay_challenge.discovery_health_limit',
                     250,
                 ));
+                $healthDiscoveryMode = (string) $app->config(
+                    'database.idempotency.remote_replay_challenge.discovery_health_mode',
+                    'allow',
+                );
+                $healthAdvertisementMaxAgeSeconds = max(0, (int) $app->config(
+                    'database.idempotency.remote_replay_challenge.discovery_health_max_age_seconds',
+                    300,
+                ));
+                $trustedNodes = $app->config('database.idempotency.remote_replay_challenge.discovery_trusted_nodes', []);
+                if (! is_array($trustedNodes)) {
+                    $trustedNodes = [];
+                }
 
                 return new DatabaseRemoteReplayChallengeEndpointResolver(
                     endpointMap: array_filter(array_map(
@@ -264,6 +276,12 @@ final class DatabaseServiceProvider extends ServiceProvider
                         static fn(mixed $value): string => is_string($value) ? trim($value) : '',
                         $knownNodes,
                     ))),
+                    trustedNodes: array_values(array_filter(array_map(
+                        static fn(mixed $value): string => is_string($value) ? trim($value) : '',
+                        $trustedNodes,
+                    ))),
+                    healthDiscoveryMode: $healthDiscoveryMode,
+                    healthAdvertisementMaxAgeSeconds: $healthAdvertisementMaxAgeSeconds,
                     advertisedEndpointProvider: $discoveryViaHealth
                         ? static function () use ($app, $healthDiscoveryLimit): array {
                             $store = $app->make(DatabaseHealthStoreInterface::class);
@@ -289,6 +307,8 @@ final class DatabaseServiceProvider extends ServiceProvider
                                     continue;
                                 }
 
+                                $advertisement['generated_at'] = $report->generatedAt;
+                                $advertisement['report_node_id'] = $report->nodeId;
                                 $advertised[$nodeId] = $advertisement;
                             }
 

@@ -284,6 +284,51 @@ final class DatabaseRemoteReplayHttpChallengeFlowTest extends TestCase
         self::assertSame('remote_replay_node_challenge_v1', $result->details['response_protocol'] ?? null);
     }
 
+    public function test_http_challenger_rejects_stale_health_advertisement_when_policy_requires_freshness(): void
+    {
+        $signer = new DatabaseRemoteReplayChallengeSigner(new Application($this->basePath . DIRECTORY_SEPARATOR . 'requester-stale'));
+
+        $challenger = new HttpDatabaseRemoteReplayChallenger(
+            signer: $signer,
+            endpointResolver: new DatabaseRemoteReplayChallengeEndpointResolver(
+                endpointMap: [],
+                healthDiscoveryMode: 'require',
+                healthAdvertisementMaxAgeSeconds: 30,
+                advertisedEndpointProvider: static fn(): array => [
+                    'node-a' => [
+                        'endpoint' => 'http://node-a.internal/_volt/db/remote-replay/challenge',
+                        'generated_at' => '2026-08-29T20:20:00+00:00',
+                    ],
+                ],
+                clock: static fn(): \DateTimeImmutable => new \DateTimeImmutable('2026-08-29T20:21:00+00:00'),
+            ),
+            requestTimeoutMs: 1000,
+            sender: static function (string $endpoint, array $payload, array $headers, int $timeoutMs): array {
+                self::fail('Stale health advertisement should not be used to dispatch a challenge.');
+            },
+        );
+
+        $result = $challenger->challenge(new DatabaseRemoteReplayChallengeRequest(
+            challengeId: 'challenge-stale',
+            challengeNonce: 'nonce-stale',
+            requestedAt: '2026-08-29T20:21:00+00:00',
+            currentNodeId: 'node-b',
+            sourceNodeId: 'node-a',
+            keyHash: hash('sha256', 'mutation-challenge-stale'),
+            requestId: 'req-stale',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            operationFingerprint: 'ofp-stale',
+            confirmationFingerprint: 'cfp-stale',
+            validationMode: 'require',
+        ));
+
+        self::assertSame('unavailable', $result->status);
+        self::assertSame('node-a', $result->details['source_node_id'] ?? null);
+        self::assertSame('stale_advertisement', $result->details['status'] ?? null);
+        self::assertSame('stale', $result->details['advertisement_freshness'] ?? null);
+    }
+
     public function test_http_challenger_accepts_rotating_key_ids_during_rollout(): void
     {
         $requesterApp = new Application($this->basePath . DIRECTORY_SEPARATOR . 'requester-rotation');

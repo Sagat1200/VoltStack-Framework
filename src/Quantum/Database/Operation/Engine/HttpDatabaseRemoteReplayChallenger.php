@@ -33,12 +33,17 @@ final class HttpDatabaseRemoteReplayChallenger implements DatabaseRemoteReplayCh
         $resolution = $this->endpointResolver->resolve($sourceNodeId);
         $endpoint = trim((string) ($resolution->endpoint ?? ''));
         if ($resolution->status !== 'resolved' || $endpoint === '') {
+            $resolutionDetails = $resolution->toArray();
+            $nestedResolutionDetails = is_array($resolutionDetails['details'] ?? null)
+                ? $resolutionDetails['details']
+                : [];
+
             return DatabaseRemoteReplayChallengeResponse::unavailable(
                 challenger: 'http_remote_replay_challenger',
                 message: sprintf('No remote replay challenge endpoint is configured for node [%s].', $sourceNodeId),
-                details: array_merge([
+                details: array_merge($nestedResolutionDetails, [
                     'source_node_id' => $sourceNodeId,
-                ], $resolution->toArray()),
+                ], $resolutionDetails),
             );
         }
 

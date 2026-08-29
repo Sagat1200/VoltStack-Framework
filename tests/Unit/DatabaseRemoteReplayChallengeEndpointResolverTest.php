@@ -54,4 +54,26 @@ final class DatabaseRemoteReplayChallengeEndpointResolverTest extends TestCase
         self::assertContains('node-b', $diagnostics['resolved_nodes']);
         self::assertIsArray($diagnostics['resolutions']);
     }
+
+    public function test_it_resolves_endpoint_from_health_advertisement(): void
+    {
+        $resolver = new DatabaseRemoteReplayChallengeEndpointResolver(
+            endpointMap: [],
+            advertisedEndpointProvider: static fn(): array => [
+                'node-a' => [
+                    'endpoint' => 'https://node-a.example.com/_volt/db/remote-replay/challenge',
+                    'protocol' => 'remote_replay_node_challenge_v1',
+                    'key_id' => 'key-2026-09',
+                ],
+            ],
+        );
+
+        $resolution = $resolver->resolve('node-a');
+
+        self::assertSame('resolved', $resolution->status);
+        self::assertSame('health_advertisement', $resolution->strategy);
+        self::assertSame('https://node-a.example.com/_volt/db/remote-replay/challenge', $resolution->endpoint);
+        self::assertSame('remote_replay_node_challenge_v1', $resolution->details['protocol'] ?? null);
+        self::assertSame('key-2026-09', $resolution->details['key_id'] ?? null);
+    }
 }

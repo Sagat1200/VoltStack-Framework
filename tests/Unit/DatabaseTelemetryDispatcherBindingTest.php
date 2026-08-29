@@ -11,6 +11,7 @@ use Quantum\Database\Operation\Engine\HttpDatabaseTelemetryDispatcher;
 use Quantum\Database\Operation\Engine\InMemoryDatabaseTelemetryDispatcher;
 use Quantum\Database\Operation\Engine\JsonLineDatabaseTelemetryDispatcher;
 use Quantum\Database\Operation\Engine\NullDatabaseTelemetryDispatcher;
+use Quantum\Database\Operation\Engine\OpenTelemetryDatabaseTelemetryDispatcher;
 use VoltStack\Framework\Application;
 use VoltStack\Framework\Provider\DatabaseServiceProvider;
 
@@ -82,6 +83,20 @@ final class DatabaseTelemetryDispatcherBindingTest extends TestCase
 
         self::assertInstanceOf(HttpDatabaseTelemetryDispatcher::class, $dispatcher);
         self::assertSame('https://monitoring.internal/voltstack/database', $dispatcher->endpoint());
+    }
+
+    public function test_it_resolves_opentelemetry_dispatcher_when_configured(): void
+    {
+        $app = new Application($this->basePath);
+        $app->register(DatabaseServiceProvider::class);
+        $app->make(ConfigRepository::class)->set('database.observability.dispatcher', 'opentelemetry');
+        $app->make(ConfigRepository::class)->set('database.observability.opentelemetry.endpoint', 'https://collector.internal/v1/logs');
+        $app->make(ConfigRepository::class)->set('database.observability.opentelemetry.service_name', 'voltstack-db');
+
+        $dispatcher = $app->make(DatabaseTelemetryDispatcherInterface::class);
+
+        self::assertInstanceOf(OpenTelemetryDatabaseTelemetryDispatcher::class, $dispatcher);
+        self::assertSame('https://collector.internal/v1/logs', $dispatcher->endpoint());
     }
 
     private function deleteDirectory(string $path): void

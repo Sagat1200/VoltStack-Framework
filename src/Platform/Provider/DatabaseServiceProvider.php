@@ -42,6 +42,7 @@ use Quantum\Database\Operation\Engine\NullDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\NullDatabaseIdempotencyStore;
 use Quantum\Database\Operation\Engine\NullDatabaseRemoteReplayChallenger;
 use Quantum\Database\Operation\Engine\NullDatabaseTelemetryDispatcher;
+use Quantum\Database\Operation\Engine\OpenTelemetryDatabaseTelemetryDispatcher;
 use Quantum\Database\Schema\SchemaIntrospectorInterface;
 use Quantum\Database\Schema\SchemaManager;
 use Quantum\Database\Schema\MariadbSchemaIntrospector;
@@ -237,6 +238,14 @@ final class DatabaseServiceProvider extends ServiceProvider
                 if (! is_array($knownNodes)) {
                     $knownNodes = [];
                 }
+                $discoveryViaHealth = (bool) $app->config(
+                    'database.idempotency.remote_replay_challenge.discovery_via_health',
+                    true,
+                );
+                $healthDiscoveryLimit = max(1, (int) $app->config(
+                    'database.idempotency.remote_replay_challenge.discovery_health_limit',
+                    250,
+                ));
 
                 return new DatabaseRemoteReplayChallengeEndpointResolver(
                     endpointMap: array_filter(array_map(
@@ -255,6 +264,37 @@ final class DatabaseServiceProvider extends ServiceProvider
                         static fn(mixed $value): string => is_string($value) ? trim($value) : '',
                         $knownNodes,
                     ))),
+                    advertisedEndpointProvider: $discoveryViaHealth
+                        ? static function () use ($app, $healthDiscoveryLimit): array {
+                            $store = $app->make(DatabaseHealthStoreInterface::class);
+                            $reports = $store->recent($healthDiscoveryLimit);
+                            $advertised = [];
+
+                            foreach ($reports as $report) {
+                                if (!$report instanceof DatabaseTelemetryReport) {
+                                    continue;
+                                }
+
+                                $summary = is_array($report->summary) ? $report->summary : [];
+                                $remoteReplayChallenge = is_array($summary['remote_replay_challenge'] ?? null)
+                                    ? $summary['remote_replay_challenge']
+                                    : [];
+                                $advertisement = is_array($remoteReplayChallenge['cluster_advertisement'] ?? null)
+                                    ? $remoteReplayChallenge['cluster_advertisement']
+                                    : null;
+                                $nodeId = trim((string) (($advertisement['node_id'] ?? null) ?: $report->nodeId ?: ''));
+                                $endpoint = trim((string) (($advertisement['endpoint'] ?? null) ?: ''));
+
+                                if ($nodeId === '' || $endpoint === '') {
+                                    continue;
+                                }
+
+                                $advertised[$nodeId] = $advertisement;
+                            }
+
+                            return $advertised;
+                        }
+                        : null,
                 );
             },
         );
@@ -274,12 +314,16 @@ final class DatabaseServiceProvider extends ServiceProvider
                     'database.idempotency.remote_replay_challenge.endpoint_template',
                     '',
                 ));
+                $discoveryViaHealth = (bool) $app->config(
+                    'database.idempotency.remote_replay_challenge.discovery_via_health',
+                    true,
+                );
 
                 if ($transport === 'null') {
                     return new NullDatabaseRemoteReplayChallenger();
                 }
 
-                if ($transport === 'http' || ($transport === 'auto' && ($endpointMap !== [] || $endpointTemplate !== ''))) {
+                if ($transport === 'http' || ($transport === 'auto' && ($endpointMap !== [] || $endpointTemplate !== '' || $discoveryViaHealth))) {
                     return new HttpDatabaseRemoteReplayChallenger(
                         signer: $app->make(DatabaseRemoteReplayChallengeSigner::class),
                         endpointResolver: $app->make(DatabaseRemoteReplayChallengeEndpointResolver::class),
@@ -348,6 +392,51 @@ final class DatabaseServiceProvider extends ServiceProvider
                     endpoint: $endpoint,
                     headers: $normalizedHeaders,
                     requestTimeoutMs: max(250, (int) $app->config('database.observability.webhook_timeout_ms', 2000)),
+                );
+            }
+
+            if ($mode === 'opentelemetry') {
+                $endpoint = trim((string) $app->config('database.observability.opentelemetry.endpoint', ''));
+                if ($endpoint === '') {
+                    throw new \RuntimeException('Database OpenTelemetry dispatcher requires [database.observability.opentelemetry.endpoint].');
+                }
+
+                $headers = $app->config('database.observability.opentelemetry.headers', []);
+                if (!is_array($headers)) {
+                    $headers = [];
+                }
+
+                $normalizedHeaders = [];
+                foreach ($headers as $name => $value) {
+                    $headerName = trim((string) $name);
+                    $headerValue = trim((string) $value);
+                    if ($headerName === '' || $headerValue === '') {
+                        continue;
+                    }
+
+                    $normalizedHeaders[$headerName] = $headerValue;
+                }
+
+                return new OpenTelemetryDatabaseTelemetryDispatcher(
+                    endpoint: $endpoint,
+                    serviceName: trim((string) $app->config(
+                        'database.observability.opentelemetry.service_name',
+                        (string) $app->config('app.name', 'voltstack-database'),
+                    )) ?: 'voltstack-database',
+                    serviceNamespace: trim((string) $app->config(
+                        'database.observability.opentelemetry.service_namespace',
+                        'voltstack.database',
+                    )) ?: 'voltstack.database',
+                    scopeName: trim((string) $app->config(
+                        'database.observability.opentelemetry.scope_name',
+                        'voltstack.database',
+                    )) ?: 'voltstack.database',
+                    scopeVersion: trim((string) $app->config(
+                        'database.observability.opentelemetry.scope_version',
+                        '1.0.0',
+                    )) ?: '1.0.0',
+                    headers: $normalizedHeaders,
+                    requestTimeoutMs: max(250, (int) $app->config('database.observability.opentelemetry.timeout_ms', 2000)),
                 );
             }
 
@@ -528,6 +617,16 @@ final class DatabaseServiceProvider extends ServiceProvider
             $telemetry = $app->make(DatabaseTelemetryStore::class);
             $summary = $telemetry->summary();
             $health = $telemetry->health()->toArray();
+            $nodeId = (string) $app->config('database.health.node_id', (string) $app->config('app.name', 'app'));
+
+            $challengeAdvertisement = self::buildRemoteReplayChallengeAdvertisement($app, $nodeId);
+            if ($challengeAdvertisement !== null) {
+                $remoteReplayChallenge = is_array($summary['remote_replay_challenge'] ?? null)
+                    ? $summary['remote_replay_challenge']
+                    : [];
+                $remoteReplayChallenge['cluster_advertisement'] = $challengeAdvertisement;
+                $summary['remote_replay_challenge'] = $remoteReplayChallenge;
+            }
 
             $context->set('database.telemetry', $summary);
             $context->set('database.health', $health);
@@ -542,7 +641,7 @@ final class DatabaseServiceProvider extends ServiceProvider
                 generatedAt: (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format(\DATE_ATOM),
                 summary: $summary,
                 health: $health,
-                nodeId: (string) $app->config('database.health.node_id', (string) $app->config('app.name', 'app')),
+                nodeId: $nodeId,
             );
 
             $dispatcher->dispatch($report);
@@ -588,5 +687,53 @@ final class DatabaseServiceProvider extends ServiceProvider
 
         $tenantId = trim($tenantHeader);
         return $tenantId === '' ? null : $tenantId;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private static function buildRemoteReplayChallengeAdvertisement(Application $app, string $nodeId): ?array
+    {
+        $transport = strtolower((string) $app->config('database.idempotency.remote_replay_challenge.transport', 'auto'));
+        if ($transport === 'null') {
+            return null;
+        }
+
+        $path = trim((string) $app->config(
+            'database.idempotency.remote_replay_challenge.path',
+            '/_volt/db/remote-replay/challenge',
+        ));
+        if ($path === '') {
+            $path = '/_volt/db/remote-replay/challenge';
+        }
+
+        $endpoint = trim((string) $app->config('database.idempotency.remote_replay_challenge.advertised_endpoint', ''));
+        $source = 'advertised_endpoint';
+
+        if ($endpoint === '') {
+            $appUrl = trim((string) $app->config('app.url', ''));
+            if ($appUrl !== '') {
+                $endpoint = rtrim($appUrl, '/') . '/' . ltrim($path, '/');
+                $source = 'app_url';
+            }
+        }
+
+        if ($endpoint === '') {
+            return null;
+        }
+
+        $signer = $app->make(DatabaseRemoteReplayChallengeSigner::class);
+
+        return [
+            'node_id' => $nodeId,
+            'endpoint' => $endpoint,
+            'path' => $path,
+            'source' => $source,
+            'transport' => $transport,
+            'protocol' => $signer->protocol(),
+            'supported_protocols' => $signer->supportedProtocols(),
+            'capabilities' => $signer->capabilities(),
+            'key_id' => $signer->activeKeyId(),
+        ];
     }
 }

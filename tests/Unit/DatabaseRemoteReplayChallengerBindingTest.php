@@ -6,7 +6,9 @@ namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
 use Quantum\Config\ConfigRepository;
+use Quantum\Database\Operation\Contracts\DatabaseHealthStoreInterface;
 use Quantum\Database\Operation\Contracts\DatabaseRemoteReplayChallengerInterface;
+use Quantum\Database\Operation\DatabaseTelemetryReport;
 use Quantum\Database\Operation\Engine\HttpDatabaseRemoteReplayChallenger;
 use Quantum\Database\Operation\Engine\NullDatabaseRemoteReplayChallenger;
 use VoltStack\Framework\Application;
@@ -65,10 +67,43 @@ final class DatabaseRemoteReplayChallengerBindingTest extends TestCase
     {
         $app = new Application($this->basePath);
         $app->register(DatabaseServiceProvider::class);
-        $app->make(ConfigRepository::class)->set('database.idempotency.remote_replay_challenge.transport', 'auto');
+        $config = $app->make(ConfigRepository::class);
+        $config->set('database.idempotency.remote_replay_challenge.transport', 'auto');
+        $config->set('database.idempotency.remote_replay_challenge.discovery_via_health', false);
 
         $challenger = $app->make(DatabaseRemoteReplayChallengerInterface::class);
 
         self::assertInstanceOf(NullDatabaseRemoteReplayChallenger::class, $challenger);
+    }
+
+    public function test_it_resolves_http_challenger_in_auto_mode_when_health_discovery_is_enabled(): void
+    {
+        $app = new Application($this->basePath);
+        $app->register(DatabaseServiceProvider::class);
+        $config = $app->make(ConfigRepository::class);
+        $config->set('database.idempotency.remote_replay_challenge.transport', 'auto');
+        $config->set('database.idempotency.remote_replay_challenge.discovery_via_health', true);
+
+        $store = $app->make(DatabaseHealthStoreInterface::class);
+        $store->persist(new DatabaseTelemetryReport(
+            requestId: 'req-health',
+            tenantId: null,
+            traceId: null,
+            generatedAt: '2026-08-29T20:00:00+00:00',
+            summary: [
+                'remote_replay_challenge' => [
+                    'cluster_advertisement' => [
+                        'node_id' => 'node-a',
+                        'endpoint' => 'https://node-a.internal/_volt/db/remote-replay/challenge',
+                    ],
+                ],
+            ],
+            health: [],
+            nodeId: 'node-a',
+        ));
+
+        $challenger = $app->make(DatabaseRemoteReplayChallengerInterface::class);
+
+        self::assertInstanceOf(HttpDatabaseRemoteReplayChallenger::class, $challenger);
     }
 }

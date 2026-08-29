@@ -9,12 +9,14 @@ final class DatabaseRemoteReplayChallengeEndpointResolver
     /**
      * @param array<string, string> $endpointMap
      * @param list<string> $knownNodes
+     * @param null|\Closure(): array<string, array<string, mixed>> $advertisedEndpointProvider
      */
     public function __construct(
         private readonly array $endpointMap,
         private readonly ?string $endpointTemplate = null,
         private readonly ?string $defaultPath = null,
         private readonly array $knownNodes = [],
+        private readonly ?\Closure $advertisedEndpointProvider = null,
     ) {}
 
     public function resolve(?string $nodeId): DatabaseRemoteReplayChallengeEndpointResolution
@@ -34,6 +36,30 @@ final class DatabaseRemoteReplayChallengeEndpointResolver
                 nodeId: $normalizedNodeId,
                 endpoint: $mappedEndpoint,
                 strategy: 'endpoint_map',
+            );
+        }
+
+        $advertised = $this->advertisedEndpoints();
+        $advertisedEndpoint = trim((string) (($advertised[$normalizedNodeId]['endpoint'] ?? null) ?: ''));
+        if ($advertisedEndpoint !== '') {
+            return new DatabaseRemoteReplayChallengeEndpointResolution(
+                status: 'resolved',
+                nodeId: $normalizedNodeId,
+                endpoint: $advertisedEndpoint,
+                strategy: 'health_advertisement',
+                details: array_filter([
+                    'protocol' => $advertised[$normalizedNodeId]['protocol'] ?? null,
+                    'supported_protocols' => is_array($advertised[$normalizedNodeId]['supported_protocols'] ?? null)
+                        ? $advertised[$normalizedNodeId]['supported_protocols']
+                        : null,
+                    'capabilities' => is_array($advertised[$normalizedNodeId]['capabilities'] ?? null)
+                        ? $advertised[$normalizedNodeId]['capabilities']
+                        : null,
+                    'key_id' => $advertised[$normalizedNodeId]['key_id'] ?? null,
+                    'source' => $advertised[$normalizedNodeId]['source'] ?? null,
+                    'path' => $advertised[$normalizedNodeId]['path'] ?? null,
+                    'transport' => $advertised[$normalizedNodeId]['transport'] ?? null,
+                ], static fn(mixed $value): bool => $value !== null && $value !== []),
             );
         }
 
@@ -77,7 +103,7 @@ final class DatabaseRemoteReplayChallengeEndpointResolver
     {
         $nodes = array_values(array_unique(array_filter(array_map(
             static fn(mixed $value): string => is_string($value) ? trim($value) : '',
-            array_merge(array_keys($this->endpointMap), $this->knownNodes),
+            array_merge(array_keys($this->endpointMap), $this->knownNodes, array_keys($this->advertisedEndpoints())),
         ))));
         sort($nodes);
 
@@ -103,11 +129,44 @@ final class DatabaseRemoteReplayChallengeEndpointResolver
             'current_node_id' => $currentNodeId,
             'default_path' => $this->defaultPath,
             'endpoint_template' => $this->endpointTemplate,
+            'advertised_nodes' => array_values(array_keys($this->advertisedEndpoints())),
             'known_nodes' => $knownNodes,
             'configured_nodes' => count($knownNodes),
             'resolved_nodes' => $resolvedNodes,
             'resolved_count' => count($resolvedNodes),
             'resolutions' => $resolutions,
         ];
+    }
+
+    /**
+     * @return array<string, array<string, mixed>>
+     */
+    private function advertisedEndpoints(): array
+    {
+        if (!$this->advertisedEndpointProvider instanceof \Closure) {
+            return [];
+        }
+
+        $advertised = ($this->advertisedEndpointProvider)();
+        if (!is_array($advertised)) {
+            return [];
+        }
+
+        $normalized = [];
+        foreach ($advertised as $nodeId => $details) {
+            $normalizedNodeId = trim((string) $nodeId);
+            if ($normalizedNodeId === '' || !is_array($details)) {
+                continue;
+            }
+
+            $endpoint = trim((string) ($details['endpoint'] ?? ''));
+            if ($endpoint === '') {
+                continue;
+            }
+
+            $normalized[$normalizedNodeId] = $details;
+        }
+
+        return $normalized;
     }
 }

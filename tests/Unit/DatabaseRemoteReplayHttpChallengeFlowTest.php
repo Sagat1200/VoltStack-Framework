@@ -7,6 +7,8 @@ namespace VoltStack\Test\Unit;
 use PHPUnit\Framework\TestCase;
 use Quantum\Config\ConfigRepository;
 use Quantum\Database\Operation\DatabaseIdempotencyRecord;
+use Quantum\Database\Operation\DatabaseTelemetryReport;
+use Quantum\Database\Operation\Engine\DirectoryDatabaseHealthStore;
 use Quantum\Database\Operation\DatabaseRemoteReplayChallengeRequest;
 use Quantum\Database\Operation\Engine\DatabaseRemoteReplayChallengeEndpointResolver;
 use Quantum\Database\Operation\Engine\DatabaseRemoteReplayChallengeSigner;
@@ -133,6 +135,153 @@ final class DatabaseRemoteReplayHttpChallengeFlowTest extends TestCase
         self::assertSame('remote_replay_node_challenge_v1', $result->details['protocol_negotiated'] ?? null);
         self::assertSame('app-default', $result->details['response_key_id'] ?? null);
         self::assertSame('verified', $result->details['response_signature_verification'] ?? null);
+    }
+
+    public function test_http_challenger_discovers_remote_endpoint_from_health_advertisement(): void
+    {
+        $sharedHealthDirectory = $this->basePath . DIRECTORY_SEPARATOR . 'shared-health';
+        mkdir($sharedHealthDirectory, 0777, true);
+
+        $requesterApp = new Application($this->basePath . DIRECTORY_SEPARATOR . 'requester-health');
+        $requesterApp->make(ConfigRepository::class)->set('app.key', 'cluster-secret');
+        $requesterApp->make(ConfigRepository::class)->set('database.idempotency.node_id', 'node-b');
+
+        $responderApp = new Application($this->basePath . DIRECTORY_SEPARATOR . 'responder-health');
+        $responderConfig = $responderApp->make(ConfigRepository::class);
+        $responderConfig->set('app.key', 'cluster-secret');
+        $responderConfig->set('app.url', 'http://node-a.internal');
+        $responderConfig->set('database.idempotency.node_id', 'node-a');
+        $responderConfig->set('database.idempotency.remote_replay_challenge.path', '/_volt/db/remote-replay/challenge');
+
+        $healthStore = new DirectoryDatabaseHealthStore($sharedHealthDirectory);
+        $healthStore->persist(new DatabaseTelemetryReport(
+            requestId: 'req-health-adv',
+            tenantId: null,
+            traceId: null,
+            generatedAt: '2026-08-29T20:10:00+00:00',
+            summary: [
+                'remote_replay_challenge' => [
+                    'cluster_advertisement' => [
+                        'node_id' => 'node-a',
+                        'endpoint' => 'http://node-a.internal/_volt/db/remote-replay/challenge',
+                        'source' => 'app_url',
+                        'protocol' => 'remote_replay_node_challenge_v1',
+                        'supported_protocols' => ['remote_replay_node_challenge_v1'],
+                        'capabilities' => [],
+                        'key_id' => 'app-default',
+                    ],
+                ],
+            ],
+            health: [],
+            nodeId: 'node-a',
+        ));
+
+        $signer = new DatabaseRemoteReplayChallengeSigner($requesterApp);
+        $store = new InMemoryDatabaseIdempotencyStore();
+        $controller = new DatabaseRemoteReplayChallengeController(
+            $responderApp,
+            $store,
+            new DatabaseRemoteReplayChallengeSigner($responderApp),
+        );
+
+        $record = new DatabaseIdempotencyRecord(
+            keyHash: hash('sha256', 'mutation-challenge-health'),
+            operationFingerprint: 'ofp-health',
+            requestId: 'req-health',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            createdAt: '2026-08-29T20:10:01+00:00',
+            nodeId: 'node-a',
+            status: 'pending',
+        );
+        $store->acquire($record);
+        $store->complete($record, [
+            'confirmation_fingerprint' => 'cfp-health',
+            'result_summary' => ['result_type' => 'success_no_rows'],
+        ]);
+
+        $challenger = new HttpDatabaseRemoteReplayChallenger(
+            signer: $signer,
+            endpointResolver: new DatabaseRemoteReplayChallengeEndpointResolver(
+                endpointMap: [],
+                advertisedEndpointProvider: static function () use ($healthStore): array {
+                    $advertised = [];
+                    foreach ($healthStore->recent(10) as $report) {
+                        $summary = is_array($report->summary) ? $report->summary : [];
+                        $remoteReplayChallenge = is_array($summary['remote_replay_challenge'] ?? null)
+                            ? $summary['remote_replay_challenge']
+                            : [];
+                        $advertisement = is_array($remoteReplayChallenge['cluster_advertisement'] ?? null)
+                            ? $remoteReplayChallenge['cluster_advertisement']
+                            : null;
+                        $nodeId = trim((string) (($advertisement['node_id'] ?? null) ?: $report->nodeId ?: ''));
+
+                        if ($nodeId === '' || !is_array($advertisement)) {
+                            continue;
+                        }
+
+                        $advertised[$nodeId] = $advertisement;
+                    }
+
+                    return $advertised;
+                },
+            ),
+            requestTimeoutMs: 1000,
+            sender: function (string $endpoint, array $payload, array $headers, int $timeoutMs) use ($controller): array {
+                self::assertSame('http://node-a.internal/_volt/db/remote-replay/challenge', $endpoint);
+                self::assertSame(1000, $timeoutMs);
+
+                $request = Request::create(
+                    '/_volt/db/remote-replay/challenge',
+                    'POST',
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [
+                        'CONTENT_TYPE' => 'application/json',
+                        'HTTP_X_VOLTSTACK_REMOTE_REPLAY_PROTOCOL' => $headers[DatabaseRemoteReplayChallengeSigner::PROTOCOL_HEADER] ?? '',
+                        'HTTP_X_VOLTSTACK_REMOTE_REPLAY_KEY_ID' => $headers[DatabaseRemoteReplayChallengeSigner::KEY_ID_HEADER] ?? '',
+                        'HTTP_X_VOLTSTACK_REMOTE_REPLAY_CAPABILITIES' => $headers[DatabaseRemoteReplayChallengeSigner::CAPABILITIES_HEADER] ?? '',
+                        'HTTP_X_VOLTSTACK_REMOTE_REPLAY_SIGNATURE' => $headers[DatabaseRemoteReplayChallengeSigner::SIGNATURE_HEADER] ?? '',
+                    ],
+                    json_encode($payload, JSON_THROW_ON_ERROR),
+                );
+                $response = $controller($request);
+
+                $normalizedHeaders = [];
+                foreach ($response->headers() as $name => $value) {
+                    $normalizedHeaders[strtolower($name)] = $value;
+                }
+
+                return [
+                    'status' => $response->statusCode(),
+                    'headers' => $normalizedHeaders,
+                    'body' => $response->content(),
+                ];
+            },
+        );
+
+        $result = $challenger->challenge(new DatabaseRemoteReplayChallengeRequest(
+            challengeId: 'challenge-health',
+            challengeNonce: 'nonce-health',
+            requestedAt: '2026-08-29T20:10:02+00:00',
+            currentNodeId: 'node-b',
+            sourceNodeId: 'node-a',
+            keyHash: hash('sha256', 'mutation-challenge-health'),
+            requestId: 'req-health',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            operationFingerprint: 'ofp-health',
+            confirmationFingerprint: 'cfp-health',
+            validationMode: 'require',
+        ));
+
+        self::assertSame('verified', $result->status);
+        self::assertSame('http://node-a.internal/_volt/db/remote-replay/challenge', $result->details['endpoint'] ?? null);
+        self::assertSame('health_advertisement', $result->details['endpoint_strategy'] ?? null);
+        self::assertSame('remote_replay_node_challenge_v1', $result->details['response_protocol'] ?? null);
     }
 
     public function test_http_challenger_accepts_rotating_key_ids_during_rollout(): void

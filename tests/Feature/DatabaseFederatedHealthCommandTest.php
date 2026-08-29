@@ -63,6 +63,19 @@ final class DatabaseFederatedHealthCommandTest extends TestCase
         self::assertStringContainsString('"total_operations": 2', $json['stdout']);
     }
 
+    public function test_health_snapshot_persists_remote_challenge_cluster_advertisement(): void
+    {
+        $appA = $this->loadApp($this->basePath . DIRECTORY_SEPARATOR . 'node-a');
+
+        $this->seedHealthSnapshot($appA, '/health-seed-advertisement');
+
+        $result = $this->runConsole($this->basePath . DIRECTORY_SEPARATOR . 'node-a', ['volt', 'db:health', '--json']);
+        self::assertSame(0, $result['exit']);
+        self::assertStringContainsString('"cluster_advertisement"', $result['stdout']);
+        self::assertStringContainsString('"endpoint": "http://node-a.cluster.internal/_volt/db/remote-replay/challenge"', $result['stdout']);
+        self::assertStringContainsString('"source": "app_url"', $result['stdout']);
+    }
+
     private function seedHealthSnapshot(Application $app, string $route): void
     {
         $router = $app->make(Router::class);
@@ -128,6 +141,7 @@ final class DatabaseFederatedHealthCommandTest extends TestCase
                 'name' => 'VoltStack Federated Health Feature Test',
                 'env' => 'testing',
                 'debug' => true,
+                'url' => 'http://' . $nodeId . '.cluster.internal',
                 'providers' => [
                     DatabaseServiceProvider::class,
                 ],

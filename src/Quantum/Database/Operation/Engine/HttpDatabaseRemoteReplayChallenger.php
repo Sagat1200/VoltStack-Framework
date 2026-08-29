@@ -11,13 +11,21 @@ use Quantum\Database\Operation\DatabaseRemoteReplayChallengeResponse;
 final class HttpDatabaseRemoteReplayChallenger implements DatabaseRemoteReplayChallengerInterface
 {
     /**
+     * @var array<string, int>
+     */
+    private array $endpointCooldowns = [];
+
+    /**
      * @param null|\Closure(string, array<string, mixed>, array<string, string>, int): array{status:int, headers:array<string, string>, body:string} $sender
+     * @param null|\Closure(): \DateTimeImmutable $clock
      */
     public function __construct(
         private readonly DatabaseRemoteReplayChallengeSigner $signer,
         private readonly DatabaseRemoteReplayChallengeEndpointResolver $endpointResolver,
         private readonly int $requestTimeoutMs = 2000,
+        private readonly int $failureCooldownSeconds = 30,
         private readonly ?\Closure $sender = null,
+        private readonly ?\Closure $clock = null,
     ) {}
 
     public function challenge(DatabaseRemoteReplayChallengeRequest $request): DatabaseRemoteReplayChallengeResponse
@@ -30,9 +38,9 @@ final class HttpDatabaseRemoteReplayChallenger implements DatabaseRemoteReplayCh
             );
         }
 
-        $resolution = $this->endpointResolver->resolve($sourceNodeId);
-        $endpoint = trim((string) ($resolution->endpoint ?? ''));
-        if ($resolution->status !== 'resolved' || $endpoint === '') {
+        $candidates = $this->endpointResolver->candidates($sourceNodeId);
+        if ($candidates === []) {
+            $resolution = $this->endpointResolver->resolve($sourceNodeId);
             $resolutionDetails = $resolution->toArray();
             $nestedResolutionDetails = is_array($resolutionDetails['details'] ?? null)
                 ? $resolutionDetails['details']
@@ -47,6 +55,118 @@ final class HttpDatabaseRemoteReplayChallenger implements DatabaseRemoteReplayCh
             );
         }
 
+        $attempts = [];
+        $lastUnavailable = null;
+
+        foreach ($candidates as $candidate) {
+            $candidateDetails = $candidate->toArray();
+            $nestedCandidateDetails = is_array($candidateDetails['details'] ?? null)
+                ? $candidateDetails['details']
+                : [];
+            $endpoint = trim((string) ($candidate->endpoint ?? ''));
+
+            if ($candidate->status !== 'resolved' || $endpoint === '') {
+                $attempts[] = array_merge($nestedCandidateDetails, [
+                    'status' => $candidate->status,
+                    'endpoint' => $endpoint !== '' ? $endpoint : null,
+                    'strategy' => $candidate->strategy,
+                ]);
+                $lastUnavailable = DatabaseRemoteReplayChallengeResponse::unavailable(
+                    challenger: 'http_remote_replay_challenger',
+                    message: sprintf('No remote replay challenge endpoint is currently usable for node [%s].', $sourceNodeId),
+                    details: array_merge($nestedCandidateDetails, [
+                        'source_node_id' => $sourceNodeId,
+                    ], $candidateDetails),
+                );
+
+                continue;
+            }
+
+            $cooldownUntil = $this->cooldownUntil($sourceNodeId, $endpoint);
+            if ($cooldownUntil !== null) {
+                $attempts[] = array_merge($nestedCandidateDetails, [
+                    'status' => 'cooldown_active',
+                    'endpoint' => $endpoint,
+                    'strategy' => $candidate->strategy,
+                    'cooldown_until' => gmdate(\DATE_ATOM, $cooldownUntil),
+                ]);
+                continue;
+            }
+
+            $response = $this->attemptChallenge($request, $sourceNodeId, $candidate);
+            if ($response->status === 'unavailable') {
+                $details = is_array($response->details) ? $response->details : [];
+                $attempts[] = array_merge([
+                    'status' => 'unavailable',
+                    'endpoint' => $endpoint,
+                    'strategy' => $candidate->strategy,
+                ], $details);
+                $lastUnavailable = $response;
+
+                if ($this->shouldEnterCooldown($details)) {
+                    $this->markCooldown($sourceNodeId, $endpoint);
+                }
+
+                continue;
+            }
+
+            if ($attempts !== []) {
+                $response = new DatabaseRemoteReplayChallengeResponse(
+                    status: $response->status,
+                    challenger: $response->challenger,
+                    message: $response->message,
+                    challengedNodeId: $response->challengedNodeId,
+                    challengeId: $response->challengeId,
+                    challengeNonce: $response->challengeNonce,
+                    respondedAt: $response->respondedAt,
+                    operationFingerprint: $response->operationFingerprint,
+                    confirmationFingerprint: $response->confirmationFingerprint,
+                    proofType: $response->proofType,
+                    proofFingerprint: $response->proofFingerprint,
+                    details: array_merge($response->details, [
+                        'failover_attempts' => $attempts,
+                    ]),
+                );
+            }
+
+            return $response;
+        }
+
+        if ($lastUnavailable instanceof DatabaseRemoteReplayChallengeResponse) {
+            return new DatabaseRemoteReplayChallengeResponse(
+                status: $lastUnavailable->status,
+                challenger: $lastUnavailable->challenger,
+                message: $lastUnavailable->message,
+                challengedNodeId: $lastUnavailable->challengedNodeId,
+                challengeId: $lastUnavailable->challengeId,
+                challengeNonce: $lastUnavailable->challengeNonce,
+                respondedAt: $lastUnavailable->respondedAt,
+                operationFingerprint: $lastUnavailable->operationFingerprint,
+                confirmationFingerprint: $lastUnavailable->confirmationFingerprint,
+                proofType: $lastUnavailable->proofType,
+                proofFingerprint: $lastUnavailable->proofFingerprint,
+                details: array_merge($lastUnavailable->details, [
+                    'failover_attempts' => $attempts,
+                ]),
+            );
+        }
+
+        return DatabaseRemoteReplayChallengeResponse::unavailable(
+            challenger: 'http_remote_replay_challenger',
+            message: sprintf('No remote replay challenge endpoint is currently usable for node [%s].', $sourceNodeId),
+            details: [
+                'source_node_id' => $sourceNodeId,
+                'failover_attempts' => $attempts,
+            ],
+        );
+    }
+
+    private function attemptChallenge(
+        DatabaseRemoteReplayChallengeRequest $request,
+        string $sourceNodeId,
+        DatabaseRemoteReplayChallengeEndpointResolution $resolution,
+    ): DatabaseRemoteReplayChallengeResponse {
+        $endpoint = trim((string) ($resolution->endpoint ?? ''));
         $payload = $this->signer->decorateRequestPayload($request->toArray());
         $headers = array_merge([
             'Content-Type' => 'application/json',
@@ -197,6 +317,64 @@ final class HttpDatabaseRemoteReplayChallenger implements DatabaseRemoteReplayCh
                 'response_signature_verification' => 'verified',
             ]),
         );
+    }
+
+    private function shouldEnterCooldown(array $details): bool
+    {
+        if ($this->failureCooldownSeconds <= 0) {
+            return false;
+        }
+
+        if (isset($details['transport_error'])) {
+            return true;
+        }
+
+        $httpStatus = (int) ($details['http_status'] ?? 0);
+
+        return $httpStatus >= 500 || $httpStatus === 0;
+    }
+
+    private function markCooldown(string $sourceNodeId, string $endpoint): void
+    {
+        if ($this->failureCooldownSeconds <= 0) {
+            return;
+        }
+
+        $this->endpointCooldowns[$this->cooldownKey($sourceNodeId, $endpoint)] = $this->now()->getTimestamp() + $this->failureCooldownSeconds;
+    }
+
+    private function cooldownUntil(string $sourceNodeId, string $endpoint): ?int
+    {
+        $key = $this->cooldownKey($sourceNodeId, $endpoint);
+        $cooldownUntil = $this->endpointCooldowns[$key] ?? null;
+        if (!is_int($cooldownUntil)) {
+            return null;
+        }
+
+        if ($cooldownUntil <= $this->now()->getTimestamp()) {
+            unset($this->endpointCooldowns[$key]);
+
+            return null;
+        }
+
+        return $cooldownUntil;
+    }
+
+    private function cooldownKey(string $sourceNodeId, string $endpoint): string
+    {
+        return $sourceNodeId . '|' . $endpoint;
+    }
+
+    private function now(): \DateTimeImmutable
+    {
+        if ($this->clock instanceof \Closure) {
+            $current = ($this->clock)();
+            if ($current instanceof \DateTimeImmutable) {
+                return $current;
+            }
+        }
+
+        return new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
     }
 
     /**

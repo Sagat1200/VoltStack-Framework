@@ -10,6 +10,7 @@ final class DatabaseRemoteReplayChallengeEndpointResolver
      * @param array<string, string> $endpointMap
      * @param list<string> $knownNodes
      * @param list<string> $trustedNodes
+     * @param list<string> $strategyOrder
      * @param null|\Closure(): array<string, array<string, mixed>> $advertisedEndpointProvider
      * @param null|\Closure(): \DateTimeImmutable $clock
      */
@@ -21,6 +22,7 @@ final class DatabaseRemoteReplayChallengeEndpointResolver
         private readonly array $trustedNodes = [],
         private readonly string $healthDiscoveryMode = 'allow',
         private readonly int $healthAdvertisementMaxAgeSeconds = 300,
+        private readonly array $strategyOrder = [],
         private readonly ?\Closure $advertisedEndpointProvider = null,
         private readonly ?\Closure $clock = null,
     ) {}
@@ -35,72 +37,55 @@ final class DatabaseRemoteReplayChallengeEndpointResolver
             );
         }
 
-        $mappedEndpoint = trim((string) ($this->endpointMap[$normalizedNodeId] ?? ''));
-        if ($mappedEndpoint !== '') {
-            return new DatabaseRemoteReplayChallengeEndpointResolution(
-                status: 'resolved',
-                nodeId: $normalizedNodeId,
-                endpoint: $mappedEndpoint,
-                strategy: 'endpoint_map',
-            );
+        $candidates = $this->candidates($normalizedNodeId);
+        foreach ($candidates as $candidate) {
+            if ($candidate->status === 'resolved') {
+                return $candidate;
+            }
         }
 
-        $advertised = $this->advertisedEndpoints();
-        $advertisedEndpoint = trim((string) (($advertised[$normalizedNodeId]['endpoint'] ?? null) ?: ''));
-        if ($advertisedEndpoint !== '') {
-            $advertisementDetails = $this->healthAdvertisementDetails($normalizedNodeId, $advertised[$normalizedNodeId]);
-            $blockedStatus = $this->blockedHealthAdvertisementStatus($advertisementDetails);
-
-            if ($blockedStatus !== null) {
-                return new DatabaseRemoteReplayChallengeEndpointResolution(
-                    status: $blockedStatus,
-                    nodeId: $normalizedNodeId,
-                    endpoint: $advertisedEndpoint,
-                    strategy: 'health_advertisement',
-                    details: $advertisementDetails,
-                );
-            }
-
-            return new DatabaseRemoteReplayChallengeEndpointResolution(
-                status: 'resolved',
-                nodeId: $normalizedNodeId,
-                endpoint: $advertisedEndpoint,
-                strategy: 'health_advertisement',
-                details: $advertisementDetails,
-            );
-        }
-
-        $template = trim((string) ($this->endpointTemplate ?? ''));
-        if ($template !== '') {
-            $path = trim((string) ($this->defaultPath ?? ''));
-            $endpoint = strtr($template, [
-                '{node_id}' => rawurlencode($normalizedNodeId),
-                '{path}' => $path,
-            ]);
-            $endpoint = trim($endpoint);
-
-            if ($endpoint !== '' && ! str_contains($endpoint, '{node_id}') && ! str_contains($endpoint, '{path}')) {
-                return new DatabaseRemoteReplayChallengeEndpointResolution(
-                    status: 'resolved',
-                    nodeId: $normalizedNodeId,
-                    endpoint: $endpoint,
-                    strategy: 'endpoint_template',
-                    details: [
-                        'template' => $template,
-                        'path' => $path !== '' ? $path : null,
-                    ],
-                );
-            }
+        if ($candidates !== []) {
+            return $candidates[0];
         }
 
         return new DatabaseRemoteReplayChallengeEndpointResolution(
             status: 'unconfigured',
             nodeId: $normalizedNodeId,
-            strategy: $template !== '' ? 'endpoint_template' : 'none',
+            strategy: trim((string) ($this->endpointTemplate ?? '')) !== '' ? 'endpoint_template' : 'none',
             details: [
-                'reason' => $template !== '' ? 'template_not_expandable' : 'no_endpoint_configuration',
+                'reason' => trim((string) ($this->endpointTemplate ?? '')) !== '' ? 'template_not_expandable' : 'no_endpoint_configuration',
             ],
         );
+    }
+
+    /**
+     * @return list<DatabaseRemoteReplayChallengeEndpointResolution>
+     */
+    public function candidates(?string $nodeId): array
+    {
+        $normalizedNodeId = is_string($nodeId) ? trim($nodeId) : '';
+        if ($normalizedNodeId === '') {
+            return [];
+        }
+
+        $candidates = [];
+        foreach ($this->normalizedStrategyOrder() as $strategy) {
+            $candidate = match ($strategy) {
+                'health_advertisement' => $this->healthAdvertisementResolution($normalizedNodeId),
+                'endpoint_map' => $this->endpointMapResolution($normalizedNodeId),
+                'endpoint_template' => $this->endpointTemplateResolution($normalizedNodeId),
+                default => null,
+            };
+
+            if (!$candidate instanceof DatabaseRemoteReplayChallengeEndpointResolution) {
+                continue;
+            }
+
+            $key = $strategy . '|' . trim((string) ($candidate->endpoint ?? ''));
+            $candidates[$key] = $candidate;
+        }
+
+        return array_values($candidates);
     }
 
     /**
@@ -136,6 +121,7 @@ final class DatabaseRemoteReplayChallengeEndpointResolver
             'current_node_id' => $currentNodeId,
             'default_path' => $this->defaultPath,
             'endpoint_template' => $this->endpointTemplate,
+            'strategy_order' => $this->normalizedStrategyOrder(),
             'health_discovery_mode' => $this->normalizedHealthDiscoveryMode(),
             'health_advertisement_max_age_seconds' => $this->healthAdvertisementMaxAgeSeconds,
             'advertised_nodes' => array_values(array_keys($this->advertisedEndpoints())),
@@ -145,6 +131,78 @@ final class DatabaseRemoteReplayChallengeEndpointResolver
             'resolved_count' => count($resolvedNodes),
             'resolutions' => $resolutions,
         ];
+    }
+
+    private function endpointMapResolution(string $nodeId): ?DatabaseRemoteReplayChallengeEndpointResolution
+    {
+        $mappedEndpoint = trim((string) ($this->endpointMap[$nodeId] ?? ''));
+        if ($mappedEndpoint === '') {
+            return null;
+        }
+
+        return new DatabaseRemoteReplayChallengeEndpointResolution(
+            status: 'resolved',
+            nodeId: $nodeId,
+            endpoint: $mappedEndpoint,
+            strategy: 'endpoint_map',
+        );
+    }
+
+    private function healthAdvertisementResolution(string $nodeId): ?DatabaseRemoteReplayChallengeEndpointResolution
+    {
+        $advertised = $this->advertisedEndpoints();
+        $advertisedEndpoint = trim((string) (($advertised[$nodeId]['endpoint'] ?? null) ?: ''));
+        if ($advertisedEndpoint === '') {
+            return null;
+        }
+
+        $advertisementDetails = $this->healthAdvertisementDetails($nodeId, $advertised[$nodeId]);
+        $blockedStatus = $this->blockedHealthAdvertisementStatus($advertisementDetails);
+
+        return new DatabaseRemoteReplayChallengeEndpointResolution(
+            status: $blockedStatus ?? 'resolved',
+            nodeId: $nodeId,
+            endpoint: $advertisedEndpoint,
+            strategy: 'health_advertisement',
+            details: $advertisementDetails,
+        );
+    }
+
+    private function endpointTemplateResolution(string $nodeId): ?DatabaseRemoteReplayChallengeEndpointResolution
+    {
+        $template = trim((string) ($this->endpointTemplate ?? ''));
+        if ($template === '') {
+            return null;
+        }
+
+        $path = trim((string) ($this->defaultPath ?? ''));
+        $endpoint = strtr($template, [
+            '{node_id}' => rawurlencode($nodeId),
+            '{path}' => $path,
+        ]);
+        $endpoint = trim($endpoint);
+
+        if ($endpoint === '' || str_contains($endpoint, '{node_id}') || str_contains($endpoint, '{path}')) {
+            return new DatabaseRemoteReplayChallengeEndpointResolution(
+                status: 'unconfigured',
+                nodeId: $nodeId,
+                strategy: 'endpoint_template',
+                details: [
+                    'reason' => 'template_not_expandable',
+                ],
+            );
+        }
+
+        return new DatabaseRemoteReplayChallengeEndpointResolution(
+            status: 'resolved',
+            nodeId: $nodeId,
+            endpoint: $endpoint,
+            strategy: 'endpoint_template',
+            details: [
+                'template' => $template,
+                'path' => $path !== '' ? $path : null,
+            ],
+        );
     }
 
     /**
@@ -258,6 +316,28 @@ final class DatabaseRemoteReplayChallengeEndpointResolver
         return in_array($mode, ['allow', 'warn', 'require'], true)
             ? $mode
             : 'allow';
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function normalizedStrategyOrder(): array
+    {
+        $values = array_values(array_filter(array_map(
+            static fn(mixed $value): string => strtolower(trim((string) $value)),
+            $this->strategyOrder,
+        )));
+
+        if ($values === []) {
+            $values = ['health_advertisement', 'endpoint_map', 'endpoint_template'];
+        }
+
+        $allowed = ['health_advertisement', 'endpoint_map', 'endpoint_template'];
+
+        return array_values(array_unique(array_filter(
+            $values,
+            static fn(string $value): bool => in_array($value, $allowed, true),
+        )));
     }
 
     private function now(): \DateTimeImmutable

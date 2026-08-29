@@ -258,6 +258,10 @@ final class DatabaseServiceProvider extends ServiceProvider
                 if (! is_array($trustedNodes)) {
                     $trustedNodes = [];
                 }
+                $strategyOrder = $app->config('database.idempotency.remote_replay_challenge.strategy_order', []);
+                if (! is_array($strategyOrder)) {
+                    $strategyOrder = [];
+                }
 
                 return new DatabaseRemoteReplayChallengeEndpointResolver(
                     endpointMap: array_filter(array_map(
@@ -282,6 +286,10 @@ final class DatabaseServiceProvider extends ServiceProvider
                     ))),
                     healthDiscoveryMode: $healthDiscoveryMode,
                     healthAdvertisementMaxAgeSeconds: $healthAdvertisementMaxAgeSeconds,
+                    strategyOrder: array_values(array_filter(array_map(
+                        static fn(mixed $value): string => is_string($value) ? trim($value) : '',
+                        $strategyOrder,
+                    ))),
                     advertisedEndpointProvider: $discoveryViaHealth
                         ? static function () use ($app, $healthDiscoveryLimit): array {
                             $store = $app->make(DatabaseHealthStoreInterface::class);
@@ -350,6 +358,10 @@ final class DatabaseServiceProvider extends ServiceProvider
                         requestTimeoutMs: max(250, (int) $app->config(
                             'database.idempotency.remote_replay_challenge.request_timeout_ms',
                             2000,
+                        )),
+                        failureCooldownSeconds: max(0, (int) $app->config(
+                            'database.idempotency.remote_replay_challenge.failure_cooldown_seconds',
+                            30,
                         )),
                     );
                 }

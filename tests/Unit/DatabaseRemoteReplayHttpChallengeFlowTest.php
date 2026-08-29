@@ -429,6 +429,133 @@ final class DatabaseRemoteReplayHttpChallengeFlowTest extends TestCase
         self::assertSame('verified', $result->details['response_signature_verification'] ?? null);
     }
 
+    public function test_http_challenger_fails_over_to_next_strategy_and_cools_down_failed_endpoint(): void
+    {
+        $requesterApp = new Application($this->basePath . DIRECTORY_SEPARATOR . 'requester-failover');
+        $requesterApp->make(ConfigRepository::class)->set('app.key', 'cluster-secret');
+        $requesterApp->make(ConfigRepository::class)->set('database.idempotency.node_id', 'node-b');
+
+        $responderApp = new Application($this->basePath . DIRECTORY_SEPARATOR . 'responder-failover');
+        $responderApp->make(ConfigRepository::class)->set('app.key', 'cluster-secret');
+        $responderApp->make(ConfigRepository::class)->set('database.idempotency.node_id', 'node-a');
+
+        $signer = new DatabaseRemoteReplayChallengeSigner($requesterApp);
+        $store = new InMemoryDatabaseIdempotencyStore();
+        $controller = new DatabaseRemoteReplayChallengeController(
+            $responderApp,
+            $store,
+            new DatabaseRemoteReplayChallengeSigner($responderApp),
+        );
+
+        $record = new DatabaseIdempotencyRecord(
+            keyHash: hash('sha256', 'mutation-challenge-failover'),
+            operationFingerprint: 'ofp-failover',
+            requestId: 'req-failover',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            createdAt: '2026-08-29T20:40:00+00:00',
+            nodeId: 'node-a',
+            status: 'pending',
+        );
+        $store->acquire($record);
+        $store->complete($record, [
+            'confirmation_fingerprint' => 'cfp-failover',
+            'result_summary' => ['result_type' => 'success_no_rows'],
+        ]);
+
+        $now = new \DateTimeImmutable('2026-08-29T20:40:05+00:00');
+        $attemptedEndpoints = [];
+        $challenger = new HttpDatabaseRemoteReplayChallenger(
+            signer: $signer,
+            endpointResolver: new DatabaseRemoteReplayChallengeEndpointResolver(
+                endpointMap: ['node-a' => 'http://node-a-map.internal/_volt/db/remote-replay/challenge'],
+                strategyOrder: ['health_advertisement', 'endpoint_map'],
+                advertisedEndpointProvider: static fn(): array => [
+                    'node-a' => [
+                        'endpoint' => 'http://node-a-health.internal/_volt/db/remote-replay/challenge',
+                        'generated_at' => '2026-08-29T20:40:00+00:00',
+                    ],
+                ],
+                clock: static fn(): \DateTimeImmutable => $now,
+            ),
+            requestTimeoutMs: 1000,
+            failureCooldownSeconds: 120,
+            sender: function (string $endpoint, array $payload, array $headers, int $timeoutMs) use (&$attemptedEndpoints, $controller): array {
+                $attemptedEndpoints[] = $endpoint;
+
+                if ($endpoint === 'http://node-a-health.internal/_volt/db/remote-replay/challenge') {
+                    throw new \RuntimeException('Simulated network failure for health-advertised endpoint.');
+                }
+
+                $request = Request::create(
+                    '/_volt/db/remote-replay/challenge',
+                    'POST',
+                    [],
+                    [],
+                    [],
+                    [],
+                    [],
+                    [
+                        'CONTENT_TYPE' => 'application/json',
+                        'HTTP_X_VOLTSTACK_REMOTE_REPLAY_PROTOCOL' => $headers[DatabaseRemoteReplayChallengeSigner::PROTOCOL_HEADER] ?? '',
+                        'HTTP_X_VOLTSTACK_REMOTE_REPLAY_KEY_ID' => $headers[DatabaseRemoteReplayChallengeSigner::KEY_ID_HEADER] ?? '',
+                        'HTTP_X_VOLTSTACK_REMOTE_REPLAY_CAPABILITIES' => $headers[DatabaseRemoteReplayChallengeSigner::CAPABILITIES_HEADER] ?? '',
+                        'HTTP_X_VOLTSTACK_REMOTE_REPLAY_SIGNATURE' => $headers[DatabaseRemoteReplayChallengeSigner::SIGNATURE_HEADER] ?? '',
+                    ],
+                    json_encode($payload, JSON_THROW_ON_ERROR),
+                );
+                $response = $controller($request);
+
+                $normalizedHeaders = [];
+                foreach ($response->headers() as $name => $value) {
+                    $normalizedHeaders[strtolower($name)] = $value;
+                }
+
+                return [
+                    'status' => $response->statusCode(),
+                    'headers' => $normalizedHeaders,
+                    'body' => $response->content(),
+                ];
+            },
+            clock: static fn(): \DateTimeImmutable => $now,
+        );
+
+        $request = new DatabaseRemoteReplayChallengeRequest(
+            challengeId: 'challenge-failover',
+            challengeNonce: 'nonce-failover',
+            requestedAt: '2026-08-29T20:40:06+00:00',
+            currentNodeId: 'node-b',
+            sourceNodeId: 'node-a',
+            keyHash: hash('sha256', 'mutation-challenge-failover'),
+            requestId: 'req-failover',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            operationFingerprint: 'ofp-failover',
+            confirmationFingerprint: 'cfp-failover',
+            validationMode: 'require',
+        );
+
+        $firstResult = $challenger->challenge($request);
+        $secondResult = $challenger->challenge($request);
+
+        self::assertSame('verified', $firstResult->status);
+        self::assertSame('endpoint_map', $firstResult->details['endpoint_strategy'] ?? null);
+        self::assertCount(1, $firstResult->details['failover_attempts'] ?? []);
+        self::assertSame('http://node-a-health.internal/_volt/db/remote-replay/challenge', $firstResult->details['failover_attempts'][0]['endpoint'] ?? null);
+        self::assertSame('unavailable', $firstResult->details['failover_attempts'][0]['status'] ?? null);
+
+        self::assertSame('verified', $secondResult->status);
+        self::assertSame('endpoint_map', $secondResult->details['endpoint_strategy'] ?? null);
+        self::assertCount(1, $secondResult->details['failover_attempts'] ?? []);
+        self::assertSame('cooldown_active', $secondResult->details['failover_attempts'][0]['status'] ?? null);
+
+        self::assertSame([
+            'http://node-a-health.internal/_volt/db/remote-replay/challenge',
+            'http://node-a-map.internal/_volt/db/remote-replay/challenge',
+            'http://node-a-map.internal/_volt/db/remote-replay/challenge',
+        ], $attemptedEndpoints);
+    }
+
     public function test_http_challenger_reports_protocol_incompatibility(): void
     {
         $requesterApp = new Application($this->basePath . DIRECTORY_SEPARATOR . 'requester-protocol');

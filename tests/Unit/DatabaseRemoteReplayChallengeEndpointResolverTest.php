@@ -138,4 +138,33 @@ final class DatabaseRemoteReplayChallengeEndpointResolverTest extends TestCase
         self::assertSame('unknown_advertisement_age', $resolution->status);
         self::assertSame('unknown', $resolution->details['advertisement_freshness'] ?? null);
     }
+
+    public function test_it_falls_back_to_next_strategy_when_preferred_candidate_is_blocked(): void
+    {
+        $resolver = new DatabaseRemoteReplayChallengeEndpointResolver(
+            endpointMap: ['node-a' => 'https://node-a-map.internal/_volt/db/remote-replay/challenge'],
+            endpointTemplate: 'https://cluster.internal/{node_id}{path}',
+            defaultPath: '/_volt/db/remote-replay/challenge',
+            healthDiscoveryMode: 'require',
+            healthAdvertisementMaxAgeSeconds: 60,
+            strategyOrder: ['health_advertisement', 'endpoint_map', 'endpoint_template'],
+            advertisedEndpointProvider: static fn(): array => [
+                'node-a' => [
+                    'endpoint' => 'https://node-a-health.internal/_volt/db/remote-replay/challenge',
+                    'generated_at' => '2026-08-29T18:00:00+00:00',
+                ],
+            ],
+            clock: static fn(): \DateTimeImmutable => new \DateTimeImmutable('2026-08-29T18:05:00+00:00'),
+        );
+
+        $resolution = $resolver->resolve('node-a');
+        $candidates = $resolver->candidates('node-a');
+
+        self::assertSame('resolved', $resolution->status);
+        self::assertSame('endpoint_map', $resolution->strategy);
+        self::assertSame('https://node-a-map.internal/_volt/db/remote-replay/challenge', $resolution->endpoint);
+        self::assertCount(3, $candidates);
+        self::assertSame('stale_advertisement', $candidates[0]->status);
+        self::assertSame('endpoint_map', $candidates[1]->strategy);
+    }
 }

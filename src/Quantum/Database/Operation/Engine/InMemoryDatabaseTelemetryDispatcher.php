@@ -6,6 +6,8 @@ namespace Quantum\Database\Operation\Engine;
 
 use Quantum\Database\Operation\Contracts\DatabaseTelemetryDispatcherInterface;
 use Quantum\Database\Operation\DatabaseTelemetryReport;
+use Quantum\Telemetry\Engine\InMemoryTelemetryExporter;
+use Quantum\Telemetry\TelemetrySignal;
 
 final class InMemoryDatabaseTelemetryDispatcher implements DatabaseTelemetryDispatcherInterface
 {
@@ -13,15 +15,20 @@ final class InMemoryDatabaseTelemetryDispatcher implements DatabaseTelemetryDisp
      * @var list<DatabaseTelemetryReport>
      */
     private array $reports = [];
+    private readonly InMemoryTelemetryExporter $exporter;
+    private readonly DatabaseTelemetrySignalMapper $mapper;
 
     public function __construct(
         private readonly int $maxReports = 256,
     ) {
+        $this->exporter = new InMemoryTelemetryExporter($maxReports);
+        $this->mapper = new DatabaseTelemetrySignalMapper();
     }
 
     public function dispatch(DatabaseTelemetryReport $report): void
     {
         $this->reports[] = $report;
+        $this->exporter->export($this->mapper->map($report));
 
         if (count($this->reports) <= $this->maxReports) {
             return;
@@ -51,5 +58,14 @@ final class InMemoryDatabaseTelemetryDispatcher implements DatabaseTelemetryDisp
     public function clear(): void
     {
         $this->reports = [];
+        $this->exporter->clear();
+    }
+
+    /**
+     * @return list<TelemetrySignal>
+     */
+    public function signals(): array
+    {
+        return $this->exporter->signals();
     }
 }

@@ -78,6 +78,13 @@ use Quantum\Routing\Router;
 use Quantum\Routing\TreeArtifactStore;
 use Quantum\Routing\VersionArtifactStore;
 use Quantum\Security\CsrfTokenManager;
+use Quantum\Telemetry\Contracts\TelemetryExporterInterface;
+use Quantum\Telemetry\Contracts\TelemetryManagerInterface;
+use Quantum\Telemetry\Engine\HttpTelemetryExporter;
+use Quantum\Telemetry\Engine\InMemoryTelemetryExporter;
+use Quantum\Telemetry\Engine\JsonLineTelemetryExporter;
+use Quantum\Telemetry\Engine\NullTelemetryExporter;
+use Quantum\Telemetry\Engine\TelemetryManager;
 use Quantum\Controllers\Security\Context\ControllerSecurityContextFactory;
 use Quantum\Controllers\Security\Contracts\ControllerSecurityContextFactoryInterface;
 use Quantum\Controllers\Security\Contracts\ControllerSecurityDecisionEngineInterface;
@@ -478,6 +485,80 @@ class Application extends Container
             $this->singleton(
                 ControllerObservabilityManagerInterface::class,
                 fn(Application $app) => $app->make(ControllerObservabilityManager::class),
+            );
+        }
+
+        if (! isset($this->bindings[TelemetryExporterInterface::class])) {
+            $this->singleton(TelemetryExporterInterface::class, function (Application $app): TelemetryExporterInterface {
+                $mode = $app->config('telemetry.exporter', 'auto');
+
+                if ($mode === 'null') {
+                    return new NullTelemetryExporter();
+                }
+
+                if ($mode === 'in_memory') {
+                    return new InMemoryTelemetryExporter();
+                }
+
+                if ($mode === 'jsonl') {
+                    $path = $app->config('telemetry.jsonl_path');
+
+                    if (is_string($path) && trim($path) !== '') {
+                        return new JsonLineTelemetryExporter(trim($path));
+                    }
+
+                    return new JsonLineTelemetryExporter(
+                        $app->joinPath($app->storagePath('framework/logs'), 'telemetry.jsonl'),
+                    );
+                }
+
+                if ($mode === 'webhook') {
+                    $endpoint = trim((string) $app->config('telemetry.webhook_url', ''));
+                    if ($endpoint === '') {
+                        throw new RuntimeException('Telemetry webhook exporter requires [telemetry.webhook_url].');
+                    }
+
+                    $headers = $app->config('telemetry.webhook_headers', []);
+                    if (! is_array($headers)) {
+                        $headers = [];
+                    }
+
+                    $normalizedHeaders = [];
+                    foreach ($headers as $name => $value) {
+                        $headerName = trim((string) $name);
+                        $headerValue = trim((string) $value);
+                        if ($headerName === '' || $headerValue === '') {
+                            continue;
+                        }
+
+                        $normalizedHeaders[$headerName] = $headerValue;
+                    }
+
+                    return new HttpTelemetryExporter(
+                        endpoint: $endpoint,
+                        headers: $normalizedHeaders,
+                        requestTimeoutMs: max(250, (int) $app->config('telemetry.webhook_timeout_ms', 2000)),
+                    );
+                }
+
+                if ($app->isProduction()) {
+                    return new JsonLineTelemetryExporter(
+                        $app->joinPath($app->storagePath('framework/logs'), 'telemetry.jsonl'),
+                    );
+                }
+
+                return new InMemoryTelemetryExporter();
+            });
+        }
+
+        if (! isset($this->bindings[TelemetryManager::class])) {
+            $this->singleton(TelemetryManager::class);
+        }
+
+        if (! isset($this->bindings[TelemetryManagerInterface::class])) {
+            $this->singleton(
+                TelemetryManagerInterface::class,
+                fn(Application $app) => $app->make(TelemetryManager::class),
             );
         }
 

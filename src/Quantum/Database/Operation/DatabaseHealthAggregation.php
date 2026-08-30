@@ -30,6 +30,7 @@ final class DatabaseHealthAggregation
                 'unavailable' => 0,
                 'rejected' => 0,
                 'reused_receipts' => 0,
+                'cleanup_tombstones' => 0,
                 'compatible' => 0,
                 'incompatible' => 0,
                 'protocols' => [],
@@ -74,6 +75,7 @@ final class DatabaseHealthAggregation
             $summary['remote_replay_challenge']['unavailable'] += (int) ($reportRemoteReplayChallenge['unavailable'] ?? 0);
             $summary['remote_replay_challenge']['rejected'] += (int) ($reportRemoteReplayChallenge['rejected'] ?? 0);
             $summary['remote_replay_challenge']['reused_receipts'] += (int) ($reportRemoteReplayChallenge['reused_receipts'] ?? 0);
+            $summary['remote_replay_challenge']['cleanup_tombstones'] += (int) ($reportRemoteReplayChallenge['cleanup_tombstones'] ?? 0);
             $summary['remote_replay_challenge']['compatible'] += (int) ($reportRemoteReplayChallenge['compatible'] ?? 0);
             $summary['remote_replay_challenge']['incompatible'] += (int) ($reportRemoteReplayChallenge['incompatible'] ?? 0);
             self::mergeCountMap(

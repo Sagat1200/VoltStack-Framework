@@ -186,18 +186,23 @@ final class DatabaseOperationRuntime
                     $plan->policy->remoteReplayAttestationMaxAgeSeconds,
                     $evidenceVerification,
                 );
-                $remoteReplayValidation = $this->reuseRemoteReplayValidationReceipt(
+                $reuseAttempt = $this->reuseRemoteReplayValidationReceipt(
                     $existing,
                     $plan,
                     $currentNodeId,
                     $replayOrigin,
                     $evidenceVerification,
-                ) ?? $this->validateRemoteReplay(
-                    $existing,
-                    $plan,
-                    $currentNodeId,
-                    $replayOrigin,
-                    $evidenceVerification,
+                );
+                $existing = $reuseAttempt['record'];
+                $remoteReplayValidation = $reuseAttempt['validation'] ?? $this->withReceiptCleanupTombstone(
+                    $this->validateRemoteReplay(
+                        $existing,
+                        $plan,
+                        $currentNodeId,
+                        $replayOrigin,
+                        $evidenceVerification,
+                    ),
+                    $reuseAttempt['cleanup_tombstone'],
                 );
                 $legacyReplayWarning = $this->buildLegacyReplayWarning(
                     $existing,
@@ -1423,19 +1428,31 @@ final class DatabaseOperationRuntime
     /**
      * @param array<string, mixed> $confirmationEvidence
      */
+    /**
+     * @param array<string, mixed> $confirmationEvidence
+     * @return array{
+     *   record: DatabaseIdempotencyRecord,
+     *   validation:?DatabaseRemoteReplayValidationResult,
+     *   cleanup_tombstone:?array<string, mixed>
+     * }
+     */
     private function reuseRemoteReplayValidationReceipt(
         DatabaseIdempotencyRecord $record,
         DatabaseOperationPlan $plan,
         ?string $currentNodeId,
         string $replayOrigin,
         array $confirmationEvidence,
-    ): ?DatabaseRemoteReplayValidationResult {
+    ): array {
         if (
             $replayOrigin !== 'federated_remote_node'
             || ($confirmationEvidence['verification_status'] ?? null) !== 'verified_persisted_evidence'
             || $plan->policy->remoteReplayValidationReceiptMaxAgeSeconds <= 0
         ) {
-            return null;
+            return [
+                'record' => $record,
+                'validation' => null,
+                'cleanup_tombstone' => null,
+            ];
         }
 
         $prepared = $this->prepareRemoteReplayValidationReceiptReuseCandidates(
@@ -1445,6 +1462,7 @@ final class DatabaseOperationRuntime
         );
         $record = $prepared['record'];
         $propagatedReceipt = $prepared['propagated_receipt'];
+        $cleanupTombstone = $prepared['cleanup_tombstone'];
         $receipt = $record->confirmation['remote_validation_receipt'] ?? null;
         if (is_array($receipt) && $receipt !== []) {
             $reused = $this->buildReusedRemoteReplayValidationResult(
@@ -1457,15 +1475,23 @@ final class DatabaseOperationRuntime
                 persistReusedReceipt: false,
             );
             if ($reused instanceof DatabaseRemoteReplayValidationResult) {
-                return $reused;
+                return [
+                    'record' => $record,
+                    'validation' => $this->withReceiptCleanupTombstone($reused, $cleanupTombstone),
+                    'cleanup_tombstone' => $cleanupTombstone,
+                ];
             }
         }
 
         if ($propagatedReceipt === null) {
-            return null;
+            return [
+                'record' => $record,
+                'validation' => null,
+                'cleanup_tombstone' => $cleanupTombstone,
+            ];
         }
 
-        return $this->buildReusedRemoteReplayValidationResult(
+        $reused = $this->buildReusedRemoteReplayValidationResult(
             record: $record,
             plan: $plan,
             currentNodeId: $currentNodeId,
@@ -1476,13 +1502,22 @@ final class DatabaseOperationRuntime
             propagatedFromNodeId: $propagatedReceipt['report_node_id'],
             propagatedAt: $propagatedReceipt['generated_at'],
         );
+
+        return [
+            'record' => $record,
+            'validation' => $reused instanceof DatabaseRemoteReplayValidationResult
+                ? $this->withReceiptCleanupTombstone($reused, $cleanupTombstone)
+                : null,
+            'cleanup_tombstone' => $cleanupTombstone,
+        ];
     }
 
     /**
      * @param array<string, mixed> $confirmationEvidence
      * @return array{
      *   record: DatabaseIdempotencyRecord,
-     *   propagated_receipt: array{receipt:array<string, mixed>,report_node_id:?string,generated_at:?string}|null
+     *   propagated_receipt: array{receipt:array<string, mixed>,report_node_id:?string,generated_at:?string}|null,
+     *   cleanup_tombstone:?array<string, mixed>
      * }
      */
     private function prepareRemoteReplayValidationReceiptReuseCandidates(
@@ -1490,18 +1525,62 @@ final class DatabaseOperationRuntime
         DatabaseOperationPlan $plan,
         array $confirmationEvidence,
     ): array {
+        $cleanupTombstone = null;
+        $hadLocalReceipt = is_array($record->confirmation['remote_validation_receipt'] ?? null)
+            && ($record->confirmation['remote_validation_receipt'] ?? []) !== [];
         $record = $this->pruneExpiredReplicatedRemoteReplayValidationReceipt($record, $plan);
+        if ($hadLocalReceipt && !is_array($record->confirmation['remote_validation_receipt'] ?? null)) {
+            $cleanupTombstone = $this->buildRemoteReplayValidationReceiptCleanupAdvertisement($record);
+        }
         $propagatedReceipt = $this->findPropagatedRemoteReplayValidationReceipt(
             $plan,
             $record,
             $confirmationEvidence,
         );
+        $propagatedCleanupTombstone = $this->findPropagatedRemoteReplayValidationReceiptCleanupAdvertisement(
+            $plan,
+            $record,
+            $confirmationEvidence,
+        );
+        if (
+            $propagatedReceipt !== null
+            && $propagatedCleanupTombstone !== null
+            && $this->isCleanupTombstoneNewerThanPropagatedReceipt($propagatedReceipt, $propagatedCleanupTombstone)
+        ) {
+            $propagatedReceipt = null;
+        }
 
         $localReceipt = $record->confirmation['remote_validation_receipt'] ?? null;
+        if (
+            is_array($localReceipt)
+            && $localReceipt !== []
+            && $propagatedCleanupTombstone !== null
+            && $this->isCleanupTombstoneNewerThanLocalReplica($localReceipt, $propagatedCleanupTombstone)
+        ) {
+            $record = $this->pruneReplicatedRemoteReplayValidationReceipt(
+                $record,
+                [
+                    'version' => 1,
+                    'reason' => 'peer_cleanup_tombstone',
+                    'pruned_at' => $this->timestampNow(),
+                    'receipt_reuse_source' => $localReceipt['details']['receipt_reuse_source'] ?? null,
+                    'report_node_id' => $localReceipt['details']['receipt_propagation_report_node_id'] ?? null,
+                    'report_generated_at' => $localReceipt['details']['receipt_propagation_generated_at'] ?? null,
+                    'tombstone_report_node_id' => $propagatedCleanupTombstone['report_node_id'],
+                    'tombstone_report_generated_at' => $propagatedCleanupTombstone['generated_at'],
+                    'tombstone_reason' => $propagatedCleanupTombstone['cleanup']['reason'] ?? null,
+                    'tombstone_pruned_at' => $propagatedCleanupTombstone['cleanup']['pruned_at'] ?? null,
+                ],
+            );
+            $cleanupTombstone = $this->buildRemoteReplayValidationReceiptCleanupAdvertisement($record);
+            $localReceipt = null;
+        }
+
         if (!is_array($localReceipt) || $localReceipt === []) {
             return [
                 'record' => $record,
                 'propagated_receipt' => $propagatedReceipt,
+                'cleanup_tombstone' => $cleanupTombstone,
             ];
         }
 
@@ -1524,11 +1603,13 @@ final class DatabaseOperationRuntime
                     'replacement_validator' => $propagatedReceipt['receipt']['validator'] ?? null,
                 ],
             );
+            $cleanupTombstone = $this->buildRemoteReplayValidationReceiptCleanupAdvertisement($record);
         }
 
         return [
             'record' => $record,
             'propagated_receipt' => $propagatedReceipt,
+            'cleanup_tombstone' => $cleanupTombstone,
         ];
     }
 
@@ -1735,6 +1816,81 @@ final class DatabaseOperationRuntime
         return null;
     }
 
+    /**
+     * @param array<string, mixed> $confirmationEvidence
+     * @return array{cleanup:array<string, mixed>,report_node_id:?string,generated_at:?string}|null
+     */
+    private function findPropagatedRemoteReplayValidationReceiptCleanupAdvertisement(
+        DatabaseOperationPlan $plan,
+        DatabaseIdempotencyRecord $record,
+        array $confirmationEvidence,
+    ): ?array {
+        $healthStore = $this->resolveHealthStore();
+        if (!$healthStore instanceof DatabaseHealthStoreInterface) {
+            return null;
+        }
+
+        $sourceNodeId = trim((string) ($record->nodeId ?? ''));
+        if ($sourceNodeId === '') {
+            return null;
+        }
+
+        $confirmationFingerprint = trim((string) ($confirmationEvidence['confirmation_fingerprint'] ?? ''));
+        $reports = array_reverse($healthStore->recent($plan->policy->remoteReplayValidationReceiptPropagationHealthLimit));
+
+        foreach ($reports as $report) {
+            if (!$report instanceof DatabaseTelemetryReport) {
+                continue;
+            }
+
+            $reportNodeId = trim((string) ($report->nodeId ?? ''));
+            if (!$this->isTrustedPropagationReportNode($plan, $reportNodeId)) {
+                continue;
+            }
+
+            if (!$this->isFreshPropagationReport($plan, $report->generatedAt)) {
+                continue;
+            }
+
+            $summary = is_array($report->summary ?? null) ? $report->summary : [];
+            $latest = array_reverse(is_array($summary['latest'] ?? null) ? $summary['latest'] : []);
+            foreach ($latest as $entry) {
+                if (!is_array($entry)) {
+                    continue;
+                }
+
+                $cleanup = is_array($entry['challenge_receipt_tombstone_advertisement'] ?? null)
+                    ? $entry['challenge_receipt_tombstone_advertisement']
+                    : null;
+                if (!is_array($cleanup) || $cleanup === []) {
+                    continue;
+                }
+
+                $cleanupSourceNodeId = trim((string) (($cleanup['source_node_id'] ?? null) ?: ''));
+                if ($cleanupSourceNodeId !== $sourceNodeId) {
+                    continue;
+                }
+
+                $cleanupConfirmationFingerprint = trim((string) (($cleanup['confirmation_fingerprint'] ?? null) ?: ''));
+                if (
+                    $confirmationFingerprint !== ''
+                    && $cleanupConfirmationFingerprint !== ''
+                    && $cleanupConfirmationFingerprint !== $confirmationFingerprint
+                ) {
+                    continue;
+                }
+
+                return [
+                    'cleanup' => $cleanup,
+                    'report_node_id' => $reportNodeId !== '' ? $reportNodeId : null,
+                    'generated_at' => $report->generatedAt,
+                ];
+            }
+        }
+
+        return null;
+    }
+
     private function pruneExpiredReplicatedRemoteReplayValidationReceipt(
         DatabaseIdempotencyRecord $record,
         DatabaseOperationPlan $plan,
@@ -1773,6 +1929,7 @@ final class DatabaseOperationRuntime
         DatabaseIdempotencyRecord $record,
         array $cleanup,
     ): DatabaseIdempotencyRecord {
+        $cleanup = $this->enrichRemoteReplayValidationReceiptCleanup($record, $cleanup);
         $confirmation = $record->confirmation;
         unset($confirmation['remote_validation_receipt']);
         $confirmation['remote_validation_receipt_cleanup'] = $cleanup;
@@ -1781,6 +1938,86 @@ final class DatabaseOperationRuntime
         $this->resolveIdempotencyStore()?->complete($updated, $confirmation);
 
         return $updated;
+    }
+
+    /**
+     * @param array<string, scalar|null> $cleanup
+     * @return array<string, scalar|null>
+     */
+    private function enrichRemoteReplayValidationReceiptCleanup(
+        DatabaseIdempotencyRecord $record,
+        array $cleanup,
+    ): array {
+        $receipt = is_array($record->confirmation['remote_validation_receipt'] ?? null)
+            ? $record->confirmation['remote_validation_receipt']
+            : [];
+        $details = is_array($receipt['details'] ?? null) ? $receipt['details'] : [];
+
+        return $cleanup + [
+            'source_node_id' => isset($receipt['source_node_id']) ? (string) $receipt['source_node_id'] : (is_string($record->nodeId) ? $record->nodeId : null),
+            'confirmation_fingerprint' => isset($receipt['confirmation_fingerprint'])
+                ? (string) $receipt['confirmation_fingerprint']
+                : (isset($details['confirmation_fingerprint']) ? (string) $details['confirmation_fingerprint'] : null),
+            'validated_at' => isset($receipt['validated_at']) ? (string) $receipt['validated_at'] : null,
+            'validated_by_node_id' => isset($receipt['validated_by_node_id']) ? (string) $receipt['validated_by_node_id'] : null,
+            'validator' => isset($receipt['validator']) ? (string) $receipt['validator'] : null,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $localReceipt
+     * @param array{cleanup:array<string, mixed>,report_node_id:?string,generated_at:?string} $cleanupTombstone
+     */
+    private function isCleanupTombstoneNewerThanLocalReplica(
+        array $localReceipt,
+        array $cleanupTombstone,
+    ): bool {
+        $localDetails = is_array($localReceipt['details'] ?? null) ? $localReceipt['details'] : [];
+        $localMarker = trim((string) (
+            ($localDetails['receipt_propagation_generated_at'] ?? null)
+            ?: (($localDetails['receipt_replicated_at'] ?? null) ?: ($localReceipt['validated_at'] ?? null))
+        ));
+        $cleanupMarker = trim((string) (
+            ($cleanupTombstone['cleanup']['pruned_at'] ?? null)
+            ?: (($cleanupTombstone['generated_at'] ?? null) ?: '')
+        ));
+
+        return $this->isTimestampNewer($cleanupMarker, $localMarker);
+    }
+
+    /**
+     * @param array{receipt:array<string, mixed>,report_node_id:?string,generated_at:?string} $propagatedReceipt
+     * @param array{cleanup:array<string, mixed>,report_node_id:?string,generated_at:?string} $cleanupTombstone
+     */
+    private function isCleanupTombstoneNewerThanPropagatedReceipt(
+        array $propagatedReceipt,
+        array $cleanupTombstone,
+    ): bool {
+        $receiptMarker = trim((string) (
+            ($propagatedReceipt['generated_at'] ?? null)
+            ?: (($propagatedReceipt['receipt']['validated_at'] ?? null) ?: '')
+        ));
+        $cleanupMarker = trim((string) (
+            ($cleanupTombstone['cleanup']['pruned_at'] ?? null)
+            ?: (($cleanupTombstone['generated_at'] ?? null) ?: '')
+        ));
+
+        return $this->isTimestampNewer($cleanupMarker, $receiptMarker);
+    }
+
+    private function isTimestampNewer(?string $candidate, ?string $reference): bool
+    {
+        $normalizedCandidate = trim((string) ($candidate ?? ''));
+        $normalizedReference = trim((string) ($reference ?? ''));
+        if ($normalizedCandidate === '' || $normalizedReference === '') {
+            return false;
+        }
+
+        try {
+            return (new \DateTimeImmutable($normalizedCandidate)) > (new \DateTimeImmutable($normalizedReference));
+        } catch (\Throwable) {
+            return false;
+        }
     }
 
     /**
@@ -2511,15 +2748,20 @@ final class DatabaseOperationRuntime
         DatabaseIdempotencyRecord $record,
     ): array {
         $receipt = $record->confirmation['remote_validation_receipt'] ?? null;
-        if (!is_array($receipt) || $receipt === []) {
-            return [];
+        $telemetry = [];
+        if (is_array($receipt) && $receipt !== []) {
+            $advertisement = $this->buildRemoteReplayValidationReceiptAdvertisement($receipt);
+            if ($advertisement !== null) {
+                $telemetry['receipt_advertisement'] = $advertisement;
+            }
         }
 
-        $advertisement = $this->buildRemoteReplayValidationReceiptAdvertisement($receipt);
+        $cleanupAdvertisement = $this->buildRemoteReplayValidationReceiptCleanupAdvertisement($record);
+        if ($cleanupAdvertisement !== null) {
+            $telemetry['receipt_tombstone_advertisement'] = $cleanupAdvertisement;
+        }
 
-        return $advertisement !== null
-            ? ['receipt_advertisement' => $advertisement]
-            : [];
+        return $telemetry;
     }
 
     private function isTrustedPropagationReportNode(DatabaseOperationPlan $plan, string $reportNodeId): bool
@@ -2600,6 +2842,69 @@ final class DatabaseOperationRuntime
         }
 
         return $advertisement;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function buildRemoteReplayValidationReceiptCleanupAdvertisement(
+        DatabaseIdempotencyRecord $record,
+    ): ?array {
+        $cleanup = is_array($record->confirmation['remote_validation_receipt_cleanup'] ?? null)
+            ? $record->confirmation['remote_validation_receipt_cleanup']
+            : [];
+        if ($cleanup === []) {
+            return null;
+        }
+
+        $reason = trim((string) ($cleanup['reason'] ?? ''));
+        $sourceNodeId = trim((string) ($cleanup['source_node_id'] ?? ''));
+        $confirmationFingerprint = trim((string) ($cleanup['confirmation_fingerprint'] ?? ''));
+        if ($reason === '' || $sourceNodeId === '' || $confirmationFingerprint === '') {
+            return null;
+        }
+
+        return [
+            'version' => $cleanup['version'] ?? 1,
+            'reason' => $reason,
+            'pruned_at' => $cleanup['pruned_at'] ?? null,
+            'source_node_id' => $sourceNodeId,
+            'confirmation_fingerprint' => $confirmationFingerprint,
+            'validated_at' => $cleanup['validated_at'] ?? null,
+            'validated_by_node_id' => $cleanup['validated_by_node_id'] ?? null,
+            'validator' => $cleanup['validator'] ?? null,
+            'report_node_id' => $cleanup['report_node_id'] ?? null,
+            'report_generated_at' => $cleanup['report_generated_at'] ?? null,
+            'replacement_report_node_id' => $cleanup['replacement_report_node_id'] ?? null,
+            'replacement_report_generated_at' => $cleanup['replacement_report_generated_at'] ?? null,
+            'replacement_validated_at' => $cleanup['replacement_validated_at'] ?? null,
+            'tombstone_report_node_id' => $cleanup['tombstone_report_node_id'] ?? null,
+            'tombstone_report_generated_at' => $cleanup['tombstone_report_generated_at'] ?? null,
+            'tombstone_reason' => $cleanup['tombstone_reason'] ?? null,
+            'tombstone_pruned_at' => $cleanup['tombstone_pruned_at'] ?? null,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed>|null $cleanupTombstone
+     */
+    private function withReceiptCleanupTombstone(
+        DatabaseRemoteReplayValidationResult $validation,
+        ?array $cleanupTombstone,
+    ): DatabaseRemoteReplayValidationResult {
+        if ($cleanupTombstone === null) {
+            return $validation;
+        }
+
+        $details = is_array($validation->details) ? $validation->details : [];
+        $details['receipt_tombstone_advertisement'] = $cleanupTombstone;
+
+        return new DatabaseRemoteReplayValidationResult(
+            $validation->status,
+            $validation->validator,
+            $validation->message,
+            $details,
+        );
     }
 
     /**
@@ -2737,6 +3042,10 @@ final class DatabaseOperationRuntime
             if (is_scalar($value) || $value === null) {
                 $telemetry[$key] = $value;
             }
+        }
+
+        if (is_array($details['receipt_tombstone_advertisement'] ?? null)) {
+            $telemetry['receipt_tombstone_advertisement'] = $details['receipt_tombstone_advertisement'];
         }
 
         return $telemetry;

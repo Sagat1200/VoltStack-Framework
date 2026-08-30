@@ -81,6 +81,7 @@ final class DatabaseTelemetryStore
             'unavailable' => 0,
             'rejected' => 0,
             'reused_receipts' => 0,
+            'cleanup_tombstones' => 0,
             'compatible' => 0,
             'incompatible' => 0,
             'protocols' => [],
@@ -169,6 +170,9 @@ final class DatabaseTelemetryStore
             'challenge_receipt_advertisement' => is_array($challenge['challenge_receipt_advertisement'] ?? null)
                 ? $challenge['challenge_receipt_advertisement']
                 : null,
+            'challenge_receipt_tombstone_advertisement' => is_array($challenge['challenge_receipt_tombstone_advertisement'] ?? null)
+                ? $challenge['challenge_receipt_tombstone_advertisement']
+                : null,
         ];
     }
 
@@ -201,6 +205,9 @@ final class DatabaseTelemetryStore
 
         if (self::normalizeString($telemetry['challenge_receipt_reuse'] ?? null) === 'reused_fresh_receipt') {
             $summary['reused_receipts']++;
+        }
+        if (is_array($telemetry['challenge_receipt_tombstone_advertisement'] ?? null)) {
+            $summary['cleanup_tombstones']++;
         }
 
         self::incrementCountMap($summary['protocols'], self::normalizeString($telemetry['challenge_protocol'] ?? null));
@@ -245,6 +252,7 @@ final class DatabaseTelemetryStore
                     'receipt_attestation_verification',
                     'receipt_attestation_key_id',
                     'receipt_advertisement',
+                    'receipt_tombstone_advertisement',
                 ] as $key
             ) {
                 if (array_key_exists($key, $details)) {
@@ -287,6 +295,9 @@ final class DatabaseTelemetryStore
             $telemetry['challenge_receipt_advertisement'] = is_array($details['receipt_advertisement'] ?? null)
                 ? $details['receipt_advertisement']
                 : ($telemetry['challenge_receipt_advertisement'] ?? null);
+            $telemetry['challenge_receipt_tombstone_advertisement'] = is_array($details['receipt_tombstone_advertisement'] ?? null)
+                ? $details['receipt_tombstone_advertisement']
+                : ($telemetry['challenge_receipt_tombstone_advertisement'] ?? null);
         }
 
         return $telemetry === [] ? null : $telemetry;

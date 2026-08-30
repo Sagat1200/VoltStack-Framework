@@ -289,7 +289,7 @@ final class DatabaseHealthCommandTest extends TestCase
         $result = $this->runConsole(['volt', 'db:health']);
         self::assertSame(0, $result['exit']);
         self::assertStringContainsString(
-            'Remote replay challenge: observed=1 verified=1 unavailable=0 rejected=0 compatible=1 incompatible=0 reused_receipts=1 protocols=remote_replay_node_challenge_v1:1 request_key_ids=key-2026-08:1 response_key_ids=key-2026-09:1',
+            'Remote replay challenge: observed=1 verified=1 unavailable=0 rejected=0 compatible=1 incompatible=0 reused_receipts=1 cleanup_tombstones=0 protocols=remote_replay_node_challenge_v1:1 request_key_ids=key-2026-08:1 response_key_ids=key-2026-09:1',
             $result['stdout']
         );
         self::assertStringContainsString(
@@ -300,7 +300,7 @@ final class DatabaseHealthCommandTest extends TestCase
         $aggregate = $this->runConsole(['volt', 'db:health', '--aggregate', '--limit=10']);
         self::assertSame(0, $aggregate['exit']);
         self::assertStringContainsString(
-            'Remote replay challenge: observed=1 verified=1 unavailable=0 rejected=0 compatible=1 incompatible=0 reused_receipts=1 protocols=remote_replay_node_challenge_v1:1 request_key_ids=key-2026-08:1 response_key_ids=key-2026-09:1',
+            'Remote replay challenge: observed=1 verified=1 unavailable=0 rejected=0 compatible=1 incompatible=0 reused_receipts=1 cleanup_tombstones=0 protocols=remote_replay_node_challenge_v1:1 request_key_ids=key-2026-08:1 response_key_ids=key-2026-09:1',
             $aggregate['stdout']
         );
 
@@ -316,6 +316,143 @@ final class DatabaseHealthCommandTest extends TestCase
         self::assertStringContainsString('"challenge_receipt_advertisement"', $json['stdout']);
         self::assertStringContainsString('"source_node_id": "node-remote"', $json['stdout']);
         self::assertStringContainsString('"validated_by_node_id": "node-validator-c"', $json['stdout']);
+    }
+
+    public function test_cli_health_reports_remote_replay_cleanup_tombstone_telemetry(): void
+    {
+        $app = $this->loadApp();
+        $config = $app->make(ConfigRepository::class);
+        $config->set('database.idempotency.remote_replay_validation_mode', 'allow');
+        $config->set('database.idempotency.remote_replay_validation_receipt_max_age_seconds', 600);
+        $config->set('database.idempotency.remote_replay_validation_receipt_replicated_max_age_seconds', 30);
+        $router = $app->make(Router::class);
+        $router->get('/health-remote-replay-cleanup', function () use ($app): string {
+            /** @var DatabaseContext $context */
+            $context = $app->make(DatabaseContext::class);
+            /** @var DatabaseOperationRuntime $runtime */
+            $runtime = $app->make(DatabaseOperationRuntime::class);
+            /** @var DatabaseIdempotencyStoreInterface $store */
+            $store = $app->make(DatabaseIdempotencyStoreInterface::class);
+            $policy = DatabaseExecutionPolicy::fromConfig((array) $app->config('database', []));
+            $plan = $runtime->plan(
+                new RawOperation(
+                    OperationKind::RawExecute,
+                    'UPDATE users SET active = 1 WHERE id = 1',
+                    [],
+                    'primary',
+                    'mutation-health-remote-replay-cleanup',
+                ),
+                $context,
+                $policy,
+            );
+
+            $record = new DatabaseIdempotencyRecord(
+                keyHash: hash('sha256', 'mutation-health-remote-replay-cleanup'),
+                operationFingerprint: $plan->fingerprint,
+                requestId: 'req-health-remote-replay-cleanup',
+                connectionName: 'primary',
+                logicalTarget: 'users',
+                createdAt: '2026-08-27T11:00:00+00:00',
+                nodeId: 'node-remote',
+                status: 'pending',
+                expiresAt: '2099-08-27T11:05:00+00:00',
+            );
+            $store->acquire($record);
+
+            $confirmationFingerprint = $this->computeConfirmationFingerprint(
+                $record,
+                'node-remote',
+                [
+                    'kind' => 'raw_execute',
+                    'affected_rows' => 1,
+                    'rows_read' => 0,
+                    'outcome' => 'completed',
+                    'confirmed_at' => '2026-08-27T11:00:05+00:00',
+                    'replay_reproducibility' => 'persisted_summary',
+                    'result_summary' => [
+                        'kind' => 'raw_execute',
+                        'is_select' => false,
+                        'affected_rows' => 1,
+                        'rows_read' => 0,
+                        'column_count' => 0,
+                        'result_type' => 'success_no_rows',
+                    ],
+                ],
+            );
+            $store->complete($record, [
+                'kind' => 'raw_execute',
+                'affected_rows' => 1,
+                'rows_read' => 0,
+                'outcome' => 'completed',
+                'confirmed_at' => '2026-08-27T11:00:05+00:00',
+                'summary_version' => 1,
+                'replay_reproducibility' => 'persisted_summary',
+                'source_node_id' => 'node-remote',
+                'evidence_version' => 1,
+                'evidence_mode' => 'persisted_evidence',
+                'confirmation_fingerprint' => $confirmationFingerprint,
+                'attestation_version' => 1,
+                'attestation_mode' => 'source_node_self_attested',
+                'attested_by_node_id' => 'node-remote',
+                'attested_at' => '2026-08-27T11:00:05+00:00',
+                'attestation_fingerprint' => $this->computeAttestationFingerprint(
+                    $record,
+                    'node-remote',
+                    $confirmationFingerprint,
+                    'source_node_self_attested',
+                    'node-remote',
+                    '2026-08-27T11:00:05+00:00',
+                ),
+                'result_summary' => [
+                    'kind' => 'raw_execute',
+                    'is_select' => false,
+                    'affected_rows' => 1,
+                    'rows_read' => 0,
+                    'column_count' => 0,
+                    'result_type' => 'success_no_rows',
+                ],
+                'remote_validation_receipt' => [
+                    'version' => 1,
+                    'status' => 'verified_remote_validation',
+                    'validator' => 'remote-validator-original',
+                    'message' => 'Old replicated copy that should be pruned.',
+                    'validation_mode' => 'allow',
+                    'validated_at' => '2026-08-27T11:00:06+00:00',
+                    'validated_by_node_id' => 'node-validator-c',
+                    'source_node_id' => 'node-remote',
+                    'confirmation_fingerprint' => $confirmationFingerprint,
+                    'details' => [
+                        'challenge_protocol' => 'remote_replay_node_challenge_v1',
+                        'confirmation_fingerprint' => $confirmationFingerprint,
+                        'receipt_reuse_source' => 'health_snapshot',
+                        'receipt_propagation_source' => 'health_snapshot',
+                        'receipt_propagation_report_node_id' => 'node-validator-c',
+                        'receipt_propagation_generated_at' => '2026-08-27T11:00:07+00:00',
+                        'receipt_replicated_at' => '2026-08-27T11:00:08+00:00',
+                        'receipt_replicated_by_node_id' => 'VoltStack Health Command Feature Test',
+                    ],
+                ],
+            ]);
+
+            $runtime->execute($plan, $context);
+
+            return 'ok';
+        });
+
+        $response = $app->make(HttpKernel::class)->handle(Request::create('/health-remote-replay-cleanup'));
+        self::assertSame('ok', $response->content());
+
+        $result = $this->runConsole(['volt', 'db:health']);
+        self::assertSame(0, $result['exit']);
+        self::assertStringContainsString('cleanup_tombstones=1', $result['stdout']);
+        self::assertStringContainsString('receipt_tombstone=expired_local_replica tombstone_source=node-remote', $result['stdout']);
+
+        $json = $this->runConsole(['volt', 'db:health', '--json']);
+        self::assertSame(0, $json['exit']);
+        self::assertStringContainsString('"cleanup_tombstones": 1', $json['stdout']);
+        self::assertStringContainsString('"challenge_receipt_tombstone_advertisement"', $json['stdout']);
+        self::assertStringContainsString('"reason": "expired_local_replica"', $json['stdout']);
+        self::assertStringContainsString('"source_node_id": "node-remote"', $json['stdout']);
     }
 
     /**

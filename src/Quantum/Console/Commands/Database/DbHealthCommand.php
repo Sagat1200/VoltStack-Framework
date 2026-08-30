@@ -93,7 +93,7 @@ final class DbHealthCommand extends Command
                     (int) ($health['open_segments'] ?? 0),
                 ));
                 $output->writeln(sprintf(
-                    'Remote replay challenge: observed=%d verified=%d unavailable=%d rejected=%d compatible=%d incompatible=%d reused_receipts=%d protocols=%s request_key_ids=%s response_key_ids=%s',
+                    'Remote replay challenge: observed=%d verified=%d unavailable=%d rejected=%d compatible=%d incompatible=%d reused_receipts=%d cleanup_tombstones=%d protocols=%s request_key_ids=%s response_key_ids=%s',
                     (int) ($remoteReplayChallenge['observed_operations'] ?? 0),
                     (int) ($remoteReplayChallenge['verified'] ?? 0),
                     (int) ($remoteReplayChallenge['unavailable'] ?? 0),
@@ -101,6 +101,7 @@ final class DbHealthCommand extends Command
                     (int) ($remoteReplayChallenge['compatible'] ?? 0),
                     (int) ($remoteReplayChallenge['incompatible'] ?? 0),
                     (int) ($remoteReplayChallenge['reused_receipts'] ?? 0),
+                    (int) ($remoteReplayChallenge['cleanup_tombstones'] ?? 0),
                     $this->formatCountMap(is_array($remoteReplayChallenge['protocols'] ?? null) ? $remoteReplayChallenge['protocols'] : []),
                     $this->formatCountMap(is_array($remoteReplayChallenge['request_key_ids'] ?? null) ? $remoteReplayChallenge['request_key_ids'] : []),
                     $this->formatCountMap(is_array($remoteReplayChallenge['response_key_ids'] ?? null) ? $remoteReplayChallenge['response_key_ids'] : []),
@@ -154,7 +155,7 @@ final class DbHealthCommand extends Command
                 (int) ($health['open_segments'] ?? 0),
             ));
             $output->writeln(sprintf(
-                'Remote replay challenge: observed=%d verified=%d unavailable=%d rejected=%d compatible=%d incompatible=%d reused_receipts=%d protocols=%s request_key_ids=%s response_key_ids=%s',
+                'Remote replay challenge: observed=%d verified=%d unavailable=%d rejected=%d compatible=%d incompatible=%d reused_receipts=%d cleanup_tombstones=%d protocols=%s request_key_ids=%s response_key_ids=%s',
                 (int) ($remoteReplayChallenge['observed_operations'] ?? 0),
                 (int) ($remoteReplayChallenge['verified'] ?? 0),
                 (int) ($remoteReplayChallenge['unavailable'] ?? 0),
@@ -162,6 +163,7 @@ final class DbHealthCommand extends Command
                 (int) ($remoteReplayChallenge['compatible'] ?? 0),
                 (int) ($remoteReplayChallenge['incompatible'] ?? 0),
                 (int) ($remoteReplayChallenge['reused_receipts'] ?? 0),
+                (int) ($remoteReplayChallenge['cleanup_tombstones'] ?? 0),
                 $this->formatCountMap(is_array($remoteReplayChallenge['protocols'] ?? null) ? $remoteReplayChallenge['protocols'] : []),
                 $this->formatCountMap(is_array($remoteReplayChallenge['request_key_ids'] ?? null) ? $remoteReplayChallenge['request_key_ids'] : []),
                 $this->formatCountMap(is_array($remoteReplayChallenge['response_key_ids'] ?? null) ? $remoteReplayChallenge['response_key_ids'] : []),
@@ -236,6 +238,9 @@ final class DbHealthCommand extends Command
         $receiptValidatedByNodeId = isset($entry['challenge_receipt_validated_by_node_id']) ? trim((string) $entry['challenge_receipt_validated_by_node_id']) : '';
         $receiptAttestationVerification = isset($entry['challenge_receipt_attestation_verification']) ? trim((string) $entry['challenge_receipt_attestation_verification']) : '';
         $receiptAttestationKeyId = isset($entry['challenge_receipt_attestation_key_id']) ? trim((string) $entry['challenge_receipt_attestation_key_id']) : '';
+        $receiptTombstone = is_array($entry['challenge_receipt_tombstone_advertisement'] ?? null)
+            ? $entry['challenge_receipt_tombstone_advertisement']
+            : null;
 
         if (
             $status === ''
@@ -244,6 +249,7 @@ final class DbHealthCommand extends Command
             && $requestKeyId === ''
             && $responseKeyId === ''
             && $receiptReuse === ''
+            && $receiptTombstone === null
         ) {
             return '';
         }
@@ -271,6 +277,15 @@ final class DbHealthCommand extends Command
                 ' receipt_attestation=%s attestation_key=%s',
                 $receiptAttestationVerification !== '' ? $receiptAttestationVerification : 'n/a',
                 $receiptAttestationKeyId !== '' ? $receiptAttestationKeyId : 'n/a',
+            );
+        }
+
+        if ($receiptTombstone !== null) {
+            $formatted .= sprintf(
+                ' receipt_tombstone=%s tombstone_source=%s tombstone_at=%s',
+                trim((string) ($receiptTombstone['reason'] ?? '')) !== '' ? (string) $receiptTombstone['reason'] : 'n/a',
+                trim((string) ($receiptTombstone['source_node_id'] ?? '')) !== '' ? (string) $receiptTombstone['source_node_id'] : 'n/a',
+                trim((string) ($receiptTombstone['pruned_at'] ?? '')) !== '' ? (string) $receiptTombstone['pruned_at'] : 'n/a',
             );
         }
 

@@ -1438,6 +1438,7 @@ final class DatabaseOperationRuntime
             return null;
         }
 
+        $record = $this->pruneExpiredReplicatedRemoteReplayValidationReceipt($record, $plan);
         $receipt = $record->confirmation['remote_validation_receipt'] ?? null;
         if (is_array($receipt) && $receipt !== []) {
             $reused = $this->buildReusedRemoteReplayValidationResult(
@@ -1498,6 +1499,7 @@ final class DatabaseOperationRuntime
         $sourceNodeId = trim((string) (($receipt['source_node_id'] ?? null) ?: ($record->nodeId ?? '')));
         $confirmationFingerprint = trim((string) ($confirmationEvidence['confirmation_fingerprint'] ?? ''));
         $receiptConfirmationFingerprint = trim((string) (($receipt['confirmation_fingerprint'] ?? null) ?: (($receipt['details']['confirmation_fingerprint'] ?? null) ?: '')));
+        $receiptDetails = is_array($receipt['details'] ?? null) ? $receipt['details'] : [];
 
         if (
             $status !== 'verified_remote_validation'
@@ -1547,13 +1549,16 @@ final class DatabaseOperationRuntime
             return null;
         }
 
+        $replicatedLifecycle = $this->resolveReplicatedReceiptLifecycle($receipt, $plan);
+
         return DatabaseRemoteReplayValidationResult::verified(
             validator: 'cached_remote_validation_receipt',
             message: $reuseTrust === 'current_node'
                 ? 'Reused a fresh remote validation receipt previously issued by the current node.'
                 : 'Reused a fresh remote validation receipt previously issued by a trusted cluster node.',
             details: array_merge(
-                is_array($receipt['details'] ?? null) ? $receipt['details'] : [],
+                $receiptDetails,
+                $replicatedLifecycle,
                 [
                     'receipt_reuse' => 'reused_fresh_receipt',
                     'receipt_reuse_scope' => $reuseScope,
@@ -1570,13 +1575,25 @@ final class DatabaseOperationRuntime
                     'receipt_confirmation_fingerprint' => $receiptConfirmationFingerprint !== '' ? $receiptConfirmationFingerprint : null,
                     'receipt_original_validator' => isset($receipt['validator']) ? (string) $receipt['validator'] : null,
                     'receipt_reuse_source' => $receiptSource,
-                    'receipt_propagation_source' => $receiptSource === 'health_snapshot' ? 'health_snapshot' : null,
-                    'receipt_propagation_report_node_id' => $propagatedFromNodeId,
-                    'receipt_propagation_generated_at' => $propagatedAt,
-                    'receipt_propagation_age_seconds' => $receiptSource === 'health_snapshot' ? $this->resolvePropagationAgeSeconds($propagatedAt) : null,
+                    'receipt_propagation_source' => $receiptSource === 'health_snapshot'
+                        ? 'health_snapshot'
+                        : ($receiptDetails['receipt_propagation_source'] ?? null),
+                    'receipt_propagation_report_node_id' => $receiptSource === 'health_snapshot'
+                        ? $propagatedFromNodeId
+                        : ($receiptDetails['receipt_propagation_report_node_id'] ?? null),
+                    'receipt_propagation_generated_at' => $receiptSource === 'health_snapshot'
+                        ? $propagatedAt
+                        : ($receiptDetails['receipt_propagation_generated_at'] ?? null),
+                    'receipt_propagation_age_seconds' => $receiptSource === 'health_snapshot'
+                        ? $this->resolvePropagationAgeSeconds($propagatedAt)
+                        : $this->resolvePropagationAgeSeconds(
+                            isset($receiptDetails['receipt_propagation_generated_at'])
+                                ? (string) $receiptDetails['receipt_propagation_generated_at']
+                                : null,
+                        ),
                     'receipt_propagation_report_trust' => $receiptSource === 'health_snapshot'
                         ? $this->resolvePropagationReportTrust($plan, $propagatedFromNodeId)
-                        : null,
+                        : ($receiptDetails['receipt_propagation_report_trust'] ?? null),
                     'persist_reused_receipt' => $persistReusedReceipt,
                     'receipt_payload' => $persistReusedReceipt ? $receipt : null,
                     'remote_replay_validation_receipt_max_age_seconds' => $plan->policy->remoteReplayValidationReceiptMaxAgeSeconds,
@@ -1663,6 +1680,95 @@ final class DatabaseOperationRuntime
         return null;
     }
 
+    private function pruneExpiredReplicatedRemoteReplayValidationReceipt(
+        DatabaseIdempotencyRecord $record,
+        DatabaseOperationPlan $plan,
+    ): DatabaseIdempotencyRecord {
+        $receipt = $record->confirmation['remote_validation_receipt'] ?? null;
+        if (!is_array($receipt) || $receipt === []) {
+            return $record;
+        }
+
+        $replicatedLifecycle = $this->resolveReplicatedReceiptLifecycle($receipt, $plan);
+        if (($replicatedLifecycle['receipt_replica_freshness_status'] ?? null) !== 'expired_local_replica') {
+            return $record;
+        }
+
+        $confirmation = $record->confirmation;
+        unset($confirmation['remote_validation_receipt']);
+        $confirmation['remote_validation_receipt_cleanup'] = [
+            'version' => 1,
+            'reason' => 'expired_local_replica',
+            'pruned_at' => $this->timestampNow(),
+            'replicated_at' => $replicatedLifecycle['receipt_replicated_at'] ?? null,
+            'replica_age_seconds' => $replicatedLifecycle['receipt_replica_age_seconds'] ?? null,
+            'replica_max_age_seconds' => $replicatedLifecycle['receipt_replica_max_age_seconds'] ?? null,
+            'replica_expires_at' => $replicatedLifecycle['receipt_replica_expires_at'] ?? null,
+            'receipt_reuse_source' => $replicatedLifecycle['receipt_reuse_source'] ?? null,
+            'report_node_id' => $replicatedLifecycle['receipt_propagation_report_node_id'] ?? null,
+            'report_generated_at' => $replicatedLifecycle['receipt_propagation_generated_at'] ?? null,
+        ];
+
+        $updated = $record->withStatus('completed', $confirmation);
+        $this->resolveIdempotencyStore()?->complete($updated, $confirmation);
+
+        return $updated;
+    }
+
+    /**
+     * @param array<string, mixed> $receipt
+     * @return array<string, scalar|null>
+     */
+    private function resolveReplicatedReceiptLifecycle(array $receipt, DatabaseOperationPlan $plan): array
+    {
+        $details = is_array($receipt['details'] ?? null) ? $receipt['details'] : [];
+        $reuseSource = trim((string) ($details['receipt_reuse_source'] ?? ''));
+        $propagationSource = trim((string) ($details['receipt_propagation_source'] ?? ''));
+        if ($reuseSource !== 'health_snapshot' && $propagationSource !== 'health_snapshot') {
+            return [];
+        }
+
+        $replicatedAt = trim((string) ($details['receipt_replicated_at'] ?? ''));
+        $replicatedByNodeId = trim((string) ($details['receipt_replicated_by_node_id'] ?? ''));
+        $replicaAgeSeconds = $this->resolvePropagationAgeSeconds($replicatedAt !== '' ? $replicatedAt : null);
+        $replicaMaxAgeSeconds = $plan->policy->remoteReplayValidationReceiptReplicatedMaxAgeSeconds;
+
+        $expiresAt = null;
+        if ($replicatedAt !== '' && $replicaMaxAgeSeconds > 0) {
+            try {
+                $expiresAt = (new \DateTimeImmutable($replicatedAt))
+                    ->modify(sprintf('+%d seconds', $replicaMaxAgeSeconds))
+                    ->format(DATE_ATOM);
+            } catch (\Throwable) {
+                $expiresAt = null;
+            }
+        }
+
+        $freshnessStatus = 'replicated_local_receipt';
+        if ($replicaMaxAgeSeconds > 0) {
+            if ($replicaAgeSeconds === null) {
+                $freshnessStatus = 'replicated_local_receipt_missing_timestamp';
+            } elseif ($replicaAgeSeconds > $replicaMaxAgeSeconds) {
+                $freshnessStatus = 'expired_local_replica';
+            } else {
+                $freshnessStatus = 'fresh_local_replica';
+            }
+        }
+
+        return [
+            'receipt_reuse_source' => $reuseSource !== '' ? $reuseSource : null,
+            'receipt_propagation_source' => $propagationSource !== '' ? $propagationSource : null,
+            'receipt_propagation_report_node_id' => isset($details['receipt_propagation_report_node_id']) ? (string) $details['receipt_propagation_report_node_id'] : null,
+            'receipt_propagation_generated_at' => isset($details['receipt_propagation_generated_at']) ? (string) $details['receipt_propagation_generated_at'] : null,
+            'receipt_replicated_at' => $replicatedAt !== '' ? $replicatedAt : null,
+            'receipt_replicated_by_node_id' => $replicatedByNodeId !== '' ? $replicatedByNodeId : null,
+            'receipt_replica_age_seconds' => $replicaAgeSeconds,
+            'receipt_replica_max_age_seconds' => $replicaMaxAgeSeconds > 0 ? $replicaMaxAgeSeconds : null,
+            'receipt_replica_expires_at' => $expiresAt,
+            'receipt_replica_freshness_status' => $freshnessStatus,
+        ];
+    }
+
     /**
      * @return list<DatabaseDiagnosticEvent>
      */
@@ -1724,6 +1830,7 @@ final class DatabaseOperationRuntime
             }
 
             $confirmation = $record->confirmation;
+            unset($confirmation['remote_validation_receipt_cleanup']);
             $propagatedDetails = is_array($propagatedReceipt['details'] ?? null) ? $propagatedReceipt['details'] : [];
             $propagatedReceipt['details'] = $propagatedDetails + [
                 'receipt_reuse' => $details['receipt_reuse'] ?? null,
@@ -1735,6 +1842,14 @@ final class DatabaseOperationRuntime
                 'receipt_propagation_generated_at' => $details['receipt_propagation_generated_at'] ?? null,
                 'receipt_propagation_age_seconds' => $details['receipt_propagation_age_seconds'] ?? null,
                 'receipt_propagation_report_trust' => $details['receipt_propagation_report_trust'] ?? null,
+                'receipt_replicated_at' => $this->timestampNow(),
+                'receipt_replicated_by_node_id' => $currentNodeId,
+                'receipt_replica_max_age_seconds' => $plan->policy->remoteReplayValidationReceiptReplicatedMaxAgeSeconds > 0
+                    ? $plan->policy->remoteReplayValidationReceiptReplicatedMaxAgeSeconds
+                    : null,
+                'receipt_replica_expires_at' => $this->resolveReplicatedReceiptExpiresAt(
+                    $plan->policy->remoteReplayValidationReceiptReplicatedMaxAgeSeconds,
+                ),
             ];
             $confirmation['remote_validation_receipt'] = $propagatedReceipt;
 
@@ -1745,6 +1860,7 @@ final class DatabaseOperationRuntime
         }
 
         $confirmation = $record->confirmation;
+        unset($confirmation['remote_validation_receipt_cleanup']);
         $confirmation['remote_validation_receipt'] = [
             'version' => 1,
             'status' => $validation->status,
@@ -1769,6 +1885,21 @@ final class DatabaseOperationRuntime
         $this->resolveIdempotencyStore()?->complete($updated, $confirmation);
 
         return $updated;
+    }
+
+    private function resolveReplicatedReceiptExpiresAt(int $maxAgeSeconds): ?string
+    {
+        if ($maxAgeSeconds <= 0) {
+            return null;
+        }
+
+        try {
+            return (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))
+                ->modify(sprintf('+%d seconds', $maxAgeSeconds))
+                ->format(DATE_ATOM);
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     private function normalizeRemoteReplayValidationReceiptReuseScope(string $scope): string
@@ -2330,8 +2461,8 @@ final class DatabaseOperationRuntime
             ? 'unrestricted_report_node'
             : (
                 $reportNodeId !== null && in_array($reportNodeId, $plan->policy->remoteReplayValidationReceiptPropagationTrustedNodes, true)
-                    ? 'trusted_report_node'
-                    : 'untrusted_report_node'
+                ? 'trusted_report_node'
+                : 'untrusted_report_node'
             );
     }
 
@@ -2482,6 +2613,12 @@ final class DatabaseOperationRuntime
                 'receipt_propagation_generated_at',
                 'receipt_propagation_age_seconds',
                 'receipt_propagation_report_trust',
+                'receipt_replicated_at',
+                'receipt_replicated_by_node_id',
+                'receipt_replica_age_seconds',
+                'receipt_replica_max_age_seconds',
+                'receipt_replica_expires_at',
+                'receipt_replica_freshness_status',
                 'endpoint',
                 'endpoint_strategy',
                 'http_status',

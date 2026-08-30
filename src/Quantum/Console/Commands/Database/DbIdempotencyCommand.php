@@ -420,6 +420,24 @@ final class DbIdempotencyCommand extends Command
                         (string) ($receiptAttestation['key_id'] ?? 'n/a'),
                     ));
                 }
+                $receiptDetails = is_array($remoteValidationReceipt['details'] ?? null)
+                    ? $remoteValidationReceipt['details']
+                    : [];
+                if (
+                    isset($receiptDetails['receipt_replicated_at'])
+                    || isset($receiptDetails['receipt_replica_expires_at'])
+                    || isset($receiptDetails['receipt_propagation_report_node_id'])
+                ) {
+                    $output->writeln(sprintf(
+                        'Remote validation replica: source=%s replicated_at=%s replicated_by=%s expires_at=%s freshness=%s report_node=%s',
+                        (string) ($receiptDetails['receipt_propagation_source'] ?? $receiptDetails['receipt_reuse_source'] ?? 'n/a'),
+                        (string) ($receiptDetails['receipt_replicated_at'] ?? 'n/a'),
+                        (string) ($receiptDetails['receipt_replicated_by_node_id'] ?? 'n/a'),
+                        (string) ($receiptDetails['receipt_replica_expires_at'] ?? 'n/a'),
+                        (string) ($receiptDetails['receipt_replica_freshness_status'] ?? 'n/a'),
+                        (string) ($receiptDetails['receipt_propagation_report_node_id'] ?? 'n/a'),
+                    ));
+                }
                 $remoteChallengeReceipt = $this->resolveRemoteChallengeReceipt($remoteValidationReceipt);
                 if ($remoteChallengeReceipt !== null) {
                     $output->writeln(sprintf(

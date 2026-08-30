@@ -120,6 +120,12 @@ final class DatabaseIdempotencyCommandTest extends TestCase
                     'protocol_compatibility' => 'compatible',
                     'request_key_id' => 'key-2026-08',
                     'response_key_id' => 'key-2026-09',
+                    'receipt_propagation_source' => 'health_snapshot',
+                    'receipt_propagation_report_node_id' => 'node-cluster-c',
+                    'receipt_replicated_at' => '2026-08-25T07:00:13+00:00',
+                    'receipt_replicated_by_node_id' => 'VoltStack Idempotency Command Feature Test',
+                    'receipt_replica_expires_at' => '2026-08-25T07:05:13+00:00',
+                    'receipt_replica_freshness_status' => 'fresh_local_replica',
                 ],
             ],
         ]);
@@ -152,6 +158,10 @@ final class DatabaseIdempotencyCommandTest extends TestCase
             $result['stdout']
         );
         self::assertStringContainsString('Remote validation message: Remote validation accepted the replay.', $result['stdout']);
+        self::assertStringContainsString(
+            'Remote validation replica: source=health_snapshot replicated_at=2026-08-25T07:00:13+00:00 replicated_by=VoltStack Idempotency Command Feature Test expires_at=2026-08-25T07:05:13+00:00 freshness=fresh_local_replica report_node=node-cluster-c',
+            $result['stdout']
+        );
         self::assertStringContainsString(
             'Remote challenge: protocol=remote_replay_node_challenge_v1 challenge_id=challenge-123 challenged_node=VoltStack Idempotency Command Feature Test responded_at=2026-08-25T07:00:12+00:00 proof_type=hmac_sha256 proof_fingerprint=proof-123',
             $result['stdout']

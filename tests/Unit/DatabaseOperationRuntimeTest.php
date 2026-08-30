@@ -1606,6 +1606,322 @@ final class DatabaseOperationRuntimeTest extends TestCase
         self::assertSame('unrestricted_report_node', $persisted->confirmation['remote_validation_receipt']['details']['receipt_propagation_report_trust'] ?? null);
     }
 
+    public function test_runtime_reuses_fresh_local_replicated_remote_validation_receipt_without_active_validator(): void
+    {
+        $this->idempotencyBasePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-db-idempotency-runtime-' . uniqid('', true);
+        mkdir($this->idempotencyBasePath, 0777, true);
+
+        $store = new DirectoryDatabaseIdempotencyStore($this->idempotencyBasePath . DIRECTORY_SEPARATOR . 'idempotency');
+        $validator = new RuntimeRemoteReplayValidatorStub(
+            DatabaseRemoteReplayValidationResult::verified(
+                validator: 'stub-remote-validator',
+                message: 'Validator should not be called when a fresh local replicated receipt exists.',
+            ),
+        );
+        $connection = new RuntimeTestConnection(
+            statementQueue: [
+                RuntimeTestConnection::statementResult(1),
+            ],
+        );
+        $runtime = new DatabaseOperationRuntime(
+            new DatabaseCircuitBreaker(),
+            idempotencyStore: $store,
+            remoteReplayValidator: $validator,
+            idempotencyNodeId: 'node-b',
+            remoteReplayChallengeSigner: $this->makeReceiptSignerForTest('node-b', 'key-2026-08'),
+        );
+        $context = DatabaseContext::empty()->withConnection($connection);
+        $policy = new DatabaseExecutionPolicy(
+            retryLimit: 1,
+            retryBackoffMs: 0,
+            retryMutationsWhenIdempotent: true,
+            idempotencyPendingTtlSeconds: 300,
+            remoteReplayAttestationMode: 'require',
+            remoteReplayValidationMode: 'require',
+            remoteReplayValidationReceiptMaxAgeSeconds: 600,
+            remoteReplayValidationReceiptReuseScope: 'trusted_nodes',
+            remoteReplayValidationReceiptTrustedNodes: ['node-c'],
+            remoteReplayValidationReceiptReplicatedMaxAgeSeconds: 600,
+        );
+        $plan = $runtime->plan(
+            new RawOperation(
+                OperationKind::RawExecute,
+                'UPDATE users SET active = 1 WHERE id = 1',
+                [],
+                'primary',
+                'mutation-users-local-replicated-remote-validation-receipt',
+            ),
+            $context,
+            $policy,
+        );
+
+        $record = new DatabaseIdempotencyRecord(
+            keyHash: hash('sha256', 'mutation-users-local-replicated-remote-validation-receipt'),
+            operationFingerprint: $plan->fingerprint,
+            requestId: 'req-local-replicated-remote-validation-receipt',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            createdAt: '2026-08-29T21:02:00+00:00',
+            nodeId: 'node-a',
+            status: 'pending',
+            expiresAt: '2099-08-29T21:07:00+00:00',
+        );
+        $store->acquire($record);
+        $confirmationFingerprint = $this->computeConfirmationFingerprintForTest(
+            $record,
+            'node-a',
+            [
+                'kind' => 'raw_execute',
+                'affected_rows' => 1,
+                'rows_read' => 0,
+                'outcome' => 'completed',
+                'confirmed_at' => '2026-08-29T21:02:05+00:00',
+                'replay_reproducibility' => 'persisted_summary',
+                'result_summary' => [
+                    'kind' => 'raw_execute',
+                    'is_select' => false,
+                    'affected_rows' => 1,
+                    'rows_read' => 0,
+                    'column_count' => 0,
+                    'result_type' => 'success_no_rows',
+                ],
+            ],
+        );
+        $validatedAt = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format(DATE_ATOM);
+        $replicatedAt = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->modify('-10 seconds')->format(DATE_ATOM);
+        $localReplicatedReceipt = $this->attachReceiptAttestationForTest(
+            [
+                'version' => 1,
+                'status' => 'verified_remote_validation',
+                'validator' => 'remote-validator-node-c',
+                'message' => 'Previously validated by a trusted cluster node and already replicated locally.',
+                'validation_mode' => 'require',
+                'validated_at' => $validatedAt,
+                'validated_by_node_id' => 'node-c',
+                'source_node_id' => 'node-a',
+                'confirmation_fingerprint' => $confirmationFingerprint,
+                'details' => [
+                    'challenge_protocol' => 'remote_replay_node_challenge_v1',
+                    'confirmation_fingerprint' => $confirmationFingerprint,
+                    'receipt_reuse_source' => 'health_snapshot',
+                    'receipt_propagation_source' => 'health_snapshot',
+                    'receipt_propagation_report_node_id' => 'node-c',
+                    'receipt_propagation_generated_at' => $validatedAt,
+                    'receipt_replicated_at' => $replicatedAt,
+                    'receipt_replicated_by_node_id' => 'node-b',
+                    'receipt_replica_max_age_seconds' => 600,
+                    'receipt_replica_expires_at' => (new \DateTimeImmutable($replicatedAt))->modify('+600 seconds')->format(DATE_ATOM),
+                ],
+            ],
+            'node-c',
+            $validatedAt,
+            'key-2026-09',
+        );
+        $store->complete($record, [
+            'kind' => 'raw_execute',
+            'affected_rows' => 1,
+            'rows_read' => 0,
+            'outcome' => 'completed',
+            'confirmed_at' => '2026-08-29T21:02:05+00:00',
+            'summary_version' => 1,
+            'replay_reproducibility' => 'persisted_summary',
+            'source_node_id' => 'node-a',
+            'evidence_version' => 1,
+            'evidence_mode' => 'persisted_evidence',
+            'confirmation_fingerprint' => $confirmationFingerprint,
+            'attestation_version' => 1,
+            'attestation_mode' => 'source_node_self_attested',
+            'attested_by_node_id' => 'node-a',
+            'attested_at' => '2026-08-29T21:02:05+00:00',
+            'attestation_fingerprint' => $this->computeAttestationFingerprintForTest(
+                $record,
+                'node-a',
+                $confirmationFingerprint,
+                'source_node_self_attested',
+                'node-a',
+                '2026-08-29T21:02:05+00:00',
+            ),
+            'result_summary' => [
+                'kind' => 'raw_execute',
+                'is_select' => false,
+                'affected_rows' => 1,
+                'rows_read' => 0,
+                'column_count' => 0,
+                'result_type' => 'success_no_rows',
+            ],
+            'remote_validation_receipt' => $localReplicatedReceipt,
+        ]);
+
+        $result = $runtime->execute($plan, $context);
+
+        self::assertTrue($result->isSuccess);
+        self::assertSame(0, $connection->statementCalls);
+        self::assertSame(0, $validator->calls);
+        self::assertSame('cached_remote_validation_receipt', $result->debug['idempotency']['remote_validation']['validator'] ?? null);
+        self::assertSame('record_store', $result->debug['idempotency']['remote_validation']['details']['receipt_reuse_source'] ?? null);
+        self::assertSame('fresh_local_replica', $result->debug['idempotency']['remote_validation']['details']['receipt_replica_freshness_status'] ?? null);
+        self::assertSame('node-b', $result->debug['idempotency']['remote_validation']['details']['receipt_replicated_by_node_id'] ?? null);
+    }
+
+    public function test_runtime_discards_expired_local_replicated_remote_validation_receipt_and_falls_back_to_active_validation(): void
+    {
+        $this->idempotencyBasePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-db-idempotency-runtime-' . uniqid('', true);
+        mkdir($this->idempotencyBasePath, 0777, true);
+
+        $store = new DirectoryDatabaseIdempotencyStore($this->idempotencyBasePath . DIRECTORY_SEPARATOR . 'idempotency');
+        $validator = new RuntimeRemoteReplayValidatorStub(
+            DatabaseRemoteReplayValidationResult::verified(
+                validator: 'stub-remote-validator',
+                message: 'Remote validator refreshed replay after local replica expiration.',
+            ),
+        );
+        $connection = new RuntimeTestConnection(
+            statementQueue: [
+                RuntimeTestConnection::statementResult(1),
+            ],
+        );
+        $runtime = new DatabaseOperationRuntime(
+            new DatabaseCircuitBreaker(),
+            idempotencyStore: $store,
+            remoteReplayValidator: $validator,
+            idempotencyNodeId: 'node-b',
+            remoteReplayChallengeSigner: $this->makeReceiptSignerForTest('node-b', 'key-2026-08'),
+        );
+        $context = DatabaseContext::empty()->withConnection($connection);
+        $policy = new DatabaseExecutionPolicy(
+            retryLimit: 1,
+            retryBackoffMs: 0,
+            retryMutationsWhenIdempotent: true,
+            idempotencyPendingTtlSeconds: 300,
+            remoteReplayAttestationMode: 'require',
+            remoteReplayValidationMode: 'require',
+            remoteReplayValidationReceiptMaxAgeSeconds: 600,
+            remoteReplayValidationReceiptReuseScope: 'trusted_nodes',
+            remoteReplayValidationReceiptTrustedNodes: ['node-c'],
+            remoteReplayValidationReceiptReplicatedMaxAgeSeconds: 30,
+        );
+        $plan = $runtime->plan(
+            new RawOperation(
+                OperationKind::RawExecute,
+                'UPDATE users SET active = 1 WHERE id = 1',
+                [],
+                'primary',
+                'mutation-users-expired-local-replicated-remote-validation-receipt',
+            ),
+            $context,
+            $policy,
+        );
+
+        $record = new DatabaseIdempotencyRecord(
+            keyHash: hash('sha256', 'mutation-users-expired-local-replicated-remote-validation-receipt'),
+            operationFingerprint: $plan->fingerprint,
+            requestId: 'req-expired-local-replicated-remote-validation-receipt',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            createdAt: '2026-08-29T21:05:00+00:00',
+            nodeId: 'node-a',
+            status: 'pending',
+            expiresAt: '2099-08-29T21:10:00+00:00',
+        );
+        $store->acquire($record);
+        $confirmationFingerprint = $this->computeConfirmationFingerprintForTest(
+            $record,
+            'node-a',
+            [
+                'kind' => 'raw_execute',
+                'affected_rows' => 1,
+                'rows_read' => 0,
+                'outcome' => 'completed',
+                'confirmed_at' => '2026-08-29T21:05:05+00:00',
+                'replay_reproducibility' => 'persisted_summary',
+                'result_summary' => [
+                    'kind' => 'raw_execute',
+                    'is_select' => false,
+                    'affected_rows' => 1,
+                    'rows_read' => 0,
+                    'column_count' => 0,
+                    'result_type' => 'success_no_rows',
+                ],
+            ],
+        );
+        $validatedAt = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format(DATE_ATOM);
+        $expiredLocalReplica = $this->attachReceiptAttestationForTest(
+            [
+                'version' => 1,
+                'status' => 'verified_remote_validation',
+                'validator' => 'remote-validator-node-c',
+                'message' => 'Previously validated by a trusted cluster node and copied locally long ago.',
+                'validation_mode' => 'require',
+                'validated_at' => $validatedAt,
+                'validated_by_node_id' => 'node-c',
+                'source_node_id' => 'node-a',
+                'confirmation_fingerprint' => $confirmationFingerprint,
+                'details' => [
+                    'challenge_protocol' => 'remote_replay_node_challenge_v1',
+                    'confirmation_fingerprint' => $confirmationFingerprint,
+                    'receipt_reuse_source' => 'health_snapshot',
+                    'receipt_propagation_source' => 'health_snapshot',
+                    'receipt_propagation_report_node_id' => 'node-c',
+                    'receipt_propagation_generated_at' => '2026-08-29T21:05:06+00:00',
+                    'receipt_replicated_at' => '2026-08-20T21:05:10+00:00',
+                    'receipt_replicated_by_node_id' => 'node-b',
+                    'receipt_replica_max_age_seconds' => 30,
+                    'receipt_replica_expires_at' => '2026-08-20T21:05:40+00:00',
+                ],
+            ],
+            'node-c',
+            $validatedAt,
+            'key-2026-09',
+        );
+        $store->complete($record, [
+            'kind' => 'raw_execute',
+            'affected_rows' => 1,
+            'rows_read' => 0,
+            'outcome' => 'completed',
+            'confirmed_at' => '2026-08-29T21:05:05+00:00',
+            'summary_version' => 1,
+            'replay_reproducibility' => 'persisted_summary',
+            'source_node_id' => 'node-a',
+            'evidence_version' => 1,
+            'evidence_mode' => 'persisted_evidence',
+            'confirmation_fingerprint' => $confirmationFingerprint,
+            'attestation_version' => 1,
+            'attestation_mode' => 'source_node_self_attested',
+            'attested_by_node_id' => 'node-a',
+            'attested_at' => '2026-08-29T21:05:05+00:00',
+            'attestation_fingerprint' => $this->computeAttestationFingerprintForTest(
+                $record,
+                'node-a',
+                $confirmationFingerprint,
+                'source_node_self_attested',
+                'node-a',
+                '2026-08-29T21:05:05+00:00',
+            ),
+            'result_summary' => [
+                'kind' => 'raw_execute',
+                'is_select' => false,
+                'affected_rows' => 1,
+                'rows_read' => 0,
+                'column_count' => 0,
+                'result_type' => 'success_no_rows',
+            ],
+            'remote_validation_receipt' => $expiredLocalReplica,
+        ]);
+
+        $result = $runtime->execute($plan, $context);
+        $persisted = $store->find(hash('sha256', 'mutation-users-expired-local-replicated-remote-validation-receipt'));
+
+        self::assertTrue($result->isSuccess);
+        self::assertSame(0, $connection->statementCalls);
+        self::assertSame(1, $validator->calls);
+        self::assertSame('stub-remote-validator', $result->debug['idempotency']['remote_validation']['validator'] ?? null);
+        self::assertInstanceOf(DatabaseIdempotencyRecord::class, $persisted);
+        self::assertSame('stub-remote-validator', $persisted->confirmation['remote_validation_receipt']['validator'] ?? null);
+        self::assertSame('node-b', $persisted->confirmation['remote_validation_receipt']['validated_by_node_id'] ?? null);
+        self::assertArrayNotHasKey('receipt_replicated_at', $persisted->confirmation['remote_validation_receipt']['details'] ?? []);
+        self::assertArrayNotHasKey('remote_validation_receipt_cleanup', $persisted->confirmation);
+    }
+
     public function test_runtime_falls_back_to_active_remote_validation_when_propagated_receipt_snapshot_is_stale(): void
     {
         $this->idempotencyBasePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-db-idempotency-runtime-' . uniqid('', true);

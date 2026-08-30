@@ -162,6 +162,8 @@ final class DatabaseTelemetryStore
             'challenge_request_key_id' => $challenge['challenge_request_key_id'] ?? null,
             'challenge_response_key_id' => $challenge['challenge_response_key_id'] ?? null,
             'challenge_receipt_reuse' => $challenge['challenge_receipt_reuse'] ?? null,
+            'challenge_receipt_reuse_scope' => $challenge['challenge_receipt_reuse_scope'] ?? null,
+            'challenge_receipt_validated_by_node_id' => $challenge['challenge_receipt_validated_by_node_id'] ?? null,
         ];
     }
 
@@ -233,6 +235,8 @@ final class DatabaseTelemetryStore
                     'response_key_id',
                     'key_id',
                     'receipt_reuse',
+                    'receipt_reuse_scope',
+                    'receipt_validated_by_node_id',
                 ] as $key
             ) {
                 if (array_key_exists($key, $details)) {
@@ -264,6 +268,10 @@ final class DatabaseTelemetryStore
                 ?? ($telemetry['challenge_response_key_id'] ?? null);
             $telemetry['challenge_receipt_reuse'] = self::normalizeString($details['receipt_reuse'] ?? null)
                 ?? ($telemetry['challenge_receipt_reuse'] ?? null);
+            $telemetry['challenge_receipt_reuse_scope'] = self::normalizeString($details['receipt_reuse_scope'] ?? null)
+                ?? ($telemetry['challenge_receipt_reuse_scope'] ?? null);
+            $telemetry['challenge_receipt_validated_by_node_id'] = self::normalizeString($details['receipt_validated_by_node_id'] ?? null)
+                ?? ($telemetry['challenge_receipt_validated_by_node_id'] ?? null);
         }
 
         return $telemetry === [] ? null : $telemetry;

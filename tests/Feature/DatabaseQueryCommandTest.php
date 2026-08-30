@@ -85,6 +85,8 @@ final class DatabaseQueryCommandTest extends TestCase
         self::assertStringContainsString('remote_replay_attestation_max_age_seconds=0', $result['stdout']);
         self::assertStringContainsString('remote_replay_validation_mode=allow', $result['stdout']);
         self::assertStringContainsString('remote_replay_validation_receipt_max_age_seconds=0', $result['stdout']);
+        self::assertStringContainsString('remote_replay_validation_receipt_reuse_scope=current_node', $result['stdout']);
+        self::assertStringContainsString('remote_replay_validation_receipt_trusted_nodes=n/a', $result['stdout']);
     }
 
     /**
@@ -175,6 +177,8 @@ final class DatabaseQueryCommandTest extends TestCase
                     'remote_replay_attestation_max_age_seconds' => 0,
                     'remote_replay_validation_mode' => 'allow',
                     'remote_replay_validation_receipt_max_age_seconds' => 0,
+                    'remote_replay_validation_receipt_reuse_scope' => 'current_node',
+                    'remote_replay_validation_receipt_trusted_nodes' => [],
                 ],
                 'security' => [
                     'redact_sensitive' => true,

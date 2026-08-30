@@ -232,6 +232,8 @@ final class DbHealthCommand extends Command
         $requestKeyId = isset($entry['challenge_request_key_id']) ? trim((string) $entry['challenge_request_key_id']) : '';
         $responseKeyId = isset($entry['challenge_response_key_id']) ? trim((string) $entry['challenge_response_key_id']) : '';
         $receiptReuse = isset($entry['challenge_receipt_reuse']) ? trim((string) $entry['challenge_receipt_reuse']) : '';
+        $receiptReuseScope = isset($entry['challenge_receipt_reuse_scope']) ? trim((string) $entry['challenge_receipt_reuse_scope']) : '';
+        $receiptValidatedByNodeId = isset($entry['challenge_receipt_validated_by_node_id']) ? trim((string) $entry['challenge_receipt_validated_by_node_id']) : '';
 
         if (
             $status === ''
@@ -244,7 +246,7 @@ final class DbHealthCommand extends Command
             return '';
         }
 
-        return sprintf(
+        $formatted = sprintf(
             ' rv=%s challenge=%s compat=%s key=%s/%s reuse=%s',
             $status !== '' ? $status : 'n/a',
             $protocol !== '' ? $protocol : 'n/a',
@@ -253,5 +255,15 @@ final class DbHealthCommand extends Command
             $responseKeyId !== '' ? $responseKeyId : 'n/a',
             $receiptReuse !== '' ? $receiptReuse : 'n/a',
         );
+
+        if ($receiptReuseScope !== '' || $receiptValidatedByNodeId !== '') {
+            $formatted .= sprintf(
+                ' reuse_scope=%s validated_by=%s',
+                $receiptReuseScope !== '' ? $receiptReuseScope : 'n/a',
+                $receiptValidatedByNodeId !== '' ? $receiptValidatedByNodeId : 'n/a',
+            );
+        }
+
+        return $formatted;
     }
 }

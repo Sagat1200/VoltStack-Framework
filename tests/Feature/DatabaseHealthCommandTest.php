@@ -7,6 +7,7 @@ namespace VoltStack\Test\Feature;
 use PHPUnit\Framework\TestCase;
 use Quantum\Console\ConsoleApplication;
 use Quantum\Console\Output;
+use Quantum\Config\ConfigRepository;
 use Quantum\Database\DatabaseContext;
 use Quantum\Database\Operation\Contracts\DatabaseIdempotencyStoreInterface;
 use Quantum\Database\Operation\DatabaseExecutionPolicy;
@@ -119,6 +120,10 @@ final class DatabaseHealthCommandTest extends TestCase
     public function test_cli_health_reports_remote_replay_challenge_telemetry(): void
     {
         $app = $this->loadApp();
+        $config = $app->make(ConfigRepository::class);
+        $config->set('database.idempotency.remote_replay_validation_receipt_max_age_seconds', 600);
+        $config->set('database.idempotency.remote_replay_validation_receipt_reuse_scope', 'trusted_nodes');
+        $config->set('database.idempotency.remote_replay_validation_receipt_trusted_nodes', ['node-validator-c']);
         $router = $app->make(Router::class);
         $router->get('/health-remote-replay', function () use ($app): string {
             /** @var DatabaseContext $context */
@@ -213,7 +218,7 @@ final class DatabaseHealthCommandTest extends TestCase
                     'message' => 'Previously validated by the current node.',
                     'validation_mode' => 'require',
                     'validated_at' => $validatedAt,
-                    'validated_by_node_id' => 'node-local',
+                    'validated_by_node_id' => 'node-validator-c',
                     'source_node_id' => 'node-remote',
                     'details' => [
                         'challenge_protocol' => 'remote_replay_node_challenge_v1',
@@ -221,6 +226,9 @@ final class DatabaseHealthCommandTest extends TestCase
                         'protocol_compatibility' => 'compatible',
                         'request_key_id' => 'key-2026-08',
                         'response_key_id' => 'key-2026-09',
+                        'receipt_reuse' => 'reused_fresh_receipt',
+                        'receipt_reuse_scope' => 'trusted_nodes',
+                        'receipt_validated_by_node_id' => 'node-validator-c',
                     ],
                 ],
             ]);
@@ -240,7 +248,7 @@ final class DatabaseHealthCommandTest extends TestCase
             $result['stdout']
         );
         self::assertStringContainsString(
-            'rv=verified_remote_validation challenge=remote_replay_node_challenge_v1 compat=compatible key=key-2026-08/key-2026-09 reuse=reused_fresh_receipt',
+            'rv=verified_remote_validation challenge=remote_replay_node_challenge_v1 compat=compatible key=key-2026-08/key-2026-09 reuse=reused_fresh_receipt reuse_scope=trusted_nodes validated_by=node-validator-c',
             $result['stdout']
         );
 
@@ -256,6 +264,8 @@ final class DatabaseHealthCommandTest extends TestCase
         self::assertStringContainsString('"remote_replay_challenge"', $json['stdout']);
         self::assertStringContainsString('"reused_receipts": 1', $json['stdout']);
         self::assertStringContainsString('"challenge_receipt_reuse": "reused_fresh_receipt"', $json['stdout']);
+        self::assertStringContainsString('"challenge_receipt_reuse_scope": "trusted_nodes"', $json['stdout']);
+        self::assertStringContainsString('"challenge_receipt_validated_by_node_id": "node-validator-c"', $json['stdout']);
     }
 
     /**

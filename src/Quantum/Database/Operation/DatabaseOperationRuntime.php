@@ -1428,14 +1428,22 @@ final class DatabaseOperationRuntime
         $validatedByNodeId = trim((string) ($receipt['validated_by_node_id'] ?? ''));
         $normalizedCurrentNodeId = trim((string) ($currentNodeId ?? ''));
         $validatedAt = trim((string) ($receipt['validated_at'] ?? ''));
+        $sourceNodeId = trim((string) (($receipt['source_node_id'] ?? null) ?: ($record->nodeId ?? '')));
+        $confirmationFingerprint = trim((string) ($confirmationEvidence['confirmation_fingerprint'] ?? ''));
+        $receiptConfirmationFingerprint = trim((string) (($receipt['confirmation_fingerprint'] ?? null) ?: (($receipt['details']['confirmation_fingerprint'] ?? null) ?: '')));
 
         if (
             $status !== 'verified_remote_validation'
             || $validatedByNodeId === ''
-            || $normalizedCurrentNodeId === ''
-            || $validatedByNodeId !== $normalizedCurrentNodeId
+            || $sourceNodeId === ''
+            || trim((string) ($record->nodeId ?? '')) === ''
+            || $sourceNodeId !== trim((string) ($record->nodeId ?? ''))
             || $validatedAt === ''
         ) {
+            return null;
+        }
+
+        if ($confirmationFingerprint !== '' && $receiptConfirmationFingerprint !== '' && $receiptConfirmationFingerprint !== $confirmationFingerprint) {
             return null;
         }
 
@@ -1451,16 +1459,35 @@ final class DatabaseOperationRuntime
             return null;
         }
 
+        $reuseTrust = $this->resolveRemoteReplayValidationReceiptReuseTrust(
+            $plan,
+            $normalizedCurrentNodeId,
+            $validatedByNodeId,
+        );
+        if ($reuseTrust === null) {
+            return null;
+        }
+
+        $reuseScope = $this->normalizeRemoteReplayValidationReceiptReuseScope(
+            $plan->policy->remoteReplayValidationReceiptReuseScope,
+        );
+
         return DatabaseRemoteReplayValidationResult::verified(
             validator: 'cached_remote_validation_receipt',
-            message: 'Reused a fresh remote validation receipt previously issued by the current node.',
+            message: $reuseTrust === 'current_node'
+                ? 'Reused a fresh remote validation receipt previously issued by the current node.'
+                : 'Reused a fresh remote validation receipt previously issued by a trusted cluster node.',
             details: array_merge(
                 is_array($receipt['details'] ?? null) ? $receipt['details'] : [],
                 [
                     'receipt_reuse' => 'reused_fresh_receipt',
+                    'receipt_reuse_scope' => $reuseScope,
+                    'receipt_reuse_trust' => $reuseTrust,
                     'receipt_age_seconds' => $ageSeconds,
                     'receipt_validated_at' => $validatedAt,
                     'receipt_validated_by_node_id' => $validatedByNodeId,
+                    'receipt_source_node_id' => $sourceNodeId,
+                    'receipt_confirmation_fingerprint' => $receiptConfirmationFingerprint !== '' ? $receiptConfirmationFingerprint : null,
                     'receipt_original_validator' => isset($receipt['validator']) ? (string) $receipt['validator'] : null,
                     'remote_replay_validation_receipt_max_age_seconds' => $plan->policy->remoteReplayValidationReceiptMaxAgeSeconds,
                 ],
@@ -1532,6 +1559,7 @@ final class DatabaseOperationRuntime
             'validated_at' => $this->timestampNow(),
             'validated_by_node_id' => $currentNodeId,
             'source_node_id' => $record->nodeId,
+            'confirmation_fingerprint' => $confirmationEvidence['confirmation_fingerprint'] ?? null,
             'details' => $validation->details,
         ];
 
@@ -1539,6 +1567,56 @@ final class DatabaseOperationRuntime
         $this->resolveIdempotencyStore()?->complete($updated, $confirmation);
 
         return $updated;
+    }
+
+    private function normalizeRemoteReplayValidationReceiptReuseScope(string $scope): string
+    {
+        $normalized = strtolower(trim($scope));
+
+        return in_array($normalized, ['current_node', 'trusted_nodes', 'cluster'], true)
+            ? $normalized
+            : 'current_node';
+    }
+
+    private function resolveRemoteReplayValidationReceiptReuseTrust(
+        DatabaseOperationPlan $plan,
+        string $currentNodeId,
+        string $validatedByNodeId,
+    ): ?string {
+        if ($validatedByNodeId === '') {
+            return null;
+        }
+
+        $scope = $this->normalizeRemoteReplayValidationReceiptReuseScope(
+            $plan->policy->remoteReplayValidationReceiptReuseScope,
+        );
+
+        if ($scope === 'cluster') {
+            return $validatedByNodeId === $currentNodeId && $currentNodeId !== ''
+                ? 'current_node'
+                : 'cluster_node';
+        }
+
+        if ($currentNodeId === '') {
+            return null;
+        }
+
+        if ($validatedByNodeId === $currentNodeId) {
+            return 'current_node';
+        }
+
+        if ($scope !== 'trusted_nodes') {
+            return null;
+        }
+
+        $trustedNodes = array_values(array_unique(array_filter(array_map(
+            static fn(mixed $value): string => is_string($value) ? trim($value) : '',
+            $plan->policy->remoteReplayValidationReceiptTrustedNodes,
+        ))));
+
+        return in_array($validatedByNodeId, $trustedNodes, true)
+            ? 'trusted_node'
+            : null;
     }
 
     /**
@@ -1930,6 +2008,8 @@ final class DatabaseOperationRuntime
                 'response_key_id',
                 'key_id',
                 'receipt_reuse',
+                'receipt_reuse_scope',
+                'receipt_validated_by_node_id',
                 'receipt_age_seconds',
                 'endpoint',
                 'endpoint_strategy',

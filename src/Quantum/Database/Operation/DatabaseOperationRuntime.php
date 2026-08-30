@@ -1455,6 +1455,7 @@ final class DatabaseOperationRuntime
         }
 
         $propagatedReceipt = $this->findPropagatedRemoteReplayValidationReceipt(
+            $plan,
             $record,
             $confirmationEvidence,
         );
@@ -1572,6 +1573,10 @@ final class DatabaseOperationRuntime
                     'receipt_propagation_source' => $receiptSource === 'health_snapshot' ? 'health_snapshot' : null,
                     'receipt_propagation_report_node_id' => $propagatedFromNodeId,
                     'receipt_propagation_generated_at' => $propagatedAt,
+                    'receipt_propagation_age_seconds' => $receiptSource === 'health_snapshot' ? $this->resolvePropagationAgeSeconds($propagatedAt) : null,
+                    'receipt_propagation_report_trust' => $receiptSource === 'health_snapshot'
+                        ? $this->resolvePropagationReportTrust($plan, $propagatedFromNodeId)
+                        : null,
                     'persist_reused_receipt' => $persistReusedReceipt,
                     'receipt_payload' => $persistReusedReceipt ? $receipt : null,
                     'remote_replay_validation_receipt_max_age_seconds' => $plan->policy->remoteReplayValidationReceiptMaxAgeSeconds,
@@ -1585,6 +1590,7 @@ final class DatabaseOperationRuntime
      * @return array{receipt:array<string, mixed>,report_node_id:?string,generated_at:?string}|null
      */
     private function findPropagatedRemoteReplayValidationReceipt(
+        DatabaseOperationPlan $plan,
         DatabaseIdempotencyRecord $record,
         array $confirmationEvidence,
     ): ?array {
@@ -1599,10 +1605,19 @@ final class DatabaseOperationRuntime
         }
 
         $confirmationFingerprint = trim((string) ($confirmationEvidence['confirmation_fingerprint'] ?? ''));
-        $reports = array_reverse($healthStore->recent(250));
+        $reports = array_reverse($healthStore->recent($plan->policy->remoteReplayValidationReceiptPropagationHealthLimit));
 
         foreach ($reports as $report) {
             if (!$report instanceof DatabaseTelemetryReport) {
+                continue;
+            }
+
+            $reportNodeId = trim((string) ($report->nodeId ?? ''));
+            if (!$this->isTrustedPropagationReportNode($plan, $reportNodeId)) {
+                continue;
+            }
+
+            if (!$this->isFreshPropagationReport($plan, $report->generatedAt)) {
                 continue;
             }
 
@@ -1639,7 +1654,7 @@ final class DatabaseOperationRuntime
 
                 return [
                     'receipt' => $advertisedReceipt,
-                    'report_node_id' => $report->nodeId,
+                    'report_node_id' => $reportNodeId !== '' ? $reportNodeId : null,
                     'generated_at' => $report->generatedAt,
                 ];
             }
@@ -1718,6 +1733,8 @@ final class DatabaseOperationRuntime
                 'receipt_propagation_source' => $details['receipt_propagation_source'] ?? null,
                 'receipt_propagation_report_node_id' => $details['receipt_propagation_report_node_id'] ?? null,
                 'receipt_propagation_generated_at' => $details['receipt_propagation_generated_at'] ?? null,
+                'receipt_propagation_age_seconds' => $details['receipt_propagation_age_seconds'] ?? null,
+                'receipt_propagation_report_trust' => $details['receipt_propagation_report_trust'] ?? null,
             ];
             $confirmation['remote_validation_receipt'] = $propagatedReceipt;
 
@@ -2268,6 +2285,56 @@ final class DatabaseOperationRuntime
             : [];
     }
 
+    private function isTrustedPropagationReportNode(DatabaseOperationPlan $plan, string $reportNodeId): bool
+    {
+        $trustedNodes = $plan->policy->remoteReplayValidationReceiptPropagationTrustedNodes;
+        if ($trustedNodes === []) {
+            return true;
+        }
+
+        return $reportNodeId !== '' && in_array($reportNodeId, $trustedNodes, true);
+    }
+
+    private function isFreshPropagationReport(DatabaseOperationPlan $plan, ?string $generatedAt): bool
+    {
+        $maxAgeSeconds = $plan->policy->remoteReplayValidationReceiptPropagationMaxAgeSeconds;
+        if ($maxAgeSeconds <= 0) {
+            return true;
+        }
+
+        $ageSeconds = $this->resolvePropagationAgeSeconds($generatedAt);
+
+        return $ageSeconds !== null && $ageSeconds <= $maxAgeSeconds;
+    }
+
+    private function resolvePropagationAgeSeconds(?string $generatedAt): ?int
+    {
+        $normalized = trim((string) ($generatedAt ?? ''));
+        if ($normalized === '') {
+            return null;
+        }
+
+        try {
+            $generatedAtDate = new \DateTimeImmutable($normalized);
+            $reference = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+
+            return max(0, $reference->getTimestamp() - $generatedAtDate->getTimestamp());
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    private function resolvePropagationReportTrust(DatabaseOperationPlan $plan, ?string $reportNodeId): string
+    {
+        return $plan->policy->remoteReplayValidationReceiptPropagationTrustedNodes === []
+            ? 'unrestricted_report_node'
+            : (
+                $reportNodeId !== null && in_array($reportNodeId, $plan->policy->remoteReplayValidationReceiptPropagationTrustedNodes, true)
+                    ? 'trusted_report_node'
+                    : 'untrusted_report_node'
+            );
+    }
+
     /**
      * @param array<string, mixed> $receipt
      * @return array<string, mixed>|null
@@ -2413,6 +2480,8 @@ final class DatabaseOperationRuntime
                 'receipt_propagation_source',
                 'receipt_propagation_report_node_id',
                 'receipt_propagation_generated_at',
+                'receipt_propagation_age_seconds',
+                'receipt_propagation_report_trust',
                 'endpoint',
                 'endpoint_strategy',
                 'http_status',

@@ -21,6 +21,9 @@ final readonly class DatabaseExecutionPolicy
         public int $remoteReplayValidationReceiptMaxAgeSeconds = 0,
         public string $remoteReplayValidationReceiptReuseScope = 'current_node',
         public array $remoteReplayValidationReceiptTrustedNodes = [],
+        public int $remoteReplayValidationReceiptPropagationMaxAgeSeconds = 0,
+        public int $remoteReplayValidationReceiptPropagationHealthLimit = 250,
+        public array $remoteReplayValidationReceiptPropagationTrustedNodes = [],
         public int $circuitFailureThreshold = 3,
         public int $circuitCooldownMs = 30000,
         public int $slowQueryThresholdMs = 250,
@@ -71,6 +74,14 @@ final readonly class DatabaseExecutionPolicy
                 $idempotency['remote_replay_validation_receipt_trusted_nodes'],
             )))
             : [];
+        $remoteReplayValidationReceiptPropagationMaxAgeSeconds = max(0, (int) ($idempotency['remote_replay_validation_receipt_propagation_max_age_seconds'] ?? 0));
+        $remoteReplayValidationReceiptPropagationHealthLimit = max(1, (int) ($idempotency['remote_replay_validation_receipt_propagation_health_limit'] ?? 250));
+        $remoteReplayValidationReceiptPropagationTrustedNodes = is_array($idempotency['remote_replay_validation_receipt_propagation_trusted_nodes'] ?? null)
+            ? array_values(array_filter(array_map(
+                static fn(mixed $value): string => is_string($value) ? trim($value) : '',
+                $idempotency['remote_replay_validation_receipt_propagation_trusted_nodes'],
+            )))
+            : [];
 
         return new self(
             timeoutMs: max(1, (int) ($timeouts['soft_timeout_ms'] ?? 30000)),
@@ -87,6 +98,9 @@ final readonly class DatabaseExecutionPolicy
             remoteReplayValidationReceiptMaxAgeSeconds: $remoteReplayValidationReceiptMaxAgeSeconds,
             remoteReplayValidationReceiptReuseScope: $remoteReplayValidationReceiptReuseScope,
             remoteReplayValidationReceiptTrustedNodes: $remoteReplayValidationReceiptTrustedNodes,
+            remoteReplayValidationReceiptPropagationMaxAgeSeconds: $remoteReplayValidationReceiptPropagationMaxAgeSeconds,
+            remoteReplayValidationReceiptPropagationHealthLimit: $remoteReplayValidationReceiptPropagationHealthLimit,
+            remoteReplayValidationReceiptPropagationTrustedNodes: $remoteReplayValidationReceiptPropagationTrustedNodes,
             circuitFailureThreshold: max(1, (int) ($circuit['failure_threshold'] ?? 3)),
             circuitCooldownMs: max(1, (int) ($circuit['cooldown_ms'] ?? 30000)),
             slowQueryThresholdMs: max(1, (int) ($observability['slow_query_ms'] ?? 250)),
@@ -118,6 +132,9 @@ final readonly class DatabaseExecutionPolicy
             remoteReplayValidationReceiptMaxAgeSeconds: $this->remoteReplayValidationReceiptMaxAgeSeconds,
             remoteReplayValidationReceiptReuseScope: $this->remoteReplayValidationReceiptReuseScope,
             remoteReplayValidationReceiptTrustedNodes: $this->remoteReplayValidationReceiptTrustedNodes,
+            remoteReplayValidationReceiptPropagationMaxAgeSeconds: $this->remoteReplayValidationReceiptPropagationMaxAgeSeconds,
+            remoteReplayValidationReceiptPropagationHealthLimit: $this->remoteReplayValidationReceiptPropagationHealthLimit,
+            remoteReplayValidationReceiptPropagationTrustedNodes: $this->remoteReplayValidationReceiptPropagationTrustedNodes,
             circuitFailureThreshold: $this->circuitFailureThreshold,
             circuitCooldownMs: $this->circuitCooldownMs,
             slowQueryThresholdMs: $this->slowQueryThresholdMs,
@@ -149,6 +166,9 @@ final readonly class DatabaseExecutionPolicy
             remoteReplayValidationReceiptMaxAgeSeconds: $this->remoteReplayValidationReceiptMaxAgeSeconds,
             remoteReplayValidationReceiptReuseScope: $this->remoteReplayValidationReceiptReuseScope,
             remoteReplayValidationReceiptTrustedNodes: $this->remoteReplayValidationReceiptTrustedNodes,
+            remoteReplayValidationReceiptPropagationMaxAgeSeconds: $this->remoteReplayValidationReceiptPropagationMaxAgeSeconds,
+            remoteReplayValidationReceiptPropagationHealthLimit: $this->remoteReplayValidationReceiptPropagationHealthLimit,
+            remoteReplayValidationReceiptPropagationTrustedNodes: $this->remoteReplayValidationReceiptPropagationTrustedNodes,
             circuitFailureThreshold: $this->circuitFailureThreshold,
             circuitCooldownMs: $this->circuitCooldownMs,
             slowQueryThresholdMs: $this->slowQueryThresholdMs,

@@ -12,6 +12,7 @@ use Quantum\Database\Dbal\Value\QueryResult;
 use Quantum\Database\Operation\Contracts\DatabaseHealthStoreInterface;
 use Quantum\Database\Operation\Contracts\DatabaseIdempotencyStoreInterface;
 use Quantum\Database\Operation\Contracts\DatabaseRemoteReplayValidatorInterface;
+use Quantum\Database\Operation\Engine\DatabaseRemoteReplayChallengeSigner;
 use Quantum\Database\Trace\DatabaseDeadline;
 
 final class DatabaseOperationRuntime
@@ -23,6 +24,7 @@ final class DatabaseOperationRuntime
         private readonly DatabaseIdempotencyStoreInterface|\Closure|null $idempotencyStore = null,
         private readonly DatabaseRemoteReplayValidatorInterface|\Closure|null $remoteReplayValidator = null,
         private readonly string|\Closure|null $idempotencyNodeId = null,
+        private readonly DatabaseRemoteReplayChallengeSigner|\Closure|null $remoteReplayChallengeSigner = null,
     ) {}
 
     public function plan(RawOperation $operation, DatabaseContext $context, DatabaseExecutionPolicy $policy): DatabaseOperationPlan
@@ -559,7 +561,9 @@ final class DatabaseOperationRuntime
                                 'remote_validation_status' => $remoteReplayValidation->status,
                                 'remote_validation_validator' => $remoteReplayValidation->validator,
                                 'evidence_trust_level' => $evidenceTrustLevel,
-                            ] + $this->extractRemoteReplayValidationTelemetryDetails($remoteReplayValidation)),
+                            ]
+                                + $this->extractRemoteReplayValidationTelemetryDetails($remoteReplayValidation)
+                                + $this->buildRemoteReplayValidationReceiptAdvertisementTelemetry($existing)),
                         ],
                     ),
                 );
@@ -1181,6 +1185,21 @@ final class DatabaseOperationRuntime
         return null;
     }
 
+    private function resolveRemoteReplayChallengeSigner(): ?DatabaseRemoteReplayChallengeSigner
+    {
+        if ($this->remoteReplayChallengeSigner instanceof DatabaseRemoteReplayChallengeSigner) {
+            return $this->remoteReplayChallengeSigner;
+        }
+
+        if ($this->remoteReplayChallengeSigner instanceof \Closure) {
+            $resolved = ($this->remoteReplayChallengeSigner)();
+
+            return $resolved instanceof DatabaseRemoteReplayChallengeSigner ? $resolved : null;
+        }
+
+        return null;
+    }
+
     private function isReadOnlyOperation(OperationKind $kind): bool
     {
         return match ($kind) {
@@ -1420,10 +1439,57 @@ final class DatabaseOperationRuntime
         }
 
         $receipt = $record->confirmation['remote_validation_receipt'] ?? null;
-        if (!is_array($receipt) || $receipt === []) {
+        if (is_array($receipt) && $receipt !== []) {
+            $reused = $this->buildReusedRemoteReplayValidationResult(
+                record: $record,
+                plan: $plan,
+                currentNodeId: $currentNodeId,
+                confirmationEvidence: $confirmationEvidence,
+                receipt: $receipt,
+                receiptSource: 'record_store',
+                persistReusedReceipt: false,
+            );
+            if ($reused instanceof DatabaseRemoteReplayValidationResult) {
+                return $reused;
+            }
+        }
+
+        $propagatedReceipt = $this->findPropagatedRemoteReplayValidationReceipt(
+            $record,
+            $confirmationEvidence,
+        );
+        if ($propagatedReceipt === null) {
             return null;
         }
 
+        return $this->buildReusedRemoteReplayValidationResult(
+            record: $record,
+            plan: $plan,
+            currentNodeId: $currentNodeId,
+            confirmationEvidence: $confirmationEvidence,
+            receipt: $propagatedReceipt['receipt'],
+            receiptSource: 'health_snapshot',
+            persistReusedReceipt: true,
+            propagatedFromNodeId: $propagatedReceipt['report_node_id'],
+            propagatedAt: $propagatedReceipt['generated_at'],
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $confirmationEvidence
+     * @param array<string, mixed> $receipt
+     */
+    private function buildReusedRemoteReplayValidationResult(
+        DatabaseIdempotencyRecord $record,
+        DatabaseOperationPlan $plan,
+        ?string $currentNodeId,
+        array $confirmationEvidence,
+        array $receipt,
+        string $receiptSource,
+        bool $persistReusedReceipt,
+        ?string $propagatedFromNodeId = null,
+        ?string $propagatedAt = null,
+    ): ?DatabaseRemoteReplayValidationResult {
         $status = trim((string) ($receipt['status'] ?? ''));
         $validatedByNodeId = trim((string) ($receipt['validated_by_node_id'] ?? ''));
         $normalizedCurrentNodeId = trim((string) ($currentNodeId ?? ''));
@@ -1471,6 +1537,14 @@ final class DatabaseOperationRuntime
         $reuseScope = $this->normalizeRemoteReplayValidationReceiptReuseScope(
             $plan->policy->remoteReplayValidationReceiptReuseScope,
         );
+        $receiptAttestation = $this->verifyRemoteReplayValidationReceiptAttestation(
+            $receipt,
+            $validatedByNodeId,
+            $reuseTrust,
+        );
+        if ($reuseTrust !== 'current_node' && $receiptAttestation['status'] !== 'verified_receipt_attestation') {
+            return null;
+        }
 
         return DatabaseRemoteReplayValidationResult::verified(
             validator: 'cached_remote_validation_receipt',
@@ -1486,13 +1560,92 @@ final class DatabaseOperationRuntime
                     'receipt_age_seconds' => $ageSeconds,
                     'receipt_validated_at' => $validatedAt,
                     'receipt_validated_by_node_id' => $validatedByNodeId,
+                    'receipt_attestation_verification' => $receiptAttestation['status'],
+                    'receipt_attestation_mode' => $receiptAttestation['mode'],
+                    'receipt_attestation_key_id' => $receiptAttestation['key_id'],
+                    'receipt_attested_by_node_id' => $receiptAttestation['attested_by_node_id'],
+                    'receipt_attested_at' => $receiptAttestation['attested_at'],
                     'receipt_source_node_id' => $sourceNodeId,
                     'receipt_confirmation_fingerprint' => $receiptConfirmationFingerprint !== '' ? $receiptConfirmationFingerprint : null,
                     'receipt_original_validator' => isset($receipt['validator']) ? (string) $receipt['validator'] : null,
+                    'receipt_reuse_source' => $receiptSource,
+                    'receipt_propagation_source' => $receiptSource === 'health_snapshot' ? 'health_snapshot' : null,
+                    'receipt_propagation_report_node_id' => $propagatedFromNodeId,
+                    'receipt_propagation_generated_at' => $propagatedAt,
+                    'persist_reused_receipt' => $persistReusedReceipt,
+                    'receipt_payload' => $persistReusedReceipt ? $receipt : null,
                     'remote_replay_validation_receipt_max_age_seconds' => $plan->policy->remoteReplayValidationReceiptMaxAgeSeconds,
                 ],
             ),
         );
+    }
+
+    /**
+     * @param array<string, mixed> $confirmationEvidence
+     * @return array{receipt:array<string, mixed>,report_node_id:?string,generated_at:?string}|null
+     */
+    private function findPropagatedRemoteReplayValidationReceipt(
+        DatabaseIdempotencyRecord $record,
+        array $confirmationEvidence,
+    ): ?array {
+        $healthStore = $this->resolveHealthStore();
+        if (!$healthStore instanceof DatabaseHealthStoreInterface) {
+            return null;
+        }
+
+        $sourceNodeId = trim((string) ($record->nodeId ?? ''));
+        if ($sourceNodeId === '') {
+            return null;
+        }
+
+        $confirmationFingerprint = trim((string) ($confirmationEvidence['confirmation_fingerprint'] ?? ''));
+        $reports = array_reverse($healthStore->recent(250));
+
+        foreach ($reports as $report) {
+            if (!$report instanceof DatabaseTelemetryReport) {
+                continue;
+            }
+
+            $summary = is_array($report->summary ?? null) ? $report->summary : [];
+            $latest = array_reverse(is_array($summary['latest'] ?? null) ? $summary['latest'] : []);
+            foreach ($latest as $entry) {
+                if (!is_array($entry)) {
+                    continue;
+                }
+
+                $advertisedReceipt = is_array($entry['challenge_receipt_advertisement'] ?? null)
+                    ? $entry['challenge_receipt_advertisement']
+                    : null;
+                if (!is_array($advertisedReceipt) || $advertisedReceipt === []) {
+                    continue;
+                }
+
+                $advertisedSourceNodeId = trim((string) (($advertisedReceipt['source_node_id'] ?? null) ?: ''));
+                if ($advertisedSourceNodeId !== $sourceNodeId) {
+                    continue;
+                }
+
+                $advertisedConfirmationFingerprint = trim((string) (
+                    ($advertisedReceipt['confirmation_fingerprint'] ?? null)
+                    ?: (($advertisedReceipt['details']['confirmation_fingerprint'] ?? null) ?: '')
+                ));
+                if (
+                    $confirmationFingerprint !== ''
+                    && $advertisedConfirmationFingerprint !== ''
+                    && $advertisedConfirmationFingerprint !== $confirmationFingerprint
+                ) {
+                    continue;
+                }
+
+                return [
+                    'receipt' => $advertisedReceipt,
+                    'report_node_id' => $report->nodeId,
+                    'generated_at' => $report->generatedAt,
+                ];
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -1544,9 +1697,34 @@ final class DatabaseOperationRuntime
         if (
             $replayOrigin !== 'federated_remote_node'
             || ($confirmationEvidence['verification_status'] ?? null) !== 'verified_persisted_evidence'
-            || (($validation->details['receipt_reuse'] ?? null) === 'reused_fresh_receipt')
         ) {
             return $record;
+        }
+
+        $details = is_array($validation->details) ? $validation->details : [];
+        if (($details['receipt_reuse'] ?? null) === 'reused_fresh_receipt') {
+            $propagatedReceipt = is_array($details['receipt_payload'] ?? null) ? $details['receipt_payload'] : null;
+            if (!(bool) ($details['persist_reused_receipt'] ?? false) || $propagatedReceipt === null) {
+                return $record;
+            }
+
+            $confirmation = $record->confirmation;
+            $propagatedDetails = is_array($propagatedReceipt['details'] ?? null) ? $propagatedReceipt['details'] : [];
+            $propagatedReceipt['details'] = $propagatedDetails + [
+                'receipt_reuse' => $details['receipt_reuse'] ?? null,
+                'receipt_reuse_scope' => $details['receipt_reuse_scope'] ?? null,
+                'receipt_reuse_trust' => $details['receipt_reuse_trust'] ?? null,
+                'receipt_reuse_source' => $details['receipt_reuse_source'] ?? null,
+                'receipt_propagation_source' => $details['receipt_propagation_source'] ?? null,
+                'receipt_propagation_report_node_id' => $details['receipt_propagation_report_node_id'] ?? null,
+                'receipt_propagation_generated_at' => $details['receipt_propagation_generated_at'] ?? null,
+            ];
+            $confirmation['remote_validation_receipt'] = $propagatedReceipt;
+
+            $updated = $record->withStatus('completed', $confirmation);
+            $this->resolveIdempotencyStore()?->complete($updated, $confirmation);
+
+            return $updated;
         }
 
         $confirmation = $record->confirmation;
@@ -1562,6 +1740,13 @@ final class DatabaseOperationRuntime
             'confirmation_fingerprint' => $confirmationEvidence['confirmation_fingerprint'] ?? null,
             'details' => $validation->details,
         ];
+        $receiptAttestation = $this->createRemoteReplayValidationReceiptAttestation(
+            $confirmation['remote_validation_receipt'],
+            $currentNodeId,
+        );
+        if ($receiptAttestation !== null) {
+            $confirmation['remote_validation_receipt']['receipt_attestation'] = $receiptAttestation;
+        }
 
         $updated = $record->withStatus('completed', $confirmation);
         $this->resolveIdempotencyStore()?->complete($updated, $confirmation);
@@ -1617,6 +1802,166 @@ final class DatabaseOperationRuntime
         return in_array($validatedByNodeId, $trustedNodes, true)
             ? 'trusted_node'
             : null;
+    }
+
+    /**
+     * @param array<string, mixed> $receipt
+     * @return array<string, mixed>|null
+     */
+    private function createRemoteReplayValidationReceiptAttestation(array $receipt, ?string $currentNodeId): ?array
+    {
+        $attestedByNodeId = trim((string) ($currentNodeId ?? ''));
+        if ($attestedByNodeId === '') {
+            return null;
+        }
+
+        $signer = $this->resolveRemoteReplayChallengeSigner();
+        if ($signer === null) {
+            return null;
+        }
+
+        $attestation = [
+            'version' => 1,
+            'mode' => 'validator_node_hmac_sha256',
+            'attested_by_node_id' => $attestedByNodeId,
+            'attested_at' => $this->timestampNow(),
+            'key_id' => $signer->activeKeyId(),
+            'protocol' => $signer->protocol(),
+        ];
+        $payload = $this->buildRemoteReplayValidationReceiptAttestationPayload($receipt, $attestation);
+        $attestation['signature'] = $signer->signReceiptAttestation($payload, $attestation['key_id']);
+
+        return $attestation;
+    }
+
+    /**
+     * @param array<string, mixed> $receipt
+     * @return array{status:string,mode:?string,key_id:?string,attested_by_node_id:?string,attested_at:?string}
+     */
+    private function verifyRemoteReplayValidationReceiptAttestation(
+        array $receipt,
+        string $validatedByNodeId,
+        string $reuseTrust,
+    ): array {
+        if ($reuseTrust === 'current_node') {
+            return [
+                'status' => 'not_required_current_node',
+                'mode' => null,
+                'key_id' => null,
+                'attested_by_node_id' => $validatedByNodeId !== '' ? $validatedByNodeId : null,
+                'attested_at' => null,
+            ];
+        }
+
+        $attestation = is_array($receipt['receipt_attestation'] ?? null)
+            ? $receipt['receipt_attestation']
+            : [];
+        $mode = trim((string) ($attestation['mode'] ?? ''));
+        $keyId = trim((string) ($attestation['key_id'] ?? ''));
+        $attestedByNodeId = trim((string) ($attestation['attested_by_node_id'] ?? ''));
+        $attestedAt = trim((string) ($attestation['attested_at'] ?? ''));
+        $signature = trim((string) ($attestation['signature'] ?? ''));
+
+        if ($attestation === []) {
+            return [
+                'status' => 'missing_receipt_attestation',
+                'mode' => null,
+                'key_id' => null,
+                'attested_by_node_id' => null,
+                'attested_at' => null,
+            ];
+        }
+
+        if ($mode !== 'validator_node_hmac_sha256') {
+            return [
+                'status' => 'unsupported_receipt_attestation',
+                'mode' => $mode !== '' ? $mode : null,
+                'key_id' => $keyId !== '' ? $keyId : null,
+                'attested_by_node_id' => $attestedByNodeId !== '' ? $attestedByNodeId : null,
+                'attested_at' => $attestedAt !== '' ? $attestedAt : null,
+            ];
+        }
+
+        if ($validatedByNodeId === '' || $attestedByNodeId === '' || $attestedByNodeId !== $validatedByNodeId) {
+            return [
+                'status' => 'receipt_attestation_node_mismatch',
+                'mode' => $mode,
+                'key_id' => $keyId !== '' ? $keyId : null,
+                'attested_by_node_id' => $attestedByNodeId !== '' ? $attestedByNodeId : null,
+                'attested_at' => $attestedAt !== '' ? $attestedAt : null,
+            ];
+        }
+
+        if ($attestedAt === '' || $signature === '') {
+            return [
+                'status' => 'incomplete_receipt_attestation',
+                'mode' => $mode,
+                'key_id' => $keyId !== '' ? $keyId : null,
+                'attested_by_node_id' => $attestedByNodeId,
+                'attested_at' => $attestedAt !== '' ? $attestedAt : null,
+            ];
+        }
+
+        $signer = $this->resolveRemoteReplayChallengeSigner();
+        if ($signer === null) {
+            return [
+                'status' => 'receipt_attestation_signer_unavailable',
+                'mode' => $mode,
+                'key_id' => $keyId !== '' ? $keyId : null,
+                'attested_by_node_id' => $attestedByNodeId,
+                'attested_at' => $attestedAt,
+            ];
+        }
+
+        $payload = $this->buildRemoteReplayValidationReceiptAttestationPayload($receipt, [
+            'mode' => $mode,
+            'attested_by_node_id' => $attestedByNodeId,
+            'attested_at' => $attestedAt,
+            'key_id' => $keyId !== '' ? $keyId : null,
+            'protocol' => $attestation['protocol'] ?? null,
+        ]);
+        $verified = $signer->verifyReceiptAttestation(
+            $payload,
+            $signature,
+            $keyId !== '' ? $keyId : null,
+        );
+
+        return [
+            'status' => $verified ? 'verified_receipt_attestation' : 'invalid_receipt_attestation',
+            'mode' => $mode,
+            'key_id' => $keyId !== '' ? $keyId : null,
+            'attested_by_node_id' => $attestedByNodeId,
+            'attested_at' => $attestedAt,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $receipt
+     * @param array<string, mixed> $attestation
+     * @return array<string, mixed>
+     */
+    private function buildRemoteReplayValidationReceiptAttestationPayload(array $receipt, array $attestation): array
+    {
+        return [
+            'version' => $receipt['version'] ?? 1,
+            'status' => $receipt['status'] ?? null,
+            'validator' => $receipt['validator'] ?? null,
+            'message' => $receipt['message'] ?? null,
+            'validation_mode' => $receipt['validation_mode'] ?? null,
+            'validated_at' => $receipt['validated_at'] ?? null,
+            'validated_by_node_id' => $receipt['validated_by_node_id'] ?? null,
+            'source_node_id' => $receipt['source_node_id'] ?? null,
+            'confirmation_fingerprint' => $receipt['confirmation_fingerprint'] ?? null,
+            'details' => is_array($receipt['details'] ?? null) ? $receipt['details'] : [],
+            'receipt_attestation' => [
+                'version' => $attestation['version'] ?? 1,
+                'mode' => $attestation['mode'] ?? null,
+                'attested_by_node_id' => $attestation['attested_by_node_id'] ?? null,
+                'attested_at' => $attestation['attested_at'] ?? null,
+                'key_id' => $attestation['key_id'] ?? null,
+                'protocol' => $attestation['protocol'] ?? null,
+            ],
+        ];
     }
 
     /**
@@ -1906,6 +2251,54 @@ final class DatabaseOperationRuntime
     }
 
     /**
+     * @return array<string, array<string, mixed>>
+     */
+    private function buildRemoteReplayValidationReceiptAdvertisementTelemetry(
+        DatabaseIdempotencyRecord $record,
+    ): array {
+        $receipt = $record->confirmation['remote_validation_receipt'] ?? null;
+        if (!is_array($receipt) || $receipt === []) {
+            return [];
+        }
+
+        $advertisement = $this->buildRemoteReplayValidationReceiptAdvertisement($receipt);
+
+        return $advertisement !== null
+            ? ['receipt_advertisement' => $advertisement]
+            : [];
+    }
+
+    /**
+     * @param array<string, mixed> $receipt
+     * @return array<string, mixed>|null
+     */
+    private function buildRemoteReplayValidationReceiptAdvertisement(array $receipt): ?array
+    {
+        if (trim((string) ($receipt['status'] ?? '')) !== 'verified_remote_validation') {
+            return null;
+        }
+
+        $advertisement = [
+            'version' => $receipt['version'] ?? 1,
+            'status' => $receipt['status'] ?? null,
+            'validator' => $receipt['validator'] ?? null,
+            'message' => $receipt['message'] ?? null,
+            'validation_mode' => $receipt['validation_mode'] ?? null,
+            'validated_at' => $receipt['validated_at'] ?? null,
+            'validated_by_node_id' => $receipt['validated_by_node_id'] ?? null,
+            'source_node_id' => $receipt['source_node_id'] ?? null,
+            'confirmation_fingerprint' => $receipt['confirmation_fingerprint'] ?? null,
+            'details' => is_array($receipt['details'] ?? null) ? $receipt['details'] : [],
+        ];
+
+        if (is_array($receipt['receipt_attestation'] ?? null)) {
+            $advertisement['receipt_attestation'] = $receipt['receipt_attestation'];
+        }
+
+        return $advertisement;
+    }
+
+    /**
      * @param array<string, mixed> $confirmationEvidence
      * @return array{attestation_verification_status:string,recomputed_attestation_fingerprint:?string}
      */
@@ -2010,7 +2403,16 @@ final class DatabaseOperationRuntime
                 'receipt_reuse',
                 'receipt_reuse_scope',
                 'receipt_validated_by_node_id',
+                'receipt_attestation_verification',
+                'receipt_attestation_mode',
+                'receipt_attestation_key_id',
+                'receipt_attested_by_node_id',
+                'receipt_attested_at',
                 'receipt_age_seconds',
+                'receipt_reuse_source',
+                'receipt_propagation_source',
+                'receipt_propagation_report_node_id',
+                'receipt_propagation_generated_at',
                 'endpoint',
                 'endpoint_strategy',
                 'http_status',

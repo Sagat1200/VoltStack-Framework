@@ -48,6 +48,22 @@ final class DatabaseRemoteReplayChallengeSigner
         return $this->verifyPayload('db.remote_replay.challenge.response.v1', $payload, $signature, $keyId);
     }
 
+    /**
+     * @param array<string, mixed> $payload
+     */
+    public function signReceiptAttestation(array $payload, ?string $keyId = null): string
+    {
+        return $this->signPayload('db.remote_replay.validation_receipt.v1', $payload, $keyId);
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    public function verifyReceiptAttestation(array $payload, string $signature, ?string $keyId = null): bool
+    {
+        return $this->verifyPayload('db.remote_replay.validation_receipt.v1', $payload, $signature, $keyId);
+    }
+
     public function protocol(): string
     {
         $protocol = trim((string) $this->app->config('database.idempotency.remote_replay_challenge.protocol', self::PROTOCOL));

@@ -136,7 +136,7 @@ final class DatabaseTelemetryStore
     }
 
     /**
-     * @return array<string, scalar|null|array<int, string>>
+     * @return array<string, scalar|null|array<int, string>|array<string, mixed>>
      */
     private static function entryToArray(DatabaseOperationPlan $plan, DatabaseDiagnosticSnapshot $snapshot): array
     {
@@ -164,12 +164,17 @@ final class DatabaseTelemetryStore
             'challenge_receipt_reuse' => $challenge['challenge_receipt_reuse'] ?? null,
             'challenge_receipt_reuse_scope' => $challenge['challenge_receipt_reuse_scope'] ?? null,
             'challenge_receipt_validated_by_node_id' => $challenge['challenge_receipt_validated_by_node_id'] ?? null,
+            'challenge_receipt_attestation_verification' => $challenge['challenge_receipt_attestation_verification'] ?? null,
+            'challenge_receipt_attestation_key_id' => $challenge['challenge_receipt_attestation_key_id'] ?? null,
+            'challenge_receipt_advertisement' => is_array($challenge['challenge_receipt_advertisement'] ?? null)
+                ? $challenge['challenge_receipt_advertisement']
+                : null,
         ];
     }
 
     /**
      * @param array<string, mixed> $summary
-     * @param array<string, string|int|null>|null $telemetry
+     * @param array<string, string|int|array<string, mixed>|null>|null $telemetry
      */
     private static function collectRemoteReplayChallengeSummary(array &$summary, ?array $telemetry): void
     {
@@ -204,7 +209,7 @@ final class DatabaseTelemetryStore
     }
 
     /**
-     * @return array<string, string|int|null>|null
+     * @return array<string, string|int|array<string, mixed>|null>|null
      */
     private static function extractRemoteReplayChallengeTelemetry(DatabaseDiagnosticSnapshot $snapshot): ?array
     {
@@ -237,6 +242,9 @@ final class DatabaseTelemetryStore
                     'receipt_reuse',
                     'receipt_reuse_scope',
                     'receipt_validated_by_node_id',
+                    'receipt_attestation_verification',
+                    'receipt_attestation_key_id',
+                    'receipt_advertisement',
                 ] as $key
             ) {
                 if (array_key_exists($key, $details)) {
@@ -272,6 +280,13 @@ final class DatabaseTelemetryStore
                 ?? ($telemetry['challenge_receipt_reuse_scope'] ?? null);
             $telemetry['challenge_receipt_validated_by_node_id'] = self::normalizeString($details['receipt_validated_by_node_id'] ?? null)
                 ?? ($telemetry['challenge_receipt_validated_by_node_id'] ?? null);
+            $telemetry['challenge_receipt_attestation_verification'] = self::normalizeString($details['receipt_attestation_verification'] ?? null)
+                ?? ($telemetry['challenge_receipt_attestation_verification'] ?? null);
+            $telemetry['challenge_receipt_attestation_key_id'] = self::normalizeString($details['receipt_attestation_key_id'] ?? null)
+                ?? ($telemetry['challenge_receipt_attestation_key_id'] ?? null);
+            $telemetry['challenge_receipt_advertisement'] = is_array($details['receipt_advertisement'] ?? null)
+                ? $details['receipt_advertisement']
+                : ($telemetry['challenge_receipt_advertisement'] ?? null);
         }
 
         return $telemetry === [] ? null : $telemetry;

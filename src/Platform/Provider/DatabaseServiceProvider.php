@@ -490,6 +490,7 @@ final class DatabaseServiceProvider extends ServiceProvider
                 'database.idempotency.node_id',
                 (string) $app->config('database.health.node_id', (string) $app->config('app.name', 'app')),
             ),
+            remoteReplayChallengeSigner: static fn() => $app->make(DatabaseRemoteReplayChallengeSigner::class),
         ));
 
         $this->app->singleton(SeederDiscovery::class, function (Application $app): SeederDiscovery {

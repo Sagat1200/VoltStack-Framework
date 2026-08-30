@@ -408,6 +408,18 @@ final class DbIdempotencyCommand extends Command
                         (string) $remoteValidationReceipt['message'],
                     ));
                 }
+                $receiptAttestation = is_array($remoteValidationReceipt['receipt_attestation'] ?? null)
+                    ? $remoteValidationReceipt['receipt_attestation']
+                    : null;
+                if ($receiptAttestation !== null) {
+                    $output->writeln(sprintf(
+                        'Remote validation attestation: mode=%s attested_by=%s attested_at=%s key_id=%s',
+                        (string) ($receiptAttestation['mode'] ?? 'n/a'),
+                        (string) ($receiptAttestation['attested_by_node_id'] ?? 'n/a'),
+                        (string) ($receiptAttestation['attested_at'] ?? 'n/a'),
+                        (string) ($receiptAttestation['key_id'] ?? 'n/a'),
+                    ));
+                }
                 $remoteChallengeReceipt = $this->resolveRemoteChallengeReceipt($remoteValidationReceipt);
                 if ($remoteChallengeReceipt !== null) {
                     $output->writeln(sprintf(

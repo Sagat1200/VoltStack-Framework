@@ -234,6 +234,8 @@ final class DbHealthCommand extends Command
         $receiptReuse = isset($entry['challenge_receipt_reuse']) ? trim((string) $entry['challenge_receipt_reuse']) : '';
         $receiptReuseScope = isset($entry['challenge_receipt_reuse_scope']) ? trim((string) $entry['challenge_receipt_reuse_scope']) : '';
         $receiptValidatedByNodeId = isset($entry['challenge_receipt_validated_by_node_id']) ? trim((string) $entry['challenge_receipt_validated_by_node_id']) : '';
+        $receiptAttestationVerification = isset($entry['challenge_receipt_attestation_verification']) ? trim((string) $entry['challenge_receipt_attestation_verification']) : '';
+        $receiptAttestationKeyId = isset($entry['challenge_receipt_attestation_key_id']) ? trim((string) $entry['challenge_receipt_attestation_key_id']) : '';
 
         if (
             $status === ''
@@ -261,6 +263,14 @@ final class DbHealthCommand extends Command
                 ' reuse_scope=%s validated_by=%s',
                 $receiptReuseScope !== '' ? $receiptReuseScope : 'n/a',
                 $receiptValidatedByNodeId !== '' ? $receiptValidatedByNodeId : 'n/a',
+            );
+        }
+
+        if ($receiptAttestationVerification !== '' || $receiptAttestationKeyId !== '') {
+            $formatted .= sprintf(
+                ' receipt_attestation=%s attestation_key=%s',
+                $receiptAttestationVerification !== '' ? $receiptAttestationVerification : 'n/a',
+                $receiptAttestationKeyId !== '' ? $receiptAttestationKeyId : 'n/a',
             );
         }
 

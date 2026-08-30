@@ -13,6 +13,7 @@ use Quantum\Database\Operation\Contracts\DatabaseIdempotencyStoreInterface;
 use Quantum\Database\Operation\DatabaseExecutionPolicy;
 use Quantum\Database\Operation\DatabaseIdempotencyRecord;
 use Quantum\Database\Operation\DatabaseOperationRuntime;
+use Quantum\Database\Operation\Engine\DatabaseRemoteReplayChallengeSigner;
 use Quantum\Database\Operation\OperationKind;
 use Quantum\Database\Operation\RawOperation;
 use Quantum\Http\Request;
@@ -124,6 +125,11 @@ final class DatabaseHealthCommandTest extends TestCase
         $config->set('database.idempotency.remote_replay_validation_receipt_max_age_seconds', 600);
         $config->set('database.idempotency.remote_replay_validation_receipt_reuse_scope', 'trusted_nodes');
         $config->set('database.idempotency.remote_replay_validation_receipt_trusted_nodes', ['node-validator-c']);
+        $config->set('database.idempotency.remote_replay_challenge.key_id', 'key-2026-09');
+        $config->set('database.idempotency.remote_replay_challenge.shared_secret_map', [
+            'key-2026-08' => 'cluster-shared-secret-a',
+            'key-2026-09' => 'cluster-shared-secret-b',
+        ]);
         $router = $app->make(Router::class);
         $router->get('/health-remote-replay', function () use ($app): string {
             /** @var DatabaseContext $context */
@@ -132,6 +138,8 @@ final class DatabaseHealthCommandTest extends TestCase
             $runtime = $app->make(DatabaseOperationRuntime::class);
             /** @var DatabaseIdempotencyStoreInterface $store */
             $store = $app->make(DatabaseIdempotencyStoreInterface::class);
+            /** @var DatabaseRemoteReplayChallengeSigner $signer */
+            $signer = $app->make(DatabaseRemoteReplayChallengeSigner::class);
             $policy = DatabaseExecutionPolicy::fromConfig((array) $app->config('database', []));
             $plan = $runtime->plan(
                 new RawOperation(
@@ -179,6 +187,39 @@ final class DatabaseHealthCommandTest extends TestCase
                 ],
             );
             $validatedAt = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format(DATE_ATOM);
+            $receiptAttestation = [
+                'version' => 1,
+                'mode' => 'validator_node_hmac_sha256',
+                'attested_by_node_id' => 'node-validator-c',
+                'attested_at' => '2026-08-27T10:00:06+00:00',
+                'key_id' => 'key-2026-09',
+                'protocol' => $signer->protocol(),
+            ];
+            $receiptAttestationPayload = [
+                'version' => 1,
+                'status' => 'verified_remote_validation',
+                'validator' => 'remote-validator-original',
+                'message' => 'Previously validated by the current node.',
+                'validation_mode' => 'require',
+                'validated_at' => $validatedAt,
+                'validated_by_node_id' => 'node-validator-c',
+                'source_node_id' => 'node-remote',
+                'confirmation_fingerprint' => $confirmationFingerprint,
+                'details' => [
+                    'challenge_protocol' => 'remote_replay_node_challenge_v1',
+                    'protocol_negotiated' => 'remote_replay_node_challenge_v1',
+                    'protocol_compatibility' => 'compatible',
+                    'request_key_id' => 'key-2026-08',
+                    'response_key_id' => 'key-2026-09',
+                    'receipt_reuse' => 'reused_fresh_receipt',
+                    'receipt_reuse_scope' => 'trusted_nodes',
+                    'receipt_validated_by_node_id' => 'node-validator-c',
+                    'receipt_attestation_verification' => 'verified_receipt_attestation',
+                    'receipt_attestation_key_id' => 'key-2026-09',
+                ],
+                'receipt_attestation' => $receiptAttestation,
+            ];
+            $receiptAttestation['signature'] = $signer->signReceiptAttestation($receiptAttestationPayload, 'key-2026-09');
             $store->complete($record, [
                 'kind' => 'raw_execute',
                 'affected_rows' => 1,
@@ -220,6 +261,7 @@ final class DatabaseHealthCommandTest extends TestCase
                     'validated_at' => $validatedAt,
                     'validated_by_node_id' => 'node-validator-c',
                     'source_node_id' => 'node-remote',
+                    'confirmation_fingerprint' => $confirmationFingerprint,
                     'details' => [
                         'challenge_protocol' => 'remote_replay_node_challenge_v1',
                         'protocol_negotiated' => 'remote_replay_node_challenge_v1',
@@ -229,7 +271,10 @@ final class DatabaseHealthCommandTest extends TestCase
                         'receipt_reuse' => 'reused_fresh_receipt',
                         'receipt_reuse_scope' => 'trusted_nodes',
                         'receipt_validated_by_node_id' => 'node-validator-c',
+                        'receipt_attestation_verification' => 'verified_receipt_attestation',
+                        'receipt_attestation_key_id' => 'key-2026-09',
                     ],
+                    'receipt_attestation' => $receiptAttestation,
                 ],
             ]);
 
@@ -248,7 +293,7 @@ final class DatabaseHealthCommandTest extends TestCase
             $result['stdout']
         );
         self::assertStringContainsString(
-            'rv=verified_remote_validation challenge=remote_replay_node_challenge_v1 compat=compatible key=key-2026-08/key-2026-09 reuse=reused_fresh_receipt reuse_scope=trusted_nodes validated_by=node-validator-c',
+            'rv=verified_remote_validation challenge=remote_replay_node_challenge_v1 compat=compatible key=key-2026-08/key-2026-09 reuse=reused_fresh_receipt reuse_scope=trusted_nodes validated_by=node-validator-c receipt_attestation=verified_receipt_attestation attestation_key=key-2026-09',
             $result['stdout']
         );
 
@@ -266,6 +311,11 @@ final class DatabaseHealthCommandTest extends TestCase
         self::assertStringContainsString('"challenge_receipt_reuse": "reused_fresh_receipt"', $json['stdout']);
         self::assertStringContainsString('"challenge_receipt_reuse_scope": "trusted_nodes"', $json['stdout']);
         self::assertStringContainsString('"challenge_receipt_validated_by_node_id": "node-validator-c"', $json['stdout']);
+        self::assertStringContainsString('"challenge_receipt_attestation_verification": "verified_receipt_attestation"', $json['stdout']);
+        self::assertStringContainsString('"challenge_receipt_attestation_key_id": "key-2026-09"', $json['stdout']);
+        self::assertStringContainsString('"challenge_receipt_advertisement"', $json['stdout']);
+        self::assertStringContainsString('"source_node_id": "node-remote"', $json['stdout']);
+        self::assertStringContainsString('"validated_by_node_id": "node-validator-c"', $json['stdout']);
     }
 
     /**

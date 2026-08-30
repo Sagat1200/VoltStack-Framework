@@ -1836,7 +1836,7 @@ final class DatabaseOperationRuntime
         }
 
         $confirmationFingerprint = trim((string) ($confirmationEvidence['confirmation_fingerprint'] ?? ''));
-        $reports = array_reverse($healthStore->recent($plan->policy->remoteReplayValidationReceiptPropagationHealthLimit));
+        $reports = array_reverse($healthStore->recent($plan->policy->remoteReplayValidationReceiptCleanupPropagationHealthLimit));
 
         foreach ($reports as $report) {
             if (!$report instanceof DatabaseTelemetryReport) {
@@ -1844,11 +1844,11 @@ final class DatabaseOperationRuntime
             }
 
             $reportNodeId = trim((string) ($report->nodeId ?? ''));
-            if (!$this->isTrustedPropagationReportNode($plan, $reportNodeId)) {
+            if (!$this->isTrustedCleanupPropagationReportNode($plan, $reportNodeId)) {
                 continue;
             }
 
-            if (!$this->isFreshPropagationReport($plan, $report->generatedAt)) {
+            if (!$this->isFreshCleanupPropagationReport($plan, $report->generatedAt)) {
                 continue;
             }
 
@@ -2766,7 +2766,41 @@ final class DatabaseOperationRuntime
 
     private function isTrustedPropagationReportNode(DatabaseOperationPlan $plan, string $reportNodeId): bool
     {
-        $trustedNodes = $plan->policy->remoteReplayValidationReceiptPropagationTrustedNodes;
+        return $this->isTrustedReportNode(
+            $reportNodeId,
+            $plan->policy->remoteReplayValidationReceiptPropagationTrustedNodes,
+        );
+    }
+
+    private function isFreshPropagationReport(DatabaseOperationPlan $plan, ?string $generatedAt): bool
+    {
+        return $this->isFreshReport(
+            $generatedAt,
+            $plan->policy->remoteReplayValidationReceiptPropagationMaxAgeSeconds,
+        );
+    }
+
+    private function isTrustedCleanupPropagationReportNode(DatabaseOperationPlan $plan, string $reportNodeId): bool
+    {
+        return $this->isTrustedReportNode(
+            $reportNodeId,
+            $plan->policy->remoteReplayValidationReceiptCleanupPropagationTrustedNodes,
+        );
+    }
+
+    private function isFreshCleanupPropagationReport(DatabaseOperationPlan $plan, ?string $generatedAt): bool
+    {
+        return $this->isFreshReport(
+            $generatedAt,
+            $plan->policy->remoteReplayValidationReceiptCleanupPropagationMaxAgeSeconds,
+        );
+    }
+
+    /**
+     * @param array<int, string> $trustedNodes
+     */
+    private function isTrustedReportNode(string $reportNodeId, array $trustedNodes): bool
+    {
         if ($trustedNodes === []) {
             return true;
         }
@@ -2774,9 +2808,8 @@ final class DatabaseOperationRuntime
         return $reportNodeId !== '' && in_array($reportNodeId, $trustedNodes, true);
     }
 
-    private function isFreshPropagationReport(DatabaseOperationPlan $plan, ?string $generatedAt): bool
+    private function isFreshReport(?string $generatedAt, int $maxAgeSeconds): bool
     {
-        $maxAgeSeconds = $plan->policy->remoteReplayValidationReceiptPropagationMaxAgeSeconds;
         if ($maxAgeSeconds <= 0) {
             return true;
         }

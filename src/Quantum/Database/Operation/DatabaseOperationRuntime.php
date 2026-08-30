@@ -1438,7 +1438,13 @@ final class DatabaseOperationRuntime
             return null;
         }
 
-        $record = $this->pruneExpiredReplicatedRemoteReplayValidationReceipt($record, $plan);
+        $prepared = $this->prepareRemoteReplayValidationReceiptReuseCandidates(
+            $record,
+            $plan,
+            $confirmationEvidence,
+        );
+        $record = $prepared['record'];
+        $propagatedReceipt = $prepared['propagated_receipt'];
         $receipt = $record->confirmation['remote_validation_receipt'] ?? null;
         if (is_array($receipt) && $receipt !== []) {
             $reused = $this->buildReusedRemoteReplayValidationResult(
@@ -1455,11 +1461,6 @@ final class DatabaseOperationRuntime
             }
         }
 
-        $propagatedReceipt = $this->findPropagatedRemoteReplayValidationReceipt(
-            $plan,
-            $record,
-            $confirmationEvidence,
-        );
         if ($propagatedReceipt === null) {
             return null;
         }
@@ -1475,6 +1476,60 @@ final class DatabaseOperationRuntime
             propagatedFromNodeId: $propagatedReceipt['report_node_id'],
             propagatedAt: $propagatedReceipt['generated_at'],
         );
+    }
+
+    /**
+     * @param array<string, mixed> $confirmationEvidence
+     * @return array{
+     *   record: DatabaseIdempotencyRecord,
+     *   propagated_receipt: array{receipt:array<string, mixed>,report_node_id:?string,generated_at:?string}|null
+     * }
+     */
+    private function prepareRemoteReplayValidationReceiptReuseCandidates(
+        DatabaseIdempotencyRecord $record,
+        DatabaseOperationPlan $plan,
+        array $confirmationEvidence,
+    ): array {
+        $record = $this->pruneExpiredReplicatedRemoteReplayValidationReceipt($record, $plan);
+        $propagatedReceipt = $this->findPropagatedRemoteReplayValidationReceipt(
+            $plan,
+            $record,
+            $confirmationEvidence,
+        );
+
+        $localReceipt = $record->confirmation['remote_validation_receipt'] ?? null;
+        if (!is_array($localReceipt) || $localReceipt === []) {
+            return [
+                'record' => $record,
+                'propagated_receipt' => $propagatedReceipt,
+            ];
+        }
+
+        if (
+            $propagatedReceipt !== null
+            && $this->isPropagatedReceiptNewerThanLocalReplica($localReceipt, $propagatedReceipt)
+        ) {
+            $record = $this->pruneReplicatedRemoteReplayValidationReceipt(
+                $record,
+                [
+                    'version' => 1,
+                    'reason' => 'displaced_by_peer_advertisement',
+                    'pruned_at' => $this->timestampNow(),
+                    'receipt_reuse_source' => $localReceipt['details']['receipt_reuse_source'] ?? null,
+                    'report_node_id' => $localReceipt['details']['receipt_propagation_report_node_id'] ?? null,
+                    'report_generated_at' => $localReceipt['details']['receipt_propagation_generated_at'] ?? null,
+                    'replacement_report_node_id' => $propagatedReceipt['report_node_id'],
+                    'replacement_report_generated_at' => $propagatedReceipt['generated_at'],
+                    'replacement_validated_at' => $propagatedReceipt['receipt']['validated_at'] ?? null,
+                    'replacement_validator' => $propagatedReceipt['receipt']['validator'] ?? null,
+                ],
+            );
+        }
+
+        return [
+            'record' => $record,
+            'propagated_receipt' => $propagatedReceipt,
+        ];
     }
 
     /**
@@ -1694,25 +1749,76 @@ final class DatabaseOperationRuntime
             return $record;
         }
 
+        return $this->pruneReplicatedRemoteReplayValidationReceipt(
+            $record,
+            [
+                'version' => 1,
+                'reason' => 'expired_local_replica',
+                'pruned_at' => $this->timestampNow(),
+                'replicated_at' => $replicatedLifecycle['receipt_replicated_at'] ?? null,
+                'replica_age_seconds' => $replicatedLifecycle['receipt_replica_age_seconds'] ?? null,
+                'replica_max_age_seconds' => $replicatedLifecycle['receipt_replica_max_age_seconds'] ?? null,
+                'replica_expires_at' => $replicatedLifecycle['receipt_replica_expires_at'] ?? null,
+                'receipt_reuse_source' => $replicatedLifecycle['receipt_reuse_source'] ?? null,
+                'report_node_id' => $replicatedLifecycle['receipt_propagation_report_node_id'] ?? null,
+                'report_generated_at' => $replicatedLifecycle['receipt_propagation_generated_at'] ?? null,
+            ],
+        );
+    }
+
+    /**
+     * @param array<string, scalar|null> $cleanup
+     */
+    private function pruneReplicatedRemoteReplayValidationReceipt(
+        DatabaseIdempotencyRecord $record,
+        array $cleanup,
+    ): DatabaseIdempotencyRecord {
         $confirmation = $record->confirmation;
         unset($confirmation['remote_validation_receipt']);
-        $confirmation['remote_validation_receipt_cleanup'] = [
-            'version' => 1,
-            'reason' => 'expired_local_replica',
-            'pruned_at' => $this->timestampNow(),
-            'replicated_at' => $replicatedLifecycle['receipt_replicated_at'] ?? null,
-            'replica_age_seconds' => $replicatedLifecycle['receipt_replica_age_seconds'] ?? null,
-            'replica_max_age_seconds' => $replicatedLifecycle['receipt_replica_max_age_seconds'] ?? null,
-            'replica_expires_at' => $replicatedLifecycle['receipt_replica_expires_at'] ?? null,
-            'receipt_reuse_source' => $replicatedLifecycle['receipt_reuse_source'] ?? null,
-            'report_node_id' => $replicatedLifecycle['receipt_propagation_report_node_id'] ?? null,
-            'report_generated_at' => $replicatedLifecycle['receipt_propagation_generated_at'] ?? null,
-        ];
+        $confirmation['remote_validation_receipt_cleanup'] = $cleanup;
 
         $updated = $record->withStatus('completed', $confirmation);
         $this->resolveIdempotencyStore()?->complete($updated, $confirmation);
 
         return $updated;
+    }
+
+    /**
+     * @param array<string, mixed> $localReceipt
+     * @param array{receipt:array<string, mixed>,report_node_id:?string,generated_at:?string} $propagatedReceipt
+     */
+    private function isPropagatedReceiptNewerThanLocalReplica(
+        array $localReceipt,
+        array $propagatedReceipt,
+    ): bool {
+        $localDetails = is_array($localReceipt['details'] ?? null) ? $localReceipt['details'] : [];
+        $reuseSource = trim((string) ($localDetails['receipt_reuse_source'] ?? ''));
+        $propagationSource = trim((string) ($localDetails['receipt_propagation_source'] ?? ''));
+        if ($reuseSource !== 'health_snapshot' && $propagationSource !== 'health_snapshot') {
+            return false;
+        }
+
+        $localPropagationGeneratedAt = trim((string) ($localDetails['receipt_propagation_generated_at'] ?? ''));
+        $candidateGeneratedAt = trim((string) ($propagatedReceipt['generated_at'] ?? ''));
+        if ($localPropagationGeneratedAt !== '' && $candidateGeneratedAt !== '') {
+            try {
+                return (new \DateTimeImmutable($candidateGeneratedAt)) > (new \DateTimeImmutable($localPropagationGeneratedAt));
+            } catch (\Throwable) {
+                // Fall through to validated_at comparison.
+            }
+        }
+
+        $localValidatedAt = trim((string) ($localReceipt['validated_at'] ?? ''));
+        $candidateValidatedAt = trim((string) (($propagatedReceipt['receipt']['validated_at'] ?? null) ?: ''));
+        if ($localValidatedAt !== '' && $candidateValidatedAt !== '') {
+            try {
+                return (new \DateTimeImmutable($candidateValidatedAt)) > (new \DateTimeImmutable($localValidatedAt));
+            } catch (\Throwable) {
+                return false;
+            }
+        }
+
+        return false;
     }
 
     /**

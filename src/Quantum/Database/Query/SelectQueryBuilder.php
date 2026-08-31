@@ -1,4 +1,6 @@
-<?php declare(strict_types=1);
+<?php
+
+declare(strict_types=1);
 
 namespace Quantum\Database\Query;
 
@@ -46,6 +48,9 @@ use Quantum\Database\Operation\DatabaseDiagnosticSnapshot;
 use Quantum\Database\Operation\DatabaseExecutionPolicy;
 use Quantum\Database\Operation\DatabaseOperationPlan;
 use Quantum\Database\Operation\DatabaseOperationRuntime;
+use Quantum\Database\Operation\Pipeline\NoOpQueryOptimizer;
+use Quantum\Database\Operation\Pipeline\NoOpQueryPlanner;
+use Quantum\Database\Operation\Pipeline\QueryOptimizationInput;
 use Quantum\Database\Query\Enum\JoinType;
 use Quantum\Database\Query\Enum\Order;
 use Quantum\Database\Query\Expression\CompositeExpression;
@@ -335,7 +340,7 @@ final class SelectQueryBuilder implements \Stringable
     public function getSQL(): string
     {
         ['graph' => $graph, 'dialect' => $dialect, 'caps' => $caps] = $this->translateStateToSqg();
-        $op = new SqgOperation(kind: OperationKind::SqgSelect, graph: $graph);
+        $op = $this->buildSqgOperation($graph, $caps);
         $compiled = $dialect->compile($op, $caps);
         return $compiled->sql;
     }
@@ -354,7 +359,7 @@ final class SelectQueryBuilder implements \Stringable
             throw new \RuntimeException('SelectQueryBuilder no tiene Connection: no puede executeQuery. Construya con $connection pasada al constructor o use getSQG() manual.');
         }
         ['graph' => $graph, 'dialect' => $dialect, 'caps' => $caps] = $this->translateStateToSqg();
-        $op = new SqgOperation(kind: OperationKind::SqgSelect, graph: $graph);
+        $op = $this->buildSqgOperation($graph, $caps);
         $compiled = $dialect->compile($op, $caps);
 
         if ($this->runtime === null || $this->context === null) {
@@ -604,6 +609,41 @@ final class SelectQueryBuilder implements \Stringable
         }
 
         return ['graph' => $graph, 'positional' => $positional, 'dialect' => $dialect, 'caps' => $caps];
+    }
+
+    private function buildSqgOperation(
+        SemanticQueryGraph $graph,
+        DatabaseCapabilitySet $caps,
+    ): SqgOperation {
+        $certification = $graph->validate($caps);
+        $optimizationInput = new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+            limits: $this->resolvePipelineLimits(),
+        );
+        $optimization = (new NoOpQueryOptimizer())->optimize($optimizationInput, $this->context);
+        $plan = (new NoOpQueryPlanner())->plan($optimization, $this->context);
+
+        return new SqgOperation(
+            kind: OperationKind::SqgSelect,
+            graph: $plan->graph,
+            certificationFingerprint: $certification->fingerprint,
+            optimizationResult: $optimization,
+            planArtifact: $plan,
+        );
+    }
+
+    /**
+     * @return array<string, int|float|string|bool|null>
+     */
+    private function resolvePipelineLimits(): array
+    {
+        return [
+            'max_rows' => $this->context?->maxRows,
+            'max_depth' => $this->context?->maxDepth,
+            'has_deadline' => $this->context?->deadline !== null,
+        ];
     }
 
     // =============== PARSERS DE EXPRESIONES → NODES =============================
@@ -957,8 +997,14 @@ final class SelectQueryBuilder implements \Stringable
             if ($inS) {
                 continue;
             }
-            if ($ch === '(') { $depth++; continue; }
-            if ($ch === ')') { $depth--; continue; }
+            if ($ch === '(') {
+                $depth++;
+                continue;
+            }
+            if ($ch === ')') {
+                $depth--;
+                continue;
+            }
             if ($depth !== 0) {
                 continue;
             }
@@ -1001,8 +1047,14 @@ final class SelectQueryBuilder implements \Stringable
             if ($inS) {
                 continue;
             }
-            if ($ch === '(') { $depth++; continue; }
-            if ($ch === ')') { $depth--; continue; }
+            if ($ch === '(') {
+                $depth++;
+                continue;
+            }
+            if ($ch === ')') {
+                $depth--;
+                continue;
+            }
             if ($depth !== 0) {
                 continue;
             }

@@ -208,7 +208,7 @@ abstract class AbstractDialect implements DialectInterface
 
     private function compileSqg(SqgOperation $op, DatabaseCapabilitySet $caps): CompiledSql
     {
-        $graph = $op->graph();
+        $graph = $op->planArtifact?->graph ?? $op->graph();
         $cert = $graph->validate($caps);
         if (!$cert->valid) {
             $msgs = [];
@@ -225,7 +225,7 @@ abstract class AbstractDialect implements DialectInterface
             sql: $compiled->sql,
             params: $compiled->params,
             paramCount: $compiled->paramCount,
-            fingerprint: $cert->fingerprint,
+            fingerprint: $op->planArtifact?->fingerprint ?? $op->certificationFingerprint ?? $cert->fingerprint,
             quoteStyle: $this->quoteStyle(),
             paramStyle: $this->paramStyle(),
         );

@@ -2352,6 +2352,251 @@ final class DatabaseOperationRuntimeTest extends TestCase
         self::assertArrayNotHasKey('remote_validation_receipt_cleanup', $persisted->confirmation);
     }
 
+    public function test_runtime_prefers_newest_cleanup_tombstone_marker_over_newer_report_timestamp(): void
+    {
+        $this->idempotencyBasePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-db-idempotency-runtime-' . uniqid('', true);
+        mkdir($this->idempotencyBasePath, 0777, true);
+
+        $store = new DirectoryDatabaseIdempotencyStore($this->idempotencyBasePath . DIRECTORY_SEPARATOR . 'idempotency');
+        $healthStore = new InMemoryDatabaseHealthStore();
+        $validator = new RuntimeRemoteReplayValidatorStub(
+            DatabaseRemoteReplayValidationResult::verified(
+                validator: 'stub-remote-validator',
+                message: 'Remote validator refreshed replay after selecting the newest peer tombstone marker.',
+            ),
+        );
+        $connection = new RuntimeTestConnection(
+            statementQueue: [
+                RuntimeTestConnection::statementResult(1),
+            ],
+        );
+        $runtime = new DatabaseOperationRuntime(
+            new DatabaseCircuitBreaker(),
+            healthStore: $healthStore,
+            idempotencyStore: $store,
+            remoteReplayValidator: $validator,
+            idempotencyNodeId: 'node-b',
+            remoteReplayChallengeSigner: $this->makeReceiptSignerForTest('node-b', 'key-2026-08'),
+        );
+        $context = DatabaseContext::empty()->withConnection($connection);
+        $policy = new DatabaseExecutionPolicy(
+            retryLimit: 1,
+            retryBackoffMs: 0,
+            retryMutationsWhenIdempotent: true,
+            idempotencyPendingTtlSeconds: 300,
+            remoteReplayAttestationMode: 'require',
+            remoteReplayValidationMode: 'require',
+            remoteReplayValidationReceiptMaxAgeSeconds: 600,
+            remoteReplayValidationReceiptReuseScope: 'trusted_nodes',
+            remoteReplayValidationReceiptTrustedNodes: ['node-c'],
+            remoteReplayValidationReceiptCleanupPropagationMaxAgeSeconds: 600,
+            remoteReplayValidationReceiptCleanupPropagationTrustedNodes: ['node-d', 'node-e'],
+            remoteReplayValidationReceiptReplicatedMaxAgeSeconds: 600,
+        );
+        $plan = $runtime->plan(
+            new RawOperation(
+                OperationKind::RawExecute,
+                'UPDATE users SET active = 1 WHERE id = 1',
+                [],
+                'primary',
+                'mutation-users-divergent-peer-cleanup-tombstone-remote-validation-receipt',
+            ),
+            $context,
+            $policy,
+        );
+
+        $record = new DatabaseIdempotencyRecord(
+            keyHash: hash('sha256', 'mutation-users-divergent-peer-cleanup-tombstone-remote-validation-receipt'),
+            operationFingerprint: $plan->fingerprint,
+            requestId: 'req-divergent-peer-cleanup-tombstone-remote-validation-receipt',
+            connectionName: 'primary',
+            logicalTarget: 'users',
+            createdAt: '2026-08-29T21:10:00+00:00',
+            nodeId: 'node-a',
+            status: 'pending',
+            expiresAt: '2099-08-29T21:15:00+00:00',
+        );
+        $store->acquire($record);
+        $confirmationFingerprint = $this->computeConfirmationFingerprintForTest(
+            $record,
+            'node-a',
+            [
+                'kind' => 'raw_execute',
+                'affected_rows' => 1,
+                'rows_read' => 0,
+                'outcome' => 'completed',
+                'confirmed_at' => '2026-08-29T21:10:05+00:00',
+                'replay_reproducibility' => 'persisted_summary',
+                'result_summary' => [
+                    'kind' => 'raw_execute',
+                    'is_select' => false,
+                    'affected_rows' => 1,
+                    'rows_read' => 0,
+                    'column_count' => 0,
+                    'result_type' => 'success_no_rows',
+                ],
+            ],
+        );
+        $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+        $localValidatedAt = $now->modify('-31 seconds')->format(DATE_ATOM);
+        $localReplica = $this->attachReceiptAttestationForTest(
+            [
+                'version' => 1,
+                'status' => 'verified_remote_validation',
+                'validator' => 'remote-validator-node-c',
+                'message' => 'Local replicated copy that should yield to the newest cleanup marker.',
+                'validation_mode' => 'require',
+                'validated_at' => $localValidatedAt,
+                'validated_by_node_id' => 'node-c',
+                'source_node_id' => 'node-a',
+                'confirmation_fingerprint' => $confirmationFingerprint,
+                'details' => [
+                    'challenge_protocol' => 'remote_replay_node_challenge_v1',
+                    'confirmation_fingerprint' => $confirmationFingerprint,
+                    'receipt_reuse_source' => 'health_snapshot',
+                    'receipt_propagation_source' => 'health_snapshot',
+                    'receipt_propagation_report_node_id' => 'node-c',
+                    'receipt_propagation_generated_at' => $now->modify('-30 seconds')->format(DATE_ATOM),
+                    'receipt_replicated_at' => $now->modify('-29 seconds')->format(DATE_ATOM),
+                    'receipt_replicated_by_node_id' => 'node-b',
+                    'receipt_replica_max_age_seconds' => 600,
+                    'receipt_replica_expires_at' => $now->modify('+571 seconds')->format(DATE_ATOM),
+                ],
+            ],
+            'node-c',
+            $localValidatedAt,
+            'key-2026-09',
+        );
+        $olderCleanupPrunedAt = $now->modify('-40 seconds')->format(DATE_ATOM);
+        $newerCleanupPrunedAt = $now->modify('-5 seconds')->format(DATE_ATOM);
+        $healthStore->persist(new DatabaseTelemetryReport(
+            requestId: 'req-health-divergent-peer-cleanup-tombstone-newer-report',
+            tenantId: null,
+            traceId: null,
+            generatedAt: $now->modify('-2 seconds')->format(DATE_ATOM),
+            summary: [
+                'total_operations' => 1,
+                'completed' => 1,
+                'failed' => 0,
+                'cancelled' => 0,
+                'slow_queries' => 0,
+                'remote_replay_challenge' => [],
+                'latest' => [
+                    [
+                        'connection_name' => 'primary',
+                        'operation_kind' => 'raw_execute',
+                        'logical_target' => 'users',
+                        'outcome' => 'completed',
+                        'challenge_receipt_tombstone_advertisement' => [
+                            'version' => 1,
+                            'reason' => 'expired_local_replica',
+                            'pruned_at' => $olderCleanupPrunedAt,
+                            'source_node_id' => 'node-a',
+                            'confirmation_fingerprint' => $confirmationFingerprint,
+                        ],
+                    ],
+                ],
+            ],
+            health: [
+                'total_segments' => 1,
+                'closed_segments' => 1,
+                'half_open_segments' => 0,
+                'open_segments' => 0,
+                'segments' => [],
+            ],
+            nodeId: 'node-d',
+        ));
+        $healthStore->persist(new DatabaseTelemetryReport(
+            requestId: 'req-health-divergent-peer-cleanup-tombstone-older-report',
+            tenantId: null,
+            traceId: null,
+            generatedAt: $now->modify('-8 seconds')->format(DATE_ATOM),
+            summary: [
+                'total_operations' => 1,
+                'completed' => 1,
+                'failed' => 0,
+                'cancelled' => 0,
+                'slow_queries' => 0,
+                'remote_replay_challenge' => [],
+                'latest' => [
+                    [
+                        'connection_name' => 'primary',
+                        'operation_kind' => 'raw_execute',
+                        'logical_target' => 'users',
+                        'outcome' => 'completed',
+                        'challenge_receipt_tombstone_advertisement' => [
+                            'version' => 1,
+                            'reason' => 'displaced_by_peer_advertisement',
+                            'pruned_at' => $newerCleanupPrunedAt,
+                            'source_node_id' => 'node-a',
+                            'confirmation_fingerprint' => $confirmationFingerprint,
+                        ],
+                    ],
+                ],
+            ],
+            health: [
+                'total_segments' => 1,
+                'closed_segments' => 1,
+                'half_open_segments' => 0,
+                'open_segments' => 0,
+                'segments' => [],
+            ],
+            nodeId: 'node-e',
+        ));
+        $store->complete($record, [
+            'kind' => 'raw_execute',
+            'affected_rows' => 1,
+            'rows_read' => 0,
+            'outcome' => 'completed',
+            'confirmed_at' => '2026-08-29T21:10:05+00:00',
+            'summary_version' => 1,
+            'replay_reproducibility' => 'persisted_summary',
+            'source_node_id' => 'node-a',
+            'evidence_version' => 1,
+            'evidence_mode' => 'persisted_evidence',
+            'confirmation_fingerprint' => $confirmationFingerprint,
+            'attestation_version' => 1,
+            'attestation_mode' => 'source_node_self_attested',
+            'attested_by_node_id' => 'node-a',
+            'attested_at' => '2026-08-29T21:10:05+00:00',
+            'attestation_fingerprint' => $this->computeAttestationFingerprintForTest(
+                $record,
+                'node-a',
+                $confirmationFingerprint,
+                'source_node_self_attested',
+                'node-a',
+                '2026-08-29T21:10:05+00:00',
+            ),
+            'result_summary' => [
+                'kind' => 'raw_execute',
+                'is_select' => false,
+                'affected_rows' => 1,
+                'rows_read' => 0,
+                'column_count' => 0,
+                'result_type' => 'success_no_rows',
+            ],
+            'remote_validation_receipt' => $localReplica,
+        ]);
+
+        $result = $runtime->execute($plan, $context);
+
+        self::assertTrue($result->isSuccess);
+        self::assertSame(0, $connection->statementCalls);
+        self::assertSame(1, $validator->calls);
+        self::assertSame(
+            'node-e',
+            $result->debug['idempotency']['remote_validation']['details']['receipt_tombstone_advertisement']['tombstone_report_node_id'] ?? null
+        );
+        self::assertSame(
+            'displaced_by_peer_advertisement',
+            $result->debug['idempotency']['remote_validation']['details']['receipt_tombstone_advertisement']['tombstone_reason'] ?? null
+        );
+        self::assertSame(
+            $newerCleanupPrunedAt,
+            $result->debug['idempotency']['remote_validation']['details']['receipt_tombstone_advertisement']['tombstone_pruned_at'] ?? null
+        );
+    }
+
     public function test_runtime_ignores_stale_peer_cleanup_tombstone_and_reuses_fresh_local_replica(): void
     {
         $this->idempotencyBasePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-db-idempotency-runtime-' . uniqid('', true);

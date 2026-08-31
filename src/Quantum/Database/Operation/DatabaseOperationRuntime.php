@@ -1837,6 +1837,7 @@ final class DatabaseOperationRuntime
 
         $confirmationFingerprint = trim((string) ($confirmationEvidence['confirmation_fingerprint'] ?? ''));
         $reports = array_reverse($healthStore->recent($plan->policy->remoteReplayValidationReceiptCleanupPropagationHealthLimit));
+        $selected = null;
 
         foreach ($reports as $report) {
             if (!$report instanceof DatabaseTelemetryReport) {
@@ -1880,15 +1881,22 @@ final class DatabaseOperationRuntime
                     continue;
                 }
 
-                return [
+                $candidate = [
                     'cleanup' => $cleanup,
                     'report_node_id' => $reportNodeId !== '' ? $reportNodeId : null,
                     'generated_at' => $report->generatedAt,
                 ];
+
+                if (
+                    $selected === null
+                    || $this->isCleanupTombstoneCandidateNewer($candidate, $selected)
+                ) {
+                    $selected = $candidate;
+                }
             }
         }
 
-        return null;
+        return $selected;
     }
 
     private function pruneExpiredReplicatedRemoteReplayValidationReceipt(
@@ -2003,6 +2011,56 @@ final class DatabaseOperationRuntime
         ));
 
         return $this->isTimestampNewer($cleanupMarker, $receiptMarker);
+    }
+
+    /**
+     * @param array{cleanup:array<string, mixed>,report_node_id:?string,generated_at:?string} $candidate
+     * @param array{cleanup:array<string, mixed>,report_node_id:?string,generated_at:?string} $current
+     */
+    private function isCleanupTombstoneCandidateNewer(array $candidate, array $current): bool
+    {
+        $candidateMarker = $this->resolveCleanupTombstoneMarker($candidate);
+        $currentMarker = $this->resolveCleanupTombstoneMarker($current);
+
+        if ($candidateMarker !== '' && $currentMarker === '') {
+            return true;
+        }
+
+        if ($candidateMarker === '' && $currentMarker !== '') {
+            return false;
+        }
+
+        if ($candidateMarker !== '' && $currentMarker !== '' && $candidateMarker !== $currentMarker) {
+            return $this->isTimestampNewer($candidateMarker, $currentMarker);
+        }
+
+        $candidateGeneratedAt = trim((string) ($candidate['generated_at'] ?? ''));
+        $currentGeneratedAt = trim((string) ($current['generated_at'] ?? ''));
+
+        if ($candidateGeneratedAt !== '' && $currentGeneratedAt === '') {
+            return true;
+        }
+
+        if ($candidateGeneratedAt === '' && $currentGeneratedAt !== '') {
+            return false;
+        }
+
+        if ($candidateGeneratedAt !== '' && $currentGeneratedAt !== '' && $candidateGeneratedAt !== $currentGeneratedAt) {
+            return $this->isTimestampNewer($candidateGeneratedAt, $currentGeneratedAt);
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array{cleanup:array<string, mixed>,report_node_id:?string,generated_at:?string} $cleanupTombstone
+     */
+    private function resolveCleanupTombstoneMarker(array $cleanupTombstone): string
+    {
+        return trim((string) (
+            ($cleanupTombstone['cleanup']['pruned_at'] ?? null)
+            ?: (($cleanupTombstone['generated_at'] ?? null) ?: '')
+        ));
     }
 
     private function isTimestampNewer(?string $candidate, ?string $reference): bool

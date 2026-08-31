@@ -569,6 +569,14 @@ final class NoOpQueryPlanner implements QueryPlannerInterface
             $evidence = [...$evidence, ...$this->collectIndexEvidenceForAlias($select->where, $alias, 'where')];
         }
 
+        if ($select !== null) {
+            foreach ($select->joins as $joinNode) {
+                if ($joinNode instanceof JoinNode && $joinNode->on !== null) {
+                    $evidence = [...$evidence, ...$this->collectIndexEvidenceForAlias($joinNode->on, $alias, 'join_on')];
+                }
+            }
+        }
+
         if ($select !== null && $select->orderBy !== null) {
             foreach ($select->orderBy->items as $item) {
                 if ($item instanceof OrderByItemNode) {
@@ -662,8 +670,10 @@ final class NoOpQueryPlanner implements QueryPlannerInterface
 
         foreach ($evidence as $item) {
             if ($item['operator'] === '=') {
-                $hasLookup = true;
-                $lookupColumns[$item['column']] = true;
+                if ($item['comparable_kind'] === 'literal_or_param' || $item['source'] === 'where') {
+                    $hasLookup = true;
+                    $lookupColumns[$item['column']] = true;
+                }
                 if ($item['source'] === 'where') {
                     $whereLookupColumns[$item['column']] = true;
                 }

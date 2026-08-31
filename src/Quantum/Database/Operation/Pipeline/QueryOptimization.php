@@ -570,10 +570,28 @@ final class DefaultQueryOptimizer implements QueryOptimizerInterface
             $appliedRules[] = 'limit_offset_simplification_v1';
         }
 
+        $canonicalPredicateGraph = $this->canonicalizePredicateGraph($currentGraph);
+        if ($canonicalPredicateGraph !== $currentGraph) {
+            $currentGraph = $canonicalPredicateGraph;
+            $appliedRules[] = 'predicate_normalization_v1';
+        }
+
+        $booleanNormalizationGraph = $this->normalizeBooleanPredicateGraph($currentGraph);
+        if ($booleanNormalizationGraph !== $currentGraph) {
+            $currentGraph = $booleanNormalizationGraph;
+            $appliedRules[] = 'boolean_predicate_normalization_v1';
+        }
+
         $pushdownGraph = $this->pushDownWherePredicatesGraph($currentGraph);
         if ($pushdownGraph !== $currentGraph) {
             $currentGraph = $pushdownGraph;
             $appliedRules[] = 'predicate_pushdown_v1';
+        }
+
+        $reorderedJoinGraph = $this->reorderInnerJoinGraph($currentGraph);
+        if ($reorderedJoinGraph !== $currentGraph) {
+            $currentGraph = $reorderedJoinGraph;
+            $appliedRules[] = 'join_reorder_v1';
         }
 
         return [
@@ -623,6 +641,51 @@ final class DefaultQueryOptimizer implements QueryOptimizerInterface
         }
 
         return new SemanticQueryGraph(root: $pushedDownRoot, parameters: $graph->parameters);
+    }
+
+    private function canonicalizePredicateGraph(SemanticQueryGraph $graph): SemanticQueryGraph
+    {
+        $root = $graph->root;
+        if (!$root instanceof SelectStatementNode) {
+            return $graph;
+        }
+
+        $canonicalRoot = $this->canonicalizePredicateSelectStatement($root);
+        if ($canonicalRoot === $root) {
+            return $graph;
+        }
+
+        return new SemanticQueryGraph(root: $canonicalRoot, parameters: $graph->parameters);
+    }
+
+    private function normalizeBooleanPredicateGraph(SemanticQueryGraph $graph): SemanticQueryGraph
+    {
+        $root = $graph->root;
+        if (!$root instanceof SelectStatementNode) {
+            return $graph;
+        }
+
+        $normalizedRoot = $this->normalizeBooleanPredicateSelectStatement($root);
+        if ($normalizedRoot === $root) {
+            return $graph;
+        }
+
+        return new SemanticQueryGraph(root: $normalizedRoot, parameters: $graph->parameters);
+    }
+
+    private function reorderInnerJoinGraph(SemanticQueryGraph $graph): SemanticQueryGraph
+    {
+        $root = $graph->root;
+        if (!$root instanceof SelectStatementNode) {
+            return $graph;
+        }
+
+        $reorderedRoot = $this->reorderInnerJoinSelectStatement($root);
+        if ($reorderedRoot === $root) {
+            return $graph;
+        }
+
+        return new SemanticQueryGraph(root: $reorderedRoot, parameters: $graph->parameters);
     }
 
     private function foldSelectStatement(SelectStatementNode $node): SelectStatementNode
@@ -798,6 +861,175 @@ final class DefaultQueryOptimizer implements QueryOptimizerInterface
         ), $node);
     }
 
+    private function canonicalizePredicateSelectStatement(SelectStatementNode $node): SelectStatementNode
+    {
+        $changed = false;
+        $joins = [];
+
+        foreach ($node->joins as $join) {
+            if (!$join instanceof JoinNode) {
+                $joins[] = $join;
+                continue;
+            }
+
+            $normalizedOn = $join->on !== null
+                ? $this->canonicalizePredicateExpression($join->on, $changed)
+                : null;
+
+            $joins[] = $normalizedOn !== $join->on
+                ? $this->withInferredTypeIfPresent(new JoinNode(
+                    type: $join->type,
+                    right: $join->right,
+                    on: $normalizedOn,
+                    id: $join->id(),
+                    flags: $join->flags(),
+                    span: $join->sourceSpan(),
+                ), $join)
+                : $join;
+        }
+
+        $where = $node->where !== null
+            ? $this->canonicalizePredicateExpression($node->where, $changed)
+            : null;
+        $having = $node->having !== null
+            ? $this->canonicalizeHavingClause($node->having, $changed)
+            : null;
+
+        if (!$changed) {
+            return $node;
+        }
+
+        return $this->withInferredTypeIfPresent(new SelectStatementNode(
+            with: $node->with,
+            distinct: $node->distinct,
+            projections: $node->projections,
+            fromSources: $node->fromSources,
+            joins: $joins,
+            where: $where,
+            groupBy: $node->groupBy,
+            having: $having,
+            orderBy: $node->orderBy,
+            limit: $node->limit,
+            offset: $node->offset,
+            id: $node->id(),
+            flags: $node->flags(),
+            span: $node->sourceSpan(),
+        ), $node);
+    }
+
+    private function normalizeBooleanPredicateSelectStatement(SelectStatementNode $node): SelectStatementNode
+    {
+        $changed = false;
+        $joins = [];
+
+        foreach ($node->joins as $join) {
+            if (!$join instanceof JoinNode) {
+                $joins[] = $join;
+                continue;
+            }
+
+            $normalizedOn = $join->on !== null
+                ? $this->normalizeBooleanPredicateExpression($join->on, $changed)
+                : null;
+
+            $joins[] = $normalizedOn !== $join->on
+                ? $this->withInferredTypeIfPresent(new JoinNode(
+                    type: $join->type,
+                    right: $join->right,
+                    on: $normalizedOn,
+                    id: $join->id(),
+                    flags: $join->flags(),
+                    span: $join->sourceSpan(),
+                ), $join)
+                : $join;
+        }
+
+        $where = $node->where !== null
+            ? $this->normalizeBooleanPredicateExpression($node->where, $changed)
+            : null;
+        $having = $node->having !== null
+            ? $this->normalizeBooleanHavingClause($node->having, $changed)
+            : null;
+
+        if (!$changed) {
+            return $node;
+        }
+
+        return $this->withInferredTypeIfPresent(new SelectStatementNode(
+            with: $node->with,
+            distinct: $node->distinct,
+            projections: $node->projections,
+            fromSources: $node->fromSources,
+            joins: $joins,
+            where: $where,
+            groupBy: $node->groupBy,
+            having: $having,
+            orderBy: $node->orderBy,
+            limit: $node->limit,
+            offset: $node->offset,
+            id: $node->id(),
+            flags: $node->flags(),
+            span: $node->sourceSpan(),
+        ), $node);
+    }
+
+    private function reorderInnerJoinSelectStatement(SelectStatementNode $node): SelectStatementNode
+    {
+        if (
+            count($node->fromSources) !== 1
+            || count($node->joins) !== 1
+            || !$node->fromSources[0] instanceof TableSourceNode
+            || !$node->joins[0] instanceof JoinNode
+            || $node->joins[0]->type !== DialectJoinType::Inner
+            || !$node->joins[0]->right instanceof TableSourceNode
+        ) {
+            return $node;
+        }
+
+        /** @var TableSourceNode $baseSource */
+        $baseSource = $node->fromSources[0];
+        /** @var JoinNode $join */
+        $join = $node->joins[0];
+        /** @var TableSourceNode $joinedSource */
+        $joinedSource = $join->right;
+
+        $baseAlias = $baseSource->aliasOrName();
+        $joinedAlias = $joinedSource->aliasOrName();
+
+        $baseScore = $this->scoreLeadSourceEvidence($node, $baseAlias, $join->on);
+        $joinedScore = $this->scoreLeadSourceEvidence($node, $joinedAlias, $join->on);
+
+        if ($joinedScore <= $baseScore) {
+            return $node;
+        }
+
+        return $this->withInferredTypeIfPresent(new SelectStatementNode(
+            with: $node->with,
+            distinct: $node->distinct,
+            projections: $node->projections,
+            fromSources: [$joinedSource],
+            joins: [
+                $this->withInferredTypeIfPresent(new JoinNode(
+                    type: $join->type,
+                    right: $baseSource,
+                    on: $join->on,
+                    id: $join->id(),
+                    flags: $join->flags(),
+                    span: $join->sourceSpan(),
+                ), $join),
+            ],
+            where: $node->where,
+            groupBy: $node->groupBy,
+            having: $node->having,
+            orderBy: $node->orderBy,
+            limit: $node->limit,
+            offset: $node->offset,
+            id: $node->id(),
+            flags: $node->flags(),
+            span: $node->sourceSpan(),
+        ), $node);
+    }
+
     private function foldProjectionList(ProjectionListNode $node, bool &$changed): ProjectionListNode
     {
         $items = [];
@@ -893,6 +1125,36 @@ final class DefaultQueryOptimizer implements QueryOptimizerInterface
         ), $node);
     }
 
+    private function canonicalizeHavingClause(HavingClauseNode $node, bool &$changed): HavingClauseNode
+    {
+        $predicate = $this->canonicalizePredicateExpression($node->predicate, $changed);
+        if ($predicate === $node->predicate) {
+            return $node;
+        }
+
+        return $this->withInferredTypeIfPresent(new HavingClauseNode(
+            predicate: $predicate,
+            id: $node->id(),
+            flags: $node->flags(),
+            span: $node->sourceSpan(),
+        ), $node);
+    }
+
+    private function normalizeBooleanHavingClause(HavingClauseNode $node, bool &$changed): HavingClauseNode
+    {
+        $predicate = $this->normalizeBooleanPredicateExpression($node->predicate, $changed);
+        if ($predicate === $node->predicate) {
+            return $node;
+        }
+
+        return $this->withInferredTypeIfPresent(new HavingClauseNode(
+            predicate: $predicate,
+            id: $node->id(),
+            flags: $node->flags(),
+            span: $node->sourceSpan(),
+        ), $node);
+    }
+
     private function foldOrderByList(OrderByListNode $node, bool &$changed): OrderByListNode
     {
         $items = [];
@@ -973,6 +1235,102 @@ final class DefaultQueryOptimizer implements QueryOptimizerInterface
             }
 
             return $current;
+        }
+
+        return $node;
+    }
+
+    private function canonicalizePredicateExpression(SemanticNode $node, bool &$changed): SemanticNode
+    {
+        if ($node instanceof BinaryExpressionNode) {
+            $left = $this->canonicalizePredicateExpression($node->left, $changed);
+            $right = $this->canonicalizePredicateExpression($node->right, $changed);
+            $current = $node;
+
+            if ($left !== $node->left || $right !== $node->right) {
+                $current = $this->withInferredTypeIfPresent(new BinaryExpressionNode(
+                    op: $node->op,
+                    left: $left,
+                    right: $right,
+                    id: $node->id(),
+                    flags: $node->flags(),
+                    span: $node->sourceSpan(),
+                ), $node);
+            }
+
+            $canonicalized = $this->canonicalizeComparisonBinary($current);
+            if ($canonicalized !== $current) {
+                $changed = true;
+                return $canonicalized;
+            }
+
+            return $current;
+        }
+
+        if ($node instanceof UnaryExpressionNode) {
+            $operand = $this->canonicalizePredicateExpression($node->operand, $changed);
+            if ($operand === $node->operand) {
+                return $node;
+            }
+
+            $changed = true;
+
+            return $this->withInferredTypeIfPresent(new UnaryExpressionNode(
+                op: $node->op,
+                operand: $operand,
+                id: $node->id(),
+                flags: $node->flags(),
+                span: $node->sourceSpan(),
+            ), $node);
+        }
+
+        return $node;
+    }
+
+    private function normalizeBooleanPredicateExpression(SemanticNode $node, bool &$changed): SemanticNode
+    {
+        if ($node instanceof BinaryExpressionNode) {
+            $left = $this->normalizeBooleanPredicateExpression($node->left, $changed);
+            $right = $this->normalizeBooleanPredicateExpression($node->right, $changed);
+            $current = $node;
+
+            if ($left !== $node->left || $right !== $node->right) {
+                $current = $this->withInferredTypeIfPresent(new BinaryExpressionNode(
+                    op: $node->op,
+                    left: $left,
+                    right: $right,
+                    id: $node->id(),
+                    flags: $node->flags(),
+                    span: $node->sourceSpan(),
+                ), $node);
+            }
+
+            if (in_array($current->op, [BinaryOperator::AndAlso, BinaryOperator::OrElse], true)) {
+                $normalized = $this->normalizeAssociativeBooleanBinary($current);
+                if ($normalized !== $current) {
+                    $changed = true;
+                    return $normalized;
+                }
+            }
+
+            return $current;
+        }
+
+        if ($node instanceof UnaryExpressionNode) {
+            $operand = $this->normalizeBooleanPredicateExpression($node->operand, $changed);
+            if ($operand === $node->operand) {
+                return $node;
+            }
+
+            $changed = true;
+
+            return $this->withInferredTypeIfPresent(new UnaryExpressionNode(
+                op: $node->op,
+                operand: $operand,
+                id: $node->id(),
+                flags: $node->flags(),
+                span: $node->sourceSpan(),
+            ), $node);
         }
 
         return $node;
@@ -1094,6 +1452,60 @@ final class DefaultQueryOptimizer implements QueryOptimizerInterface
         ), $node);
     }
 
+    private function canonicalizeComparisonBinary(BinaryExpressionNode $node): BinaryExpressionNode
+    {
+        if (!in_array($node->op, [
+            BinaryOperator::Eq,
+            BinaryOperator::NotEq,
+            BinaryOperator::Lt,
+            BinaryOperator::Lte,
+            BinaryOperator::Gt,
+            BinaryOperator::Gte,
+        ], true)) {
+            return $node;
+        }
+
+        if ($this->isCanonicalComparisonOrientation($node->left, $node->right, $node->op)) {
+            return $node;
+        }
+
+        $swappedOperator = $this->swapComparisonOperator($node->op);
+
+        return $this->withInferredTypeIfPresent(new BinaryExpressionNode(
+            op: $swappedOperator,
+            left: $node->right,
+            right: $node->left,
+            id: $node->id(),
+            flags: $node->flags(),
+            span: $node->sourceSpan(),
+        ), $node);
+    }
+
+    private function normalizeAssociativeBooleanBinary(BinaryExpressionNode $node): BinaryExpressionNode
+    {
+        $parts = $this->flattenAssociativeBooleanBinary($node, $node->op);
+        usort(
+            $parts,
+            fn(SemanticNode $left, SemanticNode $right): int => strcmp(
+                $this->semanticNodeSortKey($left),
+                $this->semanticNodeSortKey($right),
+            ),
+        );
+
+        $normalized = $parts[0];
+        for ($i = 1, $max = count($parts); $i < $max; $i++) {
+            $normalized = new BinaryExpressionNode(
+                left: $normalized,
+                right: $parts[$i],
+                op: $node->op,
+            );
+        }
+
+        return $normalized instanceof BinaryExpressionNode
+            ? $this->withInferredTypeIfPresent($normalized, $node)
+            : $node;
+    }
+
     private function tryFoldUnary(UnaryExpressionNode $node): SemanticNode
     {
         if (!$node->operand instanceof LiteralNode) {
@@ -1161,6 +1573,76 @@ final class DefaultQueryOptimizer implements QueryOptimizerInterface
         };
     }
 
+    private function isCanonicalComparisonOrientation(
+        SemanticNode $left,
+        SemanticNode $right,
+        BinaryOperator $operator,
+    ): bool {
+        if ($left instanceof ColumnReferenceNode && $this->isComparableScalarNode($right)) {
+            return true;
+        }
+
+        if ($this->isComparableScalarNode($left) && $right instanceof ColumnReferenceNode) {
+            return false;
+        }
+
+        if ($left instanceof ColumnReferenceNode && $right instanceof ColumnReferenceNode) {
+            return $this->columnReferenceSortKey($left) <= $this->columnReferenceSortKey($right);
+        }
+
+        if (
+            in_array($operator, [BinaryOperator::Lt, BinaryOperator::Lte, BinaryOperator::Gt, BinaryOperator::Gte], true)
+            && $this->isComparableScalarNode($left)
+            && $this->isComparableScalarNode($right)
+        ) {
+            return true;
+        }
+
+        return true;
+    }
+
+    private function swapComparisonOperator(BinaryOperator $operator): BinaryOperator
+    {
+        return match ($operator) {
+            BinaryOperator::Lt => BinaryOperator::Gt,
+            BinaryOperator::Lte => BinaryOperator::Gte,
+            BinaryOperator::Gt => BinaryOperator::Lt,
+            BinaryOperator::Gte => BinaryOperator::Lte,
+            default => $operator,
+        };
+    }
+
+    private function isComparableScalarNode(SemanticNode $node): bool
+    {
+        return $node instanceof LiteralNode || $node instanceof ParameterNode;
+    }
+
+    private function columnReferenceSortKey(ColumnReferenceNode $node): string
+    {
+        return ($node->tableAlias ?? '') . '.' . $node->column;
+    }
+
+    private function semanticNodeSortKey(SemanticNode $node): string
+    {
+        return match (true) {
+            $node instanceof ColumnReferenceNode => 'column:' . $this->columnReferenceSortKey($node),
+            $node instanceof LiteralNode => 'literal:' . json_encode($node->value),
+            $node instanceof ParameterNode => 'param:' . ($node->name ?? (string) $node->index),
+            $node instanceof BinaryExpressionNode => sprintf(
+                'binary:%s:%s:%s',
+                $node->op->value,
+                $this->semanticNodeSortKey($node->left),
+                $this->semanticNodeSortKey($node->right),
+            ),
+            $node instanceof UnaryExpressionNode => sprintf(
+                'unary:%s:%s',
+                $node->op->value,
+                $this->semanticNodeSortKey($node->operand),
+            ),
+            default => $node->kind()->value . ':' . $node->id(),
+        };
+    }
+
     /**
      * @template T of SemanticNode
      * @param T $newNode
@@ -1222,6 +1704,21 @@ final class DefaultQueryOptimizer implements QueryOptimizerInterface
     }
 
     /**
+     * @return list<SemanticNode>
+     */
+    private function flattenAssociativeBooleanBinary(SemanticNode $node, BinaryOperator $operator): array
+    {
+        if ($node instanceof BinaryExpressionNode && $node->op === $operator) {
+            return [
+                ...$this->flattenAssociativeBooleanBinary($node->left, $operator),
+                ...$this->flattenAssociativeBooleanBinary($node->right, $operator),
+            ];
+        }
+
+        return [$node];
+    }
+
+    /**
      * @param list<SemanticNode> $sources
      * @return array<string, bool>
      */
@@ -1278,6 +1775,151 @@ final class DefaultQueryOptimizer implements QueryOptimizerInterface
         return $hasBareColumnReference ? null : $aliases;
     }
 
+    private function scoreLeadSourceEvidence(
+        SelectStatementNode $select,
+        string $alias,
+        ?SemanticNode $joinPredicate = null,
+    ): int {
+        $score = 0;
+
+        foreach ($this->collectComparableEvidenceForAlias($select->where, $alias, 'where') as $item) {
+            $score += $this->scoreComparableEvidence($item);
+        }
+
+        foreach ($this->collectComparableEvidenceForAlias($joinPredicate, $alias, 'join_on') as $item) {
+            $score += $this->scoreComparableEvidence($item);
+        }
+
+        if ($select->orderBy !== null) {
+            foreach ($select->orderBy->items as $item) {
+                if ($item instanceof OrderByItemNode && $this->matchesOrderByAlias($item, $alias)) {
+                    $score += 1;
+                }
+            }
+        }
+
+        return $score;
+    }
+
+    /**
+     * @return list<array{source:string,column:string,operator:string,comparable_kind:string}>
+     */
+    private function collectComparableEvidenceForAlias(
+        ?SemanticNode $node,
+        string $alias,
+        string $source,
+    ): array {
+        if (!$node instanceof SemanticNode) {
+            return [];
+        }
+
+        $evidence = [];
+
+        if ($node instanceof BinaryExpressionNode) {
+            if (in_array($node->op, [
+                BinaryOperator::Eq,
+                BinaryOperator::Lt,
+                BinaryOperator::Lte,
+                BinaryOperator::Gt,
+                BinaryOperator::Gte,
+            ], true)) {
+                $leftEvidence = $this->matchComparableEvidenceSide($node->left, $node->right, $alias, $source, $node->op);
+                $rightEvidence = $this->matchComparableEvidenceSide($node->right, $node->left, $alias, $source, $node->op);
+                $evidence = [...$evidence, ...$leftEvidence, ...$rightEvidence];
+            }
+
+            foreach ($node->children() as $child) {
+                if ($child instanceof SemanticNode) {
+                    $evidence = [...$evidence, ...$this->collectComparableEvidenceForAlias($child, $alias, $source)];
+                }
+            }
+        }
+
+        return $this->deduplicateComparableEvidence($evidence);
+    }
+
+    /**
+     * @return list<array{source:string,column:string,operator:string,comparable_kind:string}>
+     */
+    private function matchComparableEvidenceSide(
+        SemanticNode $candidateColumn,
+        SemanticNode $otherSide,
+        string $alias,
+        string $source,
+        BinaryOperator $operator,
+    ): array {
+        if (
+            !$candidateColumn instanceof ColumnReferenceNode
+            || !$this->matchesAlias($candidateColumn, $alias)
+            || !$this->isJoinReorderComparableNode($otherSide)
+        ) {
+            return [];
+        }
+
+        return [[
+            'source' => $source,
+            'column' => $candidateColumn->column,
+            'operator' => $operator->value,
+            'comparable_kind' => $this->classifyComparableNodeForJoinReorder($otherSide),
+        ]];
+    }
+
+    private function scoreComparableEvidence(array $item): int
+    {
+        return match ($item['operator']) {
+            '=' => $item['comparable_kind'] === 'literal_or_param' ? 6 : 2,
+            '<', '<=', '>', '>=' => $item['comparable_kind'] === 'literal_or_param' ? 4 : 1,
+            default => 0,
+        };
+    }
+
+    private function matchesOrderByAlias(OrderByItemNode $item, string $alias): bool
+    {
+        return $item->expression instanceof ColumnReferenceNode
+            && $this->matchesAlias($item->expression, $alias);
+    }
+
+    private function matchesAlias(ColumnReferenceNode $column, string $alias): bool
+    {
+        return $column->tableAlias === null || $column->tableAlias === $alias;
+    }
+
+    private function isJoinReorderComparableNode(SemanticNode $node): bool
+    {
+        return $node instanceof LiteralNode || $node instanceof ParameterNode || $node instanceof ColumnReferenceNode;
+    }
+
+    private function classifyComparableNodeForJoinReorder(SemanticNode $node): string
+    {
+        return match (true) {
+            $node instanceof LiteralNode, $node instanceof ParameterNode => 'literal_or_param',
+            $node instanceof ColumnReferenceNode => 'column_ref',
+            default => 'other',
+        };
+    }
+
+    /**
+     * @param list<array{source:string,column:string,operator:string,comparable_kind:string}> $evidence
+     * @return list<array{source:string,column:string,operator:string,comparable_kind:string}>
+     */
+    private function deduplicateComparableEvidence(array $evidence): array
+    {
+        $unique = [];
+        $seen = [];
+
+        foreach ($evidence as $item) {
+            $key = implode('|', [$item['source'], $item['column'], $item['operator'], $item['comparable_kind']]);
+            if (isset($seen[$key])) {
+                continue;
+            }
+
+            $seen[$key] = true;
+            $unique[] = $item;
+        }
+
+        return $unique;
+    }
+
     /**
      * @param list<string> $rules
      */
@@ -1319,6 +1961,18 @@ final class DefaultQueryOptimizer implements QueryOptimizerInterface
 
         if ($rules === ['predicate_pushdown_v1']) {
             return 'conjunctive_predicates_pushed_into_inner_join';
+        }
+
+        if ($rules === ['predicate_normalization_v1']) {
+            return 'comparison_predicates_canonicalized';
+        }
+
+        if ($rules === ['boolean_predicate_normalization_v1']) {
+            return 'boolean_predicate_tree_canonicalized';
+        }
+
+        if ($rules === ['join_reorder_v1']) {
+            return 'inner_join_sources_reordered_for_selectivity';
         }
 
         return 'safe_rule_bundle_applied';

@@ -15,12 +15,14 @@ use Quantum\Database\Operation\SqgOperation;
 use Quantum\Database\Operation\Sqg\Enum\BinaryOperator;
 use Quantum\Database\Operation\Sqg\Enum\DataType;
 use Quantum\Database\Operation\Sqg\Node\BinaryExpressionNode;
+use Quantum\Database\Operation\Sqg\Node\ColumnReferenceNode;
 use Quantum\Database\Operation\Sqg\Node\LiteralNode as SqgLiteralNode;
 use Quantum\Database\Operation\Sqg\Node\ProjectionListNode;
 use Quantum\Database\Operation\Sqg\Node\SelectStatementNode;
 use Quantum\Database\Operation\Sqg\SemanticQueryGraph;
 use Quantum\Database\Operation\Sqg\Node\AliasedProjectionNode;
 use Quantum\Database\Operation\Sqg\Node\LiteralNode;
+use Quantum\Database\Operation\Sqg\Node\TableSourceNode;
 use Quantum\Database\Query\SelectQueryBuilder;
 
 final class DatabaseQueryPipelineTest extends TestCase
@@ -130,7 +132,7 @@ final class DatabaseQueryPipelineTest extends TestCase
         self::assertSame(['scan', 'scan', 'join', 'filter', 'project', 'sort', 'limit', 'offset'], $plan->logicalPlan->operators);
         self::assertSame('streaming_limit', $plan->physicalPlan->rootStrategy);
         self::assertSame(
-            ['index_lookup_order_candidate', 'index_lookup_candidate', 'nested_loop_join', 'predicate_evaluation', 'project_passthrough', 'sort_materialize', 'streaming_limit'],
+            ['index_join_lookup_order_candidate', 'index_candidate', 'nested_loop_join', 'predicate_evaluation', 'project_passthrough', 'sort_materialize', 'streaming_limit'],
             $plan->physicalPlan->strategies,
         );
         self::assertSame(1, $plan->logicalPlan->metadata['join_count'] ?? null);
@@ -142,10 +144,10 @@ final class DatabaseQueryPipelineTest extends TestCase
         self::assertSame(10, $plan->logicalPlan->metadata['operator_details'][6]['metadata']['value'] ?? null);
         self::assertSame(5, $plan->logicalPlan->metadata['operator_details'][7]['metadata']['value'] ?? null);
         self::assertSame('nested_loop_join', $plan->physicalPlan->metadata['strategy_details'][2]['name'] ?? null);
-        self::assertSame('index_lookup_order_candidate', $plan->physicalPlan->metadata['strategy_details'][0]['name'] ?? null);
+        self::assertSame('index_join_lookup_order_candidate', $plan->physicalPlan->metadata['strategy_details'][0]['name'] ?? null);
         self::assertSame('id', $plan->physicalPlan->metadata['strategy_details'][0]['metadata']['evidence'][0]['column'] ?? null);
         self::assertSame('where', $plan->physicalPlan->metadata['strategy_details'][0]['metadata']['evidence'][0]['source'] ?? null);
-        self::assertSame('index_lookup_candidate', $plan->physicalPlan->metadata['strategy_details'][1]['name'] ?? null);
+        self::assertSame('index_candidate', $plan->physicalPlan->metadata['strategy_details'][1]['name'] ?? null);
         self::assertSame('sort_materialize', $plan->physicalPlan->metadata['strategy_details'][5]['name'] ?? null);
         self::assertSame(10, $plan->physicalPlan->metadata['strategy_details'][6]['metadata']['limit'] ?? null);
         self::assertSame(5, $plan->physicalPlan->metadata['strategy_details'][6]['metadata']['offset'] ?? null);
@@ -240,11 +242,14 @@ final class DatabaseQueryPipelineTest extends TestCase
 
         $plan = (new NoOpQueryPlanner())->plan($optimization);
 
-        self::assertSame('predicate_pushdown_v1', $optimization->decision->strategy);
+        self::assertSame('safe_rule_bundle_v1', $optimization->decision->strategy);
         self::assertNull($optimization->graph->root->where);
-        self::assertSame(['predicate_pushdown_v1'], $optimization->decision->metadata['selected_rules'] ?? null);
-        self::assertSame(['table_scan', 'index_join_lookup_candidate', 'nested_loop_join', 'project_passthrough'], $plan->physicalPlan->strategies);
-        self::assertSame('index_join_lookup_candidate', $plan->physicalPlan->metadata['strategy_details'][1]['name'] ?? null);
+        self::assertSame(
+            ['predicate_normalization_v1', 'predicate_pushdown_v1', 'join_reorder_v1'],
+            $optimization->decision->metadata['selected_rules'] ?? null,
+        );
+        self::assertSame(['index_join_lookup_candidate', 'index_candidate', 'nested_loop_join', 'project_passthrough'], $plan->physicalPlan->strategies);
+        self::assertSame('index_join_lookup_candidate', $plan->physicalPlan->metadata['strategy_details'][0]['name'] ?? null);
         self::assertStringContainsString('index_join_lookup_candidate', implode(' ', $plan->diagnostics->capabilityDecisions));
     }
 
@@ -267,10 +272,10 @@ final class DatabaseQueryPipelineTest extends TestCase
 
         $plan = (new NoOpQueryPlanner())->plan($optimization);
 
-        self::assertSame('predicate_pushdown_v1', $optimization->decision->strategy);
+        self::assertSame('safe_rule_bundle_v1', $optimization->decision->strategy);
         self::assertNull($optimization->graph->root->where);
-        self::assertSame(['table_scan', 'index_join_lookup_order_candidate', 'nested_loop_join', 'project_passthrough', 'sort_materialize'], $plan->physicalPlan->strategies);
-        self::assertSame('index_join_lookup_order_candidate', $plan->physicalPlan->metadata['strategy_details'][1]['name'] ?? null);
+        self::assertSame(['index_join_lookup_order_candidate', 'index_candidate', 'nested_loop_join', 'project_passthrough', 'sort_materialize'], $plan->physicalPlan->strategies);
+        self::assertSame('index_join_lookup_order_candidate', $plan->physicalPlan->metadata['strategy_details'][0]['name'] ?? null);
         self::assertStringContainsString('index_join_lookup_order_candidate', implode(' ', $plan->diagnostics->capabilityDecisions));
     }
 
@@ -291,15 +296,227 @@ final class DatabaseQueryPipelineTest extends TestCase
             capabilities: $caps,
         ));
 
-        self::assertSame('predicate_pushdown_v1', $optimization->decision->strategy);
-        self::assertSame(['predicate_pushdown_v1'], $optimization->trace->appliedRules);
+        self::assertSame('safe_rule_bundle_v1', $optimization->decision->strategy);
+        self::assertSame(['predicate_normalization_v1', 'predicate_pushdown_v1', 'join_reorder_v1'], $optimization->trace->appliedRules);
         self::assertNull($optimization->graph->root->where);
         self::assertInstanceOf(BinaryExpressionNode::class, $optimization->graph->root->joins[0]->on ?? null);
-        self::assertSame('candidate:predicate_pushdown_v1', $optimization->selectedCandidate->id);
+        self::assertSame('candidate:predicate_normalization_v1+predicate_pushdown_v1+join_reorder_v1', $optimization->selectedCandidate->id);
         self::assertSame(
-            'conjunctive_predicates_pushed_into_inner_join',
+            'safe_rule_bundle_applied',
             $optimization->decision->metadata['reason'] ?? null,
         );
+    }
+
+    public function test_default_optimizer_canonicalizes_inverted_literal_comparison_predicate(): void
+    {
+        $graph = new SemanticQueryGraph(
+            root: new SelectStatementNode(
+                projections: new ProjectionListNode(items: [
+                    new ColumnReferenceNode(column: 'id', tableAlias: 'u'),
+                ]),
+                fromSources: [
+                    new TableSourceNode(tableName: 'users', alias: 'u'),
+                ],
+                where: new BinaryExpressionNode(
+                    op: BinaryOperator::Eq,
+                    left: new LiteralNode(value: 1, declaredType: DataType::Int8),
+                    right: new ColumnReferenceNode(column: 'id', tableAlias: 'u'),
+                ),
+            ),
+            parameters: [],
+        );
+        $caps = DatabaseCapabilitySet::minimalSet('sqlite');
+        $certification = $graph->validate($caps);
+
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+        ));
+
+        self::assertSame('predicate_normalization_v1', $optimization->decision->strategy);
+        self::assertSame(['predicate_normalization_v1'], $optimization->trace->appliedRules);
+        self::assertInstanceOf(BinaryExpressionNode::class, $optimization->graph->root->where);
+        self::assertInstanceOf(ColumnReferenceNode::class, $optimization->graph->root->where->left);
+        self::assertInstanceOf(LiteralNode::class, $optimization->graph->root->where->right);
+        self::assertSame('u', $optimization->graph->root->where->left->tableAlias);
+        self::assertSame('id', $optimization->graph->root->where->left->column);
+        self::assertSame(1, $optimization->graph->root->where->right->value);
+        self::assertSame('comparison_predicates_canonicalized', $optimization->decision->metadata['reason'] ?? null);
+    }
+
+    public function test_default_optimizer_bundles_predicate_normalization_with_pushdown_for_inner_join(): void
+    {
+        $graph = new SemanticQueryGraph(
+            root: new SelectStatementNode(
+                projections: new ProjectionListNode(items: [
+                    new ColumnReferenceNode(column: 'user_id', tableAlias: 'p'),
+                ]),
+                fromSources: [
+                    new TableSourceNode(tableName: 'users', alias: 'u'),
+                ],
+                joins: [
+                    new \Quantum\Database\Operation\Sqg\Node\JoinNode(
+                        type: \Quantum\Database\Dialect\Enum\JoinType::Inner,
+                        right: new TableSourceNode(tableName: 'profiles', alias: 'p'),
+                        on: new BinaryExpressionNode(
+                            op: BinaryOperator::Eq,
+                            left: new ColumnReferenceNode(column: 'id', tableAlias: 'u'),
+                            right: new ColumnReferenceNode(column: 'user_id', tableAlias: 'p'),
+                        ),
+                    ),
+                ],
+                where: new BinaryExpressionNode(
+                    op: BinaryOperator::Eq,
+                    left: new LiteralNode(value: 1, declaredType: DataType::Int8),
+                    right: new ColumnReferenceNode(column: 'user_id', tableAlias: 'p'),
+                ),
+            ),
+            parameters: [],
+        );
+        $caps = DatabaseCapabilitySet::minimalSet('sqlite');
+        $certification = $graph->validate($caps);
+
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+        ));
+
+        self::assertSame('safe_rule_bundle_v1', $optimization->decision->strategy);
+        self::assertSame(
+            ['predicate_normalization_v1', 'predicate_pushdown_v1', 'join_reorder_v1'],
+            $optimization->decision->metadata['selected_rules'] ?? null,
+        );
+        self::assertNull($optimization->graph->root->where);
+        self::assertInstanceOf(BinaryExpressionNode::class, $optimization->graph->root->joins[0]->on ?? null);
+        self::assertSame('safe_rule_bundle_applied', $optimization->decision->metadata['reason'] ?? null);
+    }
+
+    public function test_default_optimizer_canonicalizes_boolean_and_tree_order_in_where_clause(): void
+    {
+        $builder = (new SelectQueryBuilder())
+            ->from('users', 'u')
+            ->select('u.id')
+            ->where('u.status = 2')
+            ->andWhere('u.id = 1');
+        $graph = $builder->getSQG();
+        $caps = DatabaseCapabilitySet::minimalSet('sqlite');
+        $certification = $graph->validate($caps);
+
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+        ));
+
+        self::assertSame('boolean_predicate_normalization_v1', $optimization->decision->strategy);
+        self::assertSame(['boolean_predicate_normalization_v1'], $optimization->trace->appliedRules);
+        self::assertInstanceOf(BinaryExpressionNode::class, $optimization->graph->root->where);
+        self::assertSame(BinaryOperator::AndAlso, $optimization->graph->root->where->op);
+        self::assertInstanceOf(BinaryExpressionNode::class, $optimization->graph->root->where->left);
+        self::assertSame('id', $optimization->graph->root->where->left->left->column ?? null);
+        self::assertInstanceOf(BinaryExpressionNode::class, $optimization->graph->root->where->right);
+        self::assertSame('status', $optimization->graph->root->where->right->left->column ?? null);
+        self::assertSame('boolean_predicate_tree_canonicalized', $optimization->decision->metadata['reason'] ?? null);
+    }
+
+    public function test_default_optimizer_bundles_comparison_and_boolean_predicate_normalization(): void
+    {
+        $graph = new SemanticQueryGraph(
+            root: new SelectStatementNode(
+                projections: new ProjectionListNode(items: [
+                    new ColumnReferenceNode(column: 'id', tableAlias: 'u'),
+                ]),
+                fromSources: [
+                    new TableSourceNode(tableName: 'users', alias: 'u'),
+                ],
+                where: new BinaryExpressionNode(
+                    op: BinaryOperator::AndAlso,
+                    left: new BinaryExpressionNode(
+                        op: BinaryOperator::Eq,
+                        left: new ColumnReferenceNode(column: 'status', tableAlias: 'u'),
+                        right: new LiteralNode(value: 2, declaredType: DataType::Int8),
+                    ),
+                    right: new BinaryExpressionNode(
+                        op: BinaryOperator::Eq,
+                        left: new LiteralNode(value: 1, declaredType: DataType::Int8),
+                        right: new ColumnReferenceNode(column: 'id', tableAlias: 'u'),
+                    ),
+                ),
+            ),
+            parameters: [],
+        );
+        $caps = DatabaseCapabilitySet::minimalSet('sqlite');
+        $certification = $graph->validate($caps);
+
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+        ));
+
+        self::assertSame('safe_rule_bundle_v1', $optimization->decision->strategy);
+        self::assertSame(
+            ['predicate_normalization_v1', 'boolean_predicate_normalization_v1'],
+            $optimization->decision->metadata['selected_rules'] ?? null,
+        );
+        self::assertInstanceOf(BinaryExpressionNode::class, $optimization->graph->root->where);
+        self::assertSame('id', $optimization->graph->root->where->left->left->column ?? null);
+        self::assertSame('status', $optimization->graph->root->where->right->left->column ?? null);
+        self::assertSame('safe_rule_bundle_applied', $optimization->decision->metadata['reason'] ?? null);
+    }
+
+    public function test_default_optimizer_reorders_simple_inner_join_when_joined_alias_has_stronger_lookup_evidence(): void
+    {
+        $builder = (new SelectQueryBuilder())
+            ->from('users', 'u')
+            ->innerJoin('u', 'profiles', 'p', 'u.id = p.user_id')
+            ->select('p.user_id')
+            ->where('p.user_id = 1');
+        $graph = $builder->getSQG();
+        $caps = DatabaseCapabilitySet::minimalSet('sqlite');
+        $certification = $graph->validate($caps);
+
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+        ));
+        $plan = (new NoOpQueryPlanner())->plan($optimization);
+
+        self::assertSame('safe_rule_bundle_v1', $optimization->decision->strategy);
+        self::assertContains('join_reorder_v1', $optimization->decision->metadata['selected_rules'] ?? []);
+        self::assertInstanceOf(TableSourceNode::class, $optimization->graph->root->fromSources[0] ?? null);
+        self::assertSame('p', $optimization->graph->root->fromSources[0]->aliasOrName());
+        self::assertInstanceOf(\Quantum\Database\Operation\Sqg\Node\JoinNode::class, $optimization->graph->root->joins[0] ?? null);
+        self::assertInstanceOf(TableSourceNode::class, $optimization->graph->root->joins[0]->right ?? null);
+        self::assertSame('u', $optimization->graph->root->joins[0]->right->aliasOrName());
+        self::assertSame(['index_join_lookup_candidate', 'index_candidate', 'nested_loop_join', 'project_passthrough'], $plan->physicalPlan->strategies);
+        self::assertSame('index_join_lookup_candidate', $plan->physicalPlan->metadata['strategy_details'][0]['name'] ?? null);
+        self::assertSame('profiles', $plan->physicalPlan->metadata['strategy_details'][0]['metadata']['table'] ?? null);
+    }
+
+    public function test_default_optimizer_keeps_simple_inner_join_order_when_base_alias_already_has_best_lookup_evidence(): void
+    {
+        $builder = (new SelectQueryBuilder())
+            ->from('users', 'u')
+            ->innerJoin('u', 'profiles', 'p', 'u.id = p.user_id')
+            ->select('u.id')
+            ->where('u.id = 1');
+        $graph = $builder->getSQG();
+        $caps = DatabaseCapabilitySet::minimalSet('sqlite');
+        $certification = $graph->validate($caps);
+
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+        ));
+
+        self::assertNotContains('join_reorder_v1', $optimization->decision->metadata['selected_rules'] ?? []);
+        self::assertInstanceOf(TableSourceNode::class, $optimization->graph->root->fromSources[0] ?? null);
+        self::assertSame('u', $optimization->graph->root->fromSources[0]->aliasOrName());
     }
 
     public function test_planner_uses_index_range_order_candidate_for_range_with_matching_order(): void

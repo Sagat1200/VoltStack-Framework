@@ -39,6 +39,13 @@ final class DatabaseQueryPipelineTest extends TestCase
         self::assertSame($certification->fingerprint, $result->certification->fingerprint);
         self::assertSame('no_op', $result->decision->strategy);
         self::assertSame('candidate:no_op', $result->selectedCandidate->id);
+        self::assertGreaterThan(0, $result->selectedCandidate->estimatedCost);
+        self::assertSame('deterministic_v1', $result->decision->metadata['cost_model_version'] ?? null);
+        self::assertArrayHasKey('cardinality_cost', $result->selectedCandidate->costBreakdown);
+        self::assertArrayHasKey('memory_risk_penalty', $result->selectedCandidate->costBreakdown);
+        self::assertSame($result->selectedCandidate->costBreakdown, $result->decision->metadata['selected_breakdown'] ?? null);
+        self::assertSame(1, $result->decision->metadata['candidate_count'] ?? null);
+        self::assertNotEmpty($result->trace->candidateSummaries[0]['metrics'] ?? []);
         self::assertNotEmpty($result->trace->notes);
     }
 
@@ -58,6 +65,17 @@ final class DatabaseQueryPipelineTest extends TestCase
         self::assertSame('candidate:constant_folding_v1', $optimization->selectedCandidate->id);
         self::assertSame(['constant_folding_v1'], $optimization->trace->appliedRules);
         self::assertNotSame($graph, $optimization->graph);
+        self::assertSame('deterministic_v1', $optimization->decision->metadata['cost_model_version'] ?? null);
+        self::assertCount(2, $optimization->trace->candidateSummaries);
+        self::assertGreaterThan(
+            $optimization->trace->candidateSummaries[1]['cost'] ?? 0,
+            $optimization->trace->candidateSummaries[0]['cost'] ?? 0,
+        );
+        self::assertGreaterThan(0, $optimization->decision->metadata['cost_delta_vs_baseline'] ?? 0);
+        self::assertSame(
+            $optimization->selectedCandidate->costBreakdown,
+            $optimization->decision->metadata['selected_breakdown'] ?? null,
+        );
         self::assertInstanceOf(AliasedProjectionNode::class, $optimization->graph->root->projections?->items[0] ?? null);
         self::assertInstanceOf(LiteralNode::class, $optimization->graph->root->projections?->items[0]->expression ?? null);
         self::assertSame(3, $optimization->graph->root->projections?->items[0]->expression->value ?? null);
@@ -295,6 +313,60 @@ final class DatabaseQueryPipelineTest extends TestCase
         self::assertSame('index_order_candidate', $plan->physicalPlan->metadata['strategy_details'][0]['name'] ?? null);
         self::assertSame('order', $plan->physicalPlan->metadata['strategy_details'][0]['metadata']['evidence'][0]['operator'] ?? null);
         self::assertStringContainsString('index_order_candidate', implode(' ', $plan->diagnostics->capabilityDecisions));
+    }
+
+    public function test_default_optimizer_simplifies_offset_zero_into_no_offset_candidate(): void
+    {
+        $builder = (new SelectQueryBuilder())
+            ->from('users', 'u')
+            ->select('u.id')
+            ->orderBy('u.id')
+            ->setFirstResult(0);
+        $graph = $builder->getSQG();
+        $caps = DatabaseCapabilitySet::minimalSet('sqlite');
+        $certification = $graph->validate($caps);
+
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+        ));
+
+        self::assertSame('limit_offset_simplification_v1', $optimization->decision->strategy);
+        self::assertSame(['limit_offset_simplification_v1'], $optimization->trace->appliedRules);
+        self::assertSame(['limit_offset_simplification_v1'], $optimization->decision->metadata['selected_rules'] ?? null);
+        self::assertNotNull($graph->root->offset);
+        self::assertNull($optimization->graph->root->offset);
+        self::assertGreaterThan(0, $optimization->decision->metadata['cost_delta_vs_baseline'] ?? 0);
+    }
+
+    public function test_default_optimizer_drops_offset_when_limit_zero_already_forces_empty_result(): void
+    {
+        $builder = (new SelectQueryBuilder())
+            ->from('users', 'u')
+            ->select('u.id')
+            ->setMaxResults(0)
+            ->setFirstResult(25);
+        $graph = $builder->getSQG();
+        $caps = DatabaseCapabilitySet::minimalSet('sqlite');
+        $certification = $graph->validate($caps);
+
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+        ));
+
+        self::assertSame('limit_offset_simplification_v1', $optimization->decision->strategy);
+        self::assertNotNull($graph->root->offset);
+        self::assertNotNull($optimization->graph->root->limit);
+        self::assertSame(0, $optimization->graph->root->limit?->limit);
+        self::assertNull($optimization->graph->root->offset);
+        self::assertSame(
+            'candidate:limit_offset_simplification_v1',
+            $optimization->selectedCandidate->id,
+        );
+        self::assertGreaterThan(0, $optimization->decision->metadata['cost_delta_vs_baseline'] ?? 0);
     }
 
     public function test_sqlite_dialect_compiles_sqg_operation_using_plan_artifact_fingerprint(): void

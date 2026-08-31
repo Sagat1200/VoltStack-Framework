@@ -7,17 +7,30 @@ namespace Quantum\Database\Operation\Pipeline;
 use Quantum\Database\Capability\DatabaseCapabilitySet;
 use Quantum\Database\DatabaseContext;
 use Quantum\Database\Operation\Sqg\GraphCertification;
+use Quantum\Database\Operation\Sqg\Node\AggregateFunctionNode;
 use Quantum\Database\Operation\Sqg\Node\AliasedProjectionNode;
+use Quantum\Database\Operation\Sqg\Node\BetweenPredicateNode;
 use Quantum\Database\Operation\Sqg\Node\BinaryExpressionNode;
+use Quantum\Database\Operation\Sqg\Node\CaseExpressionNode;
+use Quantum\Database\Operation\Sqg\Node\CteListNode;
+use Quantum\Database\Operation\Sqg\Node\ExistsPredicateNode;
+use Quantum\Database\Operation\Sqg\Node\FunctionCallNode;
 use Quantum\Database\Operation\Sqg\Node\GroupByListNode;
 use Quantum\Database\Operation\Sqg\Node\HavingClauseNode;
+use Quantum\Database\Operation\Sqg\Node\InSubqueryPredicateNode;
 use Quantum\Database\Operation\Sqg\Node\JoinNode;
 use Quantum\Database\Operation\Sqg\Node\LiteralNode;
+use Quantum\Database\Operation\Sqg\Node\LimitClauseNode;
+use Quantum\Database\Operation\Sqg\Node\OffsetClauseNode;
 use Quantum\Database\Operation\Sqg\Node\OrderByItemNode;
 use Quantum\Database\Operation\Sqg\Node\OrderByListNode;
+use Quantum\Database\Operation\Sqg\Node\ParameterNode;
 use Quantum\Database\Operation\Sqg\Node\ProjectionListNode;
 use Quantum\Database\Operation\Sqg\Node\SelectStatementNode;
+use Quantum\Database\Operation\Sqg\Node\SubqueryExpressionNode;
+use Quantum\Database\Operation\Sqg\Node\SubquerySourceNode;
 use Quantum\Database\Operation\Sqg\Node\UnaryExpressionNode;
+use Quantum\Database\Operation\Sqg\Node\WindowFunctionNode;
 use Quantum\Database\Operation\Sqg\SemanticNode;
 use Quantum\Database\Operation\Sqg\SemanticQueryGraph;
 use Quantum\Database\Operation\Sqg\Enum\BinaryOperator;
@@ -99,23 +112,273 @@ final readonly class QueryOptimizationResult
     ) {}
 }
 
+final readonly class QueryCostEvaluation
+{
+    /**
+     * @param array<string, float|int> $costBreakdown
+     * @param array<string, float|int> $metrics
+     */
+    public function __construct(
+        public float $estimatedCost,
+        public array $costBreakdown,
+        public array $metrics,
+    ) {}
+}
+
+final class DeterministicQueryCostModel
+{
+    /**
+     * @param array<string, int|float|string|bool|null> $limits
+     */
+    public function evaluate(
+        SemanticQueryGraph $graph,
+        DatabaseCapabilitySet $capabilities,
+        array $limits = [],
+    ): QueryCostEvaluation {
+        $metrics = $this->collectMetrics($graph);
+
+        $cardinalityBase = 18.0
+            + ($metrics['source_count'] * 10.0)
+            + ($metrics['projection_count'] * 1.25)
+            + ($metrics['aggregate_count'] * 4.0)
+            + ($metrics['distinct_count'] * 6.0)
+            + ($metrics['group_count'] * 8.0)
+            + ($metrics['cte_count'] * 3.0);
+        $selectivityCredit = ($metrics['filter_clause_count'] * 1.5)
+            + ($metrics['equality_predicate_count'] * 4.0)
+            + ($metrics['range_predicate_count'] * 2.5)
+            + ($this->limitSelectivityCredit($metrics['smallest_limit']));
+
+        $cardinalityCost = max(1.0, $cardinalityBase - $selectivityCredit);
+        $joinFanoutCost = ($metrics['join_count'] * 15.0)
+            + (max(0, $metrics['source_count'] - 1) * 1.5)
+            + (max(0, $metrics['join_count'] - 1) * 4.0);
+        $sortCost = ($metrics['order_count'] * 12.0)
+            + ($metrics['distinct_count'] * 6.0)
+            + ($metrics['group_count'] * 6.0)
+            + ($metrics['window_function_count'] * 4.0);
+        $materializationCost = ($metrics['subquery_count'] * 14.0)
+            + ($metrics['cte_count'] * 8.0)
+            + ($metrics['offset_count'] * 4.0)
+            + ($metrics['recursive_cte_count'] * 6.0);
+        $functionVolatilityPenalty = ($metrics['mutable_function_count'] * 20.0)
+            + ($metrics['function_call_count'] * 2.0)
+            + ($metrics['aggregate_count'] * 3.0)
+            + ($metrics['case_expression_count'] * 1.5)
+            + ($metrics['window_function_count'] * 2.0);
+        $capabilityPenalty = 0.0;
+        if ($metrics['window_function_count'] > 0 && !$capabilities->windowFunctions) {
+            $capabilityPenalty += $metrics['window_function_count'] * 25.0;
+        }
+        if ($metrics['recursive_cte_count'] > 0 && !$capabilities->cteRecursive) {
+            $capabilityPenalty += $metrics['recursive_cte_count'] * 25.0;
+        }
+        $memoryRiskPenalty = ($metrics['node_count'] * 0.25)
+            + ($metrics['binary_expression_count'] * 0.5)
+            + ($metrics['subquery_count'] * 4.0)
+            + ($metrics['order_count'] * 2.0)
+            + ($metrics['offset_count'] * 2.0)
+            + ($this->budgetPressurePenalty($metrics, $limits));
+
+        $breakdown = [
+            'cardinality_cost' => round($cardinalityCost, 2),
+            'join_fanout_cost' => round($joinFanoutCost, 2),
+            'sort_cost' => round($sortCost, 2),
+            'materialization_cost' => round($materializationCost, 2),
+            'function_volatility_penalty' => round($functionVolatilityPenalty, 2),
+            'capability_penalty' => round($capabilityPenalty, 2),
+            'memory_risk_penalty' => round($memoryRiskPenalty, 2),
+        ];
+
+        return new QueryCostEvaluation(
+            estimatedCost: round((float) array_sum($breakdown), 2),
+            costBreakdown: $breakdown,
+            metrics: $metrics,
+        );
+    }
+
+    /**
+     * @return array<string, float|int>
+     */
+    private function collectMetrics(SemanticQueryGraph $graph): array
+    {
+        $metrics = [
+            'node_count' => 0,
+            'source_count' => 0,
+            'join_count' => 0,
+            'projection_count' => 0,
+            'filter_clause_count' => 0,
+            'equality_predicate_count' => 0,
+            'range_predicate_count' => 0,
+            'group_count' => 0,
+            'having_count' => 0,
+            'order_count' => 0,
+            'distinct_count' => 0,
+            'limit_count' => 0,
+            'offset_count' => 0,
+            'smallest_limit' => 0,
+            'largest_offset' => 0,
+            'function_call_count' => 0,
+            'mutable_function_count' => 0,
+            'aggregate_count' => 0,
+            'window_function_count' => 0,
+            'case_expression_count' => 0,
+            'subquery_count' => 0,
+            'cte_count' => 0,
+            'recursive_cte_count' => 0,
+            'parameter_count' => count($graph->parameters),
+            'binary_expression_count' => 0,
+        ];
+
+        $walk = function (SemanticNode $node) use (&$walk, &$metrics): void {
+            $metrics['node_count']++;
+
+            if ($node instanceof SelectStatementNode) {
+                $metrics['source_count'] += count($node->fromSources);
+                $metrics['projection_count'] += count($node->projections?->items ?? []);
+                $metrics['filter_clause_count'] += $node->where !== null ? 1 : 0;
+                $metrics['group_count'] += count($node->groupBy?->expressions ?? []);
+                $metrics['having_count'] += $node->having !== null ? 1 : 0;
+                $metrics['filter_clause_count'] += $node->having !== null ? 1 : 0;
+                $metrics['order_count'] += count($node->orderBy?->items ?? []);
+                $metrics['distinct_count'] += $node->distinct !== null ? 1 : 0;
+                if ($node->limit !== null) {
+                    $metrics['limit_count']++;
+                    $limit = $node->limit->limit;
+                    $metrics['smallest_limit'] = $metrics['smallest_limit'] === 0
+                        ? $limit
+                        : min($metrics['smallest_limit'], $limit);
+                }
+                if ($node->offset !== null) {
+                    $metrics['offset_count']++;
+                    $metrics['largest_offset'] = max($metrics['largest_offset'], $node->offset->offset);
+                }
+            }
+
+            if ($node instanceof JoinNode) {
+                $metrics['join_count']++;
+            }
+
+            if ($node instanceof BinaryExpressionNode) {
+                $metrics['binary_expression_count']++;
+                match ($node->op) {
+                    BinaryOperator::Eq => $metrics['equality_predicate_count']++,
+                    BinaryOperator::Lt,
+                    BinaryOperator::Lte,
+                    BinaryOperator::Gt,
+                    BinaryOperator::Gte => $metrics['range_predicate_count']++,
+                    default => null,
+                };
+            }
+
+            if ($node instanceof BetweenPredicateNode) {
+                $metrics['range_predicate_count']++;
+            }
+
+            if ($node instanceof FunctionCallNode) {
+                $metrics['function_call_count']++;
+                $metrics['mutable_function_count'] += $node->isMutable ? 1 : 0;
+            }
+
+            if ($node instanceof AggregateFunctionNode) {
+                $metrics['aggregate_count']++;
+            }
+
+            if ($node instanceof WindowFunctionNode) {
+                $metrics['window_function_count']++;
+            }
+
+            if ($node instanceof CaseExpressionNode) {
+                $metrics['case_expression_count']++;
+            }
+
+            if ($node instanceof CteListNode) {
+                $metrics['cte_count'] += count($node->ctes);
+                $metrics['recursive_cte_count'] += $node->recursive ? 1 : 0;
+            }
+
+            if (
+                $node instanceof SubquerySourceNode
+                || $node instanceof SubqueryExpressionNode
+                || $node instanceof ExistsPredicateNode
+                || $node instanceof InSubqueryPredicateNode
+            ) {
+                $metrics['subquery_count']++;
+            }
+
+            if ($node instanceof ParameterNode) {
+                $metrics['parameter_count']++;
+            }
+
+            foreach ($node->children() as $child) {
+                if ($child instanceof SemanticNode) {
+                    $walk($child);
+                }
+            }
+        };
+
+        $walk($graph->root);
+
+        return $metrics;
+    }
+
+    private function limitSelectivityCredit(int|float $smallestLimit): float
+    {
+        if ($smallestLimit <= 0) {
+            return 0.0;
+        }
+
+        return match (true) {
+            $smallestLimit <= 1 => 10.0,
+            $smallestLimit <= 10 => 8.0,
+            $smallestLimit <= 50 => 5.0,
+            $smallestLimit <= 100 => 3.0,
+            default => 1.0,
+        };
+    }
+
+    /**
+     * @param array<string, float|int> $metrics
+     * @param array<string, int|float|string|bool|null> $limits
+     */
+    private function budgetPressurePenalty(array $metrics, array $limits): float
+    {
+        $penalty = 0.0;
+
+        $maxNodeCount = $limits['max_node_count'] ?? null;
+        if (is_int($maxNodeCount) || is_float($maxNodeCount)) {
+            $penalty += max(0.0, ((float) $metrics['node_count']) - (float) $maxNodeCount) * 0.5;
+        }
+
+        $maxJoinCount = $limits['max_join_count'] ?? null;
+        if (is_int($maxJoinCount) || is_float($maxJoinCount)) {
+            $penalty += max(0.0, ((float) $metrics['join_count']) - (float) $maxJoinCount) * 4.0;
+        }
+
+        $maxSubqueryCount = $limits['max_subquery_count'] ?? null;
+        if (is_int($maxSubqueryCount) || is_float($maxSubqueryCount)) {
+            $penalty += max(0.0, ((float) $metrics['subquery_count']) - (float) $maxSubqueryCount) * 6.0;
+        }
+
+        return $penalty;
+    }
+}
+
 final class NoOpQueryOptimizer implements QueryOptimizerInterface
 {
     public function optimize(QueryOptimizationInput $input, ?DatabaseContext $context = null): QueryOptimizationResult
     {
+        $costEvaluation = (new DeterministicQueryCostModel())->evaluate(
+            graph: $input->graph,
+            capabilities: $input->capabilities,
+            limits: $input->limits,
+        );
+
         $candidate = new QueryOptimizationCandidate(
             id: 'candidate:no_op',
             graph: $input->graph,
-            estimatedCost: 0.0,
-            costBreakdown: [
-                'cardinality_cost' => 0.0,
-                'join_fanout_cost' => 0.0,
-                'sort_cost' => 0.0,
-                'materialization_cost' => 0.0,
-                'function_volatility_penalty' => 0.0,
-                'capability_penalty' => 0.0,
-                'memory_risk_penalty' => 0.0,
-            ],
+            estimatedCost: $costEvaluation->estimatedCost,
+            costBreakdown: $costEvaluation->costBreakdown,
             appliedRules: [],
         );
 
@@ -126,6 +389,9 @@ final class NoOpQueryOptimizer implements QueryOptimizerInterface
             metadata: [
                 'request_id' => $context?->requestId,
                 'reason' => 'optimizer_v1_bootstrap',
+                'cost_model_version' => 'deterministic_v1',
+                'selected_breakdown' => $candidate->costBreakdown,
+                'selected_metrics' => $costEvaluation->metrics,
             ],
         );
 
@@ -136,11 +402,14 @@ final class NoOpQueryOptimizer implements QueryOptimizerInterface
                     'id' => $candidate->id,
                     'cost' => $candidate->estimatedCost,
                     'rules' => $candidate->appliedRules,
+                    'breakdown' => $candidate->costBreakdown,
+                    'metrics' => $costEvaluation->metrics,
                 ],
             ],
             notes: [
                 'No-op optimizer selected the certified graph unchanged.',
                 'This bootstrap implementation establishes explicit optimizer artifacts and trace output.',
+                'Costing uses deterministic structural heuristics and does not depend on runtime statistics.',
             ],
         );
 
@@ -158,58 +427,132 @@ final class DefaultQueryOptimizer implements QueryOptimizerInterface
 {
     public function optimize(QueryOptimizationInput $input, ?DatabaseContext $context = null): QueryOptimizationResult
     {
-        $foldedGraph = $this->foldGraph($input->graph);
-        $appliedRules = $foldedGraph !== $input->graph ? ['constant_folding_v1'] : [];
-        $candidateId = $appliedRules !== [] ? 'candidate:constant_folding_v1' : 'candidate:no_op';
-        $strategy = $appliedRules !== [] ? 'constant_folding_v1' : 'no_op';
-
-        $candidate = new QueryOptimizationCandidate(
-            id: $candidateId,
-            graph: $foldedGraph,
-            estimatedCost: 0.0,
-            costBreakdown: [
-                'cardinality_cost' => 0.0,
-                'join_fanout_cost' => 0.0,
-                'sort_cost' => 0.0,
-                'materialization_cost' => 0.0,
-                'function_volatility_penalty' => 0.0,
-                'capability_penalty' => 0.0,
-                'memory_risk_penalty' => 0.0,
-            ],
-            appliedRules: $appliedRules,
+        $costModel = new DeterministicQueryCostModel();
+        ['graph' => $optimizedGraph, 'applied_rules' => $optimizedRules] = $this->applySafeRulePasses($input->graph);
+        $baselineEvaluation = $costModel->evaluate(
+            graph: $input->graph,
+            capabilities: $input->capabilities,
+            limits: $input->limits,
         );
+        $baselineCandidate = new QueryOptimizationCandidate(
+            id: 'candidate:no_op',
+            graph: $input->graph,
+            estimatedCost: $baselineEvaluation->estimatedCost,
+            costBreakdown: $baselineEvaluation->costBreakdown,
+            appliedRules: [],
+        );
+
+        $candidateSummaries = [[
+            'id' => $baselineCandidate->id,
+            'cost' => $baselineCandidate->estimatedCost,
+            'rules' => $baselineCandidate->appliedRules,
+            'breakdown' => $baselineCandidate->costBreakdown,
+            'metrics' => $baselineEvaluation->metrics,
+        ]];
+
+        $selectedCandidate = $baselineCandidate;
+        $selectedMetrics = $baselineEvaluation->metrics;
+        $selectedReason = 'no_foldable_literals_found';
+        $appliedRules = [];
+
+        if ($optimizedGraph !== $input->graph) {
+            $optimizedEvaluation = $costModel->evaluate(
+                graph: $optimizedGraph,
+                capabilities: $input->capabilities,
+                limits: $input->limits,
+            );
+            $optimizedCandidate = new QueryOptimizationCandidate(
+                id: $this->candidateIdFromRules($optimizedRules),
+                graph: $optimizedGraph,
+                estimatedCost: $optimizedEvaluation->estimatedCost,
+                costBreakdown: $optimizedEvaluation->costBreakdown,
+                appliedRules: $optimizedRules,
+            );
+
+            $candidateSummaries[] = [
+                'id' => $optimizedCandidate->id,
+                'cost' => $optimizedCandidate->estimatedCost,
+                'rules' => $optimizedCandidate->appliedRules,
+                'breakdown' => $optimizedCandidate->costBreakdown,
+                'metrics' => $optimizedEvaluation->metrics,
+            ];
+
+            if ($optimizedCandidate->estimatedCost <= $baselineCandidate->estimatedCost) {
+                $selectedCandidate = $optimizedCandidate;
+                $selectedMetrics = $optimizedEvaluation->metrics;
+                $selectedReason = $this->reasonFromRules($optimizedRules);
+                $appliedRules = $optimizedCandidate->appliedRules;
+            }
+        }
+
+        $strategy = $this->strategyFromRules($appliedRules);
 
         $decision = new QueryOptimizationDecision(
             strategy: $strategy,
-            selectedCandidateId: $candidate->id,
-            estimatedCost: $candidate->estimatedCost,
+            selectedCandidateId: $selectedCandidate->id,
+            estimatedCost: $selectedCandidate->estimatedCost,
             metadata: [
                 'request_id' => $context?->requestId,
-                'reason' => $appliedRules !== [] ? 'constant_expressions_folded' : 'no_foldable_literals_found',
+                'reason' => $selectedReason,
+                'cost_model_version' => 'deterministic_v1',
+                'candidate_count' => count($candidateSummaries),
+                'selected_rules' => $appliedRules,
+                'selected_breakdown' => $selectedCandidate->costBreakdown,
+                'selected_metrics' => $selectedMetrics,
+                'cost_delta_vs_baseline' => round(
+                    max(0.0, $baselineCandidate->estimatedCost - $selectedCandidate->estimatedCost),
+                    2,
+                ),
             ],
         );
 
         $trace = new QueryOptimizationTrace(
             appliedRules: $appliedRules,
-            candidateSummaries: [
-                [
-                    'id' => $candidate->id,
-                    'cost' => $candidate->estimatedCost,
-                    'rules' => $candidate->appliedRules,
-                ],
-            ],
+            candidateSummaries: $candidateSummaries,
             notes: $appliedRules !== []
-                ? ['Default optimizer folded constant literal expressions without changing query semantics.']
-                : ['Default optimizer found no safe literal-only expressions to fold.'],
+                ? [
+                    'Default optimizer applied safe SQG rewrites without changing query semantics.',
+                    'Candidate selection uses deterministic structural heuristics and chooses the lowest-cost candidate.',
+                ]
+                : [
+                    'Default optimizer found no safe literal-only expressions to fold.',
+                    'Costing uses deterministic structural heuristics and falls back to the certified graph when no cheaper candidate exists.',
+                ],
         );
 
         return new QueryOptimizationResult(
-            graph: $foldedGraph,
+            graph: $selectedCandidate->graph,
             certification: $input->certification,
-            selectedCandidate: $candidate,
+            selectedCandidate: $selectedCandidate,
             decision: $decision,
             trace: $trace,
         );
+    }
+
+    /**
+     * @return array{graph:SemanticQueryGraph,applied_rules:list<string>}
+     */
+    private function applySafeRulePasses(SemanticQueryGraph $graph): array
+    {
+        $currentGraph = $graph;
+        $appliedRules = [];
+
+        $foldedGraph = $this->foldGraph($currentGraph);
+        if ($foldedGraph !== $currentGraph) {
+            $currentGraph = $foldedGraph;
+            $appliedRules[] = 'constant_folding_v1';
+        }
+
+        $normalizedGraph = $this->simplifyLimitOffsetGraph($currentGraph);
+        if ($normalizedGraph !== $currentGraph) {
+            $currentGraph = $normalizedGraph;
+            $appliedRules[] = 'limit_offset_simplification_v1';
+        }
+
+        return [
+            'graph' => $currentGraph,
+            'applied_rules' => $appliedRules,
+        ];
     }
 
     private function foldGraph(SemanticQueryGraph $graph): SemanticQueryGraph
@@ -223,6 +566,21 @@ final class DefaultQueryOptimizer implements QueryOptimizerInterface
         }
 
         return $graph;
+    }
+
+    private function simplifyLimitOffsetGraph(SemanticQueryGraph $graph): SemanticQueryGraph
+    {
+        $root = $graph->root;
+        if (!$root instanceof SelectStatementNode) {
+            return $graph;
+        }
+
+        $normalizedRoot = $this->simplifyLimitOffsetSelectStatement($root);
+        if ($normalizedRoot === $root) {
+            return $graph;
+        }
+
+        return new SemanticQueryGraph(root: $normalizedRoot, parameters: $graph->parameters);
     }
 
     private function foldSelectStatement(SelectStatementNode $node): SelectStatementNode
@@ -269,6 +627,44 @@ final class DefaultQueryOptimizer implements QueryOptimizerInterface
             orderBy: $orderBy,
             limit: $node->limit,
             offset: $node->offset,
+            id: $node->id(),
+            flags: $node->flags(),
+            span: $node->sourceSpan(),
+        ), $node);
+    }
+
+    private function simplifyLimitOffsetSelectStatement(SelectStatementNode $node): SelectStatementNode
+    {
+        $changed = false;
+        $limit = $node->limit;
+        $offset = $node->offset;
+
+        if ($offset instanceof OffsetClauseNode && $offset->offset <= 0) {
+            $offset = null;
+            $changed = true;
+        }
+
+        if ($limit instanceof LimitClauseNode && $limit->limit === 0 && $offset instanceof OffsetClauseNode) {
+            $offset = null;
+            $changed = true;
+        }
+
+        if (!$changed) {
+            return $node;
+        }
+
+        return $this->withInferredTypeIfPresent(new SelectStatementNode(
+            with: $node->with,
+            distinct: $node->distinct,
+            projections: $node->projections,
+            fromSources: $node->fromSources,
+            joins: $node->joins,
+            where: $node->where,
+            groupBy: $node->groupBy,
+            having: $node->having,
+            orderBy: $node->orderBy,
+            limit: $limit,
+            offset: $offset,
             id: $node->id(),
             flags: $node->flags(),
             span: $node->sourceSpan(),
@@ -649,5 +1045,47 @@ final class DefaultQueryOptimizer implements QueryOptimizerInterface
         $inferredType = $sourceNode->inferredType();
 
         return $inferredType !== null ? $newNode->withInferredType($inferredType) : $newNode;
+    }
+
+    /**
+     * @param list<string> $rules
+     */
+    private function candidateIdFromRules(array $rules): string
+    {
+        return $rules === []
+            ? 'candidate:no_op'
+            : 'candidate:' . implode('+', $rules);
+    }
+
+    /**
+     * @param list<string> $rules
+     */
+    private function strategyFromRules(array $rules): string
+    {
+        return match (count($rules)) {
+            0 => 'no_op',
+            1 => $rules[0],
+            default => 'safe_rule_bundle_v1',
+        };
+    }
+
+    /**
+     * @param list<string> $rules
+     */
+    private function reasonFromRules(array $rules): string
+    {
+        if ($rules === []) {
+            return 'no_safe_rewrite_applied';
+        }
+
+        if ($rules === ['constant_folding_v1']) {
+            return 'constant_expressions_folded';
+        }
+
+        if ($rules === ['limit_offset_simplification_v1']) {
+            return 'limit_offset_normalized';
+        }
+
+        return 'safe_rule_bundle_applied';
     }
 }

@@ -78,7 +78,11 @@ final class DatabaseQueryPipelineTest extends TestCase
         self::assertSame('project', $plan->logicalPlan->rootOperator);
         self::assertSame(['scan', 'project'], $plan->logicalPlan->operators);
         self::assertSame('table', $plan->logicalPlan->metadata['operator_details'][0]['metadata']['source_kind'] ?? null);
-        self::assertSame('compile_sqg_direct', $plan->physicalPlan->rootStrategy);
+        self::assertSame('project_passthrough', $plan->physicalPlan->rootStrategy);
+        self::assertSame(['table_scan', 'project_passthrough'], $plan->physicalPlan->strategies);
+        self::assertSame('table_scan', $plan->physicalPlan->metadata['strategy_details'][0]['name'] ?? null);
+        self::assertSame('project_passthrough', $plan->physicalPlan->metadata['strategy_details'][1]['name'] ?? null);
+        self::assertNotEmpty($plan->diagnostics->warnings);
         self::assertSame(0, $plan->bindingLayout->parameterCount);
         self::assertNotEmpty($plan->fingerprint);
     }
@@ -106,6 +110,11 @@ final class DatabaseQueryPipelineTest extends TestCase
 
         self::assertSame('offset', $plan->logicalPlan->rootOperator);
         self::assertSame(['scan', 'scan', 'join', 'filter', 'project', 'sort', 'limit', 'offset'], $plan->logicalPlan->operators);
+        self::assertSame('streaming_limit', $plan->physicalPlan->rootStrategy);
+        self::assertSame(
+            ['index_lookup_order_candidate', 'index_lookup_candidate', 'nested_loop_join', 'predicate_evaluation', 'project_passthrough', 'sort_materialize', 'streaming_limit'],
+            $plan->physicalPlan->strategies,
+        );
         self::assertSame(1, $plan->logicalPlan->metadata['join_count'] ?? null);
         self::assertSame('table', $plan->logicalPlan->metadata['operator_details'][0]['metadata']['source_kind'] ?? null);
         self::assertSame('table', $plan->logicalPlan->metadata['operator_details'][1]['metadata']['source_kind'] ?? null);
@@ -114,6 +123,178 @@ final class DatabaseQueryPipelineTest extends TestCase
         self::assertSame(2, $plan->logicalPlan->metadata['operator_details'][4]['metadata']['projection_count'] ?? null);
         self::assertSame(10, $plan->logicalPlan->metadata['operator_details'][6]['metadata']['value'] ?? null);
         self::assertSame(5, $plan->logicalPlan->metadata['operator_details'][7]['metadata']['value'] ?? null);
+        self::assertSame('nested_loop_join', $plan->physicalPlan->metadata['strategy_details'][2]['name'] ?? null);
+        self::assertSame('index_lookup_order_candidate', $plan->physicalPlan->metadata['strategy_details'][0]['name'] ?? null);
+        self::assertSame('id', $plan->physicalPlan->metadata['strategy_details'][0]['metadata']['evidence'][0]['column'] ?? null);
+        self::assertSame('where', $plan->physicalPlan->metadata['strategy_details'][0]['metadata']['evidence'][0]['source'] ?? null);
+        self::assertSame('index_lookup_candidate', $plan->physicalPlan->metadata['strategy_details'][1]['name'] ?? null);
+        self::assertSame('sort_materialize', $plan->physicalPlan->metadata['strategy_details'][5]['name'] ?? null);
+        self::assertSame(10, $plan->physicalPlan->metadata['strategy_details'][6]['metadata']['limit'] ?? null);
+        self::assertSame(5, $plan->physicalPlan->metadata['strategy_details'][6]['metadata']['offset'] ?? null);
+        self::assertNotEmpty($plan->diagnostics->capabilityDecisions);
+    }
+
+    public function test_planner_uses_index_range_candidate_for_simple_range_predicate(): void
+    {
+        $builder = (new SelectQueryBuilder())
+            ->from('users', 'u')
+            ->select('u.id')
+            ->where('u.id >= 10');
+        $graph = $builder->getSQG();
+        $caps = DatabaseCapabilitySet::minimalSet('sqlite');
+        $certification = $graph->validate($caps);
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+        ));
+
+        $plan = (new NoOpQueryPlanner())->plan($optimization);
+
+        self::assertSame(['index_range_candidate', 'predicate_evaluation', 'project_passthrough'], $plan->physicalPlan->strategies);
+        self::assertSame('index_range_candidate', $plan->physicalPlan->metadata['strategy_details'][0]['name'] ?? null);
+        self::assertSame('>=', $plan->physicalPlan->metadata['strategy_details'][0]['metadata']['evidence'][0]['operator'] ?? null);
+        self::assertStringContainsString('index_range_candidate', $plan->diagnostics->capabilityDecisions[0] ?? '');
+    }
+
+    public function test_planner_uses_index_composite_lookup_candidate_for_multiple_equalities(): void
+    {
+        $builder = (new SelectQueryBuilder())
+            ->from('users', 'u')
+            ->select('u.id')
+            ->where('u.id = 1')
+            ->andWhere('u.status = 2');
+        $graph = $builder->getSQG();
+        $caps = DatabaseCapabilitySet::minimalSet('sqlite');
+        $certification = $graph->validate($caps);
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+        ));
+
+        $plan = (new NoOpQueryPlanner())->plan($optimization);
+
+        self::assertSame(['index_composite_lookup_candidate', 'predicate_evaluation', 'project_passthrough'], $plan->physicalPlan->strategies);
+        self::assertSame('index_composite_lookup_candidate', $plan->physicalPlan->metadata['strategy_details'][0]['name'] ?? null);
+        self::assertStringContainsString('index_composite_lookup_candidate', implode(' ', $plan->diagnostics->capabilityDecisions));
+    }
+
+    public function test_planner_uses_index_composite_lookup_order_candidate_for_multi_column_lookup_with_order(): void
+    {
+        $builder = (new SelectQueryBuilder())
+            ->from('users', 'u')
+            ->select('u.id')
+            ->where('u.id = 1')
+            ->andWhere('u.status = 2')
+            ->orderBy('u.status');
+        $graph = $builder->getSQG();
+        $caps = DatabaseCapabilitySet::minimalSet('sqlite');
+        $certification = $graph->validate($caps);
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+        ));
+
+        $plan = (new NoOpQueryPlanner())->plan($optimization);
+
+        self::assertSame(['index_composite_lookup_order_candidate', 'predicate_evaluation', 'project_passthrough', 'sort_materialize'], $plan->physicalPlan->strategies);
+        self::assertSame('index_composite_lookup_order_candidate', $plan->physicalPlan->metadata['strategy_details'][0]['name'] ?? null);
+        self::assertStringContainsString('index_composite_lookup_order_candidate', implode(' ', $plan->diagnostics->capabilityDecisions));
+    }
+
+    public function test_planner_uses_index_join_lookup_candidate_for_joined_source_with_matching_join_and_where(): void
+    {
+        $builder = (new SelectQueryBuilder())
+            ->from('users', 'u')
+            ->innerJoin('u', 'profiles', 'p', 'u.id = p.user_id')
+            ->select('p.user_id')
+            ->where('p.user_id = 1');
+        $graph = $builder->getSQG();
+        $caps = DatabaseCapabilitySet::minimalSet('sqlite');
+        $certification = $graph->validate($caps);
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+        ));
+
+        $plan = (new NoOpQueryPlanner())->plan($optimization);
+
+        self::assertSame(['table_scan', 'index_join_lookup_candidate', 'nested_loop_join', 'predicate_evaluation', 'project_passthrough'], $plan->physicalPlan->strategies);
+        self::assertSame('index_join_lookup_candidate', $plan->physicalPlan->metadata['strategy_details'][1]['name'] ?? null);
+        self::assertStringContainsString('index_join_lookup_candidate', implode(' ', $plan->diagnostics->capabilityDecisions));
+    }
+
+    public function test_planner_uses_index_join_lookup_order_candidate_for_joined_source_with_matching_join_where_and_order(): void
+    {
+        $builder = (new SelectQueryBuilder())
+            ->from('users', 'u')
+            ->innerJoin('u', 'profiles', 'p', 'u.id = p.user_id')
+            ->select('p.user_id')
+            ->where('p.user_id = 1')
+            ->orderBy('p.user_id');
+        $graph = $builder->getSQG();
+        $caps = DatabaseCapabilitySet::minimalSet('sqlite');
+        $certification = $graph->validate($caps);
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+        ));
+
+        $plan = (new NoOpQueryPlanner())->plan($optimization);
+
+        self::assertSame(['table_scan', 'index_join_lookup_order_candidate', 'nested_loop_join', 'predicate_evaluation', 'project_passthrough', 'sort_materialize'], $plan->physicalPlan->strategies);
+        self::assertSame('index_join_lookup_order_candidate', $plan->physicalPlan->metadata['strategy_details'][1]['name'] ?? null);
+        self::assertStringContainsString('index_join_lookup_order_candidate', implode(' ', $plan->diagnostics->capabilityDecisions));
+    }
+
+    public function test_planner_uses_index_range_order_candidate_for_range_with_matching_order(): void
+    {
+        $builder = (new SelectQueryBuilder())
+            ->from('users', 'u')
+            ->select('u.id')
+            ->where('u.id >= 10')
+            ->orderBy('u.id');
+        $graph = $builder->getSQG();
+        $caps = DatabaseCapabilitySet::minimalSet('sqlite');
+        $certification = $graph->validate($caps);
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+        ));
+
+        $plan = (new NoOpQueryPlanner())->plan($optimization);
+
+        self::assertSame(['index_range_order_candidate', 'predicate_evaluation', 'project_passthrough', 'sort_materialize'], $plan->physicalPlan->strategies);
+        self::assertSame('index_range_order_candidate', $plan->physicalPlan->metadata['strategy_details'][0]['name'] ?? null);
+        self::assertStringContainsString('index_range_order_candidate', implode(' ', $plan->diagnostics->capabilityDecisions));
+    }
+
+    public function test_planner_uses_index_order_candidate_for_order_only_query(): void
+    {
+        $builder = (new SelectQueryBuilder())
+            ->from('users', 'u')
+            ->select('u.id')
+            ->orderBy('u.id');
+        $graph = $builder->getSQG();
+        $caps = DatabaseCapabilitySet::minimalSet('sqlite');
+        $certification = $graph->validate($caps);
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+        ));
+
+        $plan = (new NoOpQueryPlanner())->plan($optimization);
+
+        self::assertSame(['index_order_candidate', 'project_passthrough', 'sort_materialize'], $plan->physicalPlan->strategies);
+        self::assertSame('index_order_candidate', $plan->physicalPlan->metadata['strategy_details'][0]['name'] ?? null);
+        self::assertSame('order', $plan->physicalPlan->metadata['strategy_details'][0]['metadata']['evidence'][0]['operator'] ?? null);
+        self::assertStringContainsString('index_order_candidate', implode(' ', $plan->diagnostics->capabilityDecisions));
     }
 
     public function test_sqlite_dialect_compiles_sqg_operation_using_plan_artifact_fingerprint(): void

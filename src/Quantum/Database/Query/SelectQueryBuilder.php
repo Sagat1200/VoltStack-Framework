@@ -50,7 +50,9 @@ use Quantum\Database\Operation\DatabaseOperationPlan;
 use Quantum\Database\Operation\DatabaseOperationRuntime;
 use Quantum\Database\Operation\Pipeline\DefaultQueryOptimizer;
 use Quantum\Database\Operation\Pipeline\NoOpQueryPlanner;
+use Quantum\Database\Operation\Pipeline\QueryOptimizationResult;
 use Quantum\Database\Operation\Pipeline\QueryOptimizationInput;
+use Quantum\Database\Operation\Pipeline\QueryPlanArtifact;
 use Quantum\Database\Query\Enum\JoinType;
 use Quantum\Database\Query\Enum\Order;
 use Quantum\Database\Query\Expression\CompositeExpression;
@@ -108,6 +110,9 @@ final class SelectQueryBuilder implements \Stringable
 
     private ?DatabaseOperationPlan $lastOperationPlan = null;
     private ?DatabaseDiagnosticSnapshot $lastDiagnostic = null;
+    private ?SqgOperation $lastSqgOperation = null;
+    private ?QueryOptimizationResult $lastOptimizationResult = null;
+    private ?QueryPlanArtifact $lastPlanArtifact = null;
 
     public function __clone()
     {
@@ -341,6 +346,7 @@ final class SelectQueryBuilder implements \Stringable
     {
         ['graph' => $graph, 'dialect' => $dialect, 'caps' => $caps] = $this->translateStateToSqg();
         $op = $this->buildSqgOperation($graph, $caps);
+        $this->rememberSqgPipeline($op);
         $compiled = $dialect->compile($op, $caps);
         return $compiled->sql;
     }
@@ -360,6 +366,7 @@ final class SelectQueryBuilder implements \Stringable
         }
         ['graph' => $graph, 'dialect' => $dialect, 'caps' => $caps] = $this->translateStateToSqg();
         $op = $this->buildSqgOperation($graph, $caps);
+        $this->rememberSqgPipeline($op);
         $compiled = $dialect->compile($op, $caps);
 
         if ($this->runtime === null || $this->context === null) {
@@ -427,6 +434,60 @@ final class SelectQueryBuilder implements \Stringable
     public function getLastDiagnostic(): ?DatabaseDiagnosticSnapshot
     {
         return $this->lastDiagnostic;
+    }
+
+    public function getLastSqgOperation(): ?SqgOperation
+    {
+        return $this->lastSqgOperation;
+    }
+
+    public function getLastOptimizationResult(): ?QueryOptimizationResult
+    {
+        return $this->lastOptimizationResult;
+    }
+
+    public function getLastPlanArtifact(): ?QueryPlanArtifact
+    {
+        return $this->lastPlanArtifact;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function getLastPipelineSummary(): ?array
+    {
+        if (
+            !$this->lastSqgOperation instanceof SqgOperation
+            || !$this->lastOptimizationResult instanceof QueryOptimizationResult
+            || !$this->lastPlanArtifact instanceof QueryPlanArtifact
+        ) {
+            return null;
+        }
+
+        return [
+            'sqg' => [
+                'certification_fingerprint' => $this->lastSqgOperation->certificationFingerprint,
+                'kind' => $this->lastSqgOperation->kind->value,
+            ],
+            'optimizer' => [
+                'strategy' => $this->lastOptimizationResult->decision->strategy,
+                'selected_candidate_id' => $this->lastOptimizationResult->selectedCandidate->id,
+                'estimated_cost' => $this->lastOptimizationResult->decision->estimatedCost,
+                'applied_rules' => $this->lastOptimizationResult->trace->appliedRules,
+                'candidate_summaries' => $this->lastOptimizationResult->trace->candidateSummaries,
+                'notes' => $this->lastOptimizationResult->trace->notes,
+            ],
+            'planner' => [
+                'fingerprint' => $this->lastPlanArtifact->fingerprint,
+                'logical_root_operator' => $this->lastPlanArtifact->logicalPlan->rootOperator,
+                'logical_operators' => $this->lastPlanArtifact->diagnostics->logicalOperators,
+                'physical_root_strategy' => $this->lastPlanArtifact->physicalPlan->rootStrategy,
+                'physical_strategies' => $this->lastPlanArtifact->diagnostics->physicalStrategies,
+                'capability_decisions' => $this->lastPlanArtifact->diagnostics->capabilityDecisions,
+                'warnings' => $this->lastPlanArtifact->diagnostics->warnings,
+                'parameter_count' => $this->lastPlanArtifact->bindingLayout->parameterCount,
+            ],
+        ];
     }
 
     /**
@@ -631,6 +692,13 @@ final class SelectQueryBuilder implements \Stringable
             optimizationResult: $optimization,
             planArtifact: $plan,
         );
+    }
+
+    private function rememberSqgPipeline(SqgOperation $operation): void
+    {
+        $this->lastSqgOperation = $operation;
+        $this->lastOptimizationResult = $operation->optimizationResult;
+        $this->lastPlanArtifact = $operation->planArtifact;
     }
 
     /**

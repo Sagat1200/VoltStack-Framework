@@ -52,13 +52,28 @@ final class DatabaseOperationalPropagationTest extends TestCase
         $rows = $qb->fetchAllAssociative();
         $plan = $qb->getLastOperationPlan();
         $diagnostic = $qb->getLastDiagnostic();
+        $optimization = $qb->getLastOptimizationResult();
+        $planArtifact = $qb->getLastPlanArtifact();
+        $pipeline = $qb->getLastPipelineSummary();
 
         self::assertCount(2, $rows);
         self::assertNotNull($plan);
         self::assertNotNull($diagnostic);
+        self::assertNotNull($optimization);
+        self::assertNotNull($planArtifact);
+        self::assertNotNull($pipeline);
         self::assertSame('raw_query', $plan->operation->kind->value);
         self::assertSame('completed', $diagnostic->outcome);
         self::assertSame(2, $diagnostic->rowsRead);
+        self::assertSame('no_op', $optimization->decision->strategy);
+        self::assertNotEmpty($planArtifact->fingerprint);
+        self::assertSame('sqg_select', $pipeline['sqg']['kind'] ?? null);
+        self::assertSame('no_op', $pipeline['optimizer']['strategy'] ?? null);
+        self::assertContains('scan', $pipeline['planner']['logical_operators'] ?? []);
+        self::assertContains('sort', $pipeline['planner']['logical_operators'] ?? []);
+        self::assertContains('index_order_candidate', $pipeline['planner']['physical_strategies'] ?? []);
+        self::assertContains('sort_materialize', $pipeline['planner']['physical_strategies'] ?? []);
+        self::assertNotEmpty($pipeline['planner']['capability_decisions'] ?? []);
 
         self::assertSame(2, $em->count(OperationalRecord::class));
         self::assertNotNull($em->getLastReadDiagnostic());

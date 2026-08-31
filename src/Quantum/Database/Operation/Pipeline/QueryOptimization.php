@@ -446,9 +446,13 @@ final class NoOpQueryOptimizer implements QueryOptimizerInterface
 
 final class DefaultQueryOptimizer implements QueryOptimizerInterface
 {
+    /** @var array<string, mixed>|null */
+    private ?array $lastJoinReorderTrace = null;
+
     public function optimize(QueryOptimizationInput $input, ?DatabaseContext $context = null): QueryOptimizationResult
     {
         $costModel = new DeterministicQueryCostModel();
+        $this->lastJoinReorderTrace = null;
         ['graph' => $optimizedGraph, 'applied_rules' => $optimizedRules] = $this->applySafeRulePasses($input->graph);
         $baselineEvaluation = $costModel->evaluate(
             graph: $input->graph,
@@ -524,6 +528,7 @@ final class DefaultQueryOptimizer implements QueryOptimizerInterface
                     max(0.0, $baselineCandidate->estimatedCost - $selectedCandidate->estimatedCost),
                     2,
                 ),
+                'join_reorder_trace' => $appliedRules !== [] ? $this->lastJoinReorderTrace : null,
             ],
         );
 
@@ -977,29 +982,75 @@ final class DefaultQueryOptimizer implements QueryOptimizerInterface
     {
         if (
             count($node->fromSources) !== 1
-            || count($node->joins) !== 1
             || !$node->fromSources[0] instanceof TableSourceNode
-            || !$node->joins[0] instanceof JoinNode
-            || $node->joins[0]->type !== DialectJoinType::Inner
-            || !$node->joins[0]->right instanceof TableSourceNode
         ) {
             return $node;
         }
 
         /** @var TableSourceNode $baseSource */
         $baseSource = $node->fromSources[0];
-        /** @var JoinNode $join */
-        $join = $node->joins[0];
-        /** @var TableSourceNode $joinedSource */
-        $joinedSource = $join->right;
-
         $baseAlias = $baseSource->aliasOrName();
-        $joinedAlias = $joinedSource->aliasOrName();
+        if ($node->joins === []) {
+            return $node;
+        }
 
-        $baseScore = $this->scoreLeadSourceEvidence($node, $baseAlias, $join->on);
-        $joinedScore = $this->scoreLeadSourceEvidence($node, $joinedAlias, $join->on);
+        $joinRecords = [];
+        foreach ($node->joins as $index => $join) {
+            if (
+                !$join instanceof JoinNode
+                || $join->type !== DialectJoinType::Inner
+                || !$join->right instanceof TableSourceNode
+                || !$join->on instanceof SemanticNode
+            ) {
+                return $node;
+            }
 
-        if ($joinedScore <= $baseScore) {
+            $joinedAlias = $join->right->aliasOrName();
+            $aliases = $this->collectReferencedAliases($join->on);
+            if (
+                $aliases === null
+                || !isset($aliases[$joinedAlias])
+                || count($aliases) !== 2
+            ) {
+                return $node;
+            }
+
+            $joinRecords[] = [
+                'index' => $index,
+                'join' => $join,
+                'source' => $join->right,
+                'alias' => $joinedAlias,
+                'aliases' => $aliases,
+            ];
+        }
+
+        $aliasScores = [$baseAlias => $this->scoreAliasForJoinReorder($node, $baseAlias)];
+        foreach ($joinRecords as $record) {
+            $aliasScores[$record['alias']] = $this->scoreAliasForJoinReorder($node, $record['alias']);
+        }
+
+        $bestCandidate = $this->selectBestJoinReorderCandidate(
+            baseSource: $baseSource,
+            baseAlias: $baseAlias,
+            joinRecords: $joinRecords,
+            aliasScores: $aliasScores,
+            originalJoins: $node->joins,
+        );
+        if ($bestCandidate === null) {
+            return $node;
+        }
+
+        $this->lastJoinReorderTrace = $bestCandidate['trace'];
+
+        /** @var TableSourceNode $reorderedBaseSource */
+        $reorderedBaseSource = $bestCandidate['base_source'];
+        /** @var list<JoinNode> $reorderedJoins */
+        $reorderedJoins = $bestCandidate['joins'];
+
+        if (
+            $reorderedBaseSource === $baseSource
+            && $this->joinOrderMatchesOriginal($node->joins, $reorderedJoins)
+        ) {
             return $node;
         }
 
@@ -1007,17 +1058,8 @@ final class DefaultQueryOptimizer implements QueryOptimizerInterface
             with: $node->with,
             distinct: $node->distinct,
             projections: $node->projections,
-            fromSources: [$joinedSource],
-            joins: [
-                $this->withInferredTypeIfPresent(new JoinNode(
-                    type: $join->type,
-                    right: $baseSource,
-                    on: $join->on,
-                    id: $join->id(),
-                    flags: $join->flags(),
-                    span: $join->sourceSpan(),
-                ), $join),
-            ],
+            fromSources: [$reorderedBaseSource],
+            joins: $reorderedJoins,
             where: $node->where,
             groupBy: $node->groupBy,
             having: $node->having,
@@ -1775,19 +1817,20 @@ final class DefaultQueryOptimizer implements QueryOptimizerInterface
         return $hasBareColumnReference ? null : $aliases;
     }
 
-    private function scoreLeadSourceEvidence(
-        SelectStatementNode $select,
-        string $alias,
-        ?SemanticNode $joinPredicate = null,
-    ): int {
+    private function scoreAliasForJoinReorder(SelectStatementNode $select, string $alias): int
+    {
         $score = 0;
 
         foreach ($this->collectComparableEvidenceForAlias($select->where, $alias, 'where') as $item) {
             $score += $this->scoreComparableEvidence($item);
         }
 
-        foreach ($this->collectComparableEvidenceForAlias($joinPredicate, $alias, 'join_on') as $item) {
-            $score += $this->scoreComparableEvidence($item);
+        foreach ($select->joins as $joinNode) {
+            if ($joinNode instanceof JoinNode && $joinNode->on !== null) {
+                foreach ($this->collectComparableEvidenceForAlias($joinNode->on, $alias, 'join_on') as $item) {
+                    $score += $this->scoreComparableEvidence($item);
+                }
+            }
         }
 
         if ($select->orderBy !== null) {
@@ -1799,6 +1842,379 @@ final class DefaultQueryOptimizer implements QueryOptimizerInterface
         }
 
         return $score;
+    }
+
+    /**
+     * @param list<array{index:int,join:JoinNode,source:TableSourceNode,alias:string,aliases:array<string,bool>}> $records
+     * @param array<string,int> $aliasScores
+     * @param list<SemanticNode> $originalJoins
+     * @return array{
+     *   base_source:TableSourceNode,
+     *   base_alias:string,
+     *   joins:list<JoinNode>,
+     *   score:int,
+     *   signature:string,
+     *   trace:array<string, mixed>
+     * }|null
+     */
+    private function selectBestJoinReorderCandidate(
+        TableSourceNode $baseSource,
+        string $baseAlias,
+        array $joinRecords,
+        array $aliasScores,
+        array $originalJoins,
+    ): ?array {
+        $candidates = $this->enumerateJoinReorderCandidates(
+            baseSource: $baseSource,
+            baseAlias: $baseAlias,
+            joinRecords: $joinRecords,
+            aliasScores: $aliasScores,
+        );
+
+        if ($candidates === []) {
+            return null;
+        }
+
+        $originalSignature = $this->joinReorderCandidateSignature($baseAlias, $originalJoins);
+        $bestCandidate = null;
+
+        foreach ($candidates as $candidate) {
+            if ($bestCandidate === null) {
+                $bestCandidate = $candidate;
+                continue;
+            }
+
+            $scoreCompare = $candidate['score'] <=> $bestCandidate['score'];
+            if ($scoreCompare > 0) {
+                $bestCandidate = $candidate;
+                continue;
+            }
+
+            if ($scoreCompare < 0) {
+                continue;
+            }
+
+            $candidateIsOriginal = $candidate['signature'] === $originalSignature;
+            $bestIsOriginal = $bestCandidate['signature'] === $originalSignature;
+
+            if ($candidateIsOriginal && !$bestIsOriginal) {
+                $bestCandidate = $candidate;
+                continue;
+            }
+
+            if (!$candidateIsOriginal && $bestIsOriginal) {
+                continue;
+            }
+
+            if (strcmp($candidate['signature'], $bestCandidate['signature']) < 0) {
+                $bestCandidate = $candidate;
+            }
+        }
+
+        if ($bestCandidate !== null) {
+            $bestCandidate['trace'] = [
+                'candidate_count' => count($candidates),
+                'selected_signature' => $bestCandidate['signature'],
+                'selected_score' => $bestCandidate['score'],
+                'candidates' => array_map(
+                    fn(array $candidate): array => [
+                        'signature' => $candidate['signature'],
+                        'base_alias' => $candidate['base_alias'],
+                        'score' => $candidate['score'],
+                        'join_aliases' => $this->joinReorderCandidateAliases($candidate['joins']),
+                    ],
+                    $candidates,
+                ),
+            ];
+        }
+
+        return $bestCandidate;
+    }
+
+    /**
+     * @param list<array{index:int,join:JoinNode,source:TableSourceNode,alias:string,aliases:array<string,bool>}> $joinRecords
+     * @param array<string,bool> $visibleAliases
+     * @param array<string,int> $aliasScores
+     * @param list<JoinNode> $orderedJoins
+     * @param array<string, array{
+     *   base_source:TableSourceNode,
+     *   base_alias:string,
+     *   joins:list<JoinNode>,
+     *   score:int,
+     *   signature:string
+     * }> $candidates
+     */
+    private function collectJoinReorderCandidates(
+        TableSourceNode $candidateBaseSource,
+        string $candidateBaseAlias,
+        array $joinRecords,
+        array $visibleAliases,
+        array $aliasScores,
+        array $orderedJoins,
+        array &$candidates,
+        int $maxCandidates,
+    ): void {
+        if (count($candidates) >= $maxCandidates) {
+            return;
+        }
+
+        if ($joinRecords === []) {
+            $signature = $this->joinReorderCandidateSignature($candidateBaseAlias, $orderedJoins);
+            $candidates[$signature] = [
+                'base_source' => $candidateBaseSource,
+                'base_alias' => $candidateBaseAlias,
+                'joins' => $orderedJoins,
+                'score' => $this->scoreJoinReorderCandidate($candidateBaseAlias, $orderedJoins, $aliasScores),
+                'signature' => $signature,
+            ];
+
+            return;
+        }
+
+        $eligible = [];
+        foreach ($joinRecords as $record) {
+            if ($this->isJoinReorderRecordEligible($record, $visibleAliases)) {
+                $eligible[] = $record;
+            }
+        }
+
+        if ($eligible === []) {
+            return;
+        }
+
+        usort(
+            $eligible,
+            function (array $left, array $right) use ($aliasScores): int {
+                $scoreCompare = ($aliasScores[$right['alias']] ?? 0) <=> ($aliasScores[$left['alias']] ?? 0);
+                if ($scoreCompare !== 0) {
+                    return $scoreCompare;
+                }
+
+                return $left['index'] <=> $right['index'];
+            },
+        );
+
+        foreach ($eligible as $record) {
+            if (count($candidates) >= $maxCandidates) {
+                return;
+            }
+
+            $nextVisibleAliases = $visibleAliases;
+            $nextVisibleAliases[$record['alias']] = true;
+            $nextOrderedJoins = [...$orderedJoins, $record['join']];
+
+            $this->collectJoinReorderCandidates(
+                candidateBaseSource: $candidateBaseSource,
+                candidateBaseAlias: $candidateBaseAlias,
+                joinRecords: $this->removeJoinReorderRecord($joinRecords, $record),
+                visibleAliases: $nextVisibleAliases,
+                aliasScores: $aliasScores,
+                orderedJoins: $nextOrderedJoins,
+                candidates: $candidates,
+                maxCandidates: $maxCandidates,
+            );
+        }
+    }
+
+    /**
+     * @param array{index:int,join:JoinNode,source:TableSourceNode,alias:string,aliases:array<string,bool>} $record
+     * @param array<string,bool> $visibleAliases
+     */
+    private function isJoinReorderRecordEligible(array $record, array $visibleAliases): bool
+    {
+        if (isset($visibleAliases[$record['alias']])) {
+            return false;
+        }
+
+        $anchorAliases = array_diff_key($record['aliases'], [$record['alias'] => true]);
+        if ($anchorAliases === []) {
+            return false;
+        }
+
+        return array_diff_key($anchorAliases, $visibleAliases) === [];
+    }
+
+    /**
+     * @param list<array{index:int,join:JoinNode,source:TableSourceNode,alias:string,aliases:array<string,bool>}> $joinRecords
+     * @param array<string,int> $aliasScores
+     * @return list<array{
+     *   base_source:TableSourceNode,
+     *   base_alias:string,
+     *   joins:list<JoinNode>,
+     *   score:int,
+     *   signature:string
+     * }>
+     */
+    private function enumerateJoinReorderCandidates(
+        TableSourceNode $baseSource,
+        string $baseAlias,
+        array $joinRecords,
+        array $aliasScores,
+    ): array {
+        $candidates = [];
+        $maxCandidates = 16;
+
+        $this->collectJoinReorderCandidates(
+            candidateBaseSource: $baseSource,
+            candidateBaseAlias: $baseAlias,
+            joinRecords: $joinRecords,
+            visibleAliases: [$baseAlias => true],
+            aliasScores: $aliasScores,
+            orderedJoins: [],
+            candidates: $candidates,
+            maxCandidates: $maxCandidates,
+        );
+
+        $promotable = [];
+        foreach ($joinRecords as $record) {
+            if (
+                !$this->isJoinReorderRecordEligible($record, [$baseAlias => true])
+                || ($aliasScores[$record['alias']] ?? 0) <= ($aliasScores[$baseAlias] ?? 0)
+            ) {
+                continue;
+            }
+
+            $promotable[] = $record;
+        }
+
+        usort(
+            $promotable,
+            function (array $left, array $right) use ($aliasScores): int {
+                $scoreCompare = ($aliasScores[$right['alias']] ?? 0) <=> ($aliasScores[$left['alias']] ?? 0);
+                if ($scoreCompare !== 0) {
+                    return $scoreCompare;
+                }
+
+                return $left['index'] <=> $right['index'];
+            },
+        );
+
+        foreach ($promotable as $record) {
+            if (count($candidates) >= $maxCandidates) {
+                break;
+            }
+
+            $promotedJoin = $this->withInferredTypeIfPresent(new JoinNode(
+                type: $record['join']->type,
+                right: $baseSource,
+                on: $record['join']->on,
+                id: $record['join']->id(),
+                flags: $record['join']->flags(),
+                span: $record['join']->sourceSpan(),
+            ), $record['join']);
+
+            $this->collectJoinReorderCandidates(
+                candidateBaseSource: $record['source'],
+                candidateBaseAlias: $record['alias'],
+                joinRecords: $this->removeJoinReorderRecord($joinRecords, $record),
+                visibleAliases: [
+                    $record['alias'] => true,
+                    $baseAlias => true,
+                ],
+                aliasScores: $aliasScores,
+                orderedJoins: [$promotedJoin],
+                candidates: $candidates,
+                maxCandidates: $maxCandidates,
+            );
+        }
+
+        return array_values($candidates);
+    }
+
+    /**
+     * @param list<JoinNode> $orderedJoins
+     * @param array<string,int> $aliasScores
+     */
+    private function scoreJoinReorderCandidate(
+        string $baseAlias,
+        array $orderedJoins,
+        array $aliasScores,
+    ): int {
+        $score = ($aliasScores[$baseAlias] ?? 0) * (count($orderedJoins) + 1);
+        $remainingWeight = count($orderedJoins);
+
+        foreach ($orderedJoins as $join) {
+            if (!$join->right instanceof TableSourceNode) {
+                continue;
+            }
+
+            $score += ($aliasScores[$join->right->aliasOrName()] ?? 0) * max(1, $remainingWeight);
+            $remainingWeight--;
+        }
+
+        return $score;
+    }
+
+    /**
+     * @param list<JoinNode|SemanticNode> $orderedJoins
+     */
+    private function joinReorderCandidateSignature(string $baseAlias, array $orderedJoins): string
+    {
+        $aliases = [$baseAlias];
+
+        foreach ($orderedJoins as $join) {
+            if ($join instanceof JoinNode && $join->right instanceof TableSourceNode) {
+                $aliases[] = $join->right->aliasOrName();
+            }
+        }
+
+        return implode('>', $aliases);
+    }
+
+    /**
+     * @param list<JoinNode> $orderedJoins
+     * @return list<string>
+     */
+    private function joinReorderCandidateAliases(array $orderedJoins): array
+    {
+        $aliases = [];
+
+        foreach ($orderedJoins as $join) {
+            if ($join->right instanceof TableSourceNode) {
+                $aliases[] = $join->right->aliasOrName();
+            }
+        }
+
+        return $aliases;
+    }
+
+    /**
+     * @param list<array{index:int,join:JoinNode,source:TableSourceNode,alias:string,aliases:array<string,bool>}> $records
+     * @param array{index:int,join:JoinNode,source:TableSourceNode,alias:string,aliases:array<string,bool>} $selectedRecord
+     * @return list<array{index:int,join:JoinNode,source:TableSourceNode,alias:string,aliases:array<string,bool>}>
+     */
+    private function removeJoinReorderRecord(array $records, array $selectedRecord): array
+    {
+        $remaining = [];
+
+        foreach ($records as $record) {
+            if ($record['index'] === $selectedRecord['index']) {
+                continue;
+            }
+
+            $remaining[] = $record;
+        }
+
+        return $remaining;
+    }
+
+    /**
+     * @param list<SemanticNode> $originalJoins
+     * @param list<JoinNode> $reorderedJoins
+     */
+    private function joinOrderMatchesOriginal(array $originalJoins, array $reorderedJoins): bool
+    {
+        if (count($originalJoins) !== count($reorderedJoins)) {
+            return false;
+        }
+
+        foreach ($originalJoins as $index => $join) {
+            if ($join !== $reorderedJoins[$index]) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

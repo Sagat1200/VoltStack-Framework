@@ -7,10 +7,9 @@ namespace VoltStack\Test\Feature;
 use PHPUnit\Framework\TestCase;
 use Quantum\Console\ConsoleApplication;
 use Quantum\Console\Output;
-use VoltStack\Framework\Application;
 use VoltStack\Framework\Provider\DatabaseServiceProvider;
 
-final class DatabaseQueryCommandTest extends TestCase
+final class DatabaseSqgSelectCommandTest extends TestCase
 {
     private string $basePath;
 
@@ -18,7 +17,7 @@ final class DatabaseQueryCommandTest extends TestCase
     {
         parent::setUp();
 
-        $this->basePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-db-query-' . bin2hex(random_bytes(6));
+        $this->basePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-db-sqg-select-' . bin2hex(random_bytes(6));
         $this->makeTempProject($this->basePath);
     }
 
@@ -29,73 +28,123 @@ final class DatabaseQueryCommandTest extends TestCase
         parent::tearDown();
     }
 
-    public function test_cli_query_supports_pretend_plan_output(): void
+    public function test_cli_sqg_select_pretend_exposes_optimizer_summary_and_join_reorder_trace(): void
     {
-        $result = $this->runConsole(['volt', 'db:query', 'SELECT 1 AS one', '--pretend']);
+        $spec = json_encode([
+            'from' => ['table' => 'users', 'alias' => 'u'],
+            'select' => ['u.id', 'p.user_id', 'o.user_id', 'a.profile_id'],
+            'joins' => [
+                ['type' => 'INNER', 'from_alias' => 'u', 'table' => 'profiles', 'alias' => 'p', 'on' => 'u.id = p.user_id'],
+                ['type' => 'INNER', 'from_alias' => 'u', 'table' => 'orders', 'alias' => 'o', 'on' => 'u.id = o.user_id'],
+                ['type' => 'INNER', 'from_alias' => 'p', 'table' => 'addresses', 'alias' => 'a', 'on' => 'p.id = a.profile_id'],
+            ],
+            'where' => [
+                'u.id = :user_id',
+                'o.user_id >= :min_order_user_id',
+                'a.profile_id = :profile_id',
+                'a.country_id = :country_id',
+            ],
+            'params' => [
+                'user_id' => 1,
+                'min_order_user_id' => 2,
+                'profile_id' => 3,
+                'country_id' => 7,
+            ],
+            'order_by' => [
+                ['expr' => 'u.id', 'direction' => 'ASC'],
+            ],
+        ], JSON_THROW_ON_ERROR);
+
+        $result = $this->runConsole(['volt', 'db:sqg-select', '--pretend', '--spec=' . $spec]);
 
         self::assertSame(0, $result['exit']);
-        self::assertStringContainsString('Plan: kind=raw_query', $result['stdout']);
-        self::assertStringContainsString('Budget: connection=primary', $result['stdout']);
-        self::assertStringContainsString('Optimizer: unavailable (raw_sql_mode).', $result['stdout']);
+        self::assertStringContainsString('SQG SQL: SELECT', $result['stdout']);
+        self::assertStringContainsString('Optimizer: strategy=safe_rule_bundle_v1', $result['stdout']);
+        self::assertStringContainsString('Rules:', $result['stdout']);
+        self::assertStringContainsString('Candidates:', $result['stdout']);
+        self::assertStringContainsString('candidate:no_op cost=', $result['stdout']);
+        self::assertStringContainsString('selected=no', $result['stdout']);
+        self::assertStringContainsString('candidate:predicate_normalization_v1+boolean_predicate_normalization_v1+predicate_pushdown_v1+join_reorder_v1 cost=', $result['stdout']);
+        self::assertStringContainsString('selected=yes', $result['stdout']);
+        self::assertStringContainsString('join_reorder_v1', $result['stdout']);
+        self::assertStringContainsString('Join reorder: selected=u>p>a>o', $result['stdout']);
+        self::assertStringContainsString('  - u>p>a>o base=u', $result['stdout']);
+        self::assertStringContainsString('Planner: logical_root=', $result['stdout']);
         self::assertStringContainsString('Dry-run activado: no se ejecutaron cambios.', $result['stdout']);
     }
 
-    public function test_cli_query_enforces_max_rows_budget(): void
-    {
-        $result = $this->runConsole(['volt', 'db:query', 'SELECT 1 AS one UNION ALL SELECT 2 AS one', '--max-rows=1']);
-
-        self::assertSame(1, $result['exit']);
-        self::assertStringContainsString('db:query failed: failure=resource_exhausted', $result['stderr']);
-        self::assertStringContainsString('event: failed', $result['stderr']);
-    }
-
-    public function test_cli_query_reports_diagnostics_for_successful_statement_and_select(): void
-    {
-        $statement = $this->runConsole(['volt', 'db:query', 'CREATE TABLE IF NOT EXISTS f36_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, message TEXT NOT NULL)']);
-        $query = $this->runConsole(['volt', 'db:query', "SELECT 'ok' AS status"]);
-
-        self::assertSame(0, $statement['exit']);
-        self::assertStringContainsString('Plan: kind=raw_execute', $statement['stdout']);
-        self::assertStringContainsString('Statement OK. Affected rows:', $statement['stdout']);
-        self::assertStringContainsString('Diagnostic: outcome=completed', $statement['stdout']);
-
-        self::assertSame(0, $query['exit']);
-        self::assertStringContainsString('Plan: kind=raw_query', $query['stdout']);
-        self::assertStringContainsString('status', $query['stdout']);
-        self::assertStringContainsString('ok', $query['stdout']);
-        self::assertStringContainsString('Rows: 1', $query['stdout']);
-        self::assertStringContainsString('Diagnostic: outcome=completed', $query['stdout']);
-    }
-
-    public function test_cli_query_pretend_marks_idempotent_mutation_as_retryable_when_policy_allows_it(): void
+    public function test_cli_sqg_select_accepts_relaxed_powershell_inline_spec_syntax(): void
     {
         $result = $this->runConsole([
             'volt',
-            'db:query',
-            'UPDATE f36_logs SET message = 1 WHERE id = 1',
+            'db:sqg-select',
             '--pretend',
-            '--idempotency-key=mutation-f36-1',
+            '--spec={from:{table:users,alias:u},select:[u.id]}',
         ]);
 
         self::assertSame(0, $result['exit']);
-        self::assertStringContainsString('Plan: kind=raw_execute', $result['stdout']);
-        self::assertStringContainsString('retryable=yes', $result['stdout']);
-        self::assertStringContainsString('idempotency=present', $result['stdout']);
-        self::assertStringContainsString('legacy_replay_mode=allow', $result['stdout']);
-        self::assertStringContainsString('remote_replay_attestation_mode=allow', $result['stdout']);
-        self::assertStringContainsString('remote_replay_attestation_max_age_seconds=0', $result['stdout']);
-        self::assertStringContainsString('remote_replay_validation_mode=allow', $result['stdout']);
-        self::assertStringContainsString('remote_replay_validation_receipt_max_age_seconds=0', $result['stdout']);
-        self::assertStringContainsString('remote_replay_validation_receipt_reuse_scope=current_node', $result['stdout']);
-        self::assertStringContainsString('remote_replay_validation_receipt_trusted_nodes=n/a', $result['stdout']);
-        self::assertStringContainsString('remote_replay_validation_receipt_propagation_max_age_seconds=0', $result['stdout']);
-        self::assertStringContainsString('remote_replay_validation_receipt_propagation_health_limit=250', $result['stdout']);
-        self::assertStringContainsString('remote_replay_validation_receipt_propagation_trusted_nodes=n/a', $result['stdout']);
-        self::assertStringContainsString('remote_replay_validation_receipt_cleanup_propagation_max_age_seconds=0', $result['stdout']);
-        self::assertStringContainsString('remote_replay_validation_receipt_cleanup_propagation_health_limit=250', $result['stdout']);
-        self::assertStringContainsString('remote_replay_validation_receipt_cleanup_propagation_trusted_nodes=n/a', $result['stdout']);
-        self::assertStringContainsString('remote_replay_validation_receipt_replicated_max_age_seconds=0', $result['stdout']);
-        self::assertStringContainsString('Optimizer: unavailable (raw_sql_mode).', $result['stdout']);
+        self::assertStringContainsString('SQG SQL: SELECT "u"."id" FROM "users" AS "u"', $result['stdout']);
+        self::assertStringContainsString('Optimizer: strategy=no_op', $result['stdout']);
+        self::assertStringContainsString('Dry-run activado: no se ejecutaron cambios.', $result['stdout']);
+    }
+
+    public function test_cli_sqg_select_executes_and_returns_rows_with_pipeline_summary(): void
+    {
+        $this->runConsole(['volt', 'db:query', 'CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, status INTEGER NOT NULL)']);
+        $this->runConsole(['volt', 'db:query', 'DELETE FROM users']);
+        $this->runConsole(['volt', 'db:query', 'INSERT INTO users (id, status) VALUES (1, 2)']);
+
+        $spec = json_encode([
+            'from' => ['table' => 'users', 'alias' => 'u'],
+            'select' => ['u.id', 'u.status'],
+            'where' => ['u.id = :user_id'],
+            'params' => ['user_id' => 1],
+            'order_by' => [
+                ['expr' => 'u.id', 'direction' => 'ASC'],
+            ],
+        ], JSON_THROW_ON_ERROR);
+
+        $result = $this->runConsole(['volt', 'db:sqg-select', '--spec=' . $spec]);
+
+        self::assertSame(0, $result['exit']);
+        self::assertStringContainsString('SQG SQL: SELECT', $result['stdout']);
+        self::assertStringContainsString('Optimizer: strategy=', $result['stdout']);
+        self::assertStringContainsString('Planner: logical_root=', $result['stdout']);
+        self::assertStringContainsString('id', $result['stdout']);
+        self::assertStringContainsString('status', $result['stdout']);
+        self::assertStringContainsString('1', $result['stdout']);
+        self::assertStringContainsString('2', $result['stdout']);
+        self::assertStringContainsString('Rows: 1', $result['stdout']);
+    }
+
+    public function test_cli_sqg_select_preserves_parameter_binding_after_boolean_predicate_normalization(): void
+    {
+        $this->runConsole(['volt', 'db:query', 'CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)']);
+        $this->runConsole(['volt', 'db:query', 'DELETE FROM users']);
+        $this->runConsole(['volt', 'db:query', "INSERT INTO users (id, name) VALUES (1, 'demo sqg')"]);
+        $this->runConsole(['volt', 'db:query', "INSERT INTO users (id, name) VALUES (2, 'demo and')"]);
+        $this->runConsole(['volt', 'db:query', "INSERT INTO users (id, name) VALUES (3, 'demo page')"]);
+
+        $spec = json_encode([
+            'from' => ['table' => 'users', 'alias' => 'u'],
+            'select' => ['u.id', 'u.name'],
+            'where' => ['u.id >= :min_id', 'u.name <> :excluded_name'],
+            'params' => [
+                'min_id' => 1,
+                'excluded_name' => 'demo sqg',
+            ],
+            'order_by' => [
+                ['expr' => 'u.id', 'direction' => 'ASC'],
+            ],
+        ], JSON_THROW_ON_ERROR);
+
+        $result = $this->runConsole(['volt', 'db:sqg-select', '--spec=' . $spec]);
+
+        self::assertSame(0, $result['exit']);
+        self::assertStringContainsString('Optimizer: strategy=boolean_predicate_normalization_v1', $result['stdout']);
+        self::assertStringContainsString('demo and', $result['stdout']);
+        self::assertStringContainsString('demo page', $result['stdout']);
+        self::assertStringContainsString('Rows: 2', $result['stdout']);
     }
 
     /**
@@ -114,14 +163,6 @@ final class DatabaseQueryCommandTest extends TestCase
         ];
     }
 
-    private function loadApp(): Application
-    {
-        /** @var Application $app */
-        $app = require $this->basePath . DIRECTORY_SEPARATOR . 'bootstrap' . DIRECTORY_SEPARATOR . 'app.php';
-
-        return $app;
-    }
-
     private function makeTempProject(string $basePath): void
     {
         $configPath = $basePath . DIRECTORY_SEPARATOR . 'config';
@@ -137,7 +178,7 @@ final class DatabaseQueryCommandTest extends TestCase
         file_put_contents(
             $configPath . DIRECTORY_SEPARATOR . 'app.php',
             "<?php\n\ndeclare(strict_types=1);\n\nreturn " . var_export([
-                'name' => 'VoltStack Query Feature Test',
+                'name' => 'VoltStack SQG Select Feature Test',
                 'env' => 'testing',
                 'debug' => true,
                 'providers' => [

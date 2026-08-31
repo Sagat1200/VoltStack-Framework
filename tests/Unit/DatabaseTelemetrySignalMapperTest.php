@@ -36,6 +36,14 @@ final class DatabaseTelemetrySignalMapperTest extends TestCase
                     'request_key_ids' => ['key-2026-08' => 1],
                     'response_key_ids' => ['key-2026-09' => 1],
                 ],
+                'sqg_pipeline' => [
+                    'observed_operations' => 1,
+                    'join_reorder_selected' => 1,
+                    'optimizer_strategies' => ['safe_rule_bundle_v1' => 1],
+                    'selected_candidates' => ['candidate:predicate_pushdown_v1+join_reorder_v1' => 1],
+                    'planner_logical_roots' => ['sort' => 1],
+                    'planner_physical_roots' => ['sort_materialize' => 1],
+                ],
             ],
             health: [
                 'total_segments' => 2,
@@ -52,6 +60,9 @@ final class DatabaseTelemetrySignalMapperTest extends TestCase
         self::assertSame('req-db-1', $signal->requestId);
         self::assertSame(3, $signal->payload['summary']['total_operations']);
         self::assertSame(2, $signal->attributes['health']['total_segments']);
+        self::assertSame(1, $signal->attributes['sqg_pipeline']['observed_operations']);
+        self::assertSame(1, $signal->attributes['sqg_pipeline']['join_reorder_selected']);
+        self::assertSame(1, $signal->attributes['sqg_pipeline']['optimizer_strategies']['safe_rule_bundle_v1']);
         self::assertCount(3, $signal->alerts);
         self::assertSame('database.remote_replay_challenge.incompatible', $signal->alerts[0]['name']);
     }

@@ -9,7 +9,7 @@ use VoltStack\Runtime\Context\RuntimeContext;
 final class DatabaseTelemetryStore
 {
     /**
-     * @var list<array{plan:DatabaseOperationPlan,snapshot:DatabaseDiagnosticSnapshot}>
+     * @var list<array{plan:DatabaseOperationPlan,snapshot:DatabaseDiagnosticSnapshot,sqg_pipeline?:array<string,mixed>}>
      */
     private array $entries = [];
 
@@ -32,6 +32,32 @@ final class DatabaseTelemetryStore
 
         $this->segments[$segmentState->segment] = $segmentState;
         $this->syncRuntimeContext();
+    }
+
+    /**
+     * @param array<string, mixed> $pipeline
+     */
+    public function attachSqgPipeline(string $planFingerprint, array $pipeline): void
+    {
+        if ($pipeline === []) {
+            return;
+        }
+
+        for ($index = count($this->entries) - 1; $index >= 0; $index--) {
+            $entry = $this->entries[$index] ?? null;
+            if (!is_array($entry)) {
+                continue;
+            }
+
+            $plan = $entry['plan'] ?? null;
+            if (!$plan instanceof DatabaseOperationPlan || $plan->fingerprint !== $planFingerprint) {
+                continue;
+            }
+
+            $this->entries[$index]['sqg_pipeline'] = $pipeline;
+            $this->syncRuntimeContext();
+            return;
+        }
     }
 
     public function health(): DatabaseHealthSnapshot
@@ -66,6 +92,7 @@ final class DatabaseTelemetryStore
      *   cancelled:int,
      *   slow_queries:int,
      *   remote_replay_challenge:array<string, mixed>,
+     *   sqg_pipeline:array<string, mixed>,
      *   latest:list<array<string, scalar|null|array<int, string>>>
      * }
      */
@@ -88,6 +115,14 @@ final class DatabaseTelemetryStore
             'request_key_ids' => [],
             'response_key_ids' => [],
         ];
+        $sqgPipeline = [
+            'observed_operations' => 0,
+            'optimizer_strategies' => [],
+            'selected_candidates' => [],
+            'planner_logical_roots' => [],
+            'planner_physical_roots' => [],
+            'join_reorder_selected' => 0,
+        ];
 
         foreach ($this->entries as $entry) {
             $snapshot = $entry['snapshot'];
@@ -107,6 +142,10 @@ final class DatabaseTelemetryStore
                 $remoteReplayChallenge,
                 self::extractRemoteReplayChallengeTelemetry($snapshot),
             );
+            self::collectSqgPipelineSummary(
+                $sqgPipeline,
+                is_array($entry['sqg_pipeline'] ?? null) ? $entry['sqg_pipeline'] : null,
+            );
         }
 
         $latest = array_slice($this->entries, -max(1, $limit));
@@ -118,8 +157,13 @@ final class DatabaseTelemetryStore
             'cancelled' => $cancelled,
             'slow_queries' => $slow,
             'remote_replay_challenge' => $remoteReplayChallenge,
+            'sqg_pipeline' => $sqgPipeline,
             'latest' => array_values(array_map(
-                static fn(array $entry): array => self::entryToArray($entry['plan'], $entry['snapshot']),
+                static fn(array $entry): array => self::entryToArray(
+                    $entry['plan'],
+                    $entry['snapshot'],
+                    is_array($entry['sqg_pipeline'] ?? null) ? $entry['sqg_pipeline'] : null,
+                ),
                 $latest,
             )),
         ];
@@ -139,11 +183,11 @@ final class DatabaseTelemetryStore
     /**
      * @return array<string, scalar|null|array<int, string>|array<string, mixed>>
      */
-    private static function entryToArray(DatabaseOperationPlan $plan, DatabaseDiagnosticSnapshot $snapshot): array
+    private static function entryToArray(DatabaseOperationPlan $plan, DatabaseDiagnosticSnapshot $snapshot, ?array $sqgPipeline = null): array
     {
         $challenge = self::extractRemoteReplayChallengeTelemetry($snapshot) ?? [];
 
-        return [
+        $entry = [
             'fingerprint' => $snapshot->fingerprint,
             'connection_name' => $snapshot->connectionName,
             'driver' => $snapshot->driver,
@@ -174,6 +218,12 @@ final class DatabaseTelemetryStore
                 ? $challenge['challenge_receipt_tombstone_advertisement']
                 : null,
         ];
+
+        if (is_array($sqgPipeline) && $sqgPipeline !== []) {
+            $entry['sqg_pipeline'] = $sqgPipeline;
+        }
+
+        return $entry;
     }
 
     /**
@@ -213,6 +263,32 @@ final class DatabaseTelemetryStore
         self::incrementCountMap($summary['protocols'], self::normalizeString($telemetry['challenge_protocol'] ?? null));
         self::incrementCountMap($summary['request_key_ids'], self::normalizeString($telemetry['challenge_request_key_id'] ?? null));
         self::incrementCountMap($summary['response_key_ids'], self::normalizeString($telemetry['challenge_response_key_id'] ?? null));
+    }
+
+    /**
+     * @param array<string, mixed> $summary
+     * @param array<string, mixed>|null $pipeline
+     */
+    private static function collectSqgPipelineSummary(array &$summary, ?array $pipeline): void
+    {
+        if ($pipeline === null) {
+            return;
+        }
+
+        $summary['observed_operations']++;
+
+        $optimizer = is_array($pipeline['optimizer'] ?? null) ? $pipeline['optimizer'] : [];
+        $planner = is_array($pipeline['planner'] ?? null) ? $pipeline['planner'] : [];
+
+        self::incrementCountMap($summary['optimizer_strategies'], self::normalizeString($optimizer['strategy'] ?? null));
+        self::incrementCountMap($summary['selected_candidates'], self::normalizeString($optimizer['selected_candidate_id'] ?? null));
+        self::incrementCountMap($summary['planner_logical_roots'], self::normalizeString($planner['logical_root_operator'] ?? null));
+        self::incrementCountMap($summary['planner_physical_roots'], self::normalizeString($planner['physical_root_strategy'] ?? null));
+
+        $joinReorder = is_array($optimizer['join_reorder'] ?? null) ? $optimizer['join_reorder'] : [];
+        if (self::normalizeString($joinReorder['selected_signature'] ?? null) !== null) {
+            $summary['join_reorder_selected'] = (int) ($summary['join_reorder_selected'] ?? 0) + 1;
+        }
     }
 
     /**

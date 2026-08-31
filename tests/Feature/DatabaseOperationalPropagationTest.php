@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use Quantum\Config\ConfigRepository;
 use Quantum\Database\Dbal\Contract\ConnectionInterface;
 use Quantum\Database\Operation\DatabaseOperationException;
+use Quantum\Database\Operation\DatabaseTelemetryStore;
 use Quantum\Database\Orm\EntityManager\EntityManager;
 use Quantum\Database\Orm\Metadata\Attribute as ORM;
 use VoltStack\Framework\Application;
@@ -74,6 +75,22 @@ final class DatabaseOperationalPropagationTest extends TestCase
         self::assertContains('index_order_candidate', $pipeline['planner']['physical_strategies'] ?? []);
         self::assertContains('sort_materialize', $pipeline['planner']['physical_strategies'] ?? []);
         self::assertNotEmpty($pipeline['planner']['capability_decisions'] ?? []);
+
+        /** @var DatabaseTelemetryStore $telemetry */
+        $telemetry = $app->make(DatabaseTelemetryStore::class);
+        $summary = $telemetry->summary();
+        self::assertSame(1, $summary['sqg_pipeline']['observed_operations'] ?? null);
+        self::assertSame(1, $summary['sqg_pipeline']['optimizer_strategies']['no_op'] ?? null);
+        self::assertSame(1, $summary['sqg_pipeline']['selected_candidates']['candidate:no_op'] ?? null);
+        self::assertSame(1, $summary['sqg_pipeline']['planner_logical_roots']['sort'] ?? null);
+        self::assertSame(1, $summary['sqg_pipeline']['planner_physical_roots']['sort_materialize'] ?? null);
+        self::assertIsArray($summary['latest'][0]['sqg_pipeline'] ?? null);
+        self::assertSame('sqg_select', $summary['latest'][0]['sqg_pipeline']['sqg']['kind'] ?? null);
+        self::assertSame('no_op', $summary['latest'][0]['sqg_pipeline']['optimizer']['strategy'] ?? null);
+        self::assertSame(
+            $planArtifact->fingerprint,
+            $summary['latest'][0]['sqg_pipeline']['planner']['fingerprint'] ?? null,
+        );
 
         self::assertSame(2, $em->count(OperationalRecord::class));
         self::assertNotNull($em->getLastReadDiagnostic());

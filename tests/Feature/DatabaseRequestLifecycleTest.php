@@ -135,6 +135,28 @@ final class DatabaseRequestLifecycleTest extends TestCase
         self::assertNotSame($createPayload['runtime_request_id'], $readPayload['runtime_request_id']);
     }
 
+    public function test_http_runtime_exposes_sqg_pipeline_summary_in_request_telemetry(): void
+    {
+        $app = $this->makeDatabaseApp(autoFlushOnTerminate: false);
+        $this->createRecordsTable($app);
+        $this->persistRecord($app, 'pipeline-record');
+
+        $router = $app->make(Router::class);
+        $router->get('/records/pipeline', SqgTelemetryReadController::class);
+
+        $response = $app->make(HttpKernel::class)->handle(Request::create('/records/pipeline'));
+        /** @var array<string, mixed> $payload */
+        $payload = json_decode($response->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(1, count($payload['rows'] ?? []));
+        self::assertIsArray($payload['telemetry']['sqg_pipeline'] ?? null);
+        self::assertGreaterThanOrEqual(1, (int) ($payload['telemetry']['sqg_pipeline']['observed_operations'] ?? 0));
+        self::assertIsArray($payload['telemetry']['latest'][0]['sqg_pipeline'] ?? null);
+        self::assertSame('sqg_select', $payload['telemetry']['latest'][0]['sqg_pipeline']['sqg']['kind'] ?? null);
+        self::assertSame('no_op', $payload['telemetry']['latest'][0]['sqg_pipeline']['optimizer']['strategy'] ?? null);
+        self::assertNotEmpty($payload['telemetry']['latest'][0]['sqg_pipeline']['planner']['fingerprint'] ?? null);
+    }
+
     private function makeDatabaseApp(bool $autoFlushOnTerminate): Application
     {
         $app = new Application($this->basePath);
@@ -208,6 +230,12 @@ final class DatabaseRequestLifecycleTest extends TestCase
             ->fetchOneAssoc();
 
         return (int) ($row['aggregate_count'] ?? 0);
+    }
+
+    private function persistRecord(Application $app, string $name): void
+    {
+        $app->make(\Quantum\Database\Dbal\Contract\ConnectionInterface::class)
+            ->executeStatement('INSERT INTO test_auto_flush_records (name) VALUES (?)', [$name]);
     }
 
     private function deleteDirectory(string $path): void
@@ -304,6 +332,29 @@ final class ReadPersistedRecordController
             'name' => $record?->name(),
             'runtime_request_id' => \VoltStack\Runtime\Context\RuntimeContext::current()?->requestId(),
             'database_request_id' => $this->databaseContext->requestId,
+            'telemetry' => \VoltStack\Runtime\Context\RuntimeContext::current()?->get('database.telemetry', []),
+            'health' => \VoltStack\Runtime\Context\RuntimeContext::current()?->get('database.health', []),
+        ];
+    }
+}
+
+final class SqgTelemetryReadController
+{
+    public function __construct(
+        private readonly EntityManagerInterface $em,
+    ) {
+    }
+
+    public function __invoke(): array
+    {
+        $rows = $this->em
+            ->createQueryBuilder(TestAutoFlushRecord::class, 'r')
+            ->select(['r.id', 'r.name'])
+            ->orderBy('r.id')
+            ->fetchAllAssociative();
+
+        return [
+            'rows' => $rows,
             'telemetry' => \VoltStack\Runtime\Context\RuntimeContext::current()?->get('database.telemetry', []),
             'health' => \VoltStack\Runtime\Context\RuntimeContext::current()?->get('database.health', []),
         ];

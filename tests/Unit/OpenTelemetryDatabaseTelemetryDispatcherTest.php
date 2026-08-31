@@ -68,6 +68,22 @@ final class OpenTelemetryDatabaseTelemetryDispatcherTest extends TestCase
                         'key-2026-09' => 1,
                     ],
                 ],
+                'sqg_pipeline' => [
+                    'observed_operations' => 1,
+                    'join_reorder_selected' => 1,
+                    'optimizer_strategies' => [
+                        'safe_rule_bundle_v1' => 1,
+                    ],
+                    'selected_candidates' => [
+                        'candidate:predicate_normalization_v1+join_reorder_v1' => 1,
+                    ],
+                    'planner_logical_roots' => [
+                        'sort' => 1,
+                    ],
+                    'planner_physical_roots' => [
+                        'sort_materialize' => 1,
+                    ],
+                ],
                 'latest' => [],
             ],
             health: [
@@ -102,6 +118,9 @@ final class OpenTelemetryDatabaseTelemetryDispatcherTest extends TestCase
         self::assertSame('tenant-a', $attributes['db.tenant_id'] ?? null);
         self::assertSame('3', $attributes['db.summary.total_operations'] ?? null);
         self::assertSame('1', $attributes['db.summary.remote_replay_challenge.incompatible'] ?? null);
+        self::assertSame('1', $attributes['db.summary.sqg_pipeline.observed_operations'] ?? null);
+        self::assertSame('1', $attributes['db.attributes.sqg_pipeline.join_reorder_selected'] ?? null);
+        self::assertSame('1', $attributes['db.attributes.sqg_pipeline.optimizer_strategies.safe_rule_bundle_v1'] ?? null);
         self::assertSame('database.remote_replay_challenge.incompatible', $attributes['db.alerts.0.name'] ?? null);
     }
 

@@ -31,6 +31,22 @@ final class DatabaseTelemetrySignalMapper
                     'half_open_segments' => (int) ($report->health['half_open_segments'] ?? 0),
                     'closed_segments' => (int) ($report->health['closed_segments'] ?? 0),
                 ],
+                'sqg_pipeline' => [
+                    'observed_operations' => (int) ($report->summary['sqg_pipeline']['observed_operations'] ?? 0),
+                    'join_reorder_selected' => (int) ($report->summary['sqg_pipeline']['join_reorder_selected'] ?? 0),
+                    'optimizer_strategies' => is_array($report->summary['sqg_pipeline']['optimizer_strategies'] ?? null)
+                        ? $report->summary['sqg_pipeline']['optimizer_strategies']
+                        : [],
+                    'selected_candidates' => is_array($report->summary['sqg_pipeline']['selected_candidates'] ?? null)
+                        ? $report->summary['sqg_pipeline']['selected_candidates']
+                        : [],
+                    'planner_logical_roots' => is_array($report->summary['sqg_pipeline']['planner_logical_roots'] ?? null)
+                        ? $report->summary['sqg_pipeline']['planner_logical_roots']
+                        : [],
+                    'planner_physical_roots' => is_array($report->summary['sqg_pipeline']['planner_physical_roots'] ?? null)
+                        ? $report->summary['sqg_pipeline']['planner_physical_roots']
+                        : [],
+                ],
             ],
             alerts: $this->buildAlerts($report),
             requestId: $report->requestId,

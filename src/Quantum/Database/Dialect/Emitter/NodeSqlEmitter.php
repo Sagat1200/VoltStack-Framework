@@ -61,6 +61,8 @@ class NodeSqlEmitter implements NodeVisitor
 {
     /** @var list<mixed> */
     private array $params = [];
+    /** @var list<mixed> */
+    private array $graphParameters = [];
     private int $pIndex = 0;
 
     public function __construct(
@@ -75,12 +77,13 @@ class NodeSqlEmitter implements NodeVisitor
     public function emit(SemanticNode $root, array $graphParameters = []): CompiledSql
     {
         $this->params = [];
+        $this->graphParameters = $graphParameters;
         $this->pIndex = 0;
         $sql = $this->node($root);
         return new CompiledSql(
             sql: $sql,
-            params: $graphParameters,
-            paramCount: count($graphParameters),
+            params: $this->params,
+            paramCount: count($this->params),
             fingerprint: CompiledSql::fingerprintFor($this->strip($sql)),
             quoteStyle: $this->dialect->quoteStyle(),
             paramStyle: $this->dialect->paramStyle(),
@@ -251,8 +254,16 @@ class NodeSqlEmitter implements NodeVisitor
 
     protected function emitParameter(ParameterNode $n): string
     {
-        // Placeholder positional: usamos el orden de emisión ($this->pIndex) que coincide
-        // con el orden ParameterNode::$index si el builder fue correcto.
+        if (!array_key_exists($n->index, $this->graphParameters)) {
+            throw new \RuntimeException(sprintf(
+                'SQG parameter index %d no disponible durante la emisión SQL.',
+                $n->index,
+            ));
+        }
+
+        // Los placeholders se emiten en el orden del árbol final. Si una regla del
+        // optimizador reordena predicados, el binding debe seguir este orden emitido.
+        $this->params[] = $this->graphParameters[$n->index];
         $placeholder = $this->dialect->parameterPlaceholder($this->pIndex++);
         return $placeholder;
     }
@@ -311,20 +322,17 @@ class NodeSqlEmitter implements NodeVisitor
 
     protected function emitJoin(JoinNode $n): string
     {
-        $keyword = match ($n->joinType) {
+        $keyword = match ($n->type) {
             \Quantum\Database\Dialect\Enum\JoinType::Inner => 'INNER JOIN',
             \Quantum\Database\Dialect\Enum\JoinType::Left => 'LEFT JOIN',
             \Quantum\Database\Dialect\Enum\JoinType::Right => 'RIGHT JOIN',
             \Quantum\Database\Dialect\Enum\JoinType::Full => 'FULL JOIN',
             \Quantum\Database\Dialect\Enum\JoinType::Cross => 'CROSS JOIN',
-            \Quantum\Database\Dialect\Enum\JoinType::LeftOuter => 'LEFT OUTER JOIN',
-            \Quantum\Database\Dialect\Enum\JoinType::RightOuter => 'RIGHT OUTER JOIN',
-            \Quantum\Database\Dialect\Enum\JoinType::FullOuter => 'FULL OUTER JOIN',
             default => 'JOIN',
         };
         $s = "{$keyword} " . $this->node($n->right);
-        if ($n->joinType !== \Quantum\Database\Dialect\Enum\JoinType::Cross && $n->onPredicate !== null) {
-            $s .= ' ON ' . $this->node($n->onPredicate);
+        if ($n->type !== \Quantum\Database\Dialect\Enum\JoinType::Cross && $n->on !== null) {
+            $s .= ' ON ' . $this->node($n->on);
         }
         return $s;
     }

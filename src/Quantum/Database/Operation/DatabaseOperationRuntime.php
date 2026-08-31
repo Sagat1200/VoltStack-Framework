@@ -1098,6 +1098,20 @@ final class DatabaseOperationRuntime
     }
 
     /**
+     * @param array<string, mixed> $pipeline
+     */
+    public function attachSqgPipelineTelemetry(DatabaseOperationPlan $plan, array $pipeline): void
+    {
+        $telemetry = $this->resolveTelemetryStore();
+
+        if (!$telemetry instanceof DatabaseTelemetryStore || $pipeline === []) {
+            return;
+        }
+
+        $telemetry->attachSqgPipeline($plan->fingerprint, $pipeline);
+    }
+
+    /**
      * @return array<string, mixed>|null
      */
     private function resolveFallbackDecision(DatabaseOperationPlan $plan): ?array

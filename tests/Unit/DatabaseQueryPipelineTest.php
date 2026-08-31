@@ -519,6 +519,269 @@ final class DatabaseQueryPipelineTest extends TestCase
         self::assertSame('u', $optimization->graph->root->fromSources[0]->aliasOrName());
     }
 
+    public function test_default_optimizer_reorders_star_inner_join_chain_to_promote_strongest_joined_alias(): void
+    {
+        $builder = (new SelectQueryBuilder())
+            ->from('users', 'u')
+            ->innerJoin('u', 'profiles', 'p', 'u.id = p.user_id')
+            ->innerJoin('u', 'orders', 'o', 'u.id = o.user_id')
+            ->select(['p.user_id', 'o.user_id'])
+            ->where('p.user_id = 1');
+        $graph = $builder->getSQG();
+        $caps = DatabaseCapabilitySet::minimalSet('sqlite');
+        $certification = $graph->validate($caps);
+
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+        ));
+
+        self::assertSame('safe_rule_bundle_v1', $optimization->decision->strategy);
+        self::assertContains('join_reorder_v1', $optimization->decision->metadata['selected_rules'] ?? []);
+        self::assertInstanceOf(TableSourceNode::class, $optimization->graph->root->fromSources[0] ?? null);
+        self::assertSame('p', $optimization->graph->root->fromSources[0]->aliasOrName());
+        self::assertCount(2, $optimization->graph->root->joins);
+        self::assertInstanceOf(TableSourceNode::class, $optimization->graph->root->joins[0]->right ?? null);
+        self::assertSame('u', $optimization->graph->root->joins[0]->right->aliasOrName());
+        self::assertInstanceOf(TableSourceNode::class, $optimization->graph->root->joins[1]->right ?? null);
+        self::assertSame('o', $optimization->graph->root->joins[1]->right->aliasOrName());
+    }
+
+    public function test_default_optimizer_reorders_star_inner_join_chain_by_joined_alias_score_when_base_stays_leader(): void
+    {
+        $builder = (new SelectQueryBuilder())
+            ->from('users', 'u')
+            ->innerJoin('u', 'profiles', 'p', 'u.id = p.user_id')
+            ->innerJoin('u', 'orders', 'o', 'u.id = o.user_id')
+            ->select(['u.id', 'p.user_id', 'o.user_id'])
+            ->where('u.id = 1')
+            ->andWhere('o.user_id = 2');
+        $graph = $builder->getSQG();
+        $caps = DatabaseCapabilitySet::minimalSet('sqlite');
+        $certification = $graph->validate($caps);
+
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+        ));
+
+        self::assertSame('safe_rule_bundle_v1', $optimization->decision->strategy);
+        self::assertContains('join_reorder_v1', $optimization->decision->metadata['selected_rules'] ?? []);
+        self::assertInstanceOf(TableSourceNode::class, $optimization->graph->root->fromSources[0] ?? null);
+        self::assertSame('u', $optimization->graph->root->fromSources[0]->aliasOrName());
+        self::assertCount(2, $optimization->graph->root->joins);
+        self::assertInstanceOf(TableSourceNode::class, $optimization->graph->root->joins[0]->right ?? null);
+        self::assertSame('o', $optimization->graph->root->joins[0]->right->aliasOrName());
+        self::assertInstanceOf(TableSourceNode::class, $optimization->graph->root->joins[1]->right ?? null);
+        self::assertSame('p', $optimization->graph->root->joins[1]->right->aliasOrName());
+    }
+
+    public function test_default_optimizer_reorders_linear_inner_join_chain_with_promoted_intermediate_alias(): void
+    {
+        $builder = (new SelectQueryBuilder())
+            ->from('users', 'u')
+            ->innerJoin('u', 'profiles', 'p', 'u.id = p.user_id')
+            ->innerJoin('p', 'addresses', 'a', 'p.id = a.profile_id')
+            ->select(['p.user_id', 'a.profile_id'])
+            ->where('p.user_id = 1');
+        $graph = $builder->getSQG();
+        $caps = DatabaseCapabilitySet::minimalSet('sqlite');
+        $certification = $graph->validate($caps);
+
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+        ));
+
+        self::assertSame('safe_rule_bundle_v1', $optimization->decision->strategy);
+        self::assertContains('join_reorder_v1', $optimization->decision->metadata['selected_rules'] ?? []);
+        self::assertInstanceOf(TableSourceNode::class, $optimization->graph->root->fromSources[0] ?? null);
+        self::assertSame('p', $optimization->graph->root->fromSources[0]->aliasOrName());
+        self::assertCount(2, $optimization->graph->root->joins);
+        self::assertInstanceOf(TableSourceNode::class, $optimization->graph->root->joins[0]->right ?? null);
+        self::assertSame('u', $optimization->graph->root->joins[0]->right->aliasOrName());
+        self::assertInstanceOf(TableSourceNode::class, $optimization->graph->root->joins[1]->right ?? null);
+        self::assertSame('a', $optimization->graph->root->joins[1]->right->aliasOrName());
+    }
+
+    public function test_default_optimizer_reorders_mixed_inner_join_chain_with_visibility_aware_sequence(): void
+    {
+        $builder = (new SelectQueryBuilder())
+            ->from('users', 'u')
+            ->innerJoin('u', 'profiles', 'p', 'u.id = p.user_id')
+            ->innerJoin('p', 'addresses', 'a', 'p.id = a.profile_id')
+            ->innerJoin('u', 'orders', 'o', 'u.id = o.user_id')
+            ->select(['u.id', 'p.user_id', 'a.profile_id', 'o.user_id'])
+            ->where('u.id = 1')
+            ->andWhere('o.user_id = 2');
+        $graph = $builder->getSQG();
+        $caps = DatabaseCapabilitySet::minimalSet('sqlite');
+        $certification = $graph->validate($caps);
+
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+        ));
+
+        self::assertSame('safe_rule_bundle_v1', $optimization->decision->strategy);
+        self::assertContains('join_reorder_v1', $optimization->decision->metadata['selected_rules'] ?? []);
+        self::assertInstanceOf(TableSourceNode::class, $optimization->graph->root->fromSources[0] ?? null);
+        self::assertSame('u', $optimization->graph->root->fromSources[0]->aliasOrName());
+        self::assertCount(3, $optimization->graph->root->joins);
+        self::assertInstanceOf(TableSourceNode::class, $optimization->graph->root->joins[0]->right ?? null);
+        self::assertSame('o', $optimization->graph->root->joins[0]->right->aliasOrName());
+        self::assertInstanceOf(TableSourceNode::class, $optimization->graph->root->joins[1]->right ?? null);
+        self::assertSame('p', $optimization->graph->root->joins[1]->right->aliasOrName());
+        self::assertInstanceOf(TableSourceNode::class, $optimization->graph->root->joins[2]->right ?? null);
+        self::assertSame('a', $optimization->graph->root->joins[2]->right->aliasOrName());
+    }
+
+    public function test_default_optimizer_enumerates_bounded_join_candidates_beyond_greedy_choice(): void
+    {
+        $builder = (new SelectQueryBuilder())
+            ->from('users', 'u')
+            ->innerJoin('u', 'profiles', 'p', 'u.id = p.user_id')
+            ->innerJoin('u', 'orders', 'o', 'u.id = o.user_id')
+            ->innerJoin('p', 'addresses', 'a', 'p.id = a.profile_id')
+            ->select(['u.id', 'p.user_id', 'o.user_id', 'a.profile_id'])
+            ->where('u.id = 1')
+            ->andWhere('o.user_id >= 2')
+            ->andWhere('a.profile_id = 3')
+            ->andWhere('a.country_id = 7');
+        $graph = $builder->getSQG();
+        $caps = DatabaseCapabilitySet::minimalSet('sqlite');
+        $certification = $graph->validate($caps);
+
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+        ));
+
+        self::assertSame('safe_rule_bundle_v1', $optimization->decision->strategy);
+        self::assertContains('join_reorder_v1', $optimization->decision->metadata['selected_rules'] ?? []);
+        self::assertInstanceOf(TableSourceNode::class, $optimization->graph->root->fromSources[0] ?? null);
+        self::assertSame('u', $optimization->graph->root->fromSources[0]->aliasOrName());
+        self::assertCount(3, $optimization->graph->root->joins);
+        self::assertInstanceOf(TableSourceNode::class, $optimization->graph->root->joins[0]->right ?? null);
+        self::assertSame('p', $optimization->graph->root->joins[0]->right->aliasOrName());
+        self::assertInstanceOf(TableSourceNode::class, $optimization->graph->root->joins[1]->right ?? null);
+        self::assertSame('a', $optimization->graph->root->joins[1]->right->aliasOrName());
+        self::assertInstanceOf(TableSourceNode::class, $optimization->graph->root->joins[2]->right ?? null);
+        self::assertSame('o', $optimization->graph->root->joins[2]->right->aliasOrName());
+    }
+
+    public function test_default_optimizer_emits_join_reorder_trace_metadata_when_rule_is_selected(): void
+    {
+        $builder = (new SelectQueryBuilder())
+            ->from('users', 'u')
+            ->innerJoin('u', 'profiles', 'p', 'u.id = p.user_id')
+            ->innerJoin('u', 'orders', 'o', 'u.id = o.user_id')
+            ->innerJoin('p', 'addresses', 'a', 'p.id = a.profile_id')
+            ->select(['u.id', 'p.user_id', 'o.user_id', 'a.profile_id'])
+            ->where('u.id = 1')
+            ->andWhere('o.user_id >= 2')
+            ->andWhere('a.profile_id = 3')
+            ->andWhere('a.country_id = 7');
+        $graph = $builder->getSQG();
+        $caps = DatabaseCapabilitySet::minimalSet('sqlite');
+        $certification = $graph->validate($caps);
+
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+        ));
+
+        self::assertContains('join_reorder_v1', $optimization->decision->metadata['selected_rules'] ?? []);
+        self::assertIsArray($optimization->decision->metadata['join_reorder_trace'] ?? null);
+        self::assertGreaterThanOrEqual(2, $optimization->decision->metadata['join_reorder_trace']['candidate_count'] ?? 0);
+        self::assertSame('u>p>a>o', $optimization->decision->metadata['join_reorder_trace']['selected_signature'] ?? null);
+        self::assertNotEmpty($optimization->decision->metadata['join_reorder_trace']['candidates'] ?? []);
+        $selectedTraceCandidate = null;
+        foreach ($optimization->decision->metadata['join_reorder_trace']['candidates'] as $candidate) {
+            if (($candidate['signature'] ?? null) === 'u>p>a>o') {
+                $selectedTraceCandidate = $candidate;
+                break;
+            }
+        }
+        self::assertIsArray($selectedTraceCandidate);
+        self::assertSame(['p', 'a', 'o'], $selectedTraceCandidate['join_aliases'] ?? null);
+    }
+
+    public function test_select_query_builder_pipeline_summary_exposes_join_reorder_trace(): void
+    {
+        $builder = (new SelectQueryBuilder())
+            ->from('users', 'u')
+            ->innerJoin('u', 'profiles', 'p', 'u.id = p.user_id')
+            ->innerJoin('u', 'orders', 'o', 'u.id = o.user_id')
+            ->innerJoin('p', 'addresses', 'a', 'p.id = a.profile_id')
+            ->select(['u.id', 'p.user_id', 'o.user_id', 'a.profile_id'])
+            ->where('u.id = 1')
+            ->andWhere('o.user_id >= 2')
+            ->andWhere('a.profile_id = 3')
+            ->andWhere('a.country_id = 7');
+
+        $translateStateToSqg = new \ReflectionMethod($builder, 'translateStateToSqg');
+        $translateStateToSqg->setAccessible(true);
+        $translated = $translateStateToSqg->invoke($builder);
+
+        $buildSqgOperation = new \ReflectionMethod($builder, 'buildSqgOperation');
+        $buildSqgOperation->setAccessible(true);
+        $operation = $buildSqgOperation->invoke($builder, $translated['graph'], $translated['caps']);
+
+        $rememberSqgPipeline = new \ReflectionMethod($builder, 'rememberSqgPipeline');
+        $rememberSqgPipeline->setAccessible(true);
+        $rememberSqgPipeline->invoke($builder, $operation);
+
+        $summary = $builder->getLastPipelineSummary();
+
+        self::assertIsArray($summary);
+        self::assertSame('safe_rule_bundle_v1', $summary['optimizer']['strategy'] ?? null);
+        self::assertSame('safe_rule_bundle_applied', $summary['optimizer']['reason'] ?? null);
+        self::assertSame('deterministic_v1', $summary['optimizer']['cost_model_version'] ?? null);
+        self::assertSame(2, $summary['optimizer']['candidate_count'] ?? null);
+        self::assertIsFloat($summary['optimizer']['cost_delta_vs_baseline'] ?? null);
+        self::assertIsArray($summary['optimizer']['selected_breakdown'] ?? null);
+        self::assertIsArray($summary['optimizer']['selected_metrics'] ?? null);
+        self::assertIsArray($summary['optimizer']['candidates'] ?? null);
+        self::assertCount(2, $summary['optimizer']['candidates'] ?? []);
+        self::assertSame('candidate:no_op', $summary['optimizer']['candidates'][0]['id'] ?? null);
+        self::assertFalse($summary['optimizer']['candidates'][0]['selected'] ?? true);
+        self::assertSame(
+            'candidate:predicate_normalization_v1+boolean_predicate_normalization_v1+predicate_pushdown_v1+join_reorder_v1',
+            $summary['optimizer']['candidates'][1]['id'] ?? null,
+        );
+        self::assertTrue($summary['optimizer']['candidates'][1]['selected'] ?? false);
+        self::assertContains('join_reorder_v1', $summary['optimizer']['candidates'][1]['applied_rules'] ?? []);
+        self::assertIsArray($summary['optimizer']['candidates'][1]['cost_breakdown'] ?? null);
+        self::assertIsArray($summary['optimizer']['candidates'][1]['metrics'] ?? null);
+        self::assertIsArray($summary['optimizer']['candidate_summaries'] ?? null);
+        self::assertIsArray($summary['optimizer']['candidate_summaries'][1]['rules'] ?? null);
+        self::assertContains('join_reorder_v1', $summary['optimizer']['candidate_summaries'][1]['rules'] ?? []);
+        self::assertIsArray($summary['optimizer']['join_reorder'] ?? null);
+        self::assertSame(3, $summary['optimizer']['join_reorder']['candidate_count'] ?? null);
+        self::assertSame('u>p>a>o', $summary['optimizer']['join_reorder']['selected_signature'] ?? null);
+        $selectedSummaryCandidate = null;
+        foreach ($summary['optimizer']['join_reorder']['candidates'] as $candidate) {
+            if (($candidate['signature'] ?? null) === 'u>p>a>o') {
+                $selectedSummaryCandidate = $candidate;
+                break;
+            }
+        }
+        self::assertIsArray($selectedSummaryCandidate);
+        self::assertSame(['p', 'a', 'o'], $selectedSummaryCandidate['join_aliases'] ?? null);
+        self::assertIsArray($builder->getLastOptimizationResult()?->decision->metadata['join_reorder_trace'] ?? null);
+        self::assertSame(
+            'u>p>a>o',
+            $builder->getLastOptimizationResult()?->decision->metadata['join_reorder_trace']['selected_signature'] ?? null,
+        );
+    }
+
     public function test_planner_uses_index_range_order_candidate_for_range_with_matching_order(): void
     {
         $builder = (new SelectQueryBuilder())

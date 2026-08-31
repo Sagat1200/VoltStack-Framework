@@ -392,6 +392,10 @@ final class SelectQueryBuilder implements \Stringable
         $result = $this->runtime->execute($plan, $context);
         $this->lastOperationPlan = $plan;
         $this->lastDiagnostic = $result->debug['diagnostic'] ?? null;
+        $pipelineSummary = $this->getLastPipelineSummary();
+        if (is_array($pipelineSummary) && $pipelineSummary !== []) {
+            $this->runtime->attachSqgPipelineTelemetry($plan, $pipelineSummary);
+        }
 
         if (!$result->queryResult instanceof QueryResult) {
             throw new \RuntimeException('Runtime SQG no devolvió QueryResult para una consulta SELECT.');
@@ -473,8 +477,25 @@ final class SelectQueryBuilder implements \Stringable
                 'strategy' => $this->lastOptimizationResult->decision->strategy,
                 'selected_candidate_id' => $this->lastOptimizationResult->selectedCandidate->id,
                 'estimated_cost' => $this->lastOptimizationResult->decision->estimatedCost,
+                'reason' => $this->lastOptimizationResult->decision->metadata['reason'] ?? null,
+                'cost_model_version' => $this->lastOptimizationResult->decision->metadata['cost_model_version'] ?? null,
+                'candidate_count' => $this->lastOptimizationResult->decision->metadata['candidate_count'] ?? count($this->lastOptimizationResult->trace->candidateSummaries),
+                'cost_delta_vs_baseline' => $this->lastOptimizationResult->decision->metadata['cost_delta_vs_baseline'] ?? null,
                 'applied_rules' => $this->lastOptimizationResult->trace->appliedRules,
+                'selected_breakdown' => is_array($this->lastOptimizationResult->decision->metadata['selected_breakdown'] ?? null)
+                    ? $this->lastOptimizationResult->decision->metadata['selected_breakdown']
+                    : [],
+                'selected_metrics' => is_array($this->lastOptimizationResult->decision->metadata['selected_metrics'] ?? null)
+                    ? $this->lastOptimizationResult->decision->metadata['selected_metrics']
+                    : [],
+                'candidates' => $this->normalizeOptimizationCandidates(
+                    $this->lastOptimizationResult->trace->candidateSummaries,
+                    $this->lastOptimizationResult->selectedCandidate->id,
+                ),
                 'candidate_summaries' => $this->lastOptimizationResult->trace->candidateSummaries,
+                'join_reorder' => $this->normalizeJoinReorderSummary(
+                    $this->lastOptimizationResult->decision->metadata['join_reorder_trace'] ?? null,
+                ),
                 'notes' => $this->lastOptimizationResult->trace->notes,
             ],
             'planner' => [
@@ -487,6 +508,77 @@ final class SelectQueryBuilder implements \Stringable
                 'warnings' => $this->lastPlanArtifact->diagnostics->warnings,
                 'parameter_count' => $this->lastPlanArtifact->bindingLayout->parameterCount,
             ],
+        ];
+    }
+
+    /**
+     * @param mixed $candidates
+     * @return list<array<string,mixed>>
+     */
+    private function normalizeOptimizationCandidates(mixed $candidates, string $selectedCandidateId): array
+    {
+        if (!is_array($candidates)) {
+            return [];
+        }
+
+        $normalized = [];
+        foreach ($candidates as $candidate) {
+            if (!is_array($candidate)) {
+                continue;
+            }
+
+            $normalized[] = [
+                'id' => isset($candidate['id']) ? (string) $candidate['id'] : null,
+                'selected' => ($candidate['id'] ?? null) === $selectedCandidateId,
+                'estimated_cost' => isset($candidate['cost']) && is_numeric($candidate['cost'])
+                    ? (float) $candidate['cost']
+                    : null,
+                'applied_rules' => is_array($candidate['rules'] ?? null)
+                    ? array_values(array_map('strval', $candidate['rules']))
+                    : [],
+                'cost_breakdown' => is_array($candidate['breakdown'] ?? null)
+                    ? $candidate['breakdown']
+                    : [],
+                'metrics' => is_array($candidate['metrics'] ?? null)
+                    ? $candidate['metrics']
+                    : [],
+            ];
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * @param mixed $trace
+     * @return array<string, mixed>|null
+     */
+    private function normalizeJoinReorderSummary(mixed $trace): ?array
+    {
+        if (!is_array($trace)) {
+            return null;
+        }
+
+        $candidates = [];
+        foreach ($trace['candidates'] ?? [] as $candidate) {
+            if (!is_array($candidate)) {
+                continue;
+            }
+
+            $candidates[] = [
+                'signature' => $candidate['signature'] ?? null,
+                'base_alias' => $candidate['base_alias'] ?? null,
+                'score' => $candidate['score'] ?? null,
+                'join_aliases' => is_array($candidate['join_aliases'] ?? null)
+                    ? array_values($candidate['join_aliases'])
+                    : [],
+            ];
+        }
+
+        return [
+            'candidate_count' => $trace['candidate_count'] ?? count($candidates),
+            'selected_signature' => $trace['selected_signature'] ?? null,
+            'selected_score' => $trace['selected_score'] ?? null,
+            'candidates' => $candidates,
         ];
     }
 

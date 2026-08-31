@@ -631,6 +631,14 @@ final class DatabaseServiceProvider extends ServiceProvider
                     'request_key_ids' => [],
                     'response_key_ids' => [],
                 ],
+                'sqg_pipeline' => [
+                    'observed_operations' => 0,
+                    'optimizer_strategies' => [],
+                    'selected_candidates' => [],
+                    'planner_logical_roots' => [],
+                    'planner_physical_roots' => [],
+                    'join_reorder_selected' => 0,
+                ],
                 'latest' => [],
             ]);
             $context->set('database.health', (new DatabaseHealthSnapshot(
@@ -689,6 +697,7 @@ final class DatabaseServiceProvider extends ServiceProvider
             \Quantum\Console\Commands\Database\DbHealthCommand::class,
             \Quantum\Console\Commands\Database\DbIdempotencyCommand::class,
             \Quantum\Console\Commands\Database\DbQueryCommand::class,
+            \Quantum\Console\Commands\Database\DbSqgSelectCommand::class,
             \Quantum\Console\Commands\Database\DbMigrateCommand::class,
             \Quantum\Console\Commands\Database\DbMigrateRecoverCommand::class,
             \Quantum\Console\Commands\Database\DbRollbackCommand::class,

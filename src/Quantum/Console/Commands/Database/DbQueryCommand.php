@@ -220,6 +220,23 @@ final class DbQueryCommand extends Command
                 : 'n/a',
             $plan->policy->remoteReplayValidationReceiptReplicatedMaxAgeSeconds,
         ));
+        $this->renderOptimizerAudit($plan, $output);
+    }
+
+    private function renderOptimizerAudit(DatabaseOperationPlan $plan, Output $output): void
+    {
+        if (in_array($plan->operation->kind, [OperationKind::RawQuery, OperationKind::RawExecute], true)) {
+            $output->writeln(
+                'Optimizer: unavailable (raw_sql_mode). db:query opera sobre RawOperation y no construye artifacts SQG/optimizer.',
+            );
+            return;
+        }
+
+        if ($plan->operation->kind === OperationKind::SqgSelect) {
+            $output->writeln(
+                'Optimizer: sqg_select detected. Usa los artifacts del pipeline SQG para inspeccionar strategy, trace y candidate summaries.',
+            );
+        }
     }
 
     private function renderDiagnostic(DatabaseDiagnosticSnapshot $snapshot, Output $output): void

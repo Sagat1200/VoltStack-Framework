@@ -612,7 +612,7 @@ final class NoOpQueryPlanner implements QueryPlannerInterface
     }
 
     /**
-     * @return list<array{source:string,column:string,operator:string}>
+     * @return list<array{source:string,column:string,operator:string,comparable_kind:string}>
      */
     private function collectIndexEvidenceForAlias(
         SemanticNode $node,
@@ -645,7 +645,7 @@ final class NoOpQueryPlanner implements QueryPlannerInterface
     }
 
     /**
-     * @param list<array{source:string,column:string,operator:string}> $evidence
+     * @param list<array{source:string,column:string,operator:string,comparable_kind:string}> $evidence
      */
     private function classifyIndexCandidateStrategy(array $evidence): string
     {
@@ -657,6 +657,8 @@ final class NoOpQueryPlanner implements QueryPlannerInterface
         $orderColumns = [];
         $whereLookupColumns = [];
         $joinLookupColumns = [];
+        $joinLiteralLookupColumns = [];
+        $joinRelationalLookupColumns = [];
 
         foreach ($evidence as $item) {
             if ($item['operator'] === '=') {
@@ -668,6 +670,12 @@ final class NoOpQueryPlanner implements QueryPlannerInterface
 
                 if ($item['source'] === 'join_on') {
                     $joinLookupColumns[$item['column']] = true;
+                    if ($item['comparable_kind'] === 'literal_or_param') {
+                        $joinLiteralLookupColumns[$item['column']] = true;
+                    }
+                    if ($item['comparable_kind'] === 'column_ref') {
+                        $joinRelationalLookupColumns[$item['column']] = true;
+                    }
                 }
                 continue;
             }
@@ -685,15 +693,16 @@ final class NoOpQueryPlanner implements QueryPlannerInterface
         }
 
         $hasCompositeLookup = count($lookupColumns) >= 2;
-        $hasJoinWhereLookupCompound = $this->sharesEvidenceColumn($whereLookupColumns, $joinLookupColumns);
+        $hasJoinLookupCompound = $this->sharesEvidenceColumn($joinLiteralLookupColumns, $joinRelationalLookupColumns);
+        $hasJoinWhereLookupCompound = $this->sharesEvidenceColumn($whereLookupColumns, $joinLookupColumns) || $hasJoinLookupCompound;
         $hasLookupOrderCompound = $hasLookup && $hasOrder && $this->sharesEvidenceColumn($lookupColumns, $orderColumns);
         $hasRangeOrderCompound = $hasRange && $hasOrder && $this->sharesEvidenceColumn($rangeColumns, $orderColumns);
         $hasCompositeLookupOrderCompound = $hasCompositeLookup && $hasOrder && $this->sharesEvidenceColumn($lookupColumns, $orderColumns);
+        $joinOrderColumns = $hasJoinLookupCompound
+            ? $this->intersectEvidenceColumns($joinLiteralLookupColumns, $joinRelationalLookupColumns)
+            : $this->intersectEvidenceColumns($whereLookupColumns, $joinLookupColumns);
         $hasJoinWhereLookupOrderCompound = $hasJoinWhereLookupCompound
-            && $this->sharesEvidenceColumn(
-                $this->intersectEvidenceColumns($whereLookupColumns, $joinLookupColumns),
-                $orderColumns,
-            );
+            && $this->sharesEvidenceColumn($joinOrderColumns, $orderColumns);
 
         return match (true) {
             $hasJoinWhereLookupOrderCompound => 'index_join_lookup_order_candidate',
@@ -710,7 +719,7 @@ final class NoOpQueryPlanner implements QueryPlannerInterface
     }
 
     /**
-     * @return list<array{source:string,column:string,operator:string}>
+     * @return list<array{source:string,column:string,operator:string,comparable_kind:string}>
      */
     private function collectOrderByEvidenceForAlias(OrderByItemNode $item, string $alias): array
     {
@@ -719,6 +728,7 @@ final class NoOpQueryPlanner implements QueryPlannerInterface
                 'source' => 'order_by',
                 'column' => $item->expression->column,
                 'operator' => 'order',
+                'comparable_kind' => 'order_by',
             ]];
         }
 
@@ -726,7 +736,7 @@ final class NoOpQueryPlanner implements QueryPlannerInterface
     }
 
     /**
-     * @return list<array{source:string,column:string,operator:string}>
+     * @return list<array{source:string,column:string,operator:string,comparable_kind:string}>
      */
     private function matchIndexableComparisonSide(
         SemanticNode $candidateColumn,
@@ -747,6 +757,7 @@ final class NoOpQueryPlanner implements QueryPlannerInterface
             'source' => $source,
             'column' => $candidateColumn->column,
             'operator' => $operator->value,
+            'comparable_kind' => $this->classifyComparableNode($otherSide),
         ]];
     }
 
@@ -761,8 +772,8 @@ final class NoOpQueryPlanner implements QueryPlannerInterface
     }
 
     /**
-     * @param list<array{source:string,column:string,operator:string}> $evidence
-     * @return list<array{source:string,column:string,operator:string}>
+     * @param list<array{source:string,column:string,operator:string,comparable_kind:string}> $evidence
+     * @return list<array{source:string,column:string,operator:string,comparable_kind:string}>
      */
     private function deduplicateEvidence(array $evidence): array
     {
@@ -770,7 +781,7 @@ final class NoOpQueryPlanner implements QueryPlannerInterface
         $seen = [];
 
         foreach ($evidence as $item) {
-            $key = implode('|', [$item['source'], $item['column'], $item['operator']]);
+            $key = implode('|', [$item['source'], $item['column'], $item['operator'], $item['comparable_kind']]);
             if (isset($seen[$key])) {
                 continue;
             }
@@ -780,6 +791,15 @@ final class NoOpQueryPlanner implements QueryPlannerInterface
         }
 
         return $unique;
+    }
+
+    private function classifyComparableNode(SemanticNode $node): string
+    {
+        return match (true) {
+            $node instanceof LiteralNode, $node instanceof ParameterNode => 'literal_or_param',
+            $node instanceof ColumnReferenceNode => 'column_ref',
+            default => 'other',
+        };
     }
 
     /**

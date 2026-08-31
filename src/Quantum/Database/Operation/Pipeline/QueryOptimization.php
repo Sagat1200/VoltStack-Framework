@@ -6,12 +6,14 @@ namespace Quantum\Database\Operation\Pipeline;
 
 use Quantum\Database\Capability\DatabaseCapabilitySet;
 use Quantum\Database\DatabaseContext;
+use Quantum\Database\Dialect\Enum\JoinType as DialectJoinType;
 use Quantum\Database\Operation\Sqg\GraphCertification;
 use Quantum\Database\Operation\Sqg\Node\AggregateFunctionNode;
 use Quantum\Database\Operation\Sqg\Node\AliasedProjectionNode;
 use Quantum\Database\Operation\Sqg\Node\BetweenPredicateNode;
 use Quantum\Database\Operation\Sqg\Node\BinaryExpressionNode;
 use Quantum\Database\Operation\Sqg\Node\CaseExpressionNode;
+use Quantum\Database\Operation\Sqg\Node\ColumnReferenceNode;
 use Quantum\Database\Operation\Sqg\Node\CteListNode;
 use Quantum\Database\Operation\Sqg\Node\ExistsPredicateNode;
 use Quantum\Database\Operation\Sqg\Node\FunctionCallNode;
@@ -29,6 +31,7 @@ use Quantum\Database\Operation\Sqg\Node\ProjectionListNode;
 use Quantum\Database\Operation\Sqg\Node\SelectStatementNode;
 use Quantum\Database\Operation\Sqg\Node\SubqueryExpressionNode;
 use Quantum\Database\Operation\Sqg\Node\SubquerySourceNode;
+use Quantum\Database\Operation\Sqg\Node\TableSourceNode;
 use Quantum\Database\Operation\Sqg\Node\UnaryExpressionNode;
 use Quantum\Database\Operation\Sqg\Node\WindowFunctionNode;
 use Quantum\Database\Operation\Sqg\SemanticNode;
@@ -145,6 +148,7 @@ final class DeterministicQueryCostModel
             + ($metrics['group_count'] * 8.0)
             + ($metrics['cte_count'] * 3.0);
         $selectivityCredit = ($metrics['filter_clause_count'] * 1.5)
+            + ($metrics['join_predicate_count'] * 1.5)
             + ($metrics['equality_predicate_count'] * 4.0)
             + ($metrics['range_predicate_count'] * 2.5)
             + ($this->limitSelectivityCredit($metrics['smallest_limit']));
@@ -208,6 +212,7 @@ final class DeterministicQueryCostModel
             'join_count' => 0,
             'projection_count' => 0,
             'filter_clause_count' => 0,
+            'join_predicate_count' => 0,
             'equality_predicate_count' => 0,
             'range_predicate_count' => 0,
             'group_count' => 0,
@@ -257,6 +262,7 @@ final class DeterministicQueryCostModel
 
             if ($node instanceof JoinNode) {
                 $metrics['join_count']++;
+                $metrics['join_predicate_count'] += $node->on !== null ? 1 : 0;
             }
 
             if ($node instanceof BinaryExpressionNode) {
@@ -549,6 +555,12 @@ final class DefaultQueryOptimizer implements QueryOptimizerInterface
             $appliedRules[] = 'limit_offset_simplification_v1';
         }
 
+        $pushdownGraph = $this->pushDownWherePredicatesGraph($currentGraph);
+        if ($pushdownGraph !== $currentGraph) {
+            $currentGraph = $pushdownGraph;
+            $appliedRules[] = 'predicate_pushdown_v1';
+        }
+
         return [
             'graph' => $currentGraph,
             'applied_rules' => $appliedRules,
@@ -581,6 +593,21 @@ final class DefaultQueryOptimizer implements QueryOptimizerInterface
         }
 
         return new SemanticQueryGraph(root: $normalizedRoot, parameters: $graph->parameters);
+    }
+
+    private function pushDownWherePredicatesGraph(SemanticQueryGraph $graph): SemanticQueryGraph
+    {
+        $root = $graph->root;
+        if (!$root instanceof SelectStatementNode) {
+            return $graph;
+        }
+
+        $pushedDownRoot = $this->pushDownWherePredicatesSelectStatement($root);
+        if ($pushedDownRoot === $root) {
+            return $graph;
+        }
+
+        return new SemanticQueryGraph(root: $pushedDownRoot, parameters: $graph->parameters);
     }
 
     private function foldSelectStatement(SelectStatementNode $node): SelectStatementNode
@@ -665,6 +692,91 @@ final class DefaultQueryOptimizer implements QueryOptimizerInterface
             orderBy: $node->orderBy,
             limit: $limit,
             offset: $offset,
+            id: $node->id(),
+            flags: $node->flags(),
+            span: $node->sourceSpan(),
+        ), $node);
+    }
+
+    private function pushDownWherePredicatesSelectStatement(SelectStatementNode $node): SelectStatementNode
+    {
+        if ($node->where === null || $node->joins === []) {
+            return $node;
+        }
+
+        $remainingPredicates = $this->flattenConjunctivePredicates($node->where);
+        $joins = [];
+        $changed = false;
+        $visibleAliases = $this->collectVisibleSourceAliases($node->fromSources);
+
+        foreach ($node->joins as $join) {
+            if (!$join instanceof JoinNode) {
+                $joins[] = $join;
+                continue;
+            }
+
+            $currentJoin = $join;
+            $joinAlias = $this->resolveSourceAlias($join->right);
+
+            if ($joinAlias !== null && $join->type === DialectJoinType::Inner) {
+                $visibleWithCurrent = $visibleAliases;
+                $visibleWithCurrent[$joinAlias] = true;
+
+                $pushable = [];
+                $stillPending = [];
+
+                foreach ($remainingPredicates as $predicate) {
+                    $aliases = $this->collectReferencedAliases($predicate);
+                    if (
+                        $aliases === null
+                        || $aliases === []
+                        || !isset($aliases[$joinAlias])
+                        || array_diff_key($aliases, $visibleWithCurrent) !== []
+                    ) {
+                        $stillPending[] = $predicate;
+                        continue;
+                    }
+
+                    $pushable[] = $predicate;
+                }
+
+                if ($pushable !== []) {
+                    $currentJoin = $this->withInferredTypeIfPresent(new JoinNode(
+                        type: $join->type,
+                        right: $join->right,
+                        on: $this->appendPredicatesToJoinOn($join->on, $pushable),
+                        id: $join->id(),
+                        flags: $join->flags(),
+                        span: $join->sourceSpan(),
+                    ), $join);
+                    $remainingPredicates = $stillPending;
+                    $changed = true;
+                }
+            }
+
+            if ($joinAlias !== null) {
+                $visibleAliases[$joinAlias] = true;
+            }
+
+            $joins[] = $currentJoin;
+        }
+
+        if (!$changed) {
+            return $node;
+        }
+
+        return $this->withInferredTypeIfPresent(new SelectStatementNode(
+            with: $node->with,
+            distinct: $node->distinct,
+            projections: $node->projections,
+            fromSources: $node->fromSources,
+            joins: $joins,
+            where: $this->buildConjunctivePredicate($remainingPredicates),
+            groupBy: $node->groupBy,
+            having: $node->having,
+            orderBy: $node->orderBy,
+            limit: $node->limit,
+            offset: $node->offset,
             id: $node->id(),
             flags: $node->flags(),
             span: $node->sourceSpan(),
@@ -1048,6 +1160,110 @@ final class DefaultQueryOptimizer implements QueryOptimizerInterface
     }
 
     /**
+     * @param list<SemanticNode> $predicates
+     */
+    private function appendPredicatesToJoinOn(?SemanticNode $existing, array $predicates): SemanticNode
+    {
+        $parts = $existing instanceof SemanticNode ? [$existing] : [];
+        array_push($parts, ...$predicates);
+
+        return $this->buildConjunctivePredicate($parts) ?? throw new \RuntimeException('Join predicate pushdown requires at least one predicate.');
+    }
+
+    /**
+     * @return list<SemanticNode>
+     */
+    private function flattenConjunctivePredicates(SemanticNode $node): array
+    {
+        if ($node instanceof BinaryExpressionNode && $node->op === BinaryOperator::AndAlso) {
+            return [
+                ...$this->flattenConjunctivePredicates($node->left),
+                ...$this->flattenConjunctivePredicates($node->right),
+            ];
+        }
+
+        return [$node];
+    }
+
+    /**
+     * @param list<SemanticNode> $parts
+     */
+    private function buildConjunctivePredicate(array $parts): ?SemanticNode
+    {
+        if ($parts === []) {
+            return null;
+        }
+
+        $predicate = $parts[0];
+        for ($i = 1, $max = count($parts); $i < $max; $i++) {
+            $predicate = new BinaryExpressionNode(
+                left: $predicate,
+                right: $parts[$i],
+                op: BinaryOperator::AndAlso,
+            );
+        }
+
+        return $predicate;
+    }
+
+    /**
+     * @param list<SemanticNode> $sources
+     * @return array<string, bool>
+     */
+    private function collectVisibleSourceAliases(array $sources): array
+    {
+        $aliases = [];
+
+        foreach ($sources as $source) {
+            $alias = $this->resolveSourceAlias($source);
+            if ($alias !== null) {
+                $aliases[$alias] = true;
+            }
+        }
+
+        return $aliases;
+    }
+
+    private function resolveSourceAlias(SemanticNode $source): ?string
+    {
+        return match (true) {
+            $source instanceof TableSourceNode => $source->aliasOrName(),
+            $source instanceof SubquerySourceNode => $source->alias,
+            default => null,
+        };
+    }
+
+    /**
+     * @return array<string, bool>|null
+     */
+    private function collectReferencedAliases(SemanticNode $node): ?array
+    {
+        $aliases = [];
+        $hasBareColumnReference = false;
+
+        $walk = function (SemanticNode $current) use (&$walk, &$aliases, &$hasBareColumnReference): void {
+            if ($current instanceof ColumnReferenceNode) {
+                if ($current->tableAlias === null) {
+                    $hasBareColumnReference = true;
+                    return;
+                }
+
+                $aliases[$current->tableAlias] = true;
+            }
+
+            foreach ($current->children() as $child) {
+                if ($child instanceof SemanticNode) {
+                    $walk($child);
+                }
+            }
+        };
+
+        $walk($node);
+
+        return $hasBareColumnReference ? null : $aliases;
+    }
+
+    /**
      * @param list<string> $rules
      */
     private function candidateIdFromRules(array $rules): string
@@ -1084,6 +1300,10 @@ final class DefaultQueryOptimizer implements QueryOptimizerInterface
 
         if ($rules === ['limit_offset_simplification_v1']) {
             return 'limit_offset_normalized';
+        }
+
+        if ($rules === ['predicate_pushdown_v1']) {
+            return 'conjunctive_predicates_pushed_into_inner_join';
         }
 
         return 'safe_rule_bundle_applied';

@@ -240,7 +240,10 @@ final class DatabaseQueryPipelineTest extends TestCase
 
         $plan = (new NoOpQueryPlanner())->plan($optimization);
 
-        self::assertSame(['table_scan', 'index_join_lookup_candidate', 'nested_loop_join', 'predicate_evaluation', 'project_passthrough'], $plan->physicalPlan->strategies);
+        self::assertSame('predicate_pushdown_v1', $optimization->decision->strategy);
+        self::assertNull($optimization->graph->root->where);
+        self::assertSame(['predicate_pushdown_v1'], $optimization->decision->metadata['selected_rules'] ?? null);
+        self::assertSame(['table_scan', 'index_join_lookup_candidate', 'nested_loop_join', 'project_passthrough'], $plan->physicalPlan->strategies);
         self::assertSame('index_join_lookup_candidate', $plan->physicalPlan->metadata['strategy_details'][1]['name'] ?? null);
         self::assertStringContainsString('index_join_lookup_candidate', implode(' ', $plan->diagnostics->capabilityDecisions));
     }
@@ -264,9 +267,39 @@ final class DatabaseQueryPipelineTest extends TestCase
 
         $plan = (new NoOpQueryPlanner())->plan($optimization);
 
-        self::assertSame(['table_scan', 'index_join_lookup_order_candidate', 'nested_loop_join', 'predicate_evaluation', 'project_passthrough', 'sort_materialize'], $plan->physicalPlan->strategies);
+        self::assertSame('predicate_pushdown_v1', $optimization->decision->strategy);
+        self::assertNull($optimization->graph->root->where);
+        self::assertSame(['table_scan', 'index_join_lookup_order_candidate', 'nested_loop_join', 'project_passthrough', 'sort_materialize'], $plan->physicalPlan->strategies);
         self::assertSame('index_join_lookup_order_candidate', $plan->physicalPlan->metadata['strategy_details'][1]['name'] ?? null);
         self::assertStringContainsString('index_join_lookup_order_candidate', implode(' ', $plan->diagnostics->capabilityDecisions));
+    }
+
+    public function test_default_optimizer_pushes_join_scoped_where_predicate_into_inner_join_on(): void
+    {
+        $builder = (new SelectQueryBuilder())
+            ->from('users', 'u')
+            ->innerJoin('u', 'profiles', 'p', 'u.id = p.user_id')
+            ->select('p.user_id')
+            ->where('p.user_id = 1');
+        $graph = $builder->getSQG();
+        $caps = DatabaseCapabilitySet::minimalSet('sqlite');
+        $certification = $graph->validate($caps);
+
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+        ));
+
+        self::assertSame('predicate_pushdown_v1', $optimization->decision->strategy);
+        self::assertSame(['predicate_pushdown_v1'], $optimization->trace->appliedRules);
+        self::assertNull($optimization->graph->root->where);
+        self::assertInstanceOf(BinaryExpressionNode::class, $optimization->graph->root->joins[0]->on ?? null);
+        self::assertSame('candidate:predicate_pushdown_v1', $optimization->selectedCandidate->id);
+        self::assertSame(
+            'conjunctive_predicates_pushed_into_inner_join',
+            $optimization->decision->metadata['reason'] ?? null,
+        );
     }
 
     public function test_planner_uses_index_range_order_candidate_for_range_with_matching_order(): void

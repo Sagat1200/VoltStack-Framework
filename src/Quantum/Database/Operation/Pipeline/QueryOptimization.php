@@ -154,9 +154,13 @@ final class DeterministicQueryCostModel
             + ($this->limitSelectivityCredit($metrics['smallest_limit']));
 
         $cardinalityCost = max(1.0, $cardinalityBase - $selectivityCredit);
-        $joinFanoutCost = ($metrics['join_count'] * 15.0)
-            + (max(0, $metrics['source_count'] - 1) * 1.5)
-            + (max(0, $metrics['join_count'] - 1) * 4.0);
+        $joinFanoutCost = max(
+            0.0,
+            ($metrics['join_count'] * 15.0)
+                + (max(0, $metrics['source_count'] - 1) * 1.5)
+                + (max(0, $metrics['join_count'] - 1) * 4.0)
+                - ($metrics['join_predicate_count'] * 0.75),
+        );
         $sortCost = ($metrics['order_count'] * 12.0)
             + ($metrics['distinct_count'] * 6.0)
             + ($metrics['group_count'] * 6.0)
@@ -262,7 +266,9 @@ final class DeterministicQueryCostModel
 
             if ($node instanceof JoinNode) {
                 $metrics['join_count']++;
-                $metrics['join_predicate_count'] += $node->on !== null ? 1 : 0;
+                $metrics['join_predicate_count'] += $node->on !== null
+                    ? $this->countConjunctivePredicates($node->on)
+                    : 0;
             }
 
             if ($node instanceof BinaryExpressionNode) {
@@ -367,6 +373,15 @@ final class DeterministicQueryCostModel
         }
 
         return $penalty;
+    }
+
+    private function countConjunctivePredicates(SemanticNode $node): int
+    {
+        if ($node instanceof BinaryExpressionNode && $node->op === BinaryOperator::AndAlso) {
+            return $this->countConjunctivePredicates($node->left) + $this->countConjunctivePredicates($node->right);
+        }
+
+        return 1;
     }
 }
 

@@ -377,7 +377,32 @@ final class DatabaseServiceProvider extends ServiceProvider
             ),
         );
         $this->app->singleton(DatabaseTelemetrySignalMapper::class, function (Application $app): DatabaseTelemetrySignalMapper {
-            $thresholds = $app->config('database.observability.sqg_pipeline.alert_thresholds', []);
+            $profile = strtolower(trim((string) $app->config('database.observability.sqg_pipeline.alert_profile', 'production')));
+            $profiles = $app->config('database.observability.sqg_pipeline.alert_profiles', []);
+            $profileThresholds = [];
+
+            if (is_array($profiles) && is_array($profiles[$profile] ?? null)) {
+                $profileThresholds = $profiles[$profile];
+            } elseif (is_array($profiles) && is_array($profiles['production'] ?? null)) {
+                $profileThresholds = $profiles['production'];
+            }
+
+            $overrides = $app->config('database.observability.sqg_pipeline.alert_thresholds', []);
+            if (!is_array($overrides)) {
+                $overrides = [];
+            }
+
+            $thresholds = [];
+            foreach (array_merge(
+                is_array($profileThresholds) ? $profileThresholds : [],
+                $overrides,
+            ) as $key => $value) {
+                if ($value === null) {
+                    continue;
+                }
+
+                $thresholds[(string) $key] = $value;
+            }
 
             return new DatabaseTelemetrySignalMapper(
                 is_array($thresholds) ? $thresholds : [],

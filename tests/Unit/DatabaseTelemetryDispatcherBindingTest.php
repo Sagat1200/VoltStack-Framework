@@ -6,6 +6,7 @@ namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
 use Quantum\Config\ConfigRepository;
+use Quantum\Database\Operation\DatabaseTelemetryReport;
 use Quantum\Database\Operation\Contracts\DatabaseTelemetryDispatcherInterface;
 use Quantum\Database\Operation\Engine\HttpDatabaseTelemetryDispatcher;
 use Quantum\Database\Operation\Engine\InMemoryDatabaseTelemetryDispatcher;
@@ -97,6 +98,102 @@ final class DatabaseTelemetryDispatcherBindingTest extends TestCase
 
         self::assertInstanceOf(OpenTelemetryDatabaseTelemetryDispatcher::class, $dispatcher);
         self::assertSame('https://collector.internal/v1/logs', $dispatcher->endpoint());
+    }
+
+    public function test_it_uses_local_sqg_alert_profile_when_resolving_mapper_from_provider(): void
+    {
+        $app = new Application($this->basePath);
+        $app->register(DatabaseServiceProvider::class);
+        $config = $app->make(ConfigRepository::class);
+        $config->set('database.observability.dispatcher', 'in_memory');
+        $config->set('database.observability.sqg_pipeline.alert_profile', 'local');
+        $config->set('database.observability.sqg_pipeline.alert_profiles.local', [
+            'wide_search_candidate_count_max' => 6,
+            'wide_search_candidate_count_avg' => 4.5,
+            'no_gain_cost_delta_max' => -1.0,
+        ]);
+
+        $dispatcher = $app->make(DatabaseTelemetryDispatcherInterface::class);
+
+        self::assertInstanceOf(InMemoryDatabaseTelemetryDispatcher::class, $dispatcher);
+
+        $dispatcher->dispatch($this->sqgWideSearchNoGainReport());
+        $signals = $dispatcher->signals();
+        $lastSignal = $signals[array_key_last($signals)] ?? null;
+
+        self::assertNotNull($lastSignal);
+        self::assertSame([], $lastSignal->alerts);
+    }
+
+    public function test_it_allows_explicit_sqg_threshold_overrides_to_win_over_profile(): void
+    {
+        $app = new Application($this->basePath);
+        $app->register(DatabaseServiceProvider::class);
+        $config = $app->make(ConfigRepository::class);
+        $config->set('database.observability.dispatcher', 'in_memory');
+        $config->set('database.observability.sqg_pipeline.alert_profile', 'local');
+        $config->set('database.observability.sqg_pipeline.alert_thresholds.wide_search_candidate_count_max', 4);
+        $config->set('database.observability.sqg_pipeline.alert_thresholds.wide_search_candidate_count_avg', 3.0);
+        $config->set('database.observability.sqg_pipeline.alert_thresholds.no_gain_cost_delta_max', 0.0);
+
+        $dispatcher = $app->make(DatabaseTelemetryDispatcherInterface::class);
+
+        self::assertInstanceOf(InMemoryDatabaseTelemetryDispatcher::class, $dispatcher);
+
+        $dispatcher->dispatch($this->sqgWideSearchNoGainReport());
+        $signals = $dispatcher->signals();
+        $lastSignal = $signals[array_key_last($signals)] ?? null;
+
+        self::assertNotNull($lastSignal);
+        self::assertCount(3, $lastSignal->alerts);
+        self::assertSame('database.sqg_pipeline.optimizer.wide_search', $lastSignal->alerts[0]['name']);
+        self::assertSame(4, $lastSignal->alerts[0]['context']['threshold_candidate_count_max'] ?? null);
+    }
+
+    private function sqgWideSearchNoGainReport(): DatabaseTelemetryReport
+    {
+        return new DatabaseTelemetryReport(
+            requestId: 'req-db-profile',
+            tenantId: 'tenant-a',
+            traceId: 'trace-db-profile',
+            generatedAt: '2026-08-31T19:00:00+00:00',
+            summary: [
+                'total_operations' => 2,
+                'completed' => 2,
+                'failed' => 0,
+                'cancelled' => 0,
+                'slow_queries' => 0,
+                'remote_replay_challenge' => [],
+                'sqg_pipeline' => [
+                    'observed_operations' => 2,
+                    'join_reorder_selected' => 1,
+                    'join_reorder_signatures' => ['u>p>a>o' => 1],
+                    'estimated_cost_total' => 150.0,
+                    'estimated_cost_avg' => 75.0,
+                    'estimated_cost_min' => 70.0,
+                    'estimated_cost_max' => 80.0,
+                    'cost_delta_vs_baseline_total' => 0.0,
+                    'cost_delta_vs_baseline_avg' => 0.0,
+                    'cost_delta_vs_baseline_max' => 0.0,
+                    'candidate_count_total' => 8,
+                    'candidate_count_avg' => 4.0,
+                    'candidate_count_max' => 4,
+                    'optimizer_strategies' => ['safe_rule_bundle_v1' => 2],
+                    'selected_candidates' => ['candidate:predicate_normalization_v1+join_reorder_v1' => 2],
+                    'planner_logical_roots' => ['sort' => 2],
+                    'planner_physical_roots' => ['sort_materialize' => 2],
+                ],
+                'latest' => [],
+            ],
+            health: [
+                'total_segments' => 1,
+                'closed_segments' => 1,
+                'half_open_segments' => 0,
+                'open_segments' => 0,
+                'segments' => [],
+            ],
+            nodeId: 'node-a',
+        );
     }
 
     private function deleteDirectory(string $path): void

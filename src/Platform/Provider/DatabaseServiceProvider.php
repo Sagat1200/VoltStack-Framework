@@ -377,35 +377,22 @@ final class DatabaseServiceProvider extends ServiceProvider
             ),
         );
         $this->app->singleton(DatabaseTelemetrySignalMapper::class, function (Application $app): DatabaseTelemetrySignalMapper {
-            $profile = strtolower(trim((string) $app->config('database.observability.sqg_pipeline.alert_profile', 'production')));
-            $profiles = $app->config('database.observability.sqg_pipeline.alert_profiles', []);
-            $profileThresholds = [];
-
-            if (is_array($profiles) && is_array($profiles[$profile] ?? null)) {
-                $profileThresholds = $profiles[$profile];
-            } elseif (is_array($profiles) && is_array($profiles['production'] ?? null)) {
-                $profileThresholds = $profiles['production'];
-            }
-
-            $overrides = $app->config('database.observability.sqg_pipeline.alert_thresholds', []);
-            if (!is_array($overrides)) {
-                $overrides = [];
-            }
-
-            $thresholds = [];
-            foreach (array_merge(
-                is_array($profileThresholds) ? $profileThresholds : [],
-                $overrides,
-            ) as $key => $value) {
-                if ($value === null) {
-                    continue;
-                }
-
-                $thresholds[(string) $key] = $value;
-            }
+            $thresholds = self::resolveSqgPipelineProfileConfig(
+                $app,
+                'database.observability.sqg_pipeline.alert_profile',
+                'database.observability.sqg_pipeline.alert_profiles',
+                'database.observability.sqg_pipeline.alert_thresholds',
+            );
+            $severities = self::resolveSqgPipelineProfileConfig(
+                $app,
+                'database.observability.sqg_pipeline.alert_severity_profile',
+                'database.observability.sqg_pipeline.alert_severity_profiles',
+                'database.observability.sqg_pipeline.alert_severities',
+            );
 
             return new DatabaseTelemetrySignalMapper(
                 is_array($thresholds) ? $thresholds : [],
+                is_array($severities) ? $severities : [],
             );
         });
         $this->app->singleton(DatabaseTelemetryDispatcherInterface::class, function (Application $app): DatabaseTelemetryDispatcherInterface {
@@ -826,5 +813,47 @@ final class DatabaseServiceProvider extends ServiceProvider
             'capabilities' => $signer->capabilities(),
             'key_id' => $signer->activeKeyId(),
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private static function resolveSqgPipelineProfileConfig(
+        Application $app,
+        string $profileKey,
+        string $profilesKey,
+        string $overridesKey,
+        string $fallbackProfile = 'production',
+    ): array {
+        $profile = strtolower(trim((string) $app->config($profileKey, $fallbackProfile)));
+        $profiles = $app->config($profilesKey, []);
+        $profileValues = [];
+
+        if (is_array($profiles) && is_array($profiles[$profile] ?? null)) {
+            $profileValues = $profiles[$profile];
+        } elseif (is_array($profiles) && is_array($profiles[$fallbackProfile] ?? null)) {
+            $profileValues = $profiles[$fallbackProfile];
+        }
+
+        $overrides = $app->config($overridesKey, []);
+        if (!is_array($overrides)) {
+            $overrides = [];
+        }
+
+        $resolved = [];
+        foreach (
+            array_merge(
+                is_array($profileValues) ? $profileValues : [],
+                $overrides,
+            ) as $key => $value
+        ) {
+            if ($value === null) {
+                continue;
+            }
+
+            $resolved[(string) $key] = $value;
+        }
+
+        return $resolved;
     }
 }

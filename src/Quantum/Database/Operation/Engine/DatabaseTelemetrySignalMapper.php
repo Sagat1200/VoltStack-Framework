@@ -11,9 +11,11 @@ final class DatabaseTelemetrySignalMapper
 {
     /**
      * @param array<string, mixed> $sqgPipelineAlertThresholds
+     * @param array<string, mixed> $sqgPipelineAlertSeverities
      */
     public function __construct(
         private readonly array $sqgPipelineAlertThresholds = [],
+        private readonly array $sqgPipelineAlertSeverities = [],
     ) {}
 
     public function map(DatabaseTelemetryReport $report): TelemetrySignal
@@ -140,7 +142,7 @@ final class DatabaseTelemetrySignalMapper
         if ($candidateCountMax >= $wideSearchCandidateCountMax || $candidateCountAvg >= $wideSearchCandidateCountAvg) {
             $alerts[] = [
                 'name' => 'database.sqg_pipeline.optimizer.wide_search',
-                'severity' => 'warning',
+                'severity' => $this->sqgAlertSeverity('database.sqg_pipeline.optimizer.wide_search', 'warning'),
                 'count' => $candidateCountMax,
                 'context' => [
                     'observed_operations' => $sqgObserved,
@@ -159,7 +161,7 @@ final class DatabaseTelemetrySignalMapper
         if ($sqgObserved > 0 && $candidateCountTotal > $sqgObserved && $costDeltaTotal <= $noGainCostDeltaMax) {
             $alerts[] = [
                 'name' => 'database.sqg_pipeline.optimizer.no_gain',
-                'severity' => 'warning',
+                'severity' => $this->sqgAlertSeverity('database.sqg_pipeline.optimizer.no_gain', 'warning'),
                 'count' => $candidateCountTotal,
                 'context' => [
                     'observed_operations' => $sqgObserved,
@@ -177,7 +179,7 @@ final class DatabaseTelemetrySignalMapper
         if ($joinReorderSelected > 0 && $costDeltaTotal <= $noGainCostDeltaMax) {
             $alerts[] = [
                 'name' => 'database.sqg_pipeline.join_reorder.no_gain',
-                'severity' => 'warning',
+                'severity' => $this->sqgAlertSeverity('database.sqg_pipeline.join_reorder.no_gain', 'warning'),
                 'count' => $joinReorderSelected,
                 'context' => [
                     'observed_operations' => $sqgObserved,
@@ -206,5 +208,14 @@ final class DatabaseTelemetrySignalMapper
         $value = $this->sqgPipelineAlertThresholds[$key] ?? null;
 
         return is_numeric($value) ? (float) $value : $default;
+    }
+
+    private function sqgAlertSeverity(string $alertName, string $default): string
+    {
+        $severity = strtolower(trim((string) ($this->sqgPipelineAlertSeverities[$alertName] ?? '')));
+
+        return in_array($severity, ['info', 'warning', 'high', 'critical'], true)
+            ? $severity
+            : $default;
     }
 }

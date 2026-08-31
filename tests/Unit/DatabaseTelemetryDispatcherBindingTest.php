@@ -150,6 +150,71 @@ final class DatabaseTelemetryDispatcherBindingTest extends TestCase
         self::assertSame(4, $lastSignal->alerts[0]['context']['threshold_candidate_count_max'] ?? null);
     }
 
+    public function test_it_uses_sqg_alert_severity_profile_when_resolving_mapper_from_provider(): void
+    {
+        $app = new Application($this->basePath);
+        $app->register(DatabaseServiceProvider::class);
+        $config = $app->make(ConfigRepository::class);
+        $config->set('database.observability.dispatcher', 'in_memory');
+        $config->set('database.observability.sqg_pipeline.alert_thresholds.wide_search_candidate_count_max', 4);
+        $config->set('database.observability.sqg_pipeline.alert_thresholds.wide_search_candidate_count_avg', 3.0);
+        $config->set('database.observability.sqg_pipeline.alert_thresholds.no_gain_cost_delta_max', 0.0);
+        $config->set('database.observability.sqg_pipeline.alert_severity_profile', 'local');
+        $config->set('database.observability.sqg_pipeline.alert_severity_profiles.local', [
+            'database.sqg_pipeline.optimizer.wide_search' => 'info',
+            'database.sqg_pipeline.optimizer.no_gain' => 'info',
+            'database.sqg_pipeline.join_reorder.no_gain' => 'info',
+        ]);
+
+        $dispatcher = $app->make(DatabaseTelemetryDispatcherInterface::class);
+
+        self::assertInstanceOf(InMemoryDatabaseTelemetryDispatcher::class, $dispatcher);
+
+        $dispatcher->dispatch($this->sqgWideSearchNoGainReport());
+        $signals = $dispatcher->signals();
+        $lastSignal = $signals[array_key_last($signals)] ?? null;
+
+        self::assertNotNull($lastSignal);
+        self::assertCount(3, $lastSignal->alerts);
+        self::assertSame('info', $lastSignal->alerts[0]['severity']);
+        self::assertSame('info', $lastSignal->alerts[1]['severity']);
+        self::assertSame('info', $lastSignal->alerts[2]['severity']);
+    }
+
+    public function test_it_allows_explicit_sqg_alert_severity_overrides_to_win_over_profile(): void
+    {
+        $app = new Application($this->basePath);
+        $app->register(DatabaseServiceProvider::class);
+        $config = $app->make(ConfigRepository::class);
+        $config->set('database.observability.dispatcher', 'in_memory');
+        $config->set('database.observability.sqg_pipeline.alert_thresholds.wide_search_candidate_count_max', 4);
+        $config->set('database.observability.sqg_pipeline.alert_thresholds.wide_search_candidate_count_avg', 3.0);
+        $config->set('database.observability.sqg_pipeline.alert_thresholds.no_gain_cost_delta_max', 0.0);
+        $config->set('database.observability.sqg_pipeline.alert_severity_profile', 'local');
+        $config->set('database.observability.sqg_pipeline.alert_severity_profiles.local', [
+            'database.sqg_pipeline.optimizer.wide_search' => 'info',
+            'database.sqg_pipeline.optimizer.no_gain' => 'info',
+            'database.sqg_pipeline.join_reorder.no_gain' => 'info',
+        ]);
+        $config->set('database.observability.sqg_pipeline.alert_severities', [
+            'database.sqg_pipeline.optimizer.no_gain' => 'high',
+        ]);
+
+        $dispatcher = $app->make(DatabaseTelemetryDispatcherInterface::class);
+
+        self::assertInstanceOf(InMemoryDatabaseTelemetryDispatcher::class, $dispatcher);
+
+        $dispatcher->dispatch($this->sqgWideSearchNoGainReport());
+        $signals = $dispatcher->signals();
+        $lastSignal = $signals[array_key_last($signals)] ?? null;
+
+        self::assertNotNull($lastSignal);
+        self::assertCount(3, $lastSignal->alerts);
+        self::assertSame('info', $lastSignal->alerts[0]['severity']);
+        self::assertSame('high', $lastSignal->alerts[1]['severity']);
+        self::assertSame('info', $lastSignal->alerts[2]['severity']);
+    }
+
     private function sqgWideSearchNoGainReport(): DatabaseTelemetryReport
     {
         return new DatabaseTelemetryReport(

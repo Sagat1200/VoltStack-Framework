@@ -48,7 +48,7 @@ use Quantum\Database\Operation\DatabaseDiagnosticSnapshot;
 use Quantum\Database\Operation\DatabaseExecutionPolicy;
 use Quantum\Database\Operation\DatabaseOperationPlan;
 use Quantum\Database\Operation\DatabaseOperationRuntime;
-use Quantum\Database\Operation\Pipeline\NoOpQueryOptimizer;
+use Quantum\Database\Operation\Pipeline\DefaultQueryOptimizer;
 use Quantum\Database\Operation\Pipeline\NoOpQueryPlanner;
 use Quantum\Database\Operation\Pipeline\QueryOptimizationInput;
 use Quantum\Database\Query\Enum\JoinType;
@@ -622,7 +622,7 @@ final class SelectQueryBuilder implements \Stringable
             capabilities: $caps,
             limits: $this->resolvePipelineLimits(),
         );
-        $optimization = (new NoOpQueryOptimizer())->optimize($optimizationInput, $this->context);
+        $optimization = (new DefaultQueryOptimizer())->optimize($optimizationInput, $this->context);
         $plan = (new NoOpQueryPlanner())->plan($optimization, $this->context);
 
         return new SqgOperation(

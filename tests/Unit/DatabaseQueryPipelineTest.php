@@ -8,19 +8,28 @@ use PHPUnit\Framework\TestCase;
 use Quantum\Database\Capability\DatabaseCapabilitySet;
 use Quantum\Database\Dialect\Support\SqliteDialect;
 use Quantum\Database\Operation\OperationKind;
-use Quantum\Database\Operation\Pipeline\NoOpQueryOptimizer;
+use Quantum\Database\Operation\Pipeline\DefaultQueryOptimizer;
 use Quantum\Database\Operation\Pipeline\NoOpQueryPlanner;
 use Quantum\Database\Operation\Pipeline\QueryOptimizationInput;
 use Quantum\Database\Operation\SqgOperation;
+use Quantum\Database\Operation\Sqg\Enum\BinaryOperator;
+use Quantum\Database\Operation\Sqg\Enum\DataType;
+use Quantum\Database\Operation\Sqg\Node\BinaryExpressionNode;
+use Quantum\Database\Operation\Sqg\Node\LiteralNode as SqgLiteralNode;
+use Quantum\Database\Operation\Sqg\Node\ProjectionListNode;
+use Quantum\Database\Operation\Sqg\Node\SelectStatementNode;
+use Quantum\Database\Operation\Sqg\SemanticQueryGraph;
+use Quantum\Database\Operation\Sqg\Node\AliasedProjectionNode;
+use Quantum\Database\Operation\Sqg\Node\LiteralNode;
 use Quantum\Database\Query\SelectQueryBuilder;
 
 final class DatabaseQueryPipelineTest extends TestCase
 {
-    public function test_no_op_optimizer_returns_trace_and_preserves_certified_graph(): void
+    public function test_default_optimizer_returns_trace_and_preserves_graph_when_nothing_is_foldable(): void
     {
         [$graph, $caps, $certification] = $this->buildSimpleSelectGraph();
 
-        $result = (new NoOpQueryOptimizer())->optimize(new QueryOptimizationInput(
+        $result = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
             graph: $graph,
             certification: $certification,
             capabilities: $caps,
@@ -33,10 +42,31 @@ final class DatabaseQueryPipelineTest extends TestCase
         self::assertNotEmpty($result->trace->notes);
     }
 
+    public function test_default_optimizer_folds_constant_projection_expression_into_literal(): void
+    {
+        $graph = $this->buildConstantProjectionGraph();
+        $caps = DatabaseCapabilitySet::minimalSet('sqlite');
+        $certification = $graph->validate($caps);
+
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+        ));
+
+        self::assertSame('constant_folding_v1', $optimization->decision->strategy);
+        self::assertSame('candidate:constant_folding_v1', $optimization->selectedCandidate->id);
+        self::assertSame(['constant_folding_v1'], $optimization->trace->appliedRules);
+        self::assertNotSame($graph, $optimization->graph);
+        self::assertInstanceOf(AliasedProjectionNode::class, $optimization->graph->root->projections?->items[0] ?? null);
+        self::assertInstanceOf(LiteralNode::class, $optimization->graph->root->projections?->items[0]->expression ?? null);
+        self::assertSame(3, $optimization->graph->root->projections?->items[0]->expression->value ?? null);
+    }
+
     public function test_no_op_planner_emits_plan_artifact_with_deterministic_shape(): void
     {
         [$graph, $caps, $certification] = $this->buildSimpleSelectGraph();
-        $optimization = (new NoOpQueryOptimizer())->optimize(new QueryOptimizationInput(
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
             graph: $graph,
             certification: $certification,
             capabilities: $caps,
@@ -59,7 +89,7 @@ final class DatabaseQueryPipelineTest extends TestCase
         $graph = $builder->getSQG();
         $caps = DatabaseCapabilitySet::minimalSet('sqlite');
         $certification = $graph->validate($caps);
-        $optimization = (new NoOpQueryOptimizer())->optimize(new QueryOptimizationInput(
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
             graph: $graph,
             certification: $certification,
             capabilities: $caps,
@@ -81,6 +111,28 @@ final class DatabaseQueryPipelineTest extends TestCase
         self::assertSame($compiled->sql, $sql);
     }
 
+    public function test_sqlite_dialect_compiles_folded_constant_projection_sql(): void
+    {
+        $graph = $this->buildConstantProjectionGraph();
+        $caps = DatabaseCapabilitySet::minimalSet('sqlite');
+        $certification = $graph->validate($caps);
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+        ));
+        $plan = (new NoOpQueryPlanner())->plan($optimization);
+        $compiled = (new SqliteDialect())->compile(new SqgOperation(
+            kind: OperationKind::SqgSelect,
+            graph: $graph,
+            certificationFingerprint: $certification->fingerprint,
+            optimizationResult: $optimization,
+            planArtifact: $plan,
+        ), $caps);
+
+        self::assertStringContainsString('SELECT 3 AS "folded_total"', $compiled->sql);
+    }
+
     /**
      * @return array{0:\Quantum\Database\Operation\Sqg\SemanticQueryGraph,1:DatabaseCapabilitySet,2:\Quantum\Database\Operation\Sqg\GraphCertification}
      */
@@ -93,5 +145,24 @@ final class DatabaseQueryPipelineTest extends TestCase
         $caps = DatabaseCapabilitySet::minimalSet('sqlite');
 
         return [$graph, $caps, $graph->validate($caps)];
+    }
+
+    private function buildConstantProjectionGraph(): SemanticQueryGraph
+    {
+        return new SemanticQueryGraph(
+            root: new SelectStatementNode(
+                projections: new ProjectionListNode(items: [
+                    new AliasedProjectionNode(
+                        expression: new BinaryExpressionNode(
+                            op: BinaryOperator::Plus,
+                            left: new SqgLiteralNode(value: 1, declaredType: DataType::Int8),
+                            right: new SqgLiteralNode(value: 2, declaredType: DataType::Int8),
+                        ),
+                        alias: 'folded_total',
+                    ),
+                ]),
+            ),
+            parameters: [],
+        );
     }
 }

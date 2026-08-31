@@ -34,6 +34,16 @@ final class DatabaseTelemetrySignalMapper
                 'sqg_pipeline' => [
                     'observed_operations' => (int) ($report->summary['sqg_pipeline']['observed_operations'] ?? 0),
                     'join_reorder_selected' => (int) ($report->summary['sqg_pipeline']['join_reorder_selected'] ?? 0),
+                    'estimated_cost_total' => (float) ($report->summary['sqg_pipeline']['estimated_cost_total'] ?? 0.0),
+                    'estimated_cost_avg' => (float) ($report->summary['sqg_pipeline']['estimated_cost_avg'] ?? 0.0),
+                    'estimated_cost_min' => $report->summary['sqg_pipeline']['estimated_cost_min'] ?? null,
+                    'estimated_cost_max' => $report->summary['sqg_pipeline']['estimated_cost_max'] ?? null,
+                    'cost_delta_vs_baseline_total' => (float) ($report->summary['sqg_pipeline']['cost_delta_vs_baseline_total'] ?? 0.0),
+                    'cost_delta_vs_baseline_avg' => (float) ($report->summary['sqg_pipeline']['cost_delta_vs_baseline_avg'] ?? 0.0),
+                    'cost_delta_vs_baseline_max' => (float) ($report->summary['sqg_pipeline']['cost_delta_vs_baseline_max'] ?? 0.0),
+                    'candidate_count_total' => (int) ($report->summary['sqg_pipeline']['candidate_count_total'] ?? 0),
+                    'candidate_count_avg' => (float) ($report->summary['sqg_pipeline']['candidate_count_avg'] ?? 0.0),
+                    'candidate_count_max' => (int) ($report->summary['sqg_pipeline']['candidate_count_max'] ?? 0),
                     'optimizer_strategies' => is_array($report->summary['sqg_pipeline']['optimizer_strategies'] ?? null)
                         ? $report->summary['sqg_pipeline']['optimizer_strategies']
                         : [],
@@ -45,6 +55,9 @@ final class DatabaseTelemetrySignalMapper
                         : [],
                     'planner_physical_roots' => is_array($report->summary['sqg_pipeline']['planner_physical_roots'] ?? null)
                         ? $report->summary['sqg_pipeline']['planner_physical_roots']
+                        : [],
+                    'join_reorder_signatures' => is_array($report->summary['sqg_pipeline']['join_reorder_signatures'] ?? null)
+                        ? $report->summary['sqg_pipeline']['join_reorder_signatures']
                         : [],
                 ],
             ],

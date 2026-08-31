@@ -151,9 +151,14 @@ final class DatabaseRequestLifecycleTest extends TestCase
         self::assertSame(1, count($payload['rows'] ?? []));
         self::assertIsArray($payload['telemetry']['sqg_pipeline'] ?? null);
         self::assertGreaterThanOrEqual(1, (int) ($payload['telemetry']['sqg_pipeline']['observed_operations'] ?? 0));
+        self::assertSame(1, $payload['telemetry']['sqg_pipeline']['candidate_count_total'] ?? null);
         self::assertIsArray($payload['telemetry']['latest'][0]['sqg_pipeline'] ?? null);
         self::assertSame('sqg_select', $payload['telemetry']['latest'][0]['sqg_pipeline']['sqg']['kind'] ?? null);
         self::assertSame('no_op', $payload['telemetry']['latest'][0]['sqg_pipeline']['optimizer']['strategy'] ?? null);
+        self::assertSame(
+            $payload['telemetry']['latest'][0]['sqg_pipeline']['optimizer']['estimated_cost'] ?? null,
+            $payload['telemetry']['sqg_pipeline']['estimated_cost_total'] ?? null,
+        );
         self::assertNotEmpty($payload['telemetry']['latest'][0]['sqg_pipeline']['planner']['fingerprint'] ?? null);
     }
 

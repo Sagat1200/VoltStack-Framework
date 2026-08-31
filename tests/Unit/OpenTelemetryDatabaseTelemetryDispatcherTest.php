@@ -71,6 +71,19 @@ final class OpenTelemetryDatabaseTelemetryDispatcherTest extends TestCase
                 'sqg_pipeline' => [
                     'observed_operations' => 1,
                     'join_reorder_selected' => 1,
+                    'join_reorder_signatures' => [
+                        'u>p>a>o' => 1,
+                    ],
+                    'estimated_cost_total' => 78.5,
+                    'estimated_cost_avg' => 78.5,
+                    'estimated_cost_min' => 78.5,
+                    'estimated_cost_max' => 78.5,
+                    'cost_delta_vs_baseline_total' => 2.25,
+                    'cost_delta_vs_baseline_avg' => 2.25,
+                    'cost_delta_vs_baseline_max' => 2.25,
+                    'candidate_count_total' => 2,
+                    'candidate_count_avg' => 2.0,
+                    'candidate_count_max' => 2,
                     'optimizer_strategies' => [
                         'safe_rule_bundle_v1' => 1,
                     ],
@@ -120,7 +133,11 @@ final class OpenTelemetryDatabaseTelemetryDispatcherTest extends TestCase
         self::assertSame('1', $attributes['db.summary.remote_replay_challenge.incompatible'] ?? null);
         self::assertSame('1', $attributes['db.summary.sqg_pipeline.observed_operations'] ?? null);
         self::assertSame('1', $attributes['db.attributes.sqg_pipeline.join_reorder_selected'] ?? null);
+        self::assertSame(78.5, $attributes['db.attributes.sqg_pipeline.estimated_cost_total'] ?? null);
+        self::assertSame(2.25, $attributes['db.attributes.sqg_pipeline.cost_delta_vs_baseline_total'] ?? null);
+        self::assertSame('2', $attributes['db.attributes.sqg_pipeline.candidate_count_total'] ?? null);
         self::assertSame('1', $attributes['db.attributes.sqg_pipeline.optimizer_strategies.safe_rule_bundle_v1'] ?? null);
+        self::assertSame('1', $attributes['db.attributes.sqg_pipeline.join_reorder_signatures.u>p>a>o'] ?? null);
         self::assertSame('database.remote_replay_challenge.incompatible', $attributes['db.alerts.0.name'] ?? null);
     }
 

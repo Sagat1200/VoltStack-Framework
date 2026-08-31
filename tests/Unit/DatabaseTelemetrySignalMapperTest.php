@@ -39,6 +39,17 @@ final class DatabaseTelemetrySignalMapperTest extends TestCase
                 'sqg_pipeline' => [
                     'observed_operations' => 1,
                     'join_reorder_selected' => 1,
+                    'join_reorder_signatures' => ['u>p>a>o' => 1],
+                    'estimated_cost_total' => 78.5,
+                    'estimated_cost_avg' => 78.5,
+                    'estimated_cost_min' => 78.5,
+                    'estimated_cost_max' => 78.5,
+                    'cost_delta_vs_baseline_total' => 2.25,
+                    'cost_delta_vs_baseline_avg' => 2.25,
+                    'cost_delta_vs_baseline_max' => 2.25,
+                    'candidate_count_total' => 2,
+                    'candidate_count_avg' => 2.0,
+                    'candidate_count_max' => 2,
                     'optimizer_strategies' => ['safe_rule_bundle_v1' => 1],
                     'selected_candidates' => ['candidate:predicate_pushdown_v1+join_reorder_v1' => 1],
                     'planner_logical_roots' => ['sort' => 1],
@@ -62,7 +73,11 @@ final class DatabaseTelemetrySignalMapperTest extends TestCase
         self::assertSame(2, $signal->attributes['health']['total_segments']);
         self::assertSame(1, $signal->attributes['sqg_pipeline']['observed_operations']);
         self::assertSame(1, $signal->attributes['sqg_pipeline']['join_reorder_selected']);
+        self::assertSame(78.5, $signal->attributes['sqg_pipeline']['estimated_cost_total']);
+        self::assertSame(2.25, $signal->attributes['sqg_pipeline']['cost_delta_vs_baseline_total']);
+        self::assertSame(2, $signal->attributes['sqg_pipeline']['candidate_count_total']);
         self::assertSame(1, $signal->attributes['sqg_pipeline']['optimizer_strategies']['safe_rule_bundle_v1']);
+        self::assertSame(1, $signal->attributes['sqg_pipeline']['join_reorder_signatures']['u>p>a>o']);
         self::assertCount(3, $signal->alerts);
         self::assertSame('database.remote_replay_challenge.incompatible', $signal->alerts[0]['name']);
     }

@@ -122,6 +122,17 @@ final class DatabaseTelemetryStore
             'planner_logical_roots' => [],
             'planner_physical_roots' => [],
             'join_reorder_selected' => 0,
+            'join_reorder_signatures' => [],
+            'estimated_cost_total' => 0.0,
+            'estimated_cost_avg' => 0.0,
+            'estimated_cost_min' => null,
+            'estimated_cost_max' => null,
+            'cost_delta_vs_baseline_total' => 0.0,
+            'cost_delta_vs_baseline_avg' => 0.0,
+            'cost_delta_vs_baseline_max' => 0.0,
+            'candidate_count_total' => 0,
+            'candidate_count_avg' => 0.0,
+            'candidate_count_max' => 0,
         ];
 
         foreach ($this->entries as $entry) {
@@ -146,6 +157,13 @@ final class DatabaseTelemetryStore
                 $sqgPipeline,
                 is_array($entry['sqg_pipeline'] ?? null) ? $entry['sqg_pipeline'] : null,
             );
+        }
+
+        if ((int) $sqgPipeline['observed_operations'] > 0) {
+            $observedOperations = (int) $sqgPipeline['observed_operations'];
+            $sqgPipeline['estimated_cost_avg'] = round(((float) $sqgPipeline['estimated_cost_total']) / $observedOperations, 2);
+            $sqgPipeline['cost_delta_vs_baseline_avg'] = round(((float) $sqgPipeline['cost_delta_vs_baseline_total']) / $observedOperations, 2);
+            $sqgPipeline['candidate_count_avg'] = round(((int) $sqgPipeline['candidate_count_total']) / $observedOperations, 2);
         }
 
         $latest = array_slice($this->entries, -max(1, $limit));
@@ -285,9 +303,34 @@ final class DatabaseTelemetryStore
         self::incrementCountMap($summary['planner_logical_roots'], self::normalizeString($planner['logical_root_operator'] ?? null));
         self::incrementCountMap($summary['planner_physical_roots'], self::normalizeString($planner['physical_root_strategy'] ?? null));
 
+        $estimatedCost = self::normalizeFloat($optimizer['estimated_cost'] ?? null);
+        if ($estimatedCost !== null) {
+            $summary['estimated_cost_total'] = round(((float) $summary['estimated_cost_total']) + $estimatedCost, 2);
+            $summary['estimated_cost_min'] = $summary['estimated_cost_min'] === null
+                ? $estimatedCost
+                : min((float) $summary['estimated_cost_min'], $estimatedCost);
+            $summary['estimated_cost_max'] = $summary['estimated_cost_max'] === null
+                ? $estimatedCost
+                : max((float) $summary['estimated_cost_max'], $estimatedCost);
+        }
+
+        $costDelta = self::normalizeFloat($optimizer['cost_delta_vs_baseline'] ?? null);
+        if ($costDelta !== null) {
+            $summary['cost_delta_vs_baseline_total'] = round(((float) $summary['cost_delta_vs_baseline_total']) + $costDelta, 2);
+            $summary['cost_delta_vs_baseline_max'] = max((float) ($summary['cost_delta_vs_baseline_max'] ?? 0.0), $costDelta);
+        }
+
+        $candidateCount = self::normalizeInt($optimizer['candidate_count'] ?? null);
+        if ($candidateCount !== null) {
+            $summary['candidate_count_total'] = (int) $summary['candidate_count_total'] + $candidateCount;
+            $summary['candidate_count_max'] = max((int) ($summary['candidate_count_max'] ?? 0), $candidateCount);
+        }
+
         $joinReorder = is_array($optimizer['join_reorder'] ?? null) ? $optimizer['join_reorder'] : [];
-        if (self::normalizeString($joinReorder['selected_signature'] ?? null) !== null) {
+        $selectedSignature = self::normalizeString($joinReorder['selected_signature'] ?? null);
+        if ($selectedSignature !== null) {
             $summary['join_reorder_selected'] = (int) ($summary['join_reorder_selected'] ?? 0) + 1;
+            self::incrementCountMap($summary['join_reorder_signatures'], $selectedSignature);
         }
     }
 
@@ -400,5 +443,15 @@ final class DatabaseTelemetryStore
         $normalized = trim((string) $value);
 
         return $normalized !== '' ? $normalized : null;
+    }
+
+    private static function normalizeFloat(mixed $value): ?float
+    {
+        return is_numeric($value) ? (float) $value : null;
+    }
+
+    private static function normalizeInt(mixed $value): ?int
+    {
+        return is_numeric($value) ? (int) $value : null;
     }
 }

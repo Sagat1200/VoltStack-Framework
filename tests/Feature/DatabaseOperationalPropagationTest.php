@@ -84,6 +84,17 @@ final class DatabaseOperationalPropagationTest extends TestCase
         self::assertSame(1, $summary['sqg_pipeline']['selected_candidates']['candidate:no_op'] ?? null);
         self::assertSame(1, $summary['sqg_pipeline']['planner_logical_roots']['sort'] ?? null);
         self::assertSame(1, $summary['sqg_pipeline']['planner_physical_roots']['sort_materialize'] ?? null);
+        self::assertSame($pipeline['optimizer']['estimated_cost'] ?? null, $summary['sqg_pipeline']['estimated_cost_total'] ?? null);
+        self::assertSame($pipeline['optimizer']['estimated_cost'] ?? null, $summary['sqg_pipeline']['estimated_cost_avg'] ?? null);
+        self::assertSame($pipeline['optimizer']['estimated_cost'] ?? null, $summary['sqg_pipeline']['estimated_cost_min'] ?? null);
+        self::assertSame($pipeline['optimizer']['estimated_cost'] ?? null, $summary['sqg_pipeline']['estimated_cost_max'] ?? null);
+        self::assertSame(0.0, $summary['sqg_pipeline']['cost_delta_vs_baseline_total'] ?? null);
+        self::assertSame(0.0, $summary['sqg_pipeline']['cost_delta_vs_baseline_avg'] ?? null);
+        self::assertSame(0.0, $summary['sqg_pipeline']['cost_delta_vs_baseline_max'] ?? null);
+        self::assertSame(1, $summary['sqg_pipeline']['candidate_count_total'] ?? null);
+        self::assertSame(1.0, $summary['sqg_pipeline']['candidate_count_avg'] ?? null);
+        self::assertSame(1, $summary['sqg_pipeline']['candidate_count_max'] ?? null);
+        self::assertSame([], $summary['sqg_pipeline']['join_reorder_signatures'] ?? null);
         self::assertIsArray($summary['latest'][0]['sqg_pipeline'] ?? null);
         self::assertSame('sqg_select', $summary['latest'][0]['sqg_pipeline']['sqg']['kind'] ?? null);
         self::assertSame('no_op', $summary['latest'][0]['sqg_pipeline']['optimizer']['strategy'] ?? null);

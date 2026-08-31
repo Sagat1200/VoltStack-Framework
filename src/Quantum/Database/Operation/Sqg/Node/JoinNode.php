@@ -2,7 +2,7 @@
 
 namespace Quantum\Database\Operation\Sqg\Node;
 
-use Quantum\Database\Operation\Sqg\Enum\JoinType;
+use Quantum\Database\Dialect\Enum\JoinType;
 use Quantum\Database\Operation\Sqg\Enum\SemanticNodeKind;
 use Quantum\Database\Operation\Sqg\NodeVisitor;
 use Quantum\Database\Operation\Sqg\SemanticNode;

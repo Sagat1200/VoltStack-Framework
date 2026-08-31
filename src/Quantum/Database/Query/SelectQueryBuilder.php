@@ -8,8 +8,8 @@ use Quantum\Database\DatabaseContext;
 use Quantum\Database\Dbal\Contract\ConnectionInterface;
 use Quantum\Database\Dbal\Enum\ParamType;
 use Quantum\Database\Dbal\Value\QueryResult;
-use Quantum\Database\Dialect\Enum\OrderDirection;
 use Quantum\Database\Dialect\Enum\JoinType as DialectJoinType;
+use Quantum\Database\Dialect\Enum\OrderDirection;
 use Quantum\Database\Dialect\Support\AbstractDialect;
 use Quantum\Database\Dialect\Support\SqliteDialect;
 use Quantum\Database\Operation\OperationKind;
@@ -491,9 +491,8 @@ final class SelectQueryBuilder implements \Stringable
             }
             $joins[] = new JoinNode(
                 type: $jt,
-                source: $target,
-                leftSourceId: $fromAliasToSourceId[$j['fromAlias']] ?? null,
-                condition: $condNode,
+                right: $target,
+                on: $condNode,
             );
         }
 

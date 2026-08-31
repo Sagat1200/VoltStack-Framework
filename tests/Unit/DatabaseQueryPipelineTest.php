@@ -75,10 +75,45 @@ final class DatabaseQueryPipelineTest extends TestCase
         $plan = (new NoOpQueryPlanner())->plan($optimization);
 
         self::assertSame($graph, $plan->graph);
-        self::assertSame('select', $plan->logicalPlan->rootOperator);
+        self::assertSame('project', $plan->logicalPlan->rootOperator);
+        self::assertSame(['scan', 'project'], $plan->logicalPlan->operators);
+        self::assertSame('table', $plan->logicalPlan->metadata['operator_details'][0]['metadata']['source_kind'] ?? null);
         self::assertSame('compile_sqg_direct', $plan->physicalPlan->rootStrategy);
         self::assertSame(0, $plan->bindingLayout->parameterCount);
         self::assertNotEmpty($plan->fingerprint);
+    }
+
+    public function test_planner_extracts_explicit_logical_operators_for_joined_select_pipeline(): void
+    {
+        $builder = (new SelectQueryBuilder())
+            ->from('users', 'u')
+            ->innerJoin('u', 'profiles', 'p', 'u.id = p.user_id')
+            ->select(['u.id', 'p.user_id'])
+            ->where('u.id = 1')
+            ->orderBy('u.id')
+            ->setMaxResults(10)
+            ->setFirstResult(5);
+        $graph = $builder->getSQG();
+        $caps = DatabaseCapabilitySet::minimalSet('sqlite');
+        $certification = $graph->validate($caps);
+        $optimization = (new DefaultQueryOptimizer())->optimize(new QueryOptimizationInput(
+            graph: $graph,
+            certification: $certification,
+            capabilities: $caps,
+        ));
+
+        $plan = (new NoOpQueryPlanner())->plan($optimization);
+
+        self::assertSame('offset', $plan->logicalPlan->rootOperator);
+        self::assertSame(['scan', 'scan', 'join', 'filter', 'project', 'sort', 'limit', 'offset'], $plan->logicalPlan->operators);
+        self::assertSame(1, $plan->logicalPlan->metadata['join_count'] ?? null);
+        self::assertSame('table', $plan->logicalPlan->metadata['operator_details'][0]['metadata']['source_kind'] ?? null);
+        self::assertSame('table', $plan->logicalPlan->metadata['operator_details'][1]['metadata']['source_kind'] ?? null);
+        self::assertSame('Inner', $plan->logicalPlan->metadata['operator_details'][2]['metadata']['join_type'] ?? null);
+        self::assertSame('where', $plan->logicalPlan->metadata['operator_details'][3]['metadata']['source'] ?? null);
+        self::assertSame(2, $plan->logicalPlan->metadata['operator_details'][4]['metadata']['projection_count'] ?? null);
+        self::assertSame(10, $plan->logicalPlan->metadata['operator_details'][6]['metadata']['value'] ?? null);
+        self::assertSame(5, $plan->logicalPlan->metadata['operator_details'][7]['metadata']['value'] ?? null);
     }
 
     public function test_sqlite_dialect_compiles_sqg_operation_using_plan_artifact_fingerprint(): void

@@ -1,12 +1,20 @@
-<?php declare(strict_types=1);
+<?php
+
+declare(strict_types=1);
 
 namespace Quantum\Database\Operation\Pipeline;
 
 use Quantum\Database\DatabaseContext;
+use Quantum\Database\Operation\Sqg\Node\CteSourceNode;
 use Quantum\Database\Operation\Sqg\Node\DeleteStatementNode;
 use Quantum\Database\Operation\Sqg\Node\InsertStatementNode;
+use Quantum\Database\Operation\Sqg\Node\JoinNode;
 use Quantum\Database\Operation\Sqg\Node\SelectStatementNode;
+use Quantum\Database\Operation\Sqg\Node\SubquerySourceNode;
+use Quantum\Database\Operation\Sqg\Node\TableSourceNode;
 use Quantum\Database\Operation\Sqg\Node\UpdateStatementNode;
+use Quantum\Database\Operation\Sqg\Node\ValuesSourceNode;
+use Quantum\Database\Operation\Sqg\SemanticNode;
 use Quantum\Database\Operation\Sqg\SemanticQueryGraph;
 
 interface QueryPlannerInterface
@@ -93,14 +101,7 @@ final class NoOpQueryPlanner implements QueryPlannerInterface
             parameterCount: count($graph->parameters),
         );
 
-        $logicalOperator = $this->resolveLogicalRootOperator($graph);
-        $logicalPlan = new QueryLogicalPlan(
-            rootOperator: $logicalOperator,
-            operators: [$logicalOperator],
-            metadata: [
-                'selected_candidate' => $optimized->selectedCandidate->id,
-            ],
-        );
+        $logicalPlan = $this->buildLogicalPlan($graph, $optimized);
 
         $physicalStrategy = 'compile_sqg_direct';
         $physicalPlan = new QueryPhysicalPlan(
@@ -132,6 +133,31 @@ final class NoOpQueryPlanner implements QueryPlannerInterface
         );
     }
 
+    private function buildLogicalPlan(
+        SemanticQueryGraph $graph,
+        QueryOptimizationResult $optimized,
+    ): QueryLogicalPlan {
+        if ($graph->root instanceof SelectStatementNode) {
+            return $this->buildSelectLogicalPlan($graph->root, $optimized);
+        }
+
+        $logicalOperator = $this->resolveLogicalRootOperator($graph);
+
+        return new QueryLogicalPlan(
+            rootOperator: $logicalOperator,
+            operators: [$logicalOperator],
+            metadata: [
+                'selected_candidate' => $optimized->selectedCandidate->id,
+                'operator_details' => [
+                    [
+                        'name' => $logicalOperator,
+                        'metadata' => [],
+                    ],
+                ],
+            ],
+        );
+    }
+
     /**
      * @return list<int>
      */
@@ -155,6 +181,156 @@ final class NoOpQueryPlanner implements QueryPlannerInterface
         };
     }
 
+    private function buildSelectLogicalPlan(
+        SelectStatementNode $select,
+        QueryOptimizationResult $optimized,
+    ): QueryLogicalPlan {
+        $operators = [];
+        $details = [];
+
+        foreach ($select->fromSources as $source) {
+            $details[] = $this->buildScanOperatorDetail($source);
+            $operators[] = 'scan';
+        }
+
+        foreach ($select->joins as $join) {
+            if ($join instanceof JoinNode) {
+                $details[] = $this->buildScanOperatorDetail($join->right);
+                $operators[] = 'scan';
+                $details[] = [
+                    'name' => 'join',
+                    'metadata' => [
+                        'join_type' => $join->type->name,
+                        'has_predicate' => $join->on !== null,
+                    ],
+                ];
+                $operators[] = 'join';
+            }
+        }
+
+        if ($select->where !== null) {
+            $details[] = [
+                'name' => 'filter',
+                'metadata' => [
+                    'source' => 'where',
+                ],
+            ];
+            $operators[] = 'filter';
+        }
+
+        if ($select->groupBy !== null || $select->having !== null) {
+            $details[] = [
+                'name' => 'aggregate',
+                'metadata' => [
+                    'has_group_by' => $select->groupBy !== null,
+                    'has_having' => $select->having !== null,
+                ],
+            ];
+            $operators[] = 'aggregate';
+        }
+
+        $details[] = [
+            'name' => 'project',
+            'metadata' => [
+                'projection_count' => $select->projections !== null ? count($select->projections->items) : 0,
+                'distinct' => $select->distinct !== null,
+            ],
+        ];
+        $operators[] = 'project';
+
+        if ($select->orderBy !== null) {
+            $details[] = [
+                'name' => 'sort',
+                'metadata' => [
+                    'order_count' => count($select->orderBy->items),
+                ],
+            ];
+            $operators[] = 'sort';
+        }
+
+        if ($select->limit !== null) {
+            $details[] = [
+                'name' => 'limit',
+                'metadata' => [
+                    'value' => $select->limit->limit,
+                ],
+            ];
+            $operators[] = 'limit';
+        }
+
+        if ($select->offset !== null) {
+            $details[] = [
+                'name' => 'offset',
+                'metadata' => [
+                    'value' => $select->offset->offset,
+                ],
+            ];
+            $operators[] = 'offset';
+        }
+
+        $rootOperator = $operators !== [] ? $operators[array_key_last($operators)] : 'project';
+
+        return new QueryLogicalPlan(
+            rootOperator: $rootOperator,
+            operators: $operators !== [] ? $operators : ['project'],
+            metadata: [
+                'selected_candidate' => $optimized->selectedCandidate->id,
+                'operator_details' => $details,
+                'source_count' => count($select->fromSources),
+                'join_count' => count($select->joins),
+            ],
+        );
+    }
+
+    /**
+     * @return array{name:string,metadata:array<string,mixed>}
+     */
+    private function buildScanOperatorDetail(SemanticNode $source): array
+    {
+        return match (true) {
+            $source instanceof TableSourceNode => [
+                'name' => 'scan',
+                'metadata' => [
+                    'source_kind' => 'table',
+                    'table' => $source->tableName,
+                    'alias' => $source->alias,
+                    'schema' => $source->schema,
+                ],
+            ],
+            $source instanceof SubquerySourceNode => [
+                'name' => 'scan',
+                'metadata' => [
+                    'source_kind' => 'subquery',
+                    'alias' => $source->alias,
+                    'lateral' => $source->lateral,
+                ],
+            ],
+            $source instanceof ValuesSourceNode => [
+                'name' => 'scan',
+                'metadata' => [
+                    'source_kind' => 'values',
+                    'alias' => $source->alias,
+                    'row_count' => $source->rowCount,
+                    'column_count' => $source->columnCount,
+                ],
+            ],
+            $source instanceof CteSourceNode => [
+                'name' => 'scan',
+                'metadata' => [
+                    'source_kind' => 'cte',
+                    'name' => $source->name,
+                    'column_aliases' => $source->columnAliases ?? [],
+                ],
+            ],
+            default => [
+                'name' => 'scan',
+                'metadata' => [
+                    'source_kind' => 'unknown',
+                ],
+            ],
+        };
+    }
+
     private function fingerprintFor(
         QueryOptimizationResult $optimized,
         QueryBindingLayout $bindingLayout,
@@ -167,6 +343,7 @@ final class NoOpQueryPlanner implements QueryPlannerInterface
             $optimized->decision->strategy,
             $optimized->selectedCandidate->id,
             $logicalPlan->rootOperator,
+            implode(',', $logicalPlan->operators),
             $physicalPlan->rootStrategy,
             (string) $bindingLayout->parameterCount,
         ]));

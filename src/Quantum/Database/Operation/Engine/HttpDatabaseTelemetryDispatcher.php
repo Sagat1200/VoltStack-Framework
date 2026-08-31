@@ -22,9 +22,10 @@ final class HttpDatabaseTelemetryDispatcher implements DatabaseTelemetryDispatch
         private readonly array $headers = [],
         private readonly int $requestTimeoutMs = 2000,
         private readonly ?\Closure $sender = null,
+        ?DatabaseTelemetrySignalMapper $mapper = null,
     ) {
         $this->exporter = new HttpTelemetryExporter($endpoint, $headers, $requestTimeoutMs, $sender);
-        $this->mapper = new DatabaseTelemetrySignalMapper();
+        $this->mapper = $mapper ?? new DatabaseTelemetrySignalMapper();
     }
 
     public function dispatch(DatabaseTelemetryReport $report): void

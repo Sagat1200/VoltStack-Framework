@@ -16,9 +16,10 @@ final class JsonLineDatabaseTelemetryDispatcher implements DatabaseTelemetryDisp
     public function __construct(
         private readonly string $filePath,
         private readonly int $maxBytesPerLine = 32768,
+        ?DatabaseTelemetrySignalMapper $mapper = null,
     ) {
         $this->exporter = new JsonLineTelemetryExporter($filePath, $maxBytesPerLine);
-        $this->mapper = new DatabaseTelemetrySignalMapper();
+        $this->mapper = $mapper ?? new DatabaseTelemetrySignalMapper();
     }
 
     public function dispatch(DatabaseTelemetryReport $report): void

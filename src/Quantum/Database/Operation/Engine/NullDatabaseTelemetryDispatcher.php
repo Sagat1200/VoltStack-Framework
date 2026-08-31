@@ -13,10 +13,10 @@ final class NullDatabaseTelemetryDispatcher implements DatabaseTelemetryDispatch
     private readonly NullTelemetryExporter $exporter;
     private readonly DatabaseTelemetrySignalMapper $mapper;
 
-    public function __construct()
+    public function __construct(?DatabaseTelemetrySignalMapper $mapper = null)
     {
         $this->exporter = new NullTelemetryExporter();
-        $this->mapper = new DatabaseTelemetrySignalMapper();
+        $this->mapper = $mapper ?? new DatabaseTelemetrySignalMapper();
     }
 
     public function dispatch(DatabaseTelemetryReport $report): void

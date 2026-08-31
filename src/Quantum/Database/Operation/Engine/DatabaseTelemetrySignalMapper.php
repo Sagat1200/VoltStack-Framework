@@ -9,6 +9,13 @@ use Quantum\Telemetry\TelemetrySignal;
 
 final class DatabaseTelemetrySignalMapper
 {
+    /**
+     * @param array<string, mixed> $sqgPipelineAlertThresholds
+     */
+    public function __construct(
+        private readonly array $sqgPipelineAlertThresholds = [],
+    ) {}
+
     public function map(DatabaseTelemetryReport $report): TelemetrySignal
     {
         return new TelemetrySignal(
@@ -77,6 +84,9 @@ final class DatabaseTelemetrySignalMapper
         $summary = is_array($report->summary['remote_replay_challenge'] ?? null)
             ? $report->summary['remote_replay_challenge']
             : [];
+        $sqgPipeline = is_array($report->summary['sqg_pipeline'] ?? null)
+            ? $report->summary['sqg_pipeline']
+            : [];
 
         $alerts = [];
         $incompatible = (int) ($summary['incompatible'] ?? 0);
@@ -117,6 +127,84 @@ final class DatabaseTelemetrySignalMapper
             ];
         }
 
+        $sqgObserved = (int) ($sqgPipeline['observed_operations'] ?? 0);
+        $candidateCountTotal = (int) ($sqgPipeline['candidate_count_total'] ?? 0);
+        $candidateCountAvg = (float) ($sqgPipeline['candidate_count_avg'] ?? 0.0);
+        $candidateCountMax = (int) ($sqgPipeline['candidate_count_max'] ?? 0);
+        $costDeltaTotal = (float) ($sqgPipeline['cost_delta_vs_baseline_total'] ?? 0.0);
+        $joinReorderSelected = (int) ($sqgPipeline['join_reorder_selected'] ?? 0);
+        $wideSearchCandidateCountMax = $this->intThreshold('wide_search_candidate_count_max', 4);
+        $wideSearchCandidateCountAvg = $this->floatThreshold('wide_search_candidate_count_avg', 3.0);
+        $noGainCostDeltaMax = $this->floatThreshold('no_gain_cost_delta_max', 0.0);
+
+        if ($candidateCountMax >= $wideSearchCandidateCountMax || $candidateCountAvg >= $wideSearchCandidateCountAvg) {
+            $alerts[] = [
+                'name' => 'database.sqg_pipeline.optimizer.wide_search',
+                'severity' => 'warning',
+                'count' => $candidateCountMax,
+                'context' => [
+                    'observed_operations' => $sqgObserved,
+                    'candidate_count_total' => $candidateCountTotal,
+                    'candidate_count_avg' => $candidateCountAvg,
+                    'candidate_count_max' => $candidateCountMax,
+                    'threshold_candidate_count_max' => $wideSearchCandidateCountMax,
+                    'threshold_candidate_count_avg' => $wideSearchCandidateCountAvg,
+                    'selected_candidates' => is_array($sqgPipeline['selected_candidates'] ?? null)
+                        ? $sqgPipeline['selected_candidates']
+                        : [],
+                ],
+            ];
+        }
+
+        if ($sqgObserved > 0 && $candidateCountTotal > $sqgObserved && $costDeltaTotal <= $noGainCostDeltaMax) {
+            $alerts[] = [
+                'name' => 'database.sqg_pipeline.optimizer.no_gain',
+                'severity' => 'warning',
+                'count' => $candidateCountTotal,
+                'context' => [
+                    'observed_operations' => $sqgObserved,
+                    'candidate_count_total' => $candidateCountTotal,
+                    'candidate_count_avg' => $candidateCountAvg,
+                    'cost_delta_vs_baseline_total' => $costDeltaTotal,
+                    'threshold_cost_delta_max' => $noGainCostDeltaMax,
+                    'optimizer_strategies' => is_array($sqgPipeline['optimizer_strategies'] ?? null)
+                        ? $sqgPipeline['optimizer_strategies']
+                        : [],
+                ],
+            ];
+        }
+
+        if ($joinReorderSelected > 0 && $costDeltaTotal <= $noGainCostDeltaMax) {
+            $alerts[] = [
+                'name' => 'database.sqg_pipeline.join_reorder.no_gain',
+                'severity' => 'warning',
+                'count' => $joinReorderSelected,
+                'context' => [
+                    'observed_operations' => $sqgObserved,
+                    'join_reorder_selected' => $joinReorderSelected,
+                    'join_reorder_signatures' => is_array($sqgPipeline['join_reorder_signatures'] ?? null)
+                        ? $sqgPipeline['join_reorder_signatures']
+                        : [],
+                    'cost_delta_vs_baseline_total' => $costDeltaTotal,
+                    'threshold_cost_delta_max' => $noGainCostDeltaMax,
+                ],
+            ];
+        }
+
         return $alerts;
+    }
+
+    private function intThreshold(string $key, int $default): int
+    {
+        $value = $this->sqgPipelineAlertThresholds[$key] ?? null;
+
+        return is_numeric($value) ? (int) $value : $default;
+    }
+
+    private function floatThreshold(string $key, float $default): float
+    {
+        $value = $this->sqgPipelineAlertThresholds[$key] ?? null;
+
+        return is_numeric($value) ? (float) $value : $default;
     }
 }

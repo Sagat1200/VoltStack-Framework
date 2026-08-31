@@ -28,6 +28,7 @@ use Quantum\Database\Operation\DatabaseTelemetryStore;
 use Quantum\Database\Operation\Engine\DirectoryDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\DirectoryDatabaseIdempotencyStore;
 use Quantum\Database\Operation\Engine\ChallengeDatabaseRemoteReplayValidator;
+use Quantum\Database\Operation\Engine\DatabaseTelemetrySignalMapper;
 use Quantum\Database\Operation\Engine\DatabaseRemoteReplayChallengeEndpointResolver;
 use Quantum\Database\Operation\Engine\DatabaseRemoteReplayChallengeSigner;
 use Quantum\Database\Operation\Engine\HttpDatabaseTelemetryDispatcher;
@@ -375,26 +376,35 @@ final class DatabaseServiceProvider extends ServiceProvider
                 challenger: $app->make(DatabaseRemoteReplayChallengerInterface::class),
             ),
         );
+        $this->app->singleton(DatabaseTelemetrySignalMapper::class, function (Application $app): DatabaseTelemetrySignalMapper {
+            $thresholds = $app->config('database.observability.sqg_pipeline.alert_thresholds', []);
+
+            return new DatabaseTelemetrySignalMapper(
+                is_array($thresholds) ? $thresholds : [],
+            );
+        });
         $this->app->singleton(DatabaseTelemetryDispatcherInterface::class, function (Application $app): DatabaseTelemetryDispatcherInterface {
             $mode = $app->config('database.observability.dispatcher', 'auto');
+            $mapper = $app->make(DatabaseTelemetrySignalMapper::class);
 
             if ($mode === 'null') {
-                return new NullDatabaseTelemetryDispatcher();
+                return new NullDatabaseTelemetryDispatcher($mapper);
             }
 
             if ($mode === 'in_memory') {
-                return new InMemoryDatabaseTelemetryDispatcher();
+                return new InMemoryDatabaseTelemetryDispatcher(mapper: $mapper);
             }
 
             if ($mode === 'jsonl') {
                 $path = $app->config('database.observability.jsonl_path');
 
                 if (is_string($path) && trim($path) !== '') {
-                    return new JsonLineDatabaseTelemetryDispatcher(trim($path));
+                    return new JsonLineDatabaseTelemetryDispatcher(trim($path), mapper: $mapper);
                 }
 
                 return new JsonLineDatabaseTelemetryDispatcher(
                     $app->joinPath($app->storagePath('framework/logs'), 'database-telemetry.jsonl'),
+                    mapper: $mapper,
                 );
             }
 
@@ -424,6 +434,7 @@ final class DatabaseServiceProvider extends ServiceProvider
                     endpoint: $endpoint,
                     headers: $normalizedHeaders,
                     requestTimeoutMs: max(250, (int) $app->config('database.observability.webhook_timeout_ms', 2000)),
+                    mapper: $mapper,
                 );
             }
 
@@ -469,16 +480,18 @@ final class DatabaseServiceProvider extends ServiceProvider
                     )) ?: '1.0.0',
                     headers: $normalizedHeaders,
                     requestTimeoutMs: max(250, (int) $app->config('database.observability.opentelemetry.timeout_ms', 2000)),
+                    mapper: $mapper,
                 );
             }
 
             if ($app->isProduction()) {
                 return new JsonLineDatabaseTelemetryDispatcher(
                     $app->joinPath($app->storagePath('framework/logs'), 'database-telemetry.jsonl'),
+                    mapper: $mapper,
                 );
             }
 
-            return new InMemoryDatabaseTelemetryDispatcher();
+            return new InMemoryDatabaseTelemetryDispatcher(mapper: $mapper);
         });
         $this->app->singleton(DatabaseOperationRuntime::class, fn(Application $app): DatabaseOperationRuntime => new DatabaseOperationRuntime(
             circuitBreaker: $app->make(DatabaseCircuitBreaker::class),

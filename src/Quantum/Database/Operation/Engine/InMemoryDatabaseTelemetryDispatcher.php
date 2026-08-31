@@ -20,9 +20,10 @@ final class InMemoryDatabaseTelemetryDispatcher implements DatabaseTelemetryDisp
 
     public function __construct(
         private readonly int $maxReports = 256,
+        ?DatabaseTelemetrySignalMapper $mapper = null,
     ) {
         $this->exporter = new InMemoryTelemetryExporter($maxReports);
-        $this->mapper = new DatabaseTelemetrySignalMapper();
+        $this->mapper = $mapper ?? new DatabaseTelemetrySignalMapper();
     }
 
     public function dispatch(DatabaseTelemetryReport $report): void

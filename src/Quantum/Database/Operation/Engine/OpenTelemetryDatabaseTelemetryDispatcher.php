@@ -26,6 +26,7 @@ final class OpenTelemetryDatabaseTelemetryDispatcher implements DatabaseTelemetr
         array $headers = [],
         int $requestTimeoutMs = 2000,
         ?\Closure $sender = null,
+        ?DatabaseTelemetrySignalMapper $mapper = null,
     ) {
         $this->exporter = new OpenTelemetryHttpLogExporter(
             endpoint: $endpoint,
@@ -37,7 +38,7 @@ final class OpenTelemetryDatabaseTelemetryDispatcher implements DatabaseTelemetr
             requestTimeoutMs: $requestTimeoutMs,
             sender: $sender,
         );
-        $this->mapper = new DatabaseTelemetrySignalMapper();
+        $this->mapper = $mapper ?? new DatabaseTelemetrySignalMapper();
     }
 
     public function dispatch(DatabaseTelemetryReport $report): void

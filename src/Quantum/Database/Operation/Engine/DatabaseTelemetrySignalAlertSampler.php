@@ -4,21 +4,21 @@ declare(strict_types=1);
 
 namespace Quantum\Database\Operation\Engine;
 
+use Quantum\Database\Operation\Contracts\DatabaseTelemetryAlertSamplingStoreInterface;
 use Quantum\Telemetry\TelemetrySignal;
 
 final class DatabaseTelemetrySignalAlertSampler
 {
-    /**
-     * @var array<string, int>
-     */
-    private array $sqgAlertOccurrences = [];
+    private ?DatabaseTelemetryAlertSamplingStoreInterface $resolvedStore = null;
 
     /**
      * @param array<string, mixed> $sqgAlertSampling
      */
     public function __construct(
         private readonly array $sqgAlertSampling = [],
+        private readonly ?DatabaseTelemetryAlertSamplingStoreInterface $store = null,
     ) {}
+
 
     public function apply(TelemetrySignal $signal): TelemetrySignal
     {
@@ -58,8 +58,10 @@ final class DatabaseTelemetrySignalAlertSampler
                 continue;
             }
 
-            $occurrence = ($this->sqgAlertOccurrences[$alertName] ?? 0) + 1;
-            $this->sqgAlertOccurrences[$alertName] = $occurrence;
+            $occurrence = $this->samplingStore()->nextOccurrence(
+                $signal->nodeId !== null && trim($signal->nodeId) !== '' ? $signal->nodeId : 'unknown-node',
+                $alertName,
+            );
 
             if ($occurrence === 1 || $occurrence % $sampleEvery === 0) {
                 $context = is_array($alert['context'] ?? null)
@@ -108,7 +110,7 @@ final class DatabaseTelemetrySignalAlertSampler
 
     public function reset(): void
     {
-        $this->sqgAlertOccurrences = [];
+        $this->samplingStore()->reset();
     }
 
     private function sampleEvery(string $alertName): int
@@ -116,5 +118,16 @@ final class DatabaseTelemetrySignalAlertSampler
         $value = $this->sqgAlertSampling[$alertName] ?? null;
 
         return is_numeric($value) ? max(1, (int) $value) : 1;
+    }
+
+    private function samplingStore(): DatabaseTelemetryAlertSamplingStoreInterface
+    {
+        if ($this->store instanceof DatabaseTelemetryAlertSamplingStoreInterface) {
+            return $this->store;
+        }
+
+        $this->resolvedStore ??= new InMemoryDatabaseTelemetryAlertSamplingStore();
+
+        return $this->resolvedStore;
     }
 }

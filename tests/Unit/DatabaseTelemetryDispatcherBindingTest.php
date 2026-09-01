@@ -7,9 +7,12 @@ namespace VoltStack\Test\Unit;
 use PHPUnit\Framework\TestCase;
 use Quantum\Config\ConfigRepository;
 use Quantum\Database\Operation\DatabaseTelemetryReport;
+use Quantum\Database\Operation\Contracts\DatabaseTelemetryAlertSamplingStoreInterface;
 use Quantum\Database\Operation\Contracts\DatabaseTelemetryDispatcherInterface;
+use Quantum\Database\Operation\Engine\DirectoryDatabaseTelemetryAlertSamplingStore;
 use Quantum\Database\Operation\Engine\HttpDatabaseTelemetryDispatcher;
 use Quantum\Database\Operation\Engine\InMemoryDatabaseTelemetryDispatcher;
+use Quantum\Database\Operation\Engine\InMemoryDatabaseTelemetryAlertSamplingStore;
 use Quantum\Database\Operation\Engine\JsonLineDatabaseTelemetryDispatcher;
 use Quantum\Database\Operation\Engine\NullDatabaseTelemetryDispatcher;
 use Quantum\Database\Operation\Engine\OpenTelemetryDatabaseTelemetryDispatcher;
@@ -98,6 +101,34 @@ final class DatabaseTelemetryDispatcherBindingTest extends TestCase
 
         self::assertInstanceOf(OpenTelemetryDatabaseTelemetryDispatcher::class, $dispatcher);
         self::assertSame('https://collector.internal/v1/logs', $dispatcher->endpoint());
+    }
+
+    public function test_it_resolves_directory_alert_sampling_store_when_configured(): void
+    {
+        $app = new Application($this->basePath);
+        $app->register(DatabaseServiceProvider::class);
+        $config = $app->make(ConfigRepository::class);
+        $config->set('database.observability.sqg_pipeline.alert_sampling_store', 'directory');
+        $config->set(
+            'database.observability.sqg_pipeline.alert_sampling_directory_path',
+            $this->basePath . DIRECTORY_SEPARATOR . 'sampling-store',
+        );
+
+        $store = $app->make(DatabaseTelemetryAlertSamplingStoreInterface::class);
+
+        self::assertInstanceOf(DirectoryDatabaseTelemetryAlertSamplingStore::class, $store);
+        self::assertSame($this->basePath . DIRECTORY_SEPARATOR . 'sampling-store', $store->directoryPath());
+    }
+
+    public function test_it_resolves_in_memory_alert_sampling_store_when_configured(): void
+    {
+        $app = new Application($this->basePath);
+        $app->register(DatabaseServiceProvider::class);
+        $app->make(ConfigRepository::class)->set('database.observability.sqg_pipeline.alert_sampling_store', 'in_memory');
+
+        $store = $app->make(DatabaseTelemetryAlertSamplingStoreInterface::class);
+
+        self::assertInstanceOf(InMemoryDatabaseTelemetryAlertSamplingStore::class, $store);
     }
 
     public function test_it_uses_local_sqg_alert_profile_when_resolving_mapper_from_provider(): void

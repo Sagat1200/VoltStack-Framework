@@ -19,6 +19,7 @@ use Quantum\Database\Operation\Contracts\DatabaseHealthStoreInterface;
 use Quantum\Database\Operation\Contracts\DatabaseIdempotencyStoreInterface;
 use Quantum\Database\Operation\Contracts\DatabaseRemoteReplayChallengerInterface;
 use Quantum\Database\Operation\Contracts\DatabaseRemoteReplayValidatorInterface;
+use Quantum\Database\Operation\Contracts\DatabaseTelemetryAlertSamplingStoreInterface;
 use Quantum\Database\Operation\Contracts\DatabaseTelemetryDispatcherInterface;
 use Quantum\Database\Operation\DatabaseCircuitBreaker;
 use Quantum\Database\Operation\DatabaseHealthSnapshot;
@@ -27,6 +28,7 @@ use Quantum\Database\Operation\DatabaseTelemetryReport;
 use Quantum\Database\Operation\DatabaseTelemetryStore;
 use Quantum\Database\Operation\Engine\DirectoryDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\DirectoryDatabaseIdempotencyStore;
+use Quantum\Database\Operation\Engine\DirectoryDatabaseTelemetryAlertSamplingStore;
 use Quantum\Database\Operation\Engine\ChallengeDatabaseRemoteReplayValidator;
 use Quantum\Database\Operation\Engine\DatabaseTelemetrySignalAlertSampler;
 use Quantum\Database\Operation\Engine\DatabaseTelemetrySignalMapper;
@@ -35,6 +37,7 @@ use Quantum\Database\Operation\Engine\DatabaseRemoteReplayChallengeSigner;
 use Quantum\Database\Operation\Engine\HttpDatabaseTelemetryDispatcher;
 use Quantum\Database\Operation\Engine\InMemoryDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\InMemoryDatabaseIdempotencyStore;
+use Quantum\Database\Operation\Engine\InMemoryDatabaseTelemetryAlertSamplingStore;
 use Quantum\Database\Operation\Engine\InMemoryDatabaseTelemetryDispatcher;
 use Quantum\Database\Operation\Engine\HttpDatabaseRemoteReplayChallenger;
 use Quantum\Database\Operation\Engine\JsonFileDatabaseHealthStore;
@@ -377,6 +380,33 @@ final class DatabaseServiceProvider extends ServiceProvider
                 challenger: $app->make(DatabaseRemoteReplayChallengerInterface::class),
             ),
         );
+        $this->app->singleton(DatabaseTelemetryAlertSamplingStoreInterface::class, function (Application $app): DatabaseTelemetryAlertSamplingStoreInterface {
+            $mode = strtolower(trim((string) $app->config('database.observability.sqg_pipeline.alert_sampling_store', 'auto')));
+
+            if ($mode === 'directory') {
+                $path = $app->config('database.observability.sqg_pipeline.alert_sampling_directory_path');
+
+                if (is_string($path) && trim($path) !== '') {
+                    return new DirectoryDatabaseTelemetryAlertSamplingStore(trim($path));
+                }
+
+                return new DirectoryDatabaseTelemetryAlertSamplingStore(
+                    $app->joinPath($app->storagePath('framework/database'), 'telemetry-alert-sampling'),
+                );
+            }
+
+            if ($mode === 'in_memory') {
+                return new InMemoryDatabaseTelemetryAlertSamplingStore();
+            }
+
+            if ($app->isProduction()) {
+                return new DirectoryDatabaseTelemetryAlertSamplingStore(
+                    $app->joinPath($app->storagePath('framework/database'), 'telemetry-alert-sampling'),
+                );
+            }
+
+            return new InMemoryDatabaseTelemetryAlertSamplingStore();
+        });
         $this->app->singleton(DatabaseTelemetrySignalMapper::class, function (Application $app): DatabaseTelemetrySignalMapper {
             $thresholds = self::resolveSqgPipelineProfileConfig(
                 $app,
@@ -406,6 +436,7 @@ final class DatabaseServiceProvider extends ServiceProvider
 
             return new DatabaseTelemetrySignalAlertSampler(
                 is_array($sampling) ? $sampling : [],
+                $app->make(DatabaseTelemetryAlertSamplingStoreInterface::class),
             );
         });
         $this->app->singleton(DatabaseTelemetryDispatcherInterface::class, function (Application $app): DatabaseTelemetryDispatcherInterface {

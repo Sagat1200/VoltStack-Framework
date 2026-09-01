@@ -6,11 +6,29 @@ namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
 use Quantum\Database\Operation\DatabaseTelemetryReport;
+use Quantum\Database\Operation\Engine\DirectoryDatabaseTelemetryAlertSamplingStore;
 use Quantum\Database\Operation\Engine\DatabaseTelemetrySignalAlertSampler;
 use Quantum\Database\Operation\Engine\DatabaseTelemetrySignalMapper;
 
 final class DatabaseTelemetrySignalAlertSamplerTest extends TestCase
 {
+    private string $basePath;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+
+        $this->basePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-db-telemetry-sampler-' . uniqid('', true);
+        mkdir($this->basePath, 0777, true);
+    }
+
+    protected function tearDown(): void
+    {
+        $this->deleteDirectory($this->basePath);
+
+        parent::tearDown();
+    }
+
     public function test_it_samples_repeated_sqg_warning_alerts_and_keeps_periodic_visibility(): void
     {
         $mapper = new DatabaseTelemetrySignalMapper();
@@ -64,6 +82,31 @@ final class DatabaseTelemetrySignalAlertSamplerTest extends TestCase
         self::assertArrayNotHasKey('alert_sampling', $second->attributes);
     }
 
+    public function test_it_persists_sampling_occurrences_across_sampler_instances_when_store_is_directory_based(): void
+    {
+        $mapper = new DatabaseTelemetrySignalMapper();
+        $samplingDirectory = $this->basePath . DIRECTORY_SEPARATOR . 'sampling';
+        $firstSampler = new DatabaseTelemetrySignalAlertSampler([
+            'database.sqg_pipeline.optimizer.wide_search' => 3,
+            'database.sqg_pipeline.optimizer.no_gain' => 3,
+            'database.sqg_pipeline.join_reorder.no_gain' => 3,
+        ], new DirectoryDatabaseTelemetryAlertSamplingStore($samplingDirectory));
+        $secondSampler = new DatabaseTelemetrySignalAlertSampler([
+            'database.sqg_pipeline.optimizer.wide_search' => 3,
+            'database.sqg_pipeline.optimizer.no_gain' => 3,
+            'database.sqg_pipeline.join_reorder.no_gain' => 3,
+        ], new DirectoryDatabaseTelemetryAlertSamplingStore($samplingDirectory));
+
+        $first = $firstSampler->apply($mapper->map($this->sqgWideSearchNoGainReport()));
+        $second = $secondSampler->apply($mapper->map($this->sqgWideSearchNoGainReport()));
+        $third = $secondSampler->apply($mapper->map($this->sqgWideSearchNoGainReport()));
+
+        self::assertCount(3, $first->alerts);
+        self::assertSame([], $second->alerts);
+        self::assertCount(3, $third->alerts);
+        self::assertSame(3, $third->alerts[0]['context']['sampling_occurrence'] ?? null);
+    }
+
     private function sqgWideSearchNoGainReport(): DatabaseTelemetryReport
     {
         return new DatabaseTelemetryReport(
@@ -108,5 +151,35 @@ final class DatabaseTelemetrySignalAlertSamplerTest extends TestCase
             ],
             nodeId: 'node-a',
         );
+    }
+
+    private function deleteDirectory(string $path): void
+    {
+        if (!is_dir($path)) {
+            return;
+        }
+
+        $items = scandir($path);
+        if ($items === false) {
+            return;
+        }
+
+        foreach ($items as $item) {
+            if (in_array($item, ['.', '..'], true)) {
+                continue;
+            }
+
+            $target = $path . DIRECTORY_SEPARATOR . $item;
+            if (is_dir($target)) {
+                $this->deleteDirectory($target);
+                @rmdir($target);
+
+                continue;
+            }
+
+            @unlink($target);
+        }
+
+        @rmdir($path);
     }
 }

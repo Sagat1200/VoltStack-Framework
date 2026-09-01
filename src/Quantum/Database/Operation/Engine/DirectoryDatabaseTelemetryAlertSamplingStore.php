@@ -9,30 +9,41 @@ use Quantum\Database\Operation\Contracts\DatabaseTelemetryAlertSamplingStoreInte
 
 final class DirectoryDatabaseTelemetryAlertSamplingStore implements DatabaseTelemetryAlertSamplingStoreInterface
 {
+    private int $prunedRecordsTotal = 0;
+    private int $lastPrunedRecords = 0;
+
+    /**
+     * @param null|\Closure(): \DateTimeImmutable $clock
+     */
     public function __construct(
         private readonly string $directoryPath,
-    ) {
-    }
+        private readonly ?int $windowSeconds = 900,
+        private readonly ?\Closure $clock = null,
+    ) {}
 
     public function nextOccurrence(string $nodeId, string $alertName): int
     {
         $normalizedNodeId = $this->normalizeNodeId($nodeId);
         $normalizedAlertName = trim($alertName);
+        $this->pruneExpiredAlertsForNode($normalizedNodeId, $normalizedAlertName);
 
         return $this->withAlertLock($normalizedNodeId, $normalizedAlertName, function () use ($normalizedNodeId, $normalizedAlertName): int {
             $filePath = $this->filePathForAlert($normalizedNodeId, $normalizedAlertName);
+            $now = $this->now();
             $occurrence = 1;
 
             if (is_file($filePath)) {
                 $payload = $this->readPayload($filePath);
-                $occurrence = max(0, (int) ($payload['occurrence'] ?? 0)) + 1;
+                if (!$this->isExpired($payload, $now)) {
+                    $occurrence = max(0, (int) ($payload['occurrence'] ?? 0)) + 1;
+                }
             }
 
             $this->writePayload($filePath, [
                 'node_id' => $normalizedNodeId,
                 'alert_name' => $normalizedAlertName,
                 'occurrence' => $occurrence,
-                'updated_at' => (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format(\DATE_ATOM),
+                'updated_at' => $now->format(\DATE_ATOM),
             ]);
 
             return $occurrence;
@@ -63,6 +74,17 @@ final class DirectoryDatabaseTelemetryAlertSamplingStore implements DatabaseTele
     public function directoryPath(): string
     {
         return $this->directoryPath;
+    }
+
+    public function metrics(): array
+    {
+        return [
+            'store' => 'directory',
+            'window_seconds' => $this->windowSeconds,
+            'pruned_records_total' => $this->prunedRecordsTotal,
+            'last_pruned_records' => $this->lastPrunedRecords,
+            'directory_path' => $this->directoryPath,
+        ];
     }
 
     /**
@@ -106,6 +128,11 @@ final class DirectoryDatabaseTelemetryAlertSamplingStore implements DatabaseTele
     private function lockPathForAlert(string $nodeId, string $alertName): string
     {
         return $this->nodeDirectory($nodeId) . DIRECTORY_SEPARATOR . $this->alertHash($alertName) . '.lock';
+    }
+
+    private function cleanupLockPathForNode(string $nodeId): string
+    {
+        return $this->nodeDirectory($nodeId) . DIRECTORY_SEPARATOR . '__cleanup__.lock';
     }
 
     private function alertHash(string $alertName): string
@@ -187,5 +214,119 @@ final class DirectoryDatabaseTelemetryAlertSamplingStore implements DatabaseTele
 
             @unlink($path);
         }
+    }
+
+    private function pruneExpiredAlertsForNode(string $nodeId, string $activeAlertName): void
+    {
+        $this->lastPrunedRecords = 0;
+        $nodeDirectory = $this->nodeDirectory($nodeId);
+        if (!is_dir($nodeDirectory)) {
+            return;
+        }
+
+        $cleanupHandle = fopen($this->cleanupLockPathForNode($nodeId), 'c+');
+        if ($cleanupHandle === false) {
+            return;
+        }
+
+        try {
+            if (!flock($cleanupHandle, LOCK_EX | LOCK_NB)) {
+                return;
+            }
+
+            try {
+                $activeAlertHash = $this->alertHash($activeAlertName);
+                $files = glob($nodeDirectory . DIRECTORY_SEPARATOR . '*.json');
+                if (!is_array($files)) {
+                    return;
+                }
+
+                foreach ($files as $filePath) {
+                    if (!is_string($filePath) || !is_file($filePath)) {
+                        continue;
+                    }
+
+                    $alertHash = pathinfo($filePath, PATHINFO_FILENAME);
+                    if (!is_string($alertHash) || $alertHash === '' || $alertHash === $activeAlertHash) {
+                        continue;
+                    }
+
+                    $lockPath = $nodeDirectory . DIRECTORY_SEPARATOR . $alertHash . '.lock';
+                    $lockHandle = fopen($lockPath, 'c+');
+                    if ($lockHandle === false) {
+                        continue;
+                    }
+
+                    try {
+                        if (!flock($lockHandle, LOCK_EX | LOCK_NB)) {
+                            continue;
+                        }
+
+                        $payload = $this->readPayload($filePath);
+                        if ($payload !== [] && !$this->isExpired($payload, $this->now())) {
+                            continue;
+                        }
+
+                        @unlink($filePath);
+                        $this->lastPrunedRecords++;
+                        $this->prunedRecordsTotal++;
+                    } finally {
+                        flock($lockHandle, LOCK_UN);
+                        fclose($lockHandle);
+                    }
+
+                    if (!is_file($filePath) && is_file($lockPath)) {
+                        @unlink($lockPath);
+                    }
+                }
+            } finally {
+                flock($cleanupHandle, LOCK_UN);
+            }
+        } finally {
+            fclose($cleanupHandle);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function isExpired(array $payload, \DateTimeImmutable $now): bool
+    {
+        if ($this->windowSeconds === null || $this->windowSeconds <= 0) {
+            return false;
+        }
+
+        $updatedAt = $this->updatedAt($payload);
+        if (!$updatedAt instanceof \DateTimeImmutable) {
+            return true;
+        }
+
+        return ($now->getTimestamp() - $updatedAt->getTimestamp()) >= $this->windowSeconds;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     */
+    private function updatedAt(array $payload): ?\DateTimeImmutable
+    {
+        $updatedAt = trim((string) ($payload['updated_at'] ?? ''));
+        if ($updatedAt === '') {
+            return null;
+        }
+
+        try {
+            return new \DateTimeImmutable($updatedAt);
+        } catch (\Exception) {
+            return null;
+        }
+    }
+
+    private function now(): \DateTimeImmutable
+    {
+        $clock = $this->clock;
+
+        return $clock instanceof \Closure
+            ? $clock()
+            : new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
     }
 }

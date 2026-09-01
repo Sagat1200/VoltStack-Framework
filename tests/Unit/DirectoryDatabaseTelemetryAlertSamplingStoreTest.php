@@ -52,6 +52,53 @@ final class DirectoryDatabaseTelemetryAlertSamplingStoreTest extends TestCase
         self::assertSame(2, $store->nextOccurrence('node-b', 'database.sqg_pipeline.optimizer.no_gain'));
     }
 
+    public function test_it_restarts_occurrence_after_sampling_window_expires(): void
+    {
+        $directory = $this->basePath . DIRECTORY_SEPARATOR . 'sampling-window';
+        $now = new \DateTimeImmutable('2026-09-01T00:00:00+00:00');
+        $clock = static function () use (&$now): \DateTimeImmutable {
+            return $now;
+        };
+
+        $firstStore = new DirectoryDatabaseTelemetryAlertSamplingStore($directory, 60, $clock);
+        $secondStore = new DirectoryDatabaseTelemetryAlertSamplingStore($directory, 60, $clock);
+
+        self::assertSame(1, $firstStore->nextOccurrence('node-a', 'database.sqg_pipeline.optimizer.no_gain'));
+        $now = $now->modify('+30 seconds');
+        self::assertSame(2, $secondStore->nextOccurrence('node-a', 'database.sqg_pipeline.optimizer.no_gain'));
+        $now = $now->modify('+61 seconds');
+        self::assertSame(1, $firstStore->nextOccurrence('node-a', 'database.sqg_pipeline.optimizer.no_gain'));
+    }
+
+    public function test_it_prunes_expired_alert_records_from_disk_when_node_activity_resumes(): void
+    {
+        $directory = $this->basePath . DIRECTORY_SEPARATOR . 'sampling-prune';
+        $now = new \DateTimeImmutable('2026-09-01T00:00:00+00:00');
+        $clock = static function () use (&$now): \DateTimeImmutable {
+            return $now;
+        };
+
+        $store = new DirectoryDatabaseTelemetryAlertSamplingStore($directory, 60, $clock);
+
+        self::assertSame(1, $store->nextOccurrence('node-a', 'database.sqg_pipeline.optimizer.no_gain'));
+        self::assertCount(1, $this->jsonFilesForNode($directory, 'node-a'));
+
+        $now = $now->modify('+61 seconds');
+        self::assertSame(1, $store->nextOccurrence('node-a', 'database.sqg_pipeline.optimizer.wide_search'));
+
+        $jsonFiles = $this->jsonFilesForNode($directory, 'node-a');
+        self::assertCount(1, $jsonFiles);
+        self::assertStringContainsString(
+            hash('sha256', 'database.sqg_pipeline.optimizer.wide_search'),
+            $jsonFiles[0],
+        );
+        self::assertSame(1, $store->metrics()['last_pruned_records'] ?? null);
+        self::assertSame(1, $store->metrics()['pruned_records_total'] ?? null);
+        self::assertFileDoesNotExist(
+            $directory . DIRECTORY_SEPARATOR . 'node-a' . DIRECTORY_SEPARATOR . hash('sha256', 'database.sqg_pipeline.optimizer.no_gain') . '.json',
+        );
+    }
+
     private function deleteDirectory(string $path): void
     {
         if (!is_dir($path)) {
@@ -80,5 +127,15 @@ final class DirectoryDatabaseTelemetryAlertSamplingStoreTest extends TestCase
         }
 
         @rmdir($path);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function jsonFilesForNode(string $directory, string $nodeId): array
+    {
+        $files = glob($directory . DIRECTORY_SEPARATOR . $nodeId . DIRECTORY_SEPARATOR . '*.json');
+
+        return is_array($files) ? array_values($files) : [];
     }
 }

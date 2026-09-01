@@ -382,30 +382,33 @@ final class DatabaseServiceProvider extends ServiceProvider
         );
         $this->app->singleton(DatabaseTelemetryAlertSamplingStoreInterface::class, function (Application $app): DatabaseTelemetryAlertSamplingStoreInterface {
             $mode = strtolower(trim((string) $app->config('database.observability.sqg_pipeline.alert_sampling_store', 'auto')));
+            $windowSeconds = max(0, (int) $app->config('database.observability.sqg_pipeline.alert_sampling_window_seconds', 900));
 
             if ($mode === 'directory') {
                 $path = $app->config('database.observability.sqg_pipeline.alert_sampling_directory_path');
 
                 if (is_string($path) && trim($path) !== '') {
-                    return new DirectoryDatabaseTelemetryAlertSamplingStore(trim($path));
+                    return new DirectoryDatabaseTelemetryAlertSamplingStore(trim($path), $windowSeconds);
                 }
 
                 return new DirectoryDatabaseTelemetryAlertSamplingStore(
                     $app->joinPath($app->storagePath('framework/database'), 'telemetry-alert-sampling'),
+                    $windowSeconds,
                 );
             }
 
             if ($mode === 'in_memory') {
-                return new InMemoryDatabaseTelemetryAlertSamplingStore();
+                return new InMemoryDatabaseTelemetryAlertSamplingStore($windowSeconds);
             }
 
             if ($app->isProduction()) {
                 return new DirectoryDatabaseTelemetryAlertSamplingStore(
                     $app->joinPath($app->storagePath('framework/database'), 'telemetry-alert-sampling'),
+                    $windowSeconds,
                 );
             }
 
-            return new InMemoryDatabaseTelemetryAlertSamplingStore();
+            return new InMemoryDatabaseTelemetryAlertSamplingStore($windowSeconds);
         });
         $this->app->singleton(DatabaseTelemetrySignalMapper::class, function (Application $app): DatabaseTelemetrySignalMapper {
             $thresholds = self::resolveSqgPipelineProfileConfig(
@@ -427,6 +430,10 @@ final class DatabaseServiceProvider extends ServiceProvider
             );
         });
         $this->app->singleton(DatabaseTelemetrySignalAlertSampler::class, function (Application $app): DatabaseTelemetrySignalAlertSampler {
+            $samplingProfile = strtolower(trim((string) $app->config(
+                'database.observability.sqg_pipeline.alert_sampling_profile',
+                'production',
+            )));
             $sampling = self::resolveSqgPipelineProfileConfig(
                 $app,
                 'database.observability.sqg_pipeline.alert_sampling_profile',
@@ -437,6 +444,7 @@ final class DatabaseServiceProvider extends ServiceProvider
             return new DatabaseTelemetrySignalAlertSampler(
                 is_array($sampling) ? $sampling : [],
                 $app->make(DatabaseTelemetryAlertSamplingStoreInterface::class),
+                $samplingProfile !== '' ? $samplingProfile : 'custom',
             );
         });
         $this->app->singleton(DatabaseTelemetryDispatcherInterface::class, function (Application $app): DatabaseTelemetryDispatcherInterface {

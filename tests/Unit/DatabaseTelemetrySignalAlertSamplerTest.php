@@ -45,9 +45,15 @@ final class DatabaseTelemetrySignalAlertSamplerTest extends TestCase
         self::assertCount(3, $first->alerts);
         self::assertSame(3, $first->alerts[0]['context']['sampling_every'] ?? null);
         self::assertSame(1, $first->alerts[0]['context']['sampling_occurrence'] ?? null);
+        self::assertSame('custom', $first->attributes['alert_sampling']['profile'] ?? null);
+        self::assertSame('in_memory', $first->attributes['alert_sampling']['store'] ?? null);
+        self::assertSame(3, $first->attributes['alert_sampling']['visible_total'] ?? null);
+        self::assertSame(3, $first->attributes['alert_sampling']['cumulative_visible_total'] ?? null);
 
         self::assertSame([], $second->alerts);
         self::assertSame(3, $second->attributes['alert_sampling']['suppressed_total'] ?? null);
+        self::assertSame(3, $second->attributes['alert_sampling']['cumulative_visible_total'] ?? null);
+        self::assertSame(3, $second->attributes['alert_sampling']['cumulative_suppressed_total'] ?? null);
         self::assertSame(
             1,
             $second->attributes['alert_sampling']['suppressed_alerts']['database.sqg_pipeline.optimizer.wide_search'] ?? null,
@@ -105,6 +111,8 @@ final class DatabaseTelemetrySignalAlertSamplerTest extends TestCase
         self::assertSame([], $second->alerts);
         self::assertCount(3, $third->alerts);
         self::assertSame(3, $third->alerts[0]['context']['sampling_occurrence'] ?? null);
+        self::assertSame('directory', $third->attributes['alert_sampling']['store'] ?? null);
+        self::assertSame(0, $third->attributes['alert_sampling']['pruned_records_total'] ?? null);
     }
 
     private function sqgWideSearchNoGainReport(): DatabaseTelemetryReport

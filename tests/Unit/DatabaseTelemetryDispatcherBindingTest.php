@@ -275,7 +275,10 @@ final class DatabaseTelemetryDispatcherBindingTest extends TestCase
 
         self::assertNotNull($secondSignal);
         self::assertSame([], $secondSignal->alerts);
+        self::assertSame('production', $secondSignal->attributes['alert_sampling']['profile'] ?? null);
+        self::assertSame('in_memory', $secondSignal->attributes['alert_sampling']['store'] ?? null);
         self::assertSame(3, $secondSignal->attributes['alert_sampling']['suppressed_total'] ?? null);
+        self::assertSame(3, $secondSignal->attributes['alert_sampling']['cumulative_suppressed_total'] ?? null);
     }
 
     public function test_it_allows_explicit_sqg_alert_sampling_overrides_to_win_over_profile(): void
@@ -314,6 +317,8 @@ final class DatabaseTelemetryDispatcherBindingTest extends TestCase
         self::assertCount(3, $secondSignal->alerts);
         self::assertSame(2, $secondSignal->alerts[0]['context']['sampling_every'] ?? null);
         self::assertSame(2, $secondSignal->alerts[0]['context']['sampling_occurrence'] ?? null);
+        self::assertSame('production', $secondSignal->attributes['alert_sampling']['profile'] ?? null);
+        self::assertSame(6, $secondSignal->attributes['alert_sampling']['cumulative_visible_total'] ?? null);
     }
 
     private function sqgWideSearchNoGainReport(): DatabaseTelemetryReport

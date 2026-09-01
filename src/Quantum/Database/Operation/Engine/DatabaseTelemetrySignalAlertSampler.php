@@ -10,6 +10,18 @@ use Quantum\Telemetry\TelemetrySignal;
 final class DatabaseTelemetrySignalAlertSampler
 {
     private ?DatabaseTelemetryAlertSamplingStoreInterface $resolvedStore = null;
+    private int $cumulativeVisibleTotal = 0;
+    private int $cumulativeSuppressedTotal = 0;
+
+    /**
+     * @var array<string, int>
+     */
+    private array $cumulativeVisibleAlerts = [];
+
+    /**
+     * @var array<string, int>
+     */
+    private array $cumulativeSuppressedAlerts = [];
 
     /**
      * @param array<string, mixed> $sqgAlertSampling
@@ -17,6 +29,7 @@ final class DatabaseTelemetrySignalAlertSampler
     public function __construct(
         private readonly array $sqgAlertSampling = [],
         private readonly ?DatabaseTelemetryAlertSamplingStoreInterface $store = null,
+        private readonly ?string $samplingProfile = null,
     ) {}
 
 
@@ -28,6 +41,7 @@ final class DatabaseTelemetrySignalAlertSampler
 
         $filteredAlerts = [];
         $suppressedAlerts = [];
+        $visibleAlerts = [];
         $changed = false;
 
         foreach ($signal->alerts as $alert) {
@@ -71,12 +85,17 @@ final class DatabaseTelemetrySignalAlertSampler
                 $context['sampling_occurrence'] = $occurrence;
                 $alert['context'] = $context;
                 $filteredAlerts[] = $alert;
+                $visibleAlerts[$alertName] = (int) ($visibleAlerts[$alertName] ?? 0) + 1;
+                $this->cumulativeVisibleAlerts[$alertName] = (int) ($this->cumulativeVisibleAlerts[$alertName] ?? 0) + 1;
+                $this->cumulativeVisibleTotal++;
                 $changed = true;
 
                 continue;
             }
 
             $suppressedAlerts[$alertName] = (int) ($suppressedAlerts[$alertName] ?? 0) + 1;
+            $this->cumulativeSuppressedAlerts[$alertName] = (int) ($this->cumulativeSuppressedAlerts[$alertName] ?? 0) + 1;
+            $this->cumulativeSuppressedTotal++;
             $changed = true;
         }
 
@@ -85,10 +104,22 @@ final class DatabaseTelemetrySignalAlertSampler
         }
 
         $attributes = $signal->attributes;
-        if ($suppressedAlerts !== []) {
+        if ($suppressedAlerts !== [] || $visibleAlerts !== []) {
+            $metrics = $this->samplingStore()->metrics();
             $attributes['alert_sampling'] = [
+                'profile' => $this->normalizedSamplingProfile(),
+                'store' => $metrics['store'] ?? null,
+                'window_seconds' => $metrics['window_seconds'] ?? null,
+                'visible_total' => array_sum($visibleAlerts),
+                'visible_alerts' => $visibleAlerts,
                 'suppressed_total' => array_sum($suppressedAlerts),
                 'suppressed_alerts' => $suppressedAlerts,
+                'cumulative_visible_total' => $this->cumulativeVisibleTotal,
+                'cumulative_visible_alerts' => $this->cumulativeVisibleAlerts,
+                'cumulative_suppressed_total' => $this->cumulativeSuppressedTotal,
+                'cumulative_suppressed_alerts' => $this->cumulativeSuppressedAlerts,
+                'pruned_records_total' => $metrics['pruned_records_total'] ?? 0,
+                'last_pruned_records' => $metrics['last_pruned_records'] ?? 0,
             ];
         }
 
@@ -111,6 +142,10 @@ final class DatabaseTelemetrySignalAlertSampler
     public function reset(): void
     {
         $this->samplingStore()->reset();
+        $this->cumulativeVisibleTotal = 0;
+        $this->cumulativeSuppressedTotal = 0;
+        $this->cumulativeVisibleAlerts = [];
+        $this->cumulativeSuppressedAlerts = [];
     }
 
     private function sampleEvery(string $alertName): int
@@ -129,5 +164,12 @@ final class DatabaseTelemetrySignalAlertSampler
         $this->resolvedStore ??= new InMemoryDatabaseTelemetryAlertSamplingStore();
 
         return $this->resolvedStore;
+    }
+
+    private function normalizedSamplingProfile(): string
+    {
+        $profile = strtolower(trim((string) $this->samplingProfile));
+
+        return $profile !== '' ? $profile : 'custom';
     }
 }

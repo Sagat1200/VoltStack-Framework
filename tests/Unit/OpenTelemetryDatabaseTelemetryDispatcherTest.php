@@ -434,9 +434,14 @@ final class OpenTelemetryDatabaseTelemetryDispatcherTest extends TestCase
         self::assertSame('WARN', $firstRecord['severityText'] ?? null);
         self::assertSame('INFO', $secondRecord['severityText'] ?? null);
 
+        $firstAttributes = $this->attributesToMap($firstRecord['attributes'] ?? []);
         $secondAttributes = $this->attributesToMap($secondRecord['attributes'] ?? []);
+        self::assertSame('custom', $firstAttributes['db.attributes.alert_sampling.profile'] ?? null);
+        self::assertSame('in_memory', $firstAttributes['db.attributes.alert_sampling.store'] ?? null);
+        self::assertSame('3', $firstAttributes['db.attributes.alert_sampling.visible_total'] ?? null);
         self::assertArrayNotHasKey('db.alerts.0.name', $secondAttributes);
         self::assertSame('3', $secondAttributes['db.attributes.alert_sampling.suppressed_total'] ?? null);
+        self::assertSame('3', $secondAttributes['db.attributes.alert_sampling.cumulative_suppressed_total'] ?? null);
     }
 
     public function test_it_throws_when_collector_returns_error_status(): void

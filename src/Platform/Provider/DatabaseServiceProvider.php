@@ -28,6 +28,7 @@ use Quantum\Database\Operation\DatabaseTelemetryStore;
 use Quantum\Database\Operation\Engine\DirectoryDatabaseHealthStore;
 use Quantum\Database\Operation\Engine\DirectoryDatabaseIdempotencyStore;
 use Quantum\Database\Operation\Engine\ChallengeDatabaseRemoteReplayValidator;
+use Quantum\Database\Operation\Engine\DatabaseTelemetrySignalAlertSampler;
 use Quantum\Database\Operation\Engine\DatabaseTelemetrySignalMapper;
 use Quantum\Database\Operation\Engine\DatabaseRemoteReplayChallengeEndpointResolver;
 use Quantum\Database\Operation\Engine\DatabaseRemoteReplayChallengeSigner;
@@ -395,28 +396,42 @@ final class DatabaseServiceProvider extends ServiceProvider
                 is_array($severities) ? $severities : [],
             );
         });
+        $this->app->singleton(DatabaseTelemetrySignalAlertSampler::class, function (Application $app): DatabaseTelemetrySignalAlertSampler {
+            $sampling = self::resolveSqgPipelineProfileConfig(
+                $app,
+                'database.observability.sqg_pipeline.alert_sampling_profile',
+                'database.observability.sqg_pipeline.alert_sampling_profiles',
+                'database.observability.sqg_pipeline.alert_sampling',
+            );
+
+            return new DatabaseTelemetrySignalAlertSampler(
+                is_array($sampling) ? $sampling : [],
+            );
+        });
         $this->app->singleton(DatabaseTelemetryDispatcherInterface::class, function (Application $app): DatabaseTelemetryDispatcherInterface {
             $mode = $app->config('database.observability.dispatcher', 'auto');
             $mapper = $app->make(DatabaseTelemetrySignalMapper::class);
+            $alertSampler = $app->make(DatabaseTelemetrySignalAlertSampler::class);
 
             if ($mode === 'null') {
-                return new NullDatabaseTelemetryDispatcher($mapper);
+                return new NullDatabaseTelemetryDispatcher($mapper, $alertSampler);
             }
 
             if ($mode === 'in_memory') {
-                return new InMemoryDatabaseTelemetryDispatcher(mapper: $mapper);
+                return new InMemoryDatabaseTelemetryDispatcher(mapper: $mapper, alertSampler: $alertSampler);
             }
 
             if ($mode === 'jsonl') {
                 $path = $app->config('database.observability.jsonl_path');
 
                 if (is_string($path) && trim($path) !== '') {
-                    return new JsonLineDatabaseTelemetryDispatcher(trim($path), mapper: $mapper);
+                    return new JsonLineDatabaseTelemetryDispatcher(trim($path), mapper: $mapper, alertSampler: $alertSampler);
                 }
 
                 return new JsonLineDatabaseTelemetryDispatcher(
                     $app->joinPath($app->storagePath('framework/logs'), 'database-telemetry.jsonl'),
                     mapper: $mapper,
+                    alertSampler: $alertSampler,
                 );
             }
 
@@ -447,6 +462,7 @@ final class DatabaseServiceProvider extends ServiceProvider
                     headers: $normalizedHeaders,
                     requestTimeoutMs: max(250, (int) $app->config('database.observability.webhook_timeout_ms', 2000)),
                     mapper: $mapper,
+                    alertSampler: $alertSampler,
                 );
             }
 
@@ -493,6 +509,7 @@ final class DatabaseServiceProvider extends ServiceProvider
                     headers: $normalizedHeaders,
                     requestTimeoutMs: max(250, (int) $app->config('database.observability.opentelemetry.timeout_ms', 2000)),
                     mapper: $mapper,
+                    alertSampler: $alertSampler,
                 );
             }
 
@@ -500,10 +517,11 @@ final class DatabaseServiceProvider extends ServiceProvider
                 return new JsonLineDatabaseTelemetryDispatcher(
                     $app->joinPath($app->storagePath('framework/logs'), 'database-telemetry.jsonl'),
                     mapper: $mapper,
+                    alertSampler: $alertSampler,
                 );
             }
 
-            return new InMemoryDatabaseTelemetryDispatcher(mapper: $mapper);
+            return new InMemoryDatabaseTelemetryDispatcher(mapper: $mapper, alertSampler: $alertSampler);
         });
         $this->app->singleton(DatabaseOperationRuntime::class, fn(Application $app): DatabaseOperationRuntime => new DatabaseOperationRuntime(
             circuitBreaker: $app->make(DatabaseCircuitBreaker::class),

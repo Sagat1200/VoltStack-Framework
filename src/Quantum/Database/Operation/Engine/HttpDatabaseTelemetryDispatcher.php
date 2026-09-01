@@ -12,6 +12,7 @@ final class HttpDatabaseTelemetryDispatcher implements DatabaseTelemetryDispatch
 {
     private readonly HttpTelemetryExporter $exporter;
     private readonly DatabaseTelemetrySignalMapper $mapper;
+    private readonly DatabaseTelemetrySignalAlertSampler $alertSampler;
 
     /**
      * @param array<string, string> $headers
@@ -23,15 +24,17 @@ final class HttpDatabaseTelemetryDispatcher implements DatabaseTelemetryDispatch
         private readonly int $requestTimeoutMs = 2000,
         private readonly ?\Closure $sender = null,
         ?DatabaseTelemetrySignalMapper $mapper = null,
+        ?DatabaseTelemetrySignalAlertSampler $alertSampler = null,
     ) {
         $this->exporter = new HttpTelemetryExporter($endpoint, $headers, $requestTimeoutMs, $sender);
         $this->mapper = $mapper ?? new DatabaseTelemetrySignalMapper();
+        $this->alertSampler = $alertSampler ?? new DatabaseTelemetrySignalAlertSampler();
     }
 
     public function dispatch(DatabaseTelemetryReport $report): void
     {
         try {
-            $this->exporter->export($this->mapper->map($report));
+            $this->exporter->export($this->alertSampler->apply($this->mapper->map($report)));
         } catch (\RuntimeException $exception) {
             throw new \RuntimeException(str_replace('Telemetry exporter', 'Database telemetry webhook', $exception->getMessage()), 0, $exception);
         }

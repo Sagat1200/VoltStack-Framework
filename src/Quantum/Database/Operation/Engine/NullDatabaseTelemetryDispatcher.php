@@ -12,15 +12,19 @@ final class NullDatabaseTelemetryDispatcher implements DatabaseTelemetryDispatch
 {
     private readonly NullTelemetryExporter $exporter;
     private readonly DatabaseTelemetrySignalMapper $mapper;
+    private readonly DatabaseTelemetrySignalAlertSampler $alertSampler;
 
-    public function __construct(?DatabaseTelemetrySignalMapper $mapper = null)
-    {
+    public function __construct(
+        ?DatabaseTelemetrySignalMapper $mapper = null,
+        ?DatabaseTelemetrySignalAlertSampler $alertSampler = null,
+    ) {
         $this->exporter = new NullTelemetryExporter();
         $this->mapper = $mapper ?? new DatabaseTelemetrySignalMapper();
+        $this->alertSampler = $alertSampler ?? new DatabaseTelemetrySignalAlertSampler();
     }
 
     public function dispatch(DatabaseTelemetryReport $report): void
     {
-        $this->exporter->export($this->mapper->map($report));
+        $this->exporter->export($this->alertSampler->apply($this->mapper->map($report)));
     }
 }

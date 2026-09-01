@@ -17,19 +17,22 @@ final class InMemoryDatabaseTelemetryDispatcher implements DatabaseTelemetryDisp
     private array $reports = [];
     private readonly InMemoryTelemetryExporter $exporter;
     private readonly DatabaseTelemetrySignalMapper $mapper;
+    private readonly DatabaseTelemetrySignalAlertSampler $alertSampler;
 
     public function __construct(
         private readonly int $maxReports = 256,
         ?DatabaseTelemetrySignalMapper $mapper = null,
+        ?DatabaseTelemetrySignalAlertSampler $alertSampler = null,
     ) {
         $this->exporter = new InMemoryTelemetryExporter($maxReports);
         $this->mapper = $mapper ?? new DatabaseTelemetrySignalMapper();
+        $this->alertSampler = $alertSampler ?? new DatabaseTelemetrySignalAlertSampler();
     }
 
     public function dispatch(DatabaseTelemetryReport $report): void
     {
         $this->reports[] = $report;
-        $this->exporter->export($this->mapper->map($report));
+        $this->exporter->export($this->alertSampler->apply($this->mapper->map($report)));
 
         if (count($this->reports) <= $this->maxReports) {
             return;
@@ -60,6 +63,7 @@ final class InMemoryDatabaseTelemetryDispatcher implements DatabaseTelemetryDisp
     {
         $this->reports = [];
         $this->exporter->clear();
+        $this->alertSampler->reset();
     }
 
     /**

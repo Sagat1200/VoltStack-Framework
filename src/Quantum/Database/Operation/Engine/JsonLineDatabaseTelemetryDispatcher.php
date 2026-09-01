@@ -11,8 +11,7 @@ use Quantum\Telemetry\Engine\JsonLineTelemetryExporter;
 final class JsonLineDatabaseTelemetryDispatcher implements DatabaseTelemetryDispatcherInterface
 {
     private readonly JsonLineTelemetryExporter $exporter;
-    private readonly DatabaseTelemetrySignalMapper $mapper;
-    private readonly DatabaseTelemetrySignalAlertSampler $alertSampler;
+    private readonly DatabaseTelemetryDispatchPreparation $preparation;
 
     public function __construct(
         private readonly string $filePath,
@@ -21,13 +20,18 @@ final class JsonLineDatabaseTelemetryDispatcher implements DatabaseTelemetryDisp
         ?DatabaseTelemetrySignalAlertSampler $alertSampler = null,
     ) {
         $this->exporter = new JsonLineTelemetryExporter($filePath, $maxBytesPerLine);
-        $this->mapper = $mapper ?? new DatabaseTelemetrySignalMapper();
-        $this->alertSampler = $alertSampler ?? new DatabaseTelemetrySignalAlertSampler();
+        $this->preparation = new DatabaseTelemetryDispatchPreparation(
+            $mapper ?? new DatabaseTelemetrySignalMapper(),
+            $alertSampler ?? new DatabaseTelemetrySignalAlertSampler(),
+        );
     }
 
-    public function dispatch(DatabaseTelemetryReport $report): void
+    public function dispatch(DatabaseTelemetryReport $report): DatabaseTelemetryReport
     {
-        $this->exporter->export($this->alertSampler->apply($this->mapper->map($report)));
+        $prepared = $this->preparation->prepare($report);
+        $this->exporter->export($prepared['signal']);
+
+        return $prepared['report'];
     }
 
     public function filePath(): string

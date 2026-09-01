@@ -85,6 +85,7 @@ final class HttpDatabaseTelemetryDispatcherTest extends TestCase
         self::assertSame('database.remote_replay_challenge.incompatible', $captured['payload']['alerts'][0]['name']);
         self::assertSame('critical', $captured['payload']['alerts'][0]['severity']);
         self::assertSame(1, $captured['payload']['alerts'][0]['count']);
+        self::assertSame(0, $captured['payload']['payload']['summary']['alert_sampling']['suppressed_total'] ?? null);
         self::assertSame(1, $captured['payload']['payload']['summary']['remote_replay_challenge']['rejected']);
     }
 

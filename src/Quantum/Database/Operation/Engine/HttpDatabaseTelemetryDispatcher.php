@@ -11,8 +11,7 @@ use Quantum\Telemetry\Engine\HttpTelemetryExporter;
 final class HttpDatabaseTelemetryDispatcher implements DatabaseTelemetryDispatcherInterface
 {
     private readonly HttpTelemetryExporter $exporter;
-    private readonly DatabaseTelemetrySignalMapper $mapper;
-    private readonly DatabaseTelemetrySignalAlertSampler $alertSampler;
+    private readonly DatabaseTelemetryDispatchPreparation $preparation;
 
     /**
      * @param array<string, string> $headers
@@ -27,14 +26,19 @@ final class HttpDatabaseTelemetryDispatcher implements DatabaseTelemetryDispatch
         ?DatabaseTelemetrySignalAlertSampler $alertSampler = null,
     ) {
         $this->exporter = new HttpTelemetryExporter($endpoint, $headers, $requestTimeoutMs, $sender);
-        $this->mapper = $mapper ?? new DatabaseTelemetrySignalMapper();
-        $this->alertSampler = $alertSampler ?? new DatabaseTelemetrySignalAlertSampler();
+        $this->preparation = new DatabaseTelemetryDispatchPreparation(
+            $mapper ?? new DatabaseTelemetrySignalMapper(),
+            $alertSampler ?? new DatabaseTelemetrySignalAlertSampler(),
+        );
     }
 
-    public function dispatch(DatabaseTelemetryReport $report): void
+    public function dispatch(DatabaseTelemetryReport $report): DatabaseTelemetryReport
     {
         try {
-            $this->exporter->export($this->alertSampler->apply($this->mapper->map($report)));
+            $prepared = $this->preparation->prepare($report);
+            $this->exporter->export($prepared['signal']);
+
+            return $prepared['report'];
         } catch (\RuntimeException $exception) {
             throw new \RuntimeException(str_replace('Telemetry exporter', 'Database telemetry webhook', $exception->getMessage()), 0, $exception);
         }

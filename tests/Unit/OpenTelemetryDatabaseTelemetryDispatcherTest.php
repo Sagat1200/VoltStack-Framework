@@ -442,6 +442,7 @@ final class OpenTelemetryDatabaseTelemetryDispatcherTest extends TestCase
         self::assertArrayNotHasKey('db.alerts.0.name', $secondAttributes);
         self::assertSame('3', $secondAttributes['db.attributes.alert_sampling.suppressed_total'] ?? null);
         self::assertSame('3', $secondAttributes['db.attributes.alert_sampling.cumulative_suppressed_total'] ?? null);
+        self::assertStringContainsString('"suppressed_total":3', $secondRecord['body']['stringValue'] ?? '');
     }
 
     public function test_it_throws_when_collector_returns_error_status(): void

@@ -51,4 +51,20 @@ final readonly class DatabaseTelemetryReport
             nodeId: isset($payload['node_id']) ? (string) $payload['node_id'] : null,
         );
     }
+
+    /**
+     * @param array<string, mixed> $summary
+     */
+    public function withSummary(array $summary): self
+    {
+        return new self(
+            requestId: $this->requestId,
+            tenantId: $this->tenantId,
+            traceId: $this->traceId,
+            generatedAt: $this->generatedAt,
+            summary: $summary,
+            health: $this->health,
+            nodeId: $this->nodeId,
+        );
+    }
 }

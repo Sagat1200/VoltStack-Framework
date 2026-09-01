@@ -94,6 +94,8 @@ final class DatabaseOperationalPropagationTest extends TestCase
         self::assertSame(1, $summary['sqg_pipeline']['candidate_count_total'] ?? null);
         self::assertSame(1.0, $summary['sqg_pipeline']['candidate_count_avg'] ?? null);
         self::assertSame(1, $summary['sqg_pipeline']['candidate_count_max'] ?? null);
+        self::assertIsArray($summary['alert_sampling'] ?? null);
+        self::assertSame(0, $summary['alert_sampling']['visible_total'] ?? null);
         self::assertSame([], $summary['sqg_pipeline']['join_reorder_signatures'] ?? null);
         self::assertIsArray($summary['latest'][0]['sqg_pipeline'] ?? null);
         self::assertSame('sqg_select', $summary['latest'][0]['sqg_pipeline']['sqg']['kind'] ?? null);

@@ -60,6 +60,8 @@ final class DatabaseRequestLifecycleTest extends TestCase
         self::assertSame(1, $payload['telemetry']['total_operations']);
         self::assertSame(1, $payload['telemetry']['completed']);
         self::assertIsArray($payload['telemetry']['remote_replay_challenge'] ?? null);
+        self::assertIsArray($payload['telemetry']['alert_sampling'] ?? null);
+        self::assertSame(0, $payload['telemetry']['alert_sampling']['visible_total'] ?? null);
         self::assertSame(0, $payload['telemetry']['remote_replay_challenge']['observed_operations'] ?? null);
         self::assertSame(1, $payload['health']['total_segments']);
         self::assertSame('closed', $payload['health']['segments'][0]['state']);
@@ -150,6 +152,8 @@ final class DatabaseRequestLifecycleTest extends TestCase
 
         self::assertSame(1, count($payload['rows'] ?? []));
         self::assertIsArray($payload['telemetry']['sqg_pipeline'] ?? null);
+        self::assertIsArray($payload['telemetry']['alert_sampling'] ?? null);
+        self::assertSame(0, $payload['telemetry']['alert_sampling']['suppressed_total'] ?? null);
         self::assertGreaterThanOrEqual(1, (int) ($payload['telemetry']['sqg_pipeline']['observed_operations'] ?? 0));
         self::assertSame(1, $payload['telemetry']['sqg_pipeline']['candidate_count_total'] ?? null);
         self::assertIsArray($payload['telemetry']['latest'][0]['sqg_pipeline'] ?? null);

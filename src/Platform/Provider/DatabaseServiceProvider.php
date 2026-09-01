@@ -732,6 +732,7 @@ final class DatabaseServiceProvider extends ServiceProvider
                     'candidate_count_avg' => 0.0,
                     'candidate_count_max' => 0,
                 ],
+                'alert_sampling' => DatabaseTelemetryStore::emptyAlertSamplingSummary(),
                 'latest' => [],
             ]);
             $context->set('database.health', (new DatabaseHealthSnapshot(
@@ -762,9 +763,6 @@ final class DatabaseServiceProvider extends ServiceProvider
                 $summary['remote_replay_challenge'] = $remoteReplayChallenge;
             }
 
-            $context->set('database.telemetry', $summary);
-            $context->set('database.health', $health);
-
             $dispatcher = $app->make(DatabaseTelemetryDispatcherInterface::class);
             $healthStore = $app->make(DatabaseHealthStoreInterface::class);
             $dbContext = $app->make(DatabaseContext::class);
@@ -778,8 +776,18 @@ final class DatabaseServiceProvider extends ServiceProvider
                 nodeId: $nodeId,
             );
 
-            $dispatcher->dispatch($report);
-            $healthStore->persist($report);
+            $dispatchedReport = $dispatcher->dispatch($report);
+            $alertSampling = is_array($dispatchedReport->summary['alert_sampling'] ?? null)
+                ? $dispatchedReport->summary['alert_sampling']
+                : null;
+            if ($alertSampling !== null) {
+                $telemetry->attachAlertSampling($alertSampling);
+            }
+
+            $context->set('database.telemetry', $dispatchedReport->summary);
+            $context->set('database.health', $health);
+
+            $healthStore->persist($dispatchedReport);
         });
     }
 

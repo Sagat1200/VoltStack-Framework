@@ -14,11 +14,18 @@ final class DatabaseTelemetryStore
     private array $entries = [];
 
     /**
+     * @var array<string, mixed>
+     */
+    private array $alertSampling;
+
+    /**
      * @param list<DatabaseCircuitStateSnapshot> $segments
      */
     public function __construct(
         private array $segments = [],
-    ) {}
+    ) {
+        $this->alertSampling = self::emptyAlertSamplingSummary();
+    }
 
     public function record(
         DatabaseOperationPlan $plan,
@@ -60,6 +67,37 @@ final class DatabaseTelemetryStore
         }
     }
 
+    /**
+     * @param array<string, mixed> $summary
+     */
+    public function attachAlertSampling(array $summary): void
+    {
+        $this->alertSampling = self::normalizeAlertSamplingSummary($summary);
+        $this->syncRuntimeContext();
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public static function emptyAlertSamplingSummary(): array
+    {
+        return [
+            'profile' => null,
+            'store' => null,
+            'window_seconds' => null,
+            'visible_total' => 0,
+            'visible_alerts' => [],
+            'suppressed_total' => 0,
+            'suppressed_alerts' => [],
+            'cumulative_visible_total' => 0,
+            'cumulative_visible_alerts' => [],
+            'cumulative_suppressed_total' => 0,
+            'cumulative_suppressed_alerts' => [],
+            'pruned_records_total' => 0,
+            'last_pruned_records' => 0,
+        ];
+    }
+
     public function health(): DatabaseHealthSnapshot
     {
         $segments = array_values($this->segments);
@@ -93,6 +131,7 @@ final class DatabaseTelemetryStore
      *   slow_queries:int,
      *   remote_replay_challenge:array<string, mixed>,
      *   sqg_pipeline:array<string, mixed>,
+     *   alert_sampling:array<string, mixed>,
      *   latest:list<array<string, scalar|null|array<int, string>>>
      * }
      */
@@ -176,6 +215,7 @@ final class DatabaseTelemetryStore
             'slow_queries' => $slow,
             'remote_replay_challenge' => $remoteReplayChallenge,
             'sqg_pipeline' => $sqgPipeline,
+            'alert_sampling' => $this->alertSampling,
             'latest' => array_values(array_map(
                 static fn(array $entry): array => self::entryToArray(
                     $entry['plan'],
@@ -453,5 +493,34 @@ final class DatabaseTelemetryStore
     private static function normalizeInt(mixed $value): ?int
     {
         return is_numeric($value) ? (int) $value : null;
+    }
+
+    /**
+     * @param array<string, mixed> $summary
+     * @return array<string, mixed>
+     */
+    private static function normalizeAlertSamplingSummary(array $summary): array
+    {
+        $normalized = self::emptyAlertSamplingSummary();
+
+        $normalized['profile'] = self::normalizeString($summary['profile'] ?? null);
+        $normalized['store'] = self::normalizeString($summary['store'] ?? null);
+        $normalized['window_seconds'] = self::normalizeInt($summary['window_seconds'] ?? null);
+        $normalized['visible_total'] = max(0, (int) ($summary['visible_total'] ?? 0));
+        $normalized['visible_alerts'] = is_array($summary['visible_alerts'] ?? null) ? $summary['visible_alerts'] : [];
+        $normalized['suppressed_total'] = max(0, (int) ($summary['suppressed_total'] ?? 0));
+        $normalized['suppressed_alerts'] = is_array($summary['suppressed_alerts'] ?? null) ? $summary['suppressed_alerts'] : [];
+        $normalized['cumulative_visible_total'] = max(0, (int) ($summary['cumulative_visible_total'] ?? 0));
+        $normalized['cumulative_visible_alerts'] = is_array($summary['cumulative_visible_alerts'] ?? null)
+            ? $summary['cumulative_visible_alerts']
+            : [];
+        $normalized['cumulative_suppressed_total'] = max(0, (int) ($summary['cumulative_suppressed_total'] ?? 0));
+        $normalized['cumulative_suppressed_alerts'] = is_array($summary['cumulative_suppressed_alerts'] ?? null)
+            ? $summary['cumulative_suppressed_alerts']
+            : [];
+        $normalized['pruned_records_total'] = max(0, (int) ($summary['pruned_records_total'] ?? 0));
+        $normalized['last_pruned_records'] = max(0, (int) ($summary['last_pruned_records'] ?? 0));
+
+        return $normalized;
     }
 }

@@ -98,6 +98,7 @@ final class JsonLineDatabaseTelemetryDispatcherTest extends TestCase
         self::assertSame(2, $payload['payload']['summary']['total_operations']);
         self::assertSame(1, $payload['payload']['health']['closed_segments']);
         self::assertSame(1, $payload['payload']['summary']['remote_replay_challenge']['observed_operations']);
+        self::assertSame(0, $payload['payload']['summary']['alert_sampling']['visible_total'] ?? null);
         self::assertSame('verified_remote_validation', $payload['payload']['summary']['latest'][0]['remote_validation_status']);
         self::assertSame('key-2026-09', $payload['payload']['summary']['latest'][0]['challenge_response_key_id']);
     }

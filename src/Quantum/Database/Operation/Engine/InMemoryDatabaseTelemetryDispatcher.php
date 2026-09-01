@@ -16,7 +16,7 @@ final class InMemoryDatabaseTelemetryDispatcher implements DatabaseTelemetryDisp
      */
     private array $reports = [];
     private readonly InMemoryTelemetryExporter $exporter;
-    private readonly DatabaseTelemetrySignalMapper $mapper;
+    private readonly DatabaseTelemetryDispatchPreparation $preparation;
     private readonly DatabaseTelemetrySignalAlertSampler $alertSampler;
 
     public function __construct(
@@ -25,23 +25,27 @@ final class InMemoryDatabaseTelemetryDispatcher implements DatabaseTelemetryDisp
         ?DatabaseTelemetrySignalAlertSampler $alertSampler = null,
     ) {
         $this->exporter = new InMemoryTelemetryExporter($maxReports);
-        $this->mapper = $mapper ?? new DatabaseTelemetrySignalMapper();
+        $resolvedMapper = $mapper ?? new DatabaseTelemetrySignalMapper();
         $this->alertSampler = $alertSampler ?? new DatabaseTelemetrySignalAlertSampler();
+        $this->preparation = new DatabaseTelemetryDispatchPreparation($resolvedMapper, $this->alertSampler);
     }
 
-    public function dispatch(DatabaseTelemetryReport $report): void
+    public function dispatch(DatabaseTelemetryReport $report): DatabaseTelemetryReport
     {
-        $this->reports[] = $report;
-        $this->exporter->export($this->alertSampler->apply($this->mapper->map($report)));
+        $prepared = $this->preparation->prepare($report);
+        $this->reports[] = $prepared['report'];
+        $this->exporter->export($prepared['signal']);
 
         if (count($this->reports) <= $this->maxReports) {
-            return;
+            return $prepared['report'];
         }
 
         $excess = count($this->reports) - $this->maxReports;
         if ($excess > 0) {
             $this->reports = array_slice($this->reports, $excess);
         }
+
+        return $prepared['report'];
     }
 
     /**

@@ -93,6 +93,8 @@ final class DatabaseTelemetryStore
             'cumulative_visible_alerts' => [],
             'cumulative_suppressed_total' => 0,
             'cumulative_suppressed_alerts' => [],
+            'by_fingerprint' => [],
+            'by_logical_target' => [],
             'pruned_records_total' => 0,
             'last_pruned_records' => 0,
         ];
@@ -518,6 +520,8 @@ final class DatabaseTelemetryStore
         $normalized['cumulative_suppressed_alerts'] = is_array($summary['cumulative_suppressed_alerts'] ?? null)
             ? $summary['cumulative_suppressed_alerts']
             : [];
+        $normalized['by_fingerprint'] = is_array($summary['by_fingerprint'] ?? null) ? $summary['by_fingerprint'] : [];
+        $normalized['by_logical_target'] = is_array($summary['by_logical_target'] ?? null) ? $summary['by_logical_target'] : [];
         $normalized['pruned_records_total'] = max(0, (int) ($summary['pruned_records_total'] ?? 0));
         $normalized['last_pruned_records'] = max(0, (int) ($summary['last_pruned_records'] ?? 0));
 

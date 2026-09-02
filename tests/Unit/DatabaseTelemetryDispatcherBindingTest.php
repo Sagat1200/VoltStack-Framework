@@ -292,6 +292,10 @@ final class DatabaseTelemetryDispatcherBindingTest extends TestCase
             'database.sqg_pipeline.optimizer.wide_search',
             $secondReport->summary['latest'][0]['alert_sampling']['potential_alerts'][0]['name'] ?? null,
         );
+        self::assertSame(1, $secondReport->summary['alert_sampling']['by_fingerprint']['fp-sqg-profile']['operations'] ?? null);
+        self::assertSame(1, $secondReport->summary['alert_sampling']['by_fingerprint']['fp-sqg-profile']['alerts']['database.sqg_pipeline.optimizer.wide_search']['suppressed'] ?? null);
+        self::assertSame(1, $secondReport->summary['alert_sampling']['by_logical_target']['test_records']['operations'] ?? null);
+        self::assertSame(3, $secondReport->summary['alert_sampling']['by_logical_target']['test_records']['suppressed_total'] ?? null);
     }
 
     public function test_it_allows_explicit_sqg_alert_sampling_overrides_to_win_over_profile(): void
@@ -336,6 +340,7 @@ final class DatabaseTelemetryDispatcherBindingTest extends TestCase
             'visible',
             $dispatcher->reports()[1]->summary['latest'][0]['alert_sampling']['potential_alerts'][0]['state'] ?? null,
         );
+        self::assertSame(1, $dispatcher->reports()[1]->summary['alert_sampling']['by_fingerprint']['fp-sqg-profile']['alerts']['database.sqg_pipeline.optimizer.wide_search']['visible'] ?? null);
     }
 
     private function sqgWideSearchNoGainReport(): DatabaseTelemetryReport

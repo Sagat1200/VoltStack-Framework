@@ -248,4 +248,27 @@ final class DatabaseTelemetrySignalMapperTest extends TestCase
         self::assertSame('high', $signal->alerts[1]['severity']);
         self::assertSame('critical', $signal->alerts[2]['severity']);
     }
+
+    public function test_it_describes_potential_sqg_alerts_for_a_single_operation_pipeline(): void
+    {
+        $mapper = new DatabaseTelemetrySignalMapper();
+
+        $descriptions = $mapper->describeSqgOperationAlerts([
+            'optimizer' => [
+                'candidate_count' => 4,
+                'cost_delta_vs_baseline' => 0.0,
+                'selected_candidate_id' => 'candidate:predicate_normalization_v1+join_reorder_v1',
+                'join_reorder' => [
+                    'selected_signature' => 'u>p>a>o',
+                ],
+            ],
+        ]);
+
+        self::assertCount(3, $descriptions);
+        self::assertSame('database.sqg_pipeline.optimizer.wide_search', $descriptions[0]['name']);
+        self::assertSame('database.sqg_pipeline.optimizer.no_gain', $descriptions[1]['name']);
+        self::assertSame('database.sqg_pipeline.join_reorder.no_gain', $descriptions[2]['name']);
+        self::assertSame(4, $descriptions[0]['context']['candidate_count'] ?? null);
+        self::assertSame('u>p>a>o', $descriptions[2]['context']['selected_signature'] ?? null);
+    }
 }

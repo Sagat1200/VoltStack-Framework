@@ -284,6 +284,14 @@ final class DatabaseTelemetryDispatcherBindingTest extends TestCase
         self::assertSame(3, $secondSignal->attributes['alert_sampling']['cumulative_suppressed_total'] ?? null);
         self::assertSame(3, $secondReport->summary['alert_sampling']['suppressed_total'] ?? null);
         self::assertSame('production', $secondReport->summary['alert_sampling']['profile'] ?? null);
+        self::assertSame(
+            'suppressed',
+            $secondReport->summary['latest'][0]['alert_sampling']['potential_alerts'][0]['state'] ?? null,
+        );
+        self::assertSame(
+            'database.sqg_pipeline.optimizer.wide_search',
+            $secondReport->summary['latest'][0]['alert_sampling']['potential_alerts'][0]['name'] ?? null,
+        );
     }
 
     public function test_it_allows_explicit_sqg_alert_sampling_overrides_to_win_over_profile(): void
@@ -324,6 +332,10 @@ final class DatabaseTelemetryDispatcherBindingTest extends TestCase
         self::assertSame(2, $secondSignal->alerts[0]['context']['sampling_occurrence'] ?? null);
         self::assertSame('production', $secondSignal->attributes['alert_sampling']['profile'] ?? null);
         self::assertSame(6, $secondSignal->attributes['alert_sampling']['cumulative_visible_total'] ?? null);
+        self::assertSame(
+            'visible',
+            $dispatcher->reports()[1]->summary['latest'][0]['alert_sampling']['potential_alerts'][0]['state'] ?? null,
+        );
     }
 
     private function sqgWideSearchNoGainReport(): DatabaseTelemetryReport
@@ -359,7 +371,41 @@ final class DatabaseTelemetryDispatcherBindingTest extends TestCase
                     'planner_logical_roots' => ['sort' => 2],
                     'planner_physical_roots' => ['sort_materialize' => 2],
                 ],
-                'latest' => [],
+                'latest' => [
+                    [
+                        'fingerprint' => 'fp-sqg-profile',
+                        'connection_name' => 'primary',
+                        'driver' => 'sqlite',
+                        'operation_kind' => 'raw_query',
+                        'logical_target' => 'test_records',
+                        'outcome' => 'completed',
+                        'failure' => null,
+                        'duration_ms' => 4.0,
+                        'rows_read' => 2,
+                        'affected_rows' => 0,
+                        'slow_query' => 'no',
+                        'circuit_state' => 'closed',
+                        'sqg_pipeline' => [
+                            'sqg' => [
+                                'kind' => 'sqg_select',
+                            ],
+                            'optimizer' => [
+                                'strategy' => 'safe_rule_bundle_v1',
+                                'selected_candidate_id' => 'candidate:predicate_normalization_v1+join_reorder_v1',
+                                'estimated_cost' => 75.0,
+                                'cost_delta_vs_baseline' => 0.0,
+                                'candidate_count' => 4,
+                                'join_reorder' => [
+                                    'selected_signature' => 'u>p>a>o',
+                                ],
+                            ],
+                            'planner' => [
+                                'logical_root_operator' => 'sort',
+                                'physical_root_strategy' => 'sort_materialize',
+                            ],
+                        ],
+                    ],
+                ],
             ],
             health: [
                 'total_segments' => 1,

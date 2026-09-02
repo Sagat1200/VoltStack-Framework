@@ -79,6 +79,73 @@ final class DatabaseTelemetrySignalMapper
     }
 
     /**
+     * @param array<string, mixed> $pipeline
+     * @return list<array<string, mixed>>
+     */
+    public function describeSqgOperationAlerts(array $pipeline): array
+    {
+        $optimizer = is_array($pipeline['optimizer'] ?? null) ? $pipeline['optimizer'] : [];
+
+        if ($optimizer === []) {
+            return [];
+        }
+
+        $descriptions = [];
+        $candidateCount = is_numeric($optimizer['candidate_count'] ?? null) ? (int) $optimizer['candidate_count'] : 0;
+        $costDelta = is_numeric($optimizer['cost_delta_vs_baseline'] ?? null) ? (float) $optimizer['cost_delta_vs_baseline'] : null;
+        $selectedCandidateId = is_scalar($optimizer['selected_candidate_id'] ?? null)
+            ? trim((string) $optimizer['selected_candidate_id'])
+            : null;
+        $joinReorder = is_array($optimizer['join_reorder'] ?? null) ? $optimizer['join_reorder'] : [];
+        $joinReorderSignature = is_scalar($joinReorder['selected_signature'] ?? null)
+            ? trim((string) $joinReorder['selected_signature'])
+            : null;
+        $wideSearchCandidateCountMax = $this->intThreshold('wide_search_candidate_count_max', 4);
+        $wideSearchCandidateCountAvg = $this->floatThreshold('wide_search_candidate_count_avg', 3.0);
+        $noGainCostDeltaMax = $this->floatThreshold('no_gain_cost_delta_max', 0.0);
+
+        if ($candidateCount >= $wideSearchCandidateCountMax || $candidateCount >= $wideSearchCandidateCountAvg) {
+            $descriptions[] = [
+                'name' => 'database.sqg_pipeline.optimizer.wide_search',
+                'severity' => $this->sqgAlertSeverity('database.sqg_pipeline.optimizer.wide_search', 'warning'),
+                'context' => [
+                    'candidate_count' => $candidateCount,
+                    'selected_candidate_id' => $selectedCandidateId,
+                    'threshold_candidate_count_max' => $wideSearchCandidateCountMax,
+                    'threshold_candidate_count_avg' => $wideSearchCandidateCountAvg,
+                ],
+            ];
+        }
+
+        if ($candidateCount > 1 && $costDelta !== null && $costDelta <= $noGainCostDeltaMax) {
+            $descriptions[] = [
+                'name' => 'database.sqg_pipeline.optimizer.no_gain',
+                'severity' => $this->sqgAlertSeverity('database.sqg_pipeline.optimizer.no_gain', 'warning'),
+                'context' => [
+                    'candidate_count' => $candidateCount,
+                    'cost_delta_vs_baseline' => $costDelta,
+                    'selected_candidate_id' => $selectedCandidateId,
+                    'threshold_cost_delta_max' => $noGainCostDeltaMax,
+                ],
+            ];
+        }
+
+        if ($joinReorderSignature !== null && $costDelta !== null && $costDelta <= $noGainCostDeltaMax) {
+            $descriptions[] = [
+                'name' => 'database.sqg_pipeline.join_reorder.no_gain',
+                'severity' => $this->sqgAlertSeverity('database.sqg_pipeline.join_reorder.no_gain', 'warning'),
+                'context' => [
+                    'selected_signature' => $joinReorderSignature,
+                    'cost_delta_vs_baseline' => $costDelta,
+                    'threshold_cost_delta_max' => $noGainCostDeltaMax,
+                ],
+            ];
+        }
+
+        return $descriptions;
+    }
+
+    /**
      * @return list<array<string, mixed>>
      */
     private function buildAlerts(DatabaseTelemetryReport $report): array

@@ -137,6 +137,79 @@ final class DatabaseTelemetryStore
         ];
     }
 
+    /**
+     * @return array<string, int|string|null>|null
+     */
+    public function resolveAggregateQuotaViolation(DatabaseOperationPlan $plan, ?string $tenantId = null): ?array
+    {
+        $resourceGovernance = self::normalizeResourceGovernanceSummary(
+            is_array($this->summary()['resource_governance'] ?? null) ? $this->summary()['resource_governance'] : [],
+        );
+        $durationConsumed = max(0, (int) ($resourceGovernance['duration_ms_total'] ?? 0));
+        $rowsConsumed = max(0, (int) ($resourceGovernance['rows_read_total'] ?? 0));
+
+        $checks = [
+            [
+                'scope' => 'request',
+                'metric' => 'duration_ms',
+                'limit' => max(0, $plan->policy->requestMaxDurationMs),
+                'consumed' => $durationConsumed,
+                'planned' => max(0, $plan->policy->timeoutMs),
+            ],
+            [
+                'scope' => 'request',
+                'metric' => 'rows_read',
+                'limit' => max(0, $plan->policy->requestMaxRowsRead),
+                'consumed' => $rowsConsumed,
+                'planned' => max(0, $plan->maxRows),
+            ],
+        ];
+
+        $normalizedTenantId = self::normalizeString($tenantId);
+        if ($normalizedTenantId !== null) {
+            $checks[] = [
+                'scope' => 'tenant',
+                'metric' => 'duration_ms',
+                'limit' => max(0, $plan->policy->tenantMaxDurationMs),
+                'consumed' => $durationConsumed,
+                'planned' => max(0, $plan->policy->timeoutMs),
+                'tenant_id' => $normalizedTenantId,
+            ];
+            $checks[] = [
+                'scope' => 'tenant',
+                'metric' => 'rows_read',
+                'limit' => max(0, $plan->policy->tenantMaxRowsRead),
+                'consumed' => $rowsConsumed,
+                'planned' => max(0, $plan->maxRows),
+                'tenant_id' => $normalizedTenantId,
+            ];
+        }
+
+        foreach ($checks as $check) {
+            $limit = (int) ($check['limit'] ?? 0);
+            if ($limit <= 0) {
+                continue;
+            }
+
+            $projected = (int) ($check['consumed'] ?? 0) + (int) ($check['planned'] ?? 0);
+            if ($projected <= $limit) {
+                continue;
+            }
+
+            return [
+                'scope' => (string) ($check['scope'] ?? 'request'),
+                'metric' => (string) ($check['metric'] ?? 'unknown'),
+                'limit' => $limit,
+                'consumed' => (int) ($check['consumed'] ?? 0),
+                'planned' => (int) ($check['planned'] ?? 0),
+                'projected' => $projected,
+                'tenant_id' => isset($check['tenant_id']) ? (string) $check['tenant_id'] : null,
+            ];
+        }
+
+        return null;
+    }
+
     public function health(): DatabaseHealthSnapshot
     {
         $segments = array_values($this->segments);

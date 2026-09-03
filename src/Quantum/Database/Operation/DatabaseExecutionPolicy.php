@@ -14,6 +14,10 @@ final readonly class DatabaseExecutionPolicy
         public int $retryBackoffMs = 10,
         public bool $retryMutationsWhenIdempotent = false,
         public int $idempotencyPendingTtlSeconds = 300,
+        public int $requestMaxDurationMs = 0,
+        public int $requestMaxRowsRead = 0,
+        public int $tenantMaxDurationMs = 0,
+        public int $tenantMaxRowsRead = 0,
         public string $legacyReplayMode = 'allow',
         public string $remoteReplayAttestationMode = 'allow',
         public int $remoteReplayAttestationMaxAgeSeconds = 0,
@@ -48,6 +52,7 @@ final readonly class DatabaseExecutionPolicy
     {
         $timeouts = is_array($databaseConfig['timeouts'] ?? null) ? $databaseConfig['timeouts'] : [];
         $limits = is_array($databaseConfig['query_limits'] ?? null) ? $databaseConfig['query_limits'] : [];
+        $aggregateLimits = is_array($limits['aggregate'] ?? null) ? $limits['aggregate'] : [];
         $observability = is_array($databaseConfig['observability'] ?? null) ? $databaseConfig['observability'] : [];
         $resilience = is_array($databaseConfig['resilience'] ?? null) ? $databaseConfig['resilience'] : [];
         $idempotency = is_array($databaseConfig['idempotency'] ?? null) ? $databaseConfig['idempotency'] : [];
@@ -104,6 +109,10 @@ final readonly class DatabaseExecutionPolicy
             retryBackoffMs: max(0, (int) ($resilience['retry_backoff_ms'] ?? 10)),
             retryMutationsWhenIdempotent: (bool) ($resilience['retry_mutations_when_idempotent'] ?? false),
             idempotencyPendingTtlSeconds: max(1, (int) ($idempotency['pending_ttl_seconds'] ?? 300)),
+            requestMaxDurationMs: max(0, (int) ($aggregateLimits['request_max_duration_ms'] ?? 0)),
+            requestMaxRowsRead: max(0, (int) ($aggregateLimits['request_max_rows_read'] ?? 0)),
+            tenantMaxDurationMs: max(0, (int) ($aggregateLimits['tenant_max_duration_ms'] ?? 0)),
+            tenantMaxRowsRead: max(0, (int) ($aggregateLimits['tenant_max_rows_read'] ?? 0)),
             legacyReplayMode: $legacyReplayMode,
             remoteReplayAttestationMode: $remoteReplayAttestationMode,
             remoteReplayAttestationMaxAgeSeconds: $remoteReplayAttestationMaxAgeSeconds,
@@ -142,6 +151,10 @@ final readonly class DatabaseExecutionPolicy
             retryBackoffMs: $this->retryBackoffMs,
             retryMutationsWhenIdempotent: $this->retryMutationsWhenIdempotent,
             idempotencyPendingTtlSeconds: $this->idempotencyPendingTtlSeconds,
+            requestMaxDurationMs: $this->requestMaxDurationMs,
+            requestMaxRowsRead: $this->requestMaxRowsRead,
+            tenantMaxDurationMs: $this->tenantMaxDurationMs,
+            tenantMaxRowsRead: $this->tenantMaxRowsRead,
             legacyReplayMode: $this->legacyReplayMode,
             remoteReplayAttestationMode: $this->remoteReplayAttestationMode,
             remoteReplayAttestationMaxAgeSeconds: $this->remoteReplayAttestationMaxAgeSeconds,
@@ -180,6 +193,10 @@ final readonly class DatabaseExecutionPolicy
             retryBackoffMs: $this->retryBackoffMs,
             retryMutationsWhenIdempotent: $this->retryMutationsWhenIdempotent,
             idempotencyPendingTtlSeconds: $this->idempotencyPendingTtlSeconds,
+            requestMaxDurationMs: $this->requestMaxDurationMs,
+            requestMaxRowsRead: $this->requestMaxRowsRead,
+            tenantMaxDurationMs: $this->tenantMaxDurationMs,
+            tenantMaxRowsRead: $this->tenantMaxRowsRead,
             legacyReplayMode: $this->legacyReplayMode,
             remoteReplayAttestationMode: $this->remoteReplayAttestationMode,
             remoteReplayAttestationMaxAgeSeconds: $this->remoteReplayAttestationMaxAgeSeconds,

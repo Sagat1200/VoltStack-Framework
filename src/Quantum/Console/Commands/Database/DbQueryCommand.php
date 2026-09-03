@@ -189,7 +189,7 @@ final class DbQueryCommand extends Command
             $plan->safeSqlPreview,
         ));
         $output->writeln(sprintf(
-            'Budget: connection=%s driver=%s timeout_ms=%d max_rows=%d depth=%d/%d retry_limit=%d retryable=%s idempotency=%s legacy_replay_mode=%s remote_replay_attestation_mode=%s remote_replay_attestation_max_age_seconds=%d remote_replay_validation_mode=%s remote_replay_validation_receipt_max_age_seconds=%d remote_replay_validation_receipt_reuse_scope=%s remote_replay_validation_receipt_trusted_nodes=%s remote_replay_validation_receipt_propagation_max_age_seconds=%d remote_replay_validation_receipt_propagation_health_limit=%d remote_replay_validation_receipt_propagation_trusted_nodes=%s remote_replay_validation_receipt_cleanup_propagation_max_age_seconds=%d remote_replay_validation_receipt_cleanup_propagation_health_limit=%d remote_replay_validation_receipt_cleanup_propagation_trusted_nodes=%s remote_replay_validation_receipt_replicated_max_age_seconds=%d',
+            'Budget: connection=%s driver=%s timeout_ms=%d max_rows=%d depth=%d/%d retry_limit=%d retryable=%s idempotency=%s request_max_duration_ms=%d request_max_rows_read=%d tenant_max_duration_ms=%d tenant_max_rows_read=%d legacy_replay_mode=%s remote_replay_attestation_mode=%s remote_replay_attestation_max_age_seconds=%d remote_replay_validation_mode=%s remote_replay_validation_receipt_max_age_seconds=%d remote_replay_validation_receipt_reuse_scope=%s remote_replay_validation_receipt_trusted_nodes=%s remote_replay_validation_receipt_propagation_max_age_seconds=%d remote_replay_validation_receipt_propagation_health_limit=%d remote_replay_validation_receipt_propagation_trusted_nodes=%s remote_replay_validation_receipt_cleanup_propagation_max_age_seconds=%d remote_replay_validation_receipt_cleanup_propagation_health_limit=%d remote_replay_validation_receipt_cleanup_propagation_trusted_nodes=%s remote_replay_validation_receipt_replicated_max_age_seconds=%d',
             $plan->connectionName !== '' ? $plan->connectionName : 'default',
             $plan->driver,
             $plan->deadline->remainingMs(),
@@ -199,6 +199,10 @@ final class DbQueryCommand extends Command
             $plan->retryLimit,
             $plan->retryable ? 'yes' : 'no',
             $plan->operation->idempotencyKey !== null && trim($plan->operation->idempotencyKey) !== '' ? 'present' : 'absent',
+            $plan->policy->requestMaxDurationMs,
+            $plan->policy->requestMaxRowsRead,
+            $plan->policy->tenantMaxDurationMs,
+            $plan->policy->tenantMaxRowsRead,
             $plan->policy->legacyReplayMode,
             $plan->policy->remoteReplayAttestationMode,
             $plan->policy->remoteReplayAttestationMaxAgeSeconds,

@@ -128,6 +128,56 @@ final class DatabaseOperationRuntime
             );
         }
 
+        $aggregateQuotaDecision = $this->resolveAggregateQuotaDecision($plan, $context);
+        if ($aggregateQuotaDecision !== null) {
+            $scope = (string) ($aggregateQuotaDecision['scope'] ?? 'request');
+            $metric = (string) ($aggregateQuotaDecision['metric'] ?? 'unknown');
+            $limit = (int) ($aggregateQuotaDecision['limit'] ?? 0);
+            $consumed = (int) ($aggregateQuotaDecision['consumed'] ?? 0);
+            $planned = (int) ($aggregateQuotaDecision['planned'] ?? 0);
+            $projected = (int) ($aggregateQuotaDecision['projected'] ?? 0);
+
+            $snapshot = $this->snapshot(
+                plan: $plan,
+                attempts: 0,
+                durationMs: 0,
+                rowsRead: 0,
+                affectedRows: 0,
+                outcome: 'cancelled',
+                failure: DatabaseOperationalFailure::ResourceExhausted,
+                retryable: false,
+                circuitState: $this->circuitBreaker->currentState($plan->circuitSegment),
+                events: array_merge($events, [
+                    new DatabaseDiagnosticEvent('cancelled', $this->timestampNow(), [
+                        'reason' => 'aggregate_scope_quota_exceeded',
+                        'quota_scope' => $scope,
+                        'quota_metric' => $metric,
+                        'quota_limit' => $limit,
+                        'quota_consumed' => $consumed,
+                        'quota_planned' => $planned,
+                        'quota_projected' => $projected,
+                        'tenant_id' => $aggregateQuotaDecision['tenant_id'] ?? null,
+                    ]),
+                ]),
+            );
+            $this->recordTelemetry($plan, $snapshot);
+
+            throw new DatabaseOperationException(
+                failure: DatabaseOperationalFailure::ResourceExhausted,
+                snapshot: $snapshot,
+                plan: $plan,
+                message: sprintf(
+                    'Database %s aggregate quota [%s] would exceed limit [%d] (consumed=%d planned=%d projected=%d).',
+                    $scope,
+                    $metric,
+                    $limit,
+                    $consumed,
+                    $planned,
+                    $projected,
+                ),
+            );
+        }
+
         if ($plan->detectedDepth > $plan->maxDepth) {
             $snapshot = $this->snapshot(
                 plan: $plan,
@@ -1142,6 +1192,28 @@ final class DatabaseOperationRuntime
         }
 
         return $aggregate;
+    }
+
+    /**
+     * @return array<string, int|string|null>|null
+     */
+    private function resolveAggregateQuotaDecision(DatabaseOperationPlan $plan, DatabaseContext $context): ?array
+    {
+        if (
+            $plan->policy->requestMaxDurationMs <= 0
+            && $plan->policy->requestMaxRowsRead <= 0
+            && $plan->policy->tenantMaxDurationMs <= 0
+            && $plan->policy->tenantMaxRowsRead <= 0
+        ) {
+            return null;
+        }
+
+        $telemetry = $this->resolveTelemetryStore();
+        if (!$telemetry instanceof DatabaseTelemetryStore) {
+            return null;
+        }
+
+        return $telemetry->resolveAggregateQuotaViolation($plan, $context->tenantId);
     }
 
     private function resolveTelemetryStore(): ?DatabaseTelemetryStore

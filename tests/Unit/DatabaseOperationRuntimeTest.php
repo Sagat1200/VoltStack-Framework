@@ -4582,6 +4582,100 @@ final class DatabaseOperationRuntimeTest extends TestCase
         self::assertSame(2, $health->closedSegments);
     }
 
+    public function test_runtime_blocks_operation_when_request_aggregate_rows_quota_would_be_exceeded(): void
+    {
+        $connection = new RuntimeTestConnection([
+            RuntimeTestConnection::queryResult(array_map(
+                static fn (int $id): array => ['id' => $id],
+                range(1, 55),
+            )),
+        ]);
+        $telemetry = new DatabaseTelemetryStore();
+        $runtime = new DatabaseOperationRuntime(new DatabaseCircuitBreaker(), $telemetry);
+        $context = DatabaseContext::empty()->withConnection($connection);
+        $policy = new DatabaseExecutionPolicy(
+            retryLimit: 0,
+            retryBackoffMs: 0,
+            maxRows: 60,
+            requestMaxRowsRead: 100,
+        );
+        $plan = $runtime->plan(new RawOperation(OperationKind::RawQuery, 'SELECT * FROM users', [], 'primary'), $context, $policy);
+
+        $firstResult = $runtime->execute($plan, $context);
+
+        self::assertTrue($firstResult->isSuccess);
+        self::assertSame(1, $connection->queryCalls);
+
+        try {
+            $runtime->execute($plan, $context);
+            self::fail('Request aggregate rows quota should block the second operation.');
+        } catch (DatabaseOperationException $e) {
+            self::assertSame('resource_exhausted', $e->failure->value);
+            self::assertSame('cancelled', $e->snapshot->outcome);
+            self::assertSame(0, $e->snapshot->attempts);
+            self::assertSame('aggregate_scope_quota_exceeded', $e->snapshot->events[1]->details['reason'] ?? null);
+            self::assertSame('request', $e->snapshot->events[1]->details['quota_scope'] ?? null);
+            self::assertSame('rows_read', $e->snapshot->events[1]->details['quota_metric'] ?? null);
+            self::assertSame(100, $e->snapshot->events[1]->details['quota_limit'] ?? null);
+            self::assertSame(55, $e->snapshot->events[1]->details['quota_consumed'] ?? null);
+            self::assertSame(60, $e->snapshot->events[1]->details['quota_planned'] ?? null);
+            self::assertSame(115, $e->snapshot->events[1]->details['quota_projected'] ?? null);
+        }
+
+        self::assertSame(1, $connection->queryCalls);
+
+        $summary = $telemetry->summary();
+        self::assertSame(2, $summary['total_operations']);
+        self::assertSame(1, $summary['completed']);
+        self::assertSame(1, $summary['cancelled']);
+        self::assertSame(1, $summary['resource_governance']['resource_exhausted_operations'] ?? null);
+    }
+
+    public function test_runtime_blocks_operation_when_tenant_aggregate_rows_quota_would_be_exceeded(): void
+    {
+        $connection = new RuntimeTestConnection([
+            RuntimeTestConnection::queryResult(array_map(
+                static fn (int $id): array => ['id' => $id],
+                range(1, 30),
+            )),
+        ]);
+        $telemetry = new DatabaseTelemetryStore();
+        $runtime = new DatabaseOperationRuntime(new DatabaseCircuitBreaker(), $telemetry);
+        $context = DatabaseContext::empty()
+            ->withConnection($connection)
+            ->withTenant('tenant-a');
+        $policy = new DatabaseExecutionPolicy(
+            retryLimit: 0,
+            retryBackoffMs: 0,
+            maxRows: 30,
+            tenantMaxRowsRead: 50,
+        );
+        $plan = $runtime->plan(new RawOperation(OperationKind::RawQuery, 'SELECT * FROM tenant_records', [], 'primary'), $context, $policy);
+
+        $firstResult = $runtime->execute($plan, $context);
+
+        self::assertTrue($firstResult->isSuccess);
+        self::assertSame(1, $connection->queryCalls);
+
+        try {
+            $runtime->execute($plan, $context);
+            self::fail('Tenant aggregate rows quota should block the second operation.');
+        } catch (DatabaseOperationException $e) {
+            self::assertSame('resource_exhausted', $e->failure->value);
+            self::assertSame('cancelled', $e->snapshot->outcome);
+            self::assertSame('aggregate_scope_quota_exceeded', $e->snapshot->events[1]->details['reason'] ?? null);
+            self::assertSame('tenant', $e->snapshot->events[1]->details['quota_scope'] ?? null);
+            self::assertSame('rows_read', $e->snapshot->events[1]->details['quota_metric'] ?? null);
+            self::assertSame('tenant-a', $e->snapshot->events[1]->details['tenant_id'] ?? null);
+            self::assertSame(50, $e->snapshot->events[1]->details['quota_limit'] ?? null);
+            self::assertSame(30, $e->snapshot->events[1]->details['quota_consumed'] ?? null);
+            self::assertSame(30, $e->snapshot->events[1]->details['quota_planned'] ?? null);
+            self::assertSame(60, $e->snapshot->events[1]->details['quota_projected'] ?? null);
+        }
+
+        self::assertSame(1, $connection->queryCalls);
+    }
+
     public function test_runtime_blocks_mutating_operations_when_fallback_policy_detects_degraded_health(): void
     {
         $connection = new RuntimeTestConnection();

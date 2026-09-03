@@ -36,6 +36,8 @@ final class DatabaseQueryCommandTest extends TestCase
         self::assertSame(0, $result['exit']);
         self::assertStringContainsString('Plan: kind=raw_query', $result['stdout']);
         self::assertStringContainsString('Budget: connection=primary', $result['stdout']);
+        self::assertStringContainsString('request_max_duration_ms=0', $result['stdout']);
+        self::assertStringContainsString('tenant_max_rows_read=0', $result['stdout']);
         self::assertStringContainsString('Optimizer: unavailable (raw_sql_mode).', $result['stdout']);
         self::assertStringContainsString('Dry-run activado: no se ejecutaron cambios.', $result['stdout']);
     }

@@ -732,6 +732,7 @@ final class DatabaseServiceProvider extends ServiceProvider
                     'candidate_count_avg' => 0.0,
                     'candidate_count_max' => 0,
                 ],
+                'resource_governance' => DatabaseTelemetryStore::emptyResourceGovernanceSummary(),
                 'alert_sampling' => DatabaseTelemetryStore::emptyAlertSamplingSummary(),
                 'latest' => [],
             ]);

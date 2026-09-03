@@ -95,8 +95,45 @@ final class DatabaseTelemetryStore
             'cumulative_suppressed_alerts' => [],
             'by_fingerprint' => [],
             'by_logical_target' => [],
+            'top_offenders' => [
+                'by_fingerprint' => [],
+                'by_logical_target' => [],
+            ],
             'pruned_records_total' => 0,
             'last_pruned_records' => 0,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public static function emptyResourceGovernanceSummary(): array
+    {
+        return [
+            'observed_operations' => 0,
+            'duration_ms_total' => 0,
+            'rows_read_total' => 0,
+            'affected_rows_total' => 0,
+            'resource_exhausted_operations' => 0,
+            'budget' => [
+                'timeout_ms_total' => 0,
+                'max_rows_total' => 0,
+                'max_rows_peak' => 0,
+                'max_depth_peak' => 0,
+            ],
+            'pressure' => [
+                'near_timeout_operations' => 0,
+                'near_row_limit_operations' => 0,
+                'near_depth_limit_operations' => 0,
+                'slow_query_operations' => 0,
+                'resource_exhausted_operations' => 0,
+                'timeout_utilization_pct_avg' => 0.0,
+                'row_utilization_pct_avg' => 0.0,
+                'depth_utilization_pct_avg' => 0.0,
+                'timeout_pressure_detected' => false,
+                'row_pressure_detected' => false,
+                'depth_pressure_detected' => false,
+            ],
         ];
     }
 
@@ -133,6 +170,7 @@ final class DatabaseTelemetryStore
      *   slow_queries:int,
      *   remote_replay_challenge:array<string, mixed>,
      *   sqg_pipeline:array<string, mixed>,
+     *   resource_governance:array<string, mixed>,
      *   alert_sampling:array<string, mixed>,
      *   latest:list<array<string, scalar|null|array<int, string>>>
      * }
@@ -175,8 +213,10 @@ final class DatabaseTelemetryStore
             'candidate_count_avg' => 0.0,
             'candidate_count_max' => 0,
         ];
+        $resourceGovernance = self::emptyResourceGovernanceSummary();
 
         foreach ($this->entries as $entry) {
+            $plan = $entry['plan'];
             $snapshot = $entry['snapshot'];
             if ($snapshot->outcome === 'completed') {
                 $completed++;
@@ -198,6 +238,7 @@ final class DatabaseTelemetryStore
                 $sqgPipeline,
                 is_array($entry['sqg_pipeline'] ?? null) ? $entry['sqg_pipeline'] : null,
             );
+            self::collectResourceGovernanceSummary($resourceGovernance, $plan, $snapshot);
         }
 
         if ((int) $sqgPipeline['observed_operations'] > 0) {
@@ -206,6 +247,7 @@ final class DatabaseTelemetryStore
             $sqgPipeline['cost_delta_vs_baseline_avg'] = round(((float) $sqgPipeline['cost_delta_vs_baseline_total']) / $observedOperations, 2);
             $sqgPipeline['candidate_count_avg'] = round(((int) $sqgPipeline['candidate_count_total']) / $observedOperations, 2);
         }
+        self::finalizeResourceGovernanceSummary($resourceGovernance);
 
         $latest = array_slice($this->entries, -max(1, $limit));
 
@@ -217,6 +259,7 @@ final class DatabaseTelemetryStore
             'slow_queries' => $slow,
             'remote_replay_challenge' => $remoteReplayChallenge,
             'sqg_pipeline' => $sqgPipeline,
+            'resource_governance' => $resourceGovernance,
             'alert_sampling' => $this->alertSampling,
             'latest' => array_values(array_map(
                 static fn(array $entry): array => self::entryToArray(
@@ -377,6 +420,64 @@ final class DatabaseTelemetryStore
     }
 
     /**
+     * @param array<string, mixed> $summary
+     */
+    private static function collectResourceGovernanceSummary(
+        array &$summary,
+        DatabaseOperationPlan $plan,
+        DatabaseDiagnosticSnapshot $snapshot,
+    ): void {
+        $summary['observed_operations'] = (int) ($summary['observed_operations'] ?? 0) + 1;
+        $summary['duration_ms_total'] = (int) ($summary['duration_ms_total'] ?? 0) + max(0, $snapshot->durationMs);
+        $summary['rows_read_total'] = (int) ($summary['rows_read_total'] ?? 0) + max(0, $snapshot->rowsRead);
+        $summary['affected_rows_total'] = (int) ($summary['affected_rows_total'] ?? 0) + max(0, $snapshot->affectedRows);
+
+        $budget = is_array($summary['budget'] ?? null) ? $summary['budget'] : self::emptyResourceGovernanceSummary()['budget'];
+        $pressure = is_array($summary['pressure'] ?? null) ? $summary['pressure'] : self::emptyResourceGovernanceSummary()['pressure'];
+
+        $budget['timeout_ms_total'] = (int) ($budget['timeout_ms_total'] ?? 0) + max(0, $plan->policy->timeoutMs);
+        $budget['max_rows_total'] = (int) ($budget['max_rows_total'] ?? 0) + max(0, $plan->maxRows);
+        $budget['max_rows_peak'] = max((int) ($budget['max_rows_peak'] ?? 0), max(0, $plan->maxRows));
+        $budget['max_depth_peak'] = max((int) ($budget['max_depth_peak'] ?? 0), max(0, $plan->maxDepth));
+
+        $timeoutUtilization = self::calculateUtilizationPercentage($snapshot->durationMs, $plan->policy->timeoutMs);
+        $rowUtilization = self::calculateUtilizationPercentage($snapshot->rowsRead, $plan->maxRows);
+        $depthUtilization = self::calculateUtilizationPercentage($plan->detectedDepth, $plan->maxDepth);
+        $resourceExhausted = $snapshot->failure === DatabaseOperationalFailure::ResourceExhausted;
+
+        $pressure['_timeout_utilization_pct_sum'] = ((float) ($pressure['_timeout_utilization_pct_sum'] ?? 0.0)) + $timeoutUtilization;
+        $pressure['_row_utilization_pct_sum'] = ((float) ($pressure['_row_utilization_pct_sum'] ?? 0.0)) + $rowUtilization;
+        $pressure['_depth_utilization_pct_sum'] = ((float) ($pressure['_depth_utilization_pct_sum'] ?? 0.0)) + $depthUtilization;
+        $pressure['slow_query_operations'] = (int) ($pressure['slow_query_operations'] ?? 0) + ($snapshot->slowQuery ? 1 : 0);
+        $pressure['near_timeout_operations'] = (int) ($pressure['near_timeout_operations'] ?? 0) + ($timeoutUtilization >= 80.0 ? 1 : 0);
+        $pressure['near_row_limit_operations'] = (int) ($pressure['near_row_limit_operations'] ?? 0) + ($rowUtilization >= 80.0 ? 1 : 0);
+        $pressure['near_depth_limit_operations'] = (int) ($pressure['near_depth_limit_operations'] ?? 0) + ($depthUtilization >= 80.0 ? 1 : 0);
+        $pressure['resource_exhausted_operations'] = (int) ($pressure['resource_exhausted_operations'] ?? 0) + ($resourceExhausted ? 1 : 0);
+
+        $summary['resource_exhausted_operations'] = (int) ($summary['resource_exhausted_operations'] ?? 0) + ($resourceExhausted ? 1 : 0);
+        $summary['budget'] = $budget;
+        $summary['pressure'] = $pressure;
+    }
+
+    /**
+     * @param array<string, mixed> $summary
+     */
+    private static function finalizeResourceGovernanceSummary(array &$summary): void
+    {
+        $normalized = self::normalizeResourceGovernanceSummary($summary);
+        $pressure = is_array($normalized['pressure'] ?? null) ? $normalized['pressure'] : [];
+
+        $pressure['timeout_pressure_detected'] = ((int) ($pressure['near_timeout_operations'] ?? 0) > 0)
+            || ((int) ($pressure['slow_query_operations'] ?? 0) > 0);
+        $pressure['row_pressure_detected'] = ((int) ($pressure['near_row_limit_operations'] ?? 0) > 0)
+            || ((int) ($pressure['resource_exhausted_operations'] ?? 0) > 0);
+        $pressure['depth_pressure_detected'] = (int) ($pressure['near_depth_limit_operations'] ?? 0) > 0;
+        $normalized['pressure'] = $pressure;
+
+        $summary = $normalized;
+    }
+
+    /**
      * @return array<string, string|int|array<string, mixed>|null>|null
      */
     private static function extractRemoteReplayChallengeTelemetry(DatabaseDiagnosticSnapshot $snapshot): ?array
@@ -501,6 +602,60 @@ final class DatabaseTelemetryStore
      * @param array<string, mixed> $summary
      * @return array<string, mixed>
      */
+    public static function normalizeResourceGovernanceSummary(array $summary): array
+    {
+        $normalized = self::emptyResourceGovernanceSummary();
+        $budget = is_array($summary['budget'] ?? null) ? $summary['budget'] : [];
+        $pressure = is_array($summary['pressure'] ?? null) ? $summary['pressure'] : [];
+        $observedOperations = max(0, (int) ($summary['observed_operations'] ?? 0));
+        $timeoutUtilizationSum = (float) ($pressure['_timeout_utilization_pct_sum'] ?? 0.0);
+        $rowUtilizationSum = (float) ($pressure['_row_utilization_pct_sum'] ?? 0.0);
+        $depthUtilizationSum = (float) ($pressure['_depth_utilization_pct_sum'] ?? 0.0);
+
+        $normalized['observed_operations'] = $observedOperations;
+        $normalized['duration_ms_total'] = max(0, (int) ($summary['duration_ms_total'] ?? 0));
+        $normalized['rows_read_total'] = max(0, (int) ($summary['rows_read_total'] ?? 0));
+        $normalized['affected_rows_total'] = max(0, (int) ($summary['affected_rows_total'] ?? 0));
+        $normalized['resource_exhausted_operations'] = max(0, (int) ($summary['resource_exhausted_operations'] ?? 0));
+
+        $normalized['budget']['timeout_ms_total'] = max(0, (int) ($budget['timeout_ms_total'] ?? 0));
+        $normalized['budget']['max_rows_total'] = max(0, (int) ($budget['max_rows_total'] ?? 0));
+        $normalized['budget']['max_rows_peak'] = max(0, (int) ($budget['max_rows_peak'] ?? 0));
+        $normalized['budget']['max_depth_peak'] = max(0, (int) ($budget['max_depth_peak'] ?? 0));
+
+        $normalized['pressure']['near_timeout_operations'] = max(0, (int) ($pressure['near_timeout_operations'] ?? 0));
+        $normalized['pressure']['near_row_limit_operations'] = max(0, (int) ($pressure['near_row_limit_operations'] ?? 0));
+        $normalized['pressure']['near_depth_limit_operations'] = max(0, (int) ($pressure['near_depth_limit_operations'] ?? 0));
+        $normalized['pressure']['slow_query_operations'] = max(0, (int) ($pressure['slow_query_operations'] ?? 0));
+        $normalized['pressure']['resource_exhausted_operations'] = max(0, (int) ($pressure['resource_exhausted_operations'] ?? 0));
+        $normalized['pressure']['timeout_utilization_pct_avg'] = $observedOperations > 0
+            ? round($timeoutUtilizationSum / $observedOperations, 2)
+            : round((float) ($pressure['timeout_utilization_pct_avg'] ?? 0.0), 2);
+        $normalized['pressure']['row_utilization_pct_avg'] = $observedOperations > 0
+            ? round($rowUtilizationSum / $observedOperations, 2)
+            : round((float) ($pressure['row_utilization_pct_avg'] ?? 0.0), 2);
+        $normalized['pressure']['depth_utilization_pct_avg'] = $observedOperations > 0
+            ? round($depthUtilizationSum / $observedOperations, 2)
+            : round((float) ($pressure['depth_utilization_pct_avg'] ?? 0.0), 2);
+        $normalized['pressure']['timeout_pressure_detected'] = (bool) ($pressure['timeout_pressure_detected'] ?? false);
+        $normalized['pressure']['row_pressure_detected'] = (bool) ($pressure['row_pressure_detected'] ?? false);
+        $normalized['pressure']['depth_pressure_detected'] = (bool) ($pressure['depth_pressure_detected'] ?? false);
+
+        return $normalized;
+    }
+
+    private static function calculateUtilizationPercentage(int $used, int $budget): float
+    {
+        $safeBudget = max(1, $budget);
+        $safeUsed = max(0, $used);
+
+        return round(min(100.0, ($safeUsed / $safeBudget) * 100.0), 2);
+    }
+
+    /**
+     * @param array<string, mixed> $summary
+     * @return array<string, mixed>
+     */
     private static function normalizeAlertSamplingSummary(array $summary): array
     {
         $normalized = self::emptyAlertSamplingSummary();
@@ -522,6 +677,12 @@ final class DatabaseTelemetryStore
             : [];
         $normalized['by_fingerprint'] = is_array($summary['by_fingerprint'] ?? null) ? $summary['by_fingerprint'] : [];
         $normalized['by_logical_target'] = is_array($summary['by_logical_target'] ?? null) ? $summary['by_logical_target'] : [];
+        $normalized['top_offenders'] = is_array($summary['top_offenders'] ?? null)
+            ? array_merge(
+                self::emptyAlertSamplingSummary()['top_offenders'],
+                $summary['top_offenders'],
+            )
+            : self::emptyAlertSamplingSummary()['top_offenders'];
         $normalized['pruned_records_total'] = max(0, (int) ($summary['pruned_records_total'] ?? 0));
         $normalized['last_pruned_records'] = max(0, (int) ($summary['last_pruned_records'] ?? 0));
 

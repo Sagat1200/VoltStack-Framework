@@ -143,6 +143,10 @@ final readonly class DatabaseTelemetryDispatchPreparation
 
         $alertSampling['by_fingerprint'] = $this->finalizeGroupedAlerts($byFingerprint);
         $alertSampling['by_logical_target'] = $this->finalizeGroupedAlerts($byLogicalTarget);
+        $alertSampling['top_offenders'] = [
+            'by_fingerprint' => $this->buildTopOffenders($alertSampling['by_fingerprint'], 'fingerprint'),
+            'by_logical_target' => $this->buildTopOffenders($alertSampling['by_logical_target'], 'logical_target'),
+        ];
 
         return $alertSampling;
     }
@@ -208,6 +212,75 @@ final readonly class DatabaseTelemetryDispatchPreparation
         }
 
         return $groups;
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $groups
+     * @return list<array<string, mixed>>
+     */
+    private function buildTopOffenders(array $groups, string $dimension): array
+    {
+        $offenders = [];
+
+        foreach ($groups as $groupKey => $group) {
+            if (!is_array($group)) {
+                continue;
+            }
+
+            $alerts = is_array($group['alerts'] ?? null) ? $group['alerts'] : [];
+            $topAlertName = null;
+            $topAlertStats = null;
+
+            foreach ($alerts as $alertName => $alertStats) {
+                if (!is_array($alertStats)) {
+                    continue;
+                }
+
+                if (
+                    $topAlertStats === null
+                    || $this->compareAlertStats($alertName, $alertStats, (string) $topAlertName, $topAlertStats) < 0
+                ) {
+                    $topAlertName = (string) $alertName;
+                    $topAlertStats = $alertStats;
+                }
+            }
+
+            $offenders[] = [
+                $dimension => $groupKey,
+                'operations' => (int) ($group['operations'] ?? 0),
+                'suppressed_total' => (int) ($group['suppressed_total'] ?? 0),
+                'visible_total' => (int) ($group['visible_total'] ?? 0),
+                'not_promoted_total' => (int) ($group['not_promoted_total'] ?? 0),
+                'top_alert_name' => $topAlertName,
+                'top_alert' => $topAlertStats,
+            ];
+        }
+
+        usort($offenders, static function (array $left, array $right) use ($dimension): int {
+            return
+                (($right['suppressed_total'] ?? 0) <=> ($left['suppressed_total'] ?? 0))
+                ?: (($right['visible_total'] ?? 0) <=> ($left['visible_total'] ?? 0))
+                ?: (($right['not_promoted_total'] ?? 0) <=> ($left['not_promoted_total'] ?? 0))
+                ?: (($right['operations'] ?? 0) <=> ($left['operations'] ?? 0))
+                ?: strcmp((string) ($left[$dimension] ?? ''), (string) ($right[$dimension] ?? ''));
+        });
+
+        return array_values($offenders);
+    }
+
+    /**
+     * Returns -1 when $candidate should rank above $current.
+     *
+     * @param array<string, mixed> $candidate
+     * @param array<string, mixed> $current
+     */
+    private function compareAlertStats(string $candidateName, array $candidate, string $currentName, array $current): int
+    {
+        return
+            (((int) ($current['suppressed'] ?? 0)) <=> ((int) ($candidate['suppressed'] ?? 0)))
+            ?: (((int) ($current['visible'] ?? 0)) <=> ((int) ($candidate['visible'] ?? 0)))
+            ?: (((int) ($current['not_promoted'] ?? 0)) <=> ((int) ($candidate['not_promoted'] ?? 0)))
+            ?: strcmp($candidateName, $currentName);
     }
 
     private function withPayload(TelemetrySignal $signal, DatabaseTelemetryReport $report): TelemetrySignal

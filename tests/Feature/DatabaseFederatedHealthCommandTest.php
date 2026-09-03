@@ -61,6 +61,15 @@ final class DatabaseFederatedHealthCommandTest extends TestCase
         self::assertStringContainsString('"snapshots": 2', $json['stdout']);
         self::assertStringContainsString('"nodes": 2', $json['stdout']);
         self::assertStringContainsString('"total_operations": 2', $json['stdout']);
+        self::assertStringContainsString('"resource_governance"', $json['stdout']);
+        self::assertStringContainsString('"view_hints"', $json['stdout']);
+        self::assertStringContainsString('"summary"', $json['stdout']);
+        self::assertStringContainsString('"top_offenders"', $json['stdout']);
+        self::assertStringContainsString('"signal_coverage"', $json['stdout']);
+        self::assertStringContainsString('"alert_sampling_detail": false', $json['stdout']);
+        self::assertStringContainsString('"resource_governance_summary": true', $json['stdout']);
+        self::assertStringContainsString('"presets"', $json['stdout']);
+        self::assertStringContainsString('"recommended_presets"', $json['stdout']);
     }
 
     public function test_health_snapshot_persists_remote_challenge_cluster_advertisement(): void

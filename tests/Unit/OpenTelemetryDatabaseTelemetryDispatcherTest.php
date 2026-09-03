@@ -547,6 +547,7 @@ final class OpenTelemetryDatabaseTelemetryDispatcherTest extends TestCase
         self::assertStringContainsString('"suppressed_total":3', $secondRecord['body']['stringValue'] ?? '');
         self::assertStringContainsString('"state":"suppressed"', $secondRecord['body']['stringValue'] ?? '');
         self::assertStringContainsString('"by_logical_target":{"test_records"', $secondRecord['body']['stringValue'] ?? '');
+        self::assertStringContainsString('"top_offenders":{"by_fingerprint"', $secondRecord['body']['stringValue'] ?? '');
     }
 
     public function test_it_throws_when_collector_returns_error_status(): void

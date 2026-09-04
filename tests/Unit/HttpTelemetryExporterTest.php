@@ -36,19 +36,19 @@ final class HttpTelemetryExporterTest extends TestCase
         );
 
         $exporter->export(new TelemetrySignal(
-            name: 'database_telemetry',
+            name: 'runtime_telemetry',
             type: 'report',
-            source: 'database',
+            source: 'runtime',
             occurredAt: '2026-08-29T10:00:00+00:00',
             payload: [
                 'request_id' => 'req-1',
-                'summary' => ['total_operations' => 2],
+                'summary' => ['completed_actions' => 2],
             ],
             attributes: [
                 'summary' => ['completed' => 2],
             ],
             alerts: [
-                ['name' => 'database.remote_replay_challenge.incompatible', 'severity' => 'critical'],
+                ['name' => 'runtime.protocol.degraded', 'severity' => 'critical'],
             ],
             requestId: 'req-1',
             tenantId: 'tenant-a',
@@ -59,13 +59,13 @@ final class HttpTelemetryExporterTest extends TestCase
         self::assertSame('https://monitoring.internal/voltstack/telemetry', $captured['endpoint']);
         self::assertSame(2500, $captured['timeout_ms']);
         self::assertSame('Bearer token', $captured['headers']['Authorization']);
-        self::assertSame('database_telemetry', $captured['headers']['X-VoltStack-Event-Type']);
+        self::assertSame('runtime_telemetry', $captured['headers']['X-VoltStack-Event-Type']);
         self::assertSame('report', $captured['payload']['signal_type']);
-        self::assertSame('database', $captured['payload']['source']);
+        self::assertSame('runtime', $captured['payload']['source']);
         self::assertSame('req-1', $captured['payload']['request_id']);
         self::assertSame('tenant-a', $captured['payload']['tenant_id']);
         self::assertSame('node-a', $captured['payload']['node_id']);
-        self::assertSame(2, $captured['payload']['payload']['summary']['total_operations']);
-        self::assertSame('database.remote_replay_challenge.incompatible', $captured['payload']['alerts'][0]['name']);
+        self::assertSame(2, $captured['payload']['payload']['summary']['completed_actions']);
+        self::assertSame('runtime.protocol.degraded', $captured['payload']['alerts'][0]['name']);
     }
 }

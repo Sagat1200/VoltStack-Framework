@@ -135,7 +135,6 @@ Archivos de configuración.
 config/
 ├── app.php
 ├── cache.php
-├── database.php
 ├── runtime.php
 ├── view.php
 ├── protocol.php
@@ -347,7 +346,6 @@ Quantum/
 ├── Container/
 ├── Controllers/
 ├── Cookies/
-├── Database/
 ├── Encryption/
 ├── Events/
 ├── Exceptions/

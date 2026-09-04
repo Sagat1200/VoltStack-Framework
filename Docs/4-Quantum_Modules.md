@@ -70,7 +70,6 @@ Quantum
 ├── Container
 ├── Controllers
 ├── Cookies
-├── Database
 ├── Encryption
 ├── Events
 ├── Exceptions
@@ -566,24 +565,6 @@ Concurrencia y ejecución paralela.
 - fibers
 - task scheduling
 - concurrent rendering
-
----
-
-## Quantum/Database
-
-### Responsabilidad
-
-Infraestructura de base de datos.
-
-### Funciones
-
-- connections
-- query builder
-- ORM
-- transactions
-- reactive models
-
----
 
 ## Quantum/Auth
 

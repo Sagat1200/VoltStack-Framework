@@ -8,7 +8,7 @@ Su propuesta combina:
 - componentes reactivos impulsados por PHP,
 - navegación SPA sin depender de un framework frontend pesado,
 - compatibilidad con runtimes persistentes como FrankenPHP,
-- y un núcleo modular propio para HTTP, routing, views, seguridad, consola y base de datos.
+- y un núcleo modular propio para HTTP, routing, views, seguridad, consola y runtime reactivo.
 
 ## Qué hace diferente a VoltStack
 
@@ -18,7 +18,7 @@ VoltStack no intenta ser solo un micro-framework HTTP con utilidades añadidas d
 - `Reactive Native`: la reactividad forma parte del framework, no es un addon externo.
 - `SPA by Default`: el runtime frontend y el protocolo reactivo forman parte del stack.
 - `Persistent Runtime Aware`: está pensado para ejecutarse de forma segura sobre workers persistentes.
-- `Operationally Minded`: incluye capacidades reales para observabilidad, salud e idempotencia en operaciones de base de datos.
+- `Operationally Minded`: incluye capacidades reales para observabilidad, salud del runtime y ejecución predecible.
 
 ## Capacidades llamativas del framework
 
@@ -116,32 +116,18 @@ El framework integra varias piezas de seguridad:
 
 La seguridad no está tratada como un detalle de middleware suelto, sino como parte del modelo operativo del framework.
 
-### Subsistema de base de datos orientado a operación real
+### Observabilidad y disciplina operacional
 
-Una de las capacidades más distintivas del proyecto hoy está en base de datos. VoltStack incluye:
+VoltStack incorpora una capa de observabilidad y runtime pensada para operar con claridad en entornos persistentes:
 
-- DBAL multi-driver,
-- schema introspection para `sqlite`, `pgsql`, `mysql` y `mariadb`,
-- migraciones,
-- rollback y recovery plan,
-- seeders,
-- factories,
-- ORM/metadata layer en desarrollo activo,
-- runtime operacional para queries y mutaciones.
+- telemetry exportable,
+- señales canónicas,
+- control de scopes por request,
+- aislamiento de estado entre ejecuciones,
+- manejo centralizado de errores,
+- y utilidades para inspección y diagnóstico del runtime.
 
-Ese runtime de base de datos añade además:
-
-- circuit breaker,
-- deadlines y presupuestos,
-- límites de profundidad y filas,
-- telemetry,
-- health stores,
-- idempotencia persistente,
-- replay confirmado,
-- verificación de evidencia de confirmación,
-- soporte para replays federados entre nodos.
-
-Para un framework PHP joven, este nivel de preocupación operativa es especialmente llamativo.
+Eso permite mantener una ejecución más predecible sin diluir el enfoque `PHP First` del framework.
 
 ### Consola y tooling
 
@@ -150,11 +136,7 @@ VoltStack incluye CLI propia con comandos para:
 - `serve`,
 - cache de vistas,
 - cache de rutas,
-- generación de controllers, actions, pages, components, layouts y views,
-- migraciones,
-- health/idempotency de DB,
-- schema diff/describe/status,
-- seeders y factories.
+- generación de controllers, actions, pages, components, layouts y views.
 
 ## Filosofía de diseño
 

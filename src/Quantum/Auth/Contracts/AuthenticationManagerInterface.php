@@ -8,6 +8,11 @@ use Quantum\Auth\Context\AuthenticationContext;
 
 interface AuthenticationManagerInterface
 {
+    /**
+     * @param array<string, mixed> $credentials
+     */
+    public function attempt(array $credentials): bool;
+
     public function user(): mixed;
 
     public function setUser(mixed $user): void;

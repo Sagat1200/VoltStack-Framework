@@ -20,6 +20,32 @@ final class AuthManager implements AuthenticationManagerInterface
         private readonly AuthenticationOrchestratorInterface $orchestrator,
     ) {}
 
+
+    /**
+     * @param array<string, mixed> $credentials
+     */
+    public function attempt(array $credentials): bool
+    {
+        $decision = $this->orchestrator->execute(
+            new AuthenticationOperationContext(
+                operation: 'authenticate',
+                request: new AuthenticationRequest(
+                    requestId: $this->runtimeContext()->requestId(),
+                    transport: 'runtime',
+                    attributes: ['credentials' => $credentials],
+                ),
+            ),
+        );
+
+        if (! $decision->isAuthenticated() || $decision->context === null) {
+            return false;
+        }
+
+        $this->accessor->put($decision->context);
+
+        return true;
+    }
+
     public function user(): mixed
     {
         return $this->context()?->identity;

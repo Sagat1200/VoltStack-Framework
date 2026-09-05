@@ -5,10 +5,14 @@ declare(strict_types=1);
 namespace VoltStack\Framework;
 
 use Quantum\Config\ConfigRepository;
+use Quantum\Auth\Authenticators\PasswordAuthenticator;
 use Quantum\Auth\AuthManager;
 use Quantum\Auth\Context\AuthenticationContextAccessor;
+use Quantum\Auth\Contracts\AuthenticatorInterface;
 use Quantum\Auth\Contracts\AuthenticationManagerInterface;
 use Quantum\Auth\Contracts\AuthenticationOrchestratorInterface;
+use Quantum\Auth\Contracts\IdentityProviderInterface;
+use Quantum\Auth\Identity\LocalIdentityProvider;
 use Quantum\Auth\Runtime\AuthenticationOrchestrator;
 use Quantum\Cache\CacheManager;
 use Quantum\Cache\Repository as CacheRepository;
@@ -288,6 +292,14 @@ class Application extends Container
 
         if (! isset($this->bindings[AuthenticationContextAccessor::class])) {
             $this->scoped(AuthenticationContextAccessor::class);
+        }
+
+        if (! isset($this->bindings[IdentityProviderInterface::class])) {
+            $this->scoped(IdentityProviderInterface::class, LocalIdentityProvider::class);
+        }
+
+        if (! isset($this->bindings[AuthenticatorInterface::class])) {
+            $this->scoped(AuthenticatorInterface::class, PasswordAuthenticator::class);
         }
 
         if (! isset($this->bindings[AuthenticationOrchestratorInterface::class])) {

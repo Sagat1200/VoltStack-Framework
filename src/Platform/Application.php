@@ -6,6 +6,10 @@ namespace VoltStack\Framework;
 
 use Quantum\Config\ConfigRepository;
 use Quantum\Auth\AuthManager;
+use Quantum\Auth\Context\AuthenticationContextAccessor;
+use Quantum\Auth\Contracts\AuthenticationManagerInterface;
+use Quantum\Auth\Contracts\AuthenticationOrchestratorInterface;
+use Quantum\Auth\Runtime\AuthenticationOrchestrator;
 use Quantum\Cache\CacheManager;
 use Quantum\Cache\Repository as CacheRepository;
 use Quantum\Compilation\ArtifactStore;
@@ -282,8 +286,23 @@ class Application extends Container
             $this->singleton(CsrfTokenManager::class, fn(Application $app) => new CsrfTokenManager($app));
         }
 
+        if (! isset($this->bindings[AuthenticationContextAccessor::class])) {
+            $this->scoped(AuthenticationContextAccessor::class);
+        }
+
+        if (! isset($this->bindings[AuthenticationOrchestratorInterface::class])) {
+            $this->scoped(AuthenticationOrchestratorInterface::class, AuthenticationOrchestrator::class);
+        }
+
         if (! isset($this->bindings[AuthManager::class])) {
-            $this->scoped(AuthManager::class);
+            $this->scoped(AuthManager::class, fn(Application $app) => new AuthManager(
+                $app->make(AuthenticationContextAccessor::class),
+                $app->make(AuthenticationOrchestratorInterface::class),
+            ));
+        }
+
+        if (! isset($this->bindings[AuthenticationManagerInterface::class])) {
+            $this->scoped(AuthenticationManagerInterface::class, fn(Application $app) => $app->make(AuthManager::class));
         }
 
         if (! isset($this->bindings[CsrfMiddleware::class])) {

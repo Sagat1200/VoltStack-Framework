@@ -15,9 +15,12 @@ use Quantum\Auth\Contracts\AuthenticatorResolverInterface;
 use Quantum\Auth\Contracts\AuthenticationManagerInterface;
 use Quantum\Auth\Contracts\AuthenticationOrchestratorInterface;
 use Quantum\Auth\Contracts\IdentityProviderInterface;
+use Quantum\Auth\Contracts\PasswordPolicyInterface;
 use Quantum\Auth\Identity\LocalIdentityProvider;
+use Quantum\Auth\Passwords\PasswordPolicy;
 use Quantum\Auth\Runtime\AuthenticationOrchestrator;
 use Quantum\Auth\Runtime\DefaultAuthenticatorResolver;
+use Quantum\Auth\Sessions\FileAuthenticationSessionRepository;
 use Quantum\Auth\Sessions\InMemoryAuthenticationSessionRepository;
 use Quantum\Cache\CacheManager;
 use Quantum\Cache\Repository as CacheRepository;
@@ -303,12 +306,25 @@ class Application extends Container
             $this->scoped(IdentityProviderInterface::class, LocalIdentityProvider::class);
         }
 
+        if (! isset($this->bindings[PasswordPolicyInterface::class])) {
+            $this->scoped(PasswordPolicyInterface::class, PasswordPolicy::class);
+        }
+
         if (! isset($this->bindings[AuthenticatorInterface::class])) {
             $this->scoped(AuthenticatorInterface::class, PasswordAuthenticator::class);
         }
 
         if (! isset($this->bindings[AuthenticationSessionRepositoryInterface::class])) {
-            $this->singleton(AuthenticationSessionRepositoryInterface::class, InMemoryAuthenticationSessionRepository::class);
+            $this->singleton(AuthenticationSessionRepositoryInterface::class, function (Application $app): AuthenticationSessionRepositoryInterface {
+                $driver = (string) $app->config('auth.session.driver', 'memory');
+
+                return match (strtolower(trim($driver))) {
+                    'file' => new FileAuthenticationSessionRepository(
+                        $app->storagePath('framework/auth/sessions'),
+                    ),
+                    default => new InMemoryAuthenticationSessionRepository(),
+                };
+            });
         }
 
         if (! isset($this->bindings[SessionAuthenticator::class])) {

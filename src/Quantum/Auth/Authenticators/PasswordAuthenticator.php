@@ -7,8 +7,11 @@ namespace Quantum\Auth\Authenticators;
 use Quantum\Auth\Context\AuthenticationContext;
 use Quantum\Auth\Contracts\AuthenticatorInterface;
 use Quantum\Auth\Contracts\IdentityProviderInterface;
+use Quantum\Auth\Contracts\PasswordPolicyInterface;
 use Quantum\Auth\Credentials\PasswordCredentials;
 use Quantum\Auth\Decisions\AuthenticationDecision;
+use Quantum\Auth\Exceptions\IdentityNotEligibleException;
+use Quantum\Auth\Exceptions\InvalidCredentialsException;
 use Quantum\Auth\Identity\IdentityReference;
 use Quantum\Auth\Runtime\AuthenticationOperationContext;
 
@@ -16,6 +19,7 @@ final class PasswordAuthenticator implements AuthenticatorInterface
 {
     public function __construct(
         private readonly IdentityProviderInterface $identityProvider,
+        private readonly PasswordPolicyInterface $passwordPolicy,
     ) {}
 
     public function supports(AuthenticationOperationContext $context): bool
@@ -36,6 +40,7 @@ final class PasswordAuthenticator implements AuthenticatorInterface
             return AuthenticationDecision::rejected([
                 'reason' => 'missing_credentials',
                 'authenticator' => 'password',
+                'exception' => InvalidCredentialsException::class,
             ]);
         }
 
@@ -45,15 +50,28 @@ final class PasswordAuthenticator implements AuthenticatorInterface
             return AuthenticationDecision::rejected([
                 'reason' => 'invalid_credentials',
                 'authenticator' => 'password',
+                'exception' => InvalidCredentialsException::class,
+            ]);
+        }
+
+        $securityState = $this->identityProvider->securityStateFor($identity);
+
+        if (! $securityState->isEligibleForAuthentication()) {
+            return AuthenticationDecision::rejected([
+                'reason' => 'identity_not_eligible',
+                'authenticator' => 'password',
+                'security_state' => $securityState->value,
+                'exception' => IdentityNotEligibleException::class,
             ]);
         }
 
         $passwordHash = $this->identityProvider->passwordHashFor($identity);
 
-        if (! is_string($passwordHash) || $passwordHash === '' || ! password_verify($credentials->password, $passwordHash)) {
+        if (! is_string($passwordHash) || $passwordHash === '' || ! $this->passwordPolicy->verify($credentials->password, $passwordHash)) {
             return AuthenticationDecision::rejected([
                 'reason' => 'invalid_credentials',
                 'authenticator' => 'password',
+                'exception' => InvalidCredentialsException::class,
             ]);
         }
 
@@ -70,6 +88,7 @@ final class PasswordAuthenticator implements AuthenticatorInterface
             [
                 'authenticator' => 'password',
                 'identifier' => $credentials->identifier,
+                'password_needs_rehash' => $this->passwordPolicy->needsRehash($passwordHash),
             ],
         );
     }

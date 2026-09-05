@@ -6,6 +6,7 @@ namespace VoltStack\Test\Feature;
 
 use PHPUnit\Framework\TestCase;
 use Quantum\Auth\Contracts\AuthenticationManagerInterface;
+use Quantum\Auth\Exceptions\IdentityNotEligibleException;
 use Quantum\Auth\Support\AuthenticationHttpState;
 use Quantum\Config\ConfigRepository;
 use Quantum\Facades\Auth;
@@ -157,6 +158,39 @@ final class AuthManagerTest extends TestCase
         self::assertFalse($payload['check']);
         self::assertNull($payload['id']);
         self::assertFalse($payload['context']);
+    }
+
+    public function test_auth_manager_attempt_respects_configured_password_policy(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 23,
+                'identifier' => 'policy-user@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'type' => 'user',
+            ],
+        ]);
+        $app->make(ConfigRepository::class)->set('auth.password.min_length', 20);
+
+        $router = $app->make(Router::class);
+        $router->get('/auth-attempt-policy', function (): array {
+            return [
+                'ok' => auth()->attempt([
+                    'identifier' => 'policy-user@example.com',
+                    'password' => 'secret-123',
+                ]),
+                'check' => auth()->check(),
+            ];
+        });
+
+        $response = $app->make(HttpKernel::class)->handle(Request::create('/auth-attempt-policy'));
+
+        /** @var array<string, mixed> $payload */
+        $payload = json_decode($response->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertFalse($payload['ok']);
+        self::assertFalse($payload['check']);
     }
 
     public function test_auth_manager_restores_authenticated_session_across_requests_and_logout_clears_it(): void
@@ -345,5 +379,204 @@ final class AuthManagerTest extends TestCase
         self::assertFalse($payload['check']);
         self::assertNull($payload['id']);
         self::assertStringContainsString('Max-Age=0', $recoveryResponse->headers()['Set-Cookie'] ?? '');
+    }
+
+    public function test_attempt_or_fail_throws_when_identity_is_not_eligible(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 61,
+                'identifier' => 'locked-user@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'security_state' => 'locked',
+                'type' => 'user',
+            ],
+        ]);
+
+        $router = $app->make(Router::class);
+        $router->get('/auth-attempt-or-fail', function (): void {
+            auth()->attemptOrFail([
+                'identifier' => 'locked-user@example.com',
+                'password' => 'secret-123',
+            ]);
+        });
+
+        $response = $app->make(HttpKernel::class)->handle(Request::create(
+            '/auth-attempt-or-fail',
+            server: ['HTTP_ACCEPT' => 'application/json'],
+        ));
+
+        /** @var array<string, mixed> $payload */
+        $payload = json_decode($response->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(401, $response->statusCode());
+        self::assertSame('Identity is not eligible for authentication.', $payload['message'] ?? null);
+        self::assertSame('auth.identity_not_eligible', $response->headers()['X-Volt-Error-Code'] ?? null);
+        self::assertSame('Session realm="VoltStack", Password realm="VoltStack"', $response->headers()['WWW-Authenticate'] ?? null);
+    }
+
+    public function test_auth_manager_can_use_file_session_driver(): void
+    {
+        $basePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-auth-file-driver-' . bin2hex(random_bytes(4));
+        @mkdir($basePath . DIRECTORY_SEPARATOR . 'config', 0777, true);
+        @mkdir($basePath . DIRECTORY_SEPARATOR . 'storage', 0777, true);
+
+        try {
+            $app = new Application($basePath);
+            $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+                [
+                    'id' => 71,
+                    'identifier' => 'file-driver@example.com',
+                    'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                    'type' => 'user',
+                ],
+            ]);
+            $app->make(ConfigRepository::class)->set('auth.session.driver', 'file');
+
+            $router = $app->make(Router::class);
+            $router->get('/file-driver-login', function (): array {
+                return [
+                    'ok' => auth()->attempt([
+                        'identifier' => 'file-driver@example.com',
+                        'password' => 'secret-123',
+                    ]),
+                ];
+            });
+
+            $response = $app->make(HttpKernel::class)->handle(Request::create('/file-driver-login'));
+            $sessionId = $response->headers()['X-Auth-Session'] ?? null;
+
+            self::assertIsString($sessionId);
+            self::assertFileExists($basePath . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'auth' . DIRECTORY_SEPARATOR . 'sessions' . DIRECTORY_SEPARATOR . $sessionId . '.json');
+        } finally {
+            $sessionFiles = glob($basePath . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'auth' . DIRECTORY_SEPARATOR . 'sessions' . DIRECTORY_SEPARATOR . '*.json');
+            foreach ((array) $sessionFiles as $file) {
+                @unlink((string) $file);
+            }
+            @rmdir($basePath . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'auth' . DIRECTORY_SEPARATOR . 'sessions');
+            @rmdir($basePath . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'auth');
+            @rmdir($basePath . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework');
+            @rmdir($basePath . DIRECTORY_SEPARATOR . 'storage');
+            @rmdir($basePath . DIRECTORY_SEPARATOR . 'config');
+            @rmdir($basePath);
+        }
+    }
+
+    public function test_session_can_rotate_on_recover(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 81,
+                'identifier' => 'rotate-user@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'type' => 'user',
+            ],
+        ]);
+        $app->make(ConfigRepository::class)->set('auth.session.rotate_on_recover', true);
+
+        $router = $app->make(Router::class);
+        $router->get('/rotate-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'rotate-user@example.com',
+                'password' => 'secret-123',
+            ])];
+        });
+        $router->get('/rotate-me', function (): array {
+            return [
+                'check' => auth()->check(),
+                'id' => auth()->id(),
+                'session_id' => auth()->context()?->attribute('session_id'),
+            ];
+        });
+
+        $kernel = $app->make(HttpKernel::class);
+        $loginResponse = $kernel->handle(Request::create('/rotate-login'));
+        $originalSessionId = $loginResponse->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($originalSessionId);
+
+        $meResponse = $kernel->handle(Request::create(
+            '/rotate-me',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $originalSessionId],
+        ));
+
+        /** @var array<string, mixed> $payload */
+        $payload = json_decode($meResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+        $rotatedSessionId = $meResponse->headers()['X-Auth-Session'] ?? null;
+
+        self::assertTrue($payload['check']);
+        self::assertSame('81', (string) $payload['id']);
+        self::assertIsString($rotatedSessionId);
+        self::assertNotSame($originalSessionId, $rotatedSessionId);
+        self::assertSame($rotatedSessionId, $payload['session_id']);
+
+        $oldSessionResponse = $kernel->handle(Request::create(
+            '/rotate-me',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $originalSessionId],
+        ));
+
+        /** @var array<string, mixed> $oldPayload */
+        $oldPayload = json_decode($oldSessionResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertFalse($oldPayload['check']);
+        self::assertNull($oldPayload['id']);
+    }
+
+    public function test_login_can_revoke_other_sessions_for_the_same_identity(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 91,
+                'identifier' => 'revoke-user@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'type' => 'user',
+            ],
+        ]);
+        $app->make(ConfigRepository::class)->set('auth.session.revoke_others_on_login', true);
+
+        $router = $app->make(Router::class);
+        $router->get('/revoke-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'revoke-user@example.com',
+                'password' => 'secret-123',
+            ])];
+        });
+        $router->get('/revoke-me', function (): array {
+            return [
+                'check' => auth()->check(),
+                'id' => auth()->id(),
+            ];
+        });
+
+        $kernel = $app->make(HttpKernel::class);
+        $firstLogin = $kernel->handle(Request::create('/revoke-login'));
+        $firstSessionId = $firstLogin->headers()['X-Auth-Session'] ?? null;
+        $secondLogin = $kernel->handle(Request::create('/revoke-login'));
+        $secondSessionId = $secondLogin->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($firstSessionId);
+        self::assertIsString($secondSessionId);
+        self::assertNotSame($firstSessionId, $secondSessionId);
+
+        $oldSessionResponse = $kernel->handle(Request::create(
+            '/revoke-me',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $firstSessionId],
+        ));
+        /** @var array<string, mixed> $oldPayload */
+        $oldPayload = json_decode($oldSessionResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+        self::assertFalse($oldPayload['check']);
+        self::assertNull($oldPayload['id']);
+
+        $currentSessionResponse = $kernel->handle(Request::create(
+            '/revoke-me',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $secondSessionId],
+        ));
+        /** @var array<string, mixed> $currentPayload */
+        $currentPayload = json_decode($currentSessionResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+        self::assertTrue($currentPayload['check']);
+        self::assertSame('91', (string) $currentPayload['id']);
     }
 }

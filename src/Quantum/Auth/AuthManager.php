@@ -10,6 +10,9 @@ use Quantum\Auth\Contracts\AuthenticationManagerInterface;
 use Quantum\Auth\Contracts\AuthenticationOrchestratorInterface;
 use Quantum\Auth\Contracts\AuthenticationSessionRepositoryInterface;
 use Quantum\Auth\Context\AuthenticationRequest;
+use Quantum\Auth\Exceptions\AuthenticationException;
+use Quantum\Auth\Exceptions\IdentityNotEligibleException;
+use Quantum\Auth\Exceptions\InvalidCredentialsException;
 use Quantum\Auth\Identity\IdentityReference;
 use Quantum\Auth\Runtime\AuthenticationOperationContext;
 use Quantum\Auth\Sessions\AuthenticationSession;
@@ -33,6 +36,17 @@ final class AuthManager implements AuthenticationManagerInterface
      */
     public function attempt(array $credentials): bool
     {
+        try {
+            $this->attemptOrFail($credentials);
+        } catch (AuthenticationException) {
+            return false;
+        }
+
+        return true;
+    }
+
+    public function attemptOrFail(array $credentials): void
+    {
         $decision = $this->orchestrator->execute(
             new AuthenticationOperationContext(
                 operation: 'authenticate',
@@ -45,19 +59,29 @@ final class AuthManager implements AuthenticationManagerInterface
         );
 
         if (! $decision->isAuthenticated() || $decision->context === null) {
-            return false;
+            throw $this->exceptionFromDecision($decision->metadata);
         }
 
         $this->login($decision->context);
-
-        return true;
     }
 
     public function login(mixed $user): void
     {
+        $this->sessions->purgeExpired();
+
         $context = $user instanceof AuthenticationContext
             ? $user
             : $this->contextFromUser($user);
+
+        $existingSessionId = $this->activeSessionId();
+
+        if ($existingSessionId !== null && $existingSessionId !== '') {
+            $this->sessions->delete($existingSessionId);
+        }
+
+        if ($this->revokeOtherSessionsOnLogin()) {
+            $this->sessions->deleteForIdentity($context->identity, $existingSessionId);
+        }
 
         $sessionId = AuthenticationSessionId::generate();
         $sessionContext = $this->withSessionContext($context, $sessionId);
@@ -158,17 +182,25 @@ final class AuthManager implements AuthenticationManagerInterface
         );
 
         if ($decision->isAuthenticated() && $decision->context !== null) {
-            $this->accessor->put($decision->context);
-
             $resolvedSessionId = $decision->metadata['session_id'] ?? $decision->context->attribute('session_id');
-            if (is_string($resolvedSessionId) && trim($resolvedSessionId) !== '') {
-                $this->runtimeContext()->set(AuthenticationHttpState::ACTIVE_SESSION_ID_KEY, $resolvedSessionId);
+            $resolvedSessionId = is_string($resolvedSessionId) && trim($resolvedSessionId) !== ''
+                ? trim($resolvedSessionId)
+                : null;
+
+            if ($resolvedSessionId !== null && $this->rotateSessionOnRecover()) {
+                $this->login($decision->context);
+            } else {
+                $this->accessor->put($decision->context);
+
+                if ($resolvedSessionId !== null) {
+                    $this->runtimeContext()->set(AuthenticationHttpState::ACTIVE_SESSION_ID_KEY, $resolvedSessionId);
+                }
             }
         } elseif (is_string($sessionId) && trim($sessionId) !== '') {
             $this->queueLogoutCookie();
         }
 
-        return $decision->context;
+        return $this->accessor->get() ?? $decision->context;
     }
 
     public function logout(): void
@@ -223,7 +255,7 @@ final class AuthManager implements AuthenticationManagerInterface
                 : new IdentityReference($context->identity->identifier(), $context->identity->type()),
             requestId: $context->requestId,
             method: $context->method,
-            attributes: $context->attributes + ['session_id' => $sessionId->value],
+            attributes: array_merge($context->attributes, ['session_id' => $sessionId->value]),
         );
     }
 
@@ -258,11 +290,53 @@ final class AuthManager implements AuthenticationManagerInterface
         return $lifetime > 0 ? time() + $lifetime : time();
     }
 
+    private function rotateSessionOnRecover(): bool
+    {
+        return (bool) $this->config->get('auth.session.rotate_on_recover', false);
+    }
+
+    private function revokeOtherSessionsOnLogin(): bool
+    {
+        return (bool) $this->config->get('auth.session.revoke_others_on_login', false);
+    }
+
+    private function activeSessionId(): ?string
+    {
+        $runtime = $this->runtimeContext();
+        $sessionId = $runtime->get(AuthenticationHttpState::ACTIVE_SESSION_ID_KEY);
+
+        if (is_string($sessionId) && trim($sessionId) !== '') {
+            return trim($sessionId);
+        }
+
+        $requestSessionId = $runtime->request()->cookie($this->sessionCookieName());
+
+        return is_string($requestSessionId) && trim($requestSessionId) !== ''
+            ? trim($requestSessionId)
+            : null;
+    }
+
     private function queueLogoutCookie(): void
     {
         $this->runtimeContext()->set(
             AuthenticationHttpState::PENDING_SESSION_COOKIE_KEY,
             AuthenticationHttpState::logoutCookie($this->sessionCookieName()),
         );
+    }
+
+    /**
+     * @param array<string, mixed> $metadata
+     */
+    private function exceptionFromDecision(array $metadata): AuthenticationException
+    {
+        $reason = (string) ($metadata['reason'] ?? 'auth.failed');
+
+        return match ($reason) {
+            'identity_not_eligible' => new IdentityNotEligibleException(
+                \Quantum\Auth\Identity\IdentitySecurityState::from((string) ($metadata['security_state'] ?? 'disabled')),
+            ),
+            'invalid_credentials', 'missing_credentials' => new InvalidCredentialsException(),
+            default => new AuthenticationException('Authentication failed.', 'auth.failed'),
+        };
     }
 }

@@ -9,6 +9,7 @@ use Quantum\Auth\Authenticators\PasswordAuthenticator;
 use Quantum\Auth\Authenticators\SessionAuthenticator;
 use Quantum\Auth\Context\AuthenticationRequest;
 use Quantum\Auth\Identity\LocalIdentityProvider;
+use Quantum\Auth\Passwords\PasswordPolicy;
 use Quantum\Auth\Runtime\AuthenticationOperationContext;
 use Quantum\Auth\Runtime\DefaultAuthenticatorResolver;
 use Quantum\Auth\Sessions\InMemoryAuthenticationSessionRepository;
@@ -67,7 +68,10 @@ final class DefaultAuthenticatorResolverTest extends TestCase
 
         return new DefaultAuthenticatorResolver(
             new SessionAuthenticator(new InMemoryAuthenticationSessionRepository()),
-            new PasswordAuthenticator(new LocalIdentityProvider($config)),
+            new PasswordAuthenticator(
+                new LocalIdentityProvider($config),
+                new PasswordPolicy($config),
+            ),
         );
     }
 }

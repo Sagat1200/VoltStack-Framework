@@ -11,8 +11,7 @@ final class LocalIdentityProvider implements IdentityProviderInterface
 {
     public function __construct(
         private readonly ConfigRepository $config,
-    ) {
-    }
+    ) {}
 
     public function findByIdentifier(string $identifier): ?IdentityInterface
     {
@@ -59,6 +58,19 @@ final class LocalIdentityProvider implements IdentityProviderInterface
         }
 
         return null;
+    }
+
+    public function securityStateFor(IdentityInterface $identity): IdentitySecurityState
+    {
+        $entry = $this->entryForIdentity($identity);
+        $state = strtolower(trim((string) ($entry['security_state'] ?? $entry['status'] ?? 'active')));
+
+        return match ($state) {
+            'disabled' => IdentitySecurityState::Disabled,
+            'suspended' => IdentitySecurityState::Suspended,
+            'locked' => IdentitySecurityState::Locked,
+            default => IdentitySecurityState::Active,
+        };
     }
 
     /**
@@ -118,5 +130,31 @@ final class LocalIdentityProvider implements IdentityProviderInterface
         $attributes['_provider_identifier_value'] = $identifier;
 
         return $attributes;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function entryForIdentity(IdentityInterface $identity): ?array
+    {
+        if ($identity instanceof GenericIdentity) {
+            $lookupIdentifier = $identity->attributes['_provider_identifier_value'] ?? null;
+
+            if (is_string($lookupIdentifier) && trim($lookupIdentifier) !== '') {
+                return $this->findEntry($lookupIdentifier);
+            }
+        }
+
+        foreach ($this->configuredIdentities() as $entry) {
+            if (! is_array($entry)) {
+                continue;
+            }
+
+            if ((string) ($entry['id'] ?? '') === (string) $identity->identifier()) {
+                return $entry;
+            }
+        }
+
+        return null;
     }
 }

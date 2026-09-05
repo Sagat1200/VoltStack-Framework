@@ -26,6 +26,8 @@ final class SessionAuthenticator implements AuthenticatorInterface
 
     public function authenticate(AuthenticationOperationContext $context): AuthenticationDecision
     {
+        $this->sessions->purgeExpired();
+
         $sessionId = trim((string) $context->request->attribute('session_id', ''));
 
         if ($sessionId === '') {

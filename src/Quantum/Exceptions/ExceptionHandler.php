@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quantum\Exceptions;
 
+use Quantum\Auth\Exceptions\AuthenticationException;
 use Quantum\Controllers\Exceptions\ControllerException;
 use Quantum\Exceptions\Contracts\ExceptionHandlerInterface;
 use Quantum\Exceptions\Contracts\ExceptionMapperInterface;
@@ -101,6 +102,7 @@ final class ExceptionHandler implements ExceptionHandlerInterface
             $exception instanceof RouteNotFoundException => 404,
             $exception instanceof MissingRouteBindingException => 404,
             $exception instanceof MethodNotAllowedException => 405,
+            $exception instanceof AuthenticationException => 401,
             $exception instanceof InvalidSignatureException => 403,
             $exception instanceof CsrfTokenMismatchException => 419,
             $exception instanceof InvalidSnapshotException => 422,
@@ -271,6 +273,7 @@ final class ExceptionHandler implements ExceptionHandlerInterface
 
         return match (true) {
             $exception instanceof ValidationException => $exception->getMessage(),
+            $exception instanceof AuthenticationException => $exception->getMessage(),
             $exception instanceof CsrfTokenMismatchException => $exception->getMessage(),
             $exception instanceof InvalidSignatureException => $exception->getMessage(),
             $exception instanceof InvalidSnapshotException => $exception->getMessage(),
@@ -298,6 +301,7 @@ final class ExceptionHandler implements ExceptionHandlerInterface
             $exception instanceof RouteNotFoundException => 'route.not_found',
             $exception instanceof MissingRouteBindingException => 'route.binding_missing',
             $exception instanceof MethodNotAllowedException => 'route.method_not_allowed',
+            $exception instanceof AuthenticationException => $exception->reasonCode,
             $exception instanceof InvalidSignatureException => 'security.invalid_signature',
             $exception instanceof CsrfTokenMismatchException => 'security.csrf_token_mismatch',
             $exception instanceof InvalidSnapshotException => 'runtime.invalid_snapshot',
@@ -346,6 +350,13 @@ final class ExceptionHandler implements ExceptionHandlerInterface
             return [
                 ...$headers,
                 'Allow' => $exception->allowHeader(),
+            ];
+        }
+
+        if ($exception instanceof AuthenticationException) {
+            return [
+                ...$headers,
+                'WWW-Authenticate' => 'Session realm="VoltStack", Password realm="VoltStack"',
             ];
         }
 

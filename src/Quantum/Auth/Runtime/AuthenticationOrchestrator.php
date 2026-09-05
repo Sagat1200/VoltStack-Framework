@@ -4,21 +4,20 @@ declare(strict_types=1);
 
 namespace Quantum\Auth\Runtime;
 
-use Quantum\Auth\Contracts\AuthenticatorInterface;
 use Quantum\Auth\Contracts\AuthenticationOrchestratorInterface;
+use Quantum\Auth\Contracts\AuthenticatorResolverInterface;
 use Quantum\Auth\Decisions\AuthenticationDecision;
 
 final class AuthenticationOrchestrator implements AuthenticationOrchestratorInterface
 {
     public function __construct(
-        private readonly AuthenticatorInterface $passwordAuthenticator,
-    ) {
-    }
+        private readonly AuthenticatorResolverInterface $resolver,
+    ) {}
 
     public function execute(AuthenticationOperationContext $context): AuthenticationDecision
     {
-        if ($context->operation === 'authenticate' && $this->passwordAuthenticator->supports($context)) {
-            return $this->passwordAuthenticator->authenticate($context);
+        foreach ($this->resolver->resolve($context) as $authenticator) {
+            return $authenticator->authenticate($context);
         }
 
         if ($context->operation === 'recover' && $context->currentContext !== null) {

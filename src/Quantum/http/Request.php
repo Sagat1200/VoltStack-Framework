@@ -182,6 +182,19 @@ final class Request
         return $this->request[$key] ?? $default;
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    public function cookies(): array
+    {
+        return $this->cookies;
+    }
+
+    public function cookie(string $key, mixed $default = null): mixed
+    {
+        return $this->cookies[$key] ?? $default;
+    }
+
     public function attribute(string $key, mixed $default = null): mixed
     {
         return $this->attributes[$key] ?? $default;

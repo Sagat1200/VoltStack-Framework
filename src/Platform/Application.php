@@ -6,14 +6,19 @@ namespace VoltStack\Framework;
 
 use Quantum\Config\ConfigRepository;
 use Quantum\Auth\Authenticators\PasswordAuthenticator;
+use Quantum\Auth\Authenticators\SessionAuthenticator;
 use Quantum\Auth\AuthManager;
 use Quantum\Auth\Context\AuthenticationContextAccessor;
+use Quantum\Auth\Contracts\AuthenticationSessionRepositoryInterface;
 use Quantum\Auth\Contracts\AuthenticatorInterface;
+use Quantum\Auth\Contracts\AuthenticatorResolverInterface;
 use Quantum\Auth\Contracts\AuthenticationManagerInterface;
 use Quantum\Auth\Contracts\AuthenticationOrchestratorInterface;
 use Quantum\Auth\Contracts\IdentityProviderInterface;
 use Quantum\Auth\Identity\LocalIdentityProvider;
 use Quantum\Auth\Runtime\AuthenticationOrchestrator;
+use Quantum\Auth\Runtime\DefaultAuthenticatorResolver;
+use Quantum\Auth\Sessions\InMemoryAuthenticationSessionRepository;
 use Quantum\Cache\CacheManager;
 use Quantum\Cache\Repository as CacheRepository;
 use Quantum\Compilation\ArtifactStore;
@@ -302,6 +307,18 @@ class Application extends Container
             $this->scoped(AuthenticatorInterface::class, PasswordAuthenticator::class);
         }
 
+        if (! isset($this->bindings[AuthenticationSessionRepositoryInterface::class])) {
+            $this->singleton(AuthenticationSessionRepositoryInterface::class, InMemoryAuthenticationSessionRepository::class);
+        }
+
+        if (! isset($this->bindings[SessionAuthenticator::class])) {
+            $this->scoped(SessionAuthenticator::class);
+        }
+
+        if (! isset($this->bindings[AuthenticatorResolverInterface::class])) {
+            $this->scoped(AuthenticatorResolverInterface::class, DefaultAuthenticatorResolver::class);
+        }
+
         if (! isset($this->bindings[AuthenticationOrchestratorInterface::class])) {
             $this->scoped(AuthenticationOrchestratorInterface::class, AuthenticationOrchestrator::class);
         }
@@ -310,6 +327,8 @@ class Application extends Container
             $this->scoped(AuthManager::class, fn(Application $app) => new AuthManager(
                 $app->make(AuthenticationContextAccessor::class),
                 $app->make(AuthenticationOrchestratorInterface::class),
+                $app->make(AuthenticationSessionRepositoryInterface::class),
+                $app->make(ConfigRepository::class),
             ));
         }
 

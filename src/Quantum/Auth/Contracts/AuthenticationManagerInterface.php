@@ -13,6 +13,8 @@ interface AuthenticationManagerInterface
      */
     public function attempt(array $credentials): bool;
 
+    public function login(mixed $user): void;
+
     public function user(): mixed;
 
     public function setUser(mixed $user): void;

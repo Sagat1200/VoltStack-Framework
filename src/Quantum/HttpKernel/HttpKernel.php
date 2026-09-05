@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quantum\HttpKernel;
 
 use JsonException;
+use Quantum\Auth\Runtime\AuthenticationResponseDecorator;
 use Quantum\Http\JsonResponse;
 use Quantum\Http\HtmlDocumentBootstrapper;
 use Quantum\Http\Request;
@@ -75,15 +76,19 @@ class HttpKernel implements KernelContract
         $response = null;
 
         try {
-            $response = $this->compiledMiddlewarePipeline->handle(
-                $this->app,
-                $request,
-                fn(Request $request): mixed => $this->router->dispatch($request),
-            );
+            try {
+                $response = $this->compiledMiddlewarePipeline->handle(
+                    $this->app,
+                    $request,
+                    fn(Request $request): mixed => $this->router->dispatch($request),
+                );
 
-            $response = $this->normalizer->normalize($response);
-        } catch (Throwable $exception) {
-            $response = $this->app->make(ExceptionHandlerContract::class)->render($request, $exception);
+                $response = $this->normalizer->normalize($response);
+            } catch (Throwable $exception) {
+                $response = $this->app->make(ExceptionHandlerContract::class)->render($request, $exception);
+            }
+
+            $response = $this->app->make(AuthenticationResponseDecorator::class)->decorate($request, $response);
         } finally {
             $scope->end();
         }

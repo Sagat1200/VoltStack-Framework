@@ -11,7 +11,11 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
 {
     public function statusCode(Throwable $throwable): ?int
     {
-        return $throwable instanceof GuestOnlyException ? 403 : null;
+        return match (true) {
+            $throwable instanceof GuestOnlyException => 403,
+            $throwable instanceof StaleAuthenticationSessionException => 401,
+            default => null,
+        };
     }
 
     public function headers(Throwable $throwable): array
@@ -21,50 +25,52 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
 
     public function jsonExtensions(Throwable $throwable, bool $debug): array
     {
-        if (! $throwable instanceof GuestOnlyException) {
-            return [];
-        }
-
-        return [
-            'reason_code' => $throwable->reasonCode,
-        ];
+        return $this->reasonCodeExtension($throwable);
     }
 
     public function voltExtensions(Throwable $throwable, bool $debug): array
     {
-        if (! $throwable instanceof GuestOnlyException) {
-            return [];
-        }
-
-        return [
-            'reason_code' => $throwable->reasonCode,
-        ];
+        return $this->reasonCodeExtension($throwable);
     }
 
     public function message(Throwable $throwable, int $status): ?string
     {
-        if (! $throwable instanceof GuestOnlyException) {
-            return null;
-        }
-
-        return $throwable->getMessage();
+        return match (true) {
+            $throwable instanceof GuestOnlyException,
+            $throwable instanceof StaleAuthenticationSessionException => $throwable->getMessage(),
+            default => null,
+        };
     }
 
     public function errorCode(Throwable $throwable, int $status): ?string
     {
-        if (! $throwable instanceof GuestOnlyException) {
-            return null;
-        }
-
-        return $throwable->reasonCode;
+        return match (true) {
+            $throwable instanceof GuestOnlyException,
+            $throwable instanceof StaleAuthenticationSessionException => $throwable->reasonCode,
+            default => null,
+        };
     }
 
     public function htmlBody(Throwable $throwable, int $status): ?string
     {
-        if (! $throwable instanceof GuestOnlyException) {
-            return null;
-        }
+        return match (true) {
+            $throwable instanceof GuestOnlyException => '<p>This resource is only available to guest users.</p>',
+            $throwable instanceof StaleAuthenticationSessionException => '<p>The authentication session is stale, expired or invalid. Please authenticate again.</p>',
+            default => null,
+        };
+    }
 
-        return '<p>This resource is only available to guest users.</p>';
+    /**
+     * @return array<string, string>
+     */
+    private function reasonCodeExtension(Throwable $throwable): array
+    {
+        return match (true) {
+            $throwable instanceof GuestOnlyException,
+            $throwable instanceof StaleAuthenticationSessionException => [
+                'reason_code' => $throwable->reasonCode,
+            ],
+            default => [],
+        };
     }
 }

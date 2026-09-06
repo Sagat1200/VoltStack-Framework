@@ -739,4 +739,53 @@ final class AuthManagerTest extends TestCase
         self::assertSame('auth.guest_only', $authenticatedResponse->headers()['X-Volt-Error-Code'] ?? null);
         self::assertArrayNotHasKey('WWW-Authenticate', $authenticatedResponse->headers());
     }
+
+    public function test_auth_middleware_returns_stale_session_denial_for_expired_session_credentials(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 131,
+                'identifier' => 'stale-session-user@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'type' => 'user',
+            ],
+        ]);
+        $app->make(ConfigRepository::class)->set('auth.session.lifetime', 0);
+
+        $router = $app->make(Router::class);
+        $router->get('/stale-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'stale-session-user@example.com',
+                'password' => 'secret-123',
+            ])];
+        });
+        $router->get('/stale-protected', function (): array {
+            return [
+                'check' => auth()->check(),
+                'id' => auth()->id(),
+            ];
+        })->middleware('auth');
+
+        $kernel = $app->make(HttpKernel::class);
+        $loginResponse = $kernel->handle(Request::create('/stale-login'));
+        $sessionId = $loginResponse->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($sessionId);
+        self::assertNotSame('', trim($sessionId));
+
+        $response = $kernel->handle(Request::create(
+            '/stale-protected',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $sessionId],
+            server: ['HTTP_ACCEPT' => 'application/json'],
+        ));
+        $payload = json_decode($response->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(401, $response->statusCode());
+        self::assertSame('The authentication session is stale or invalid.', $payload['message'] ?? null);
+        self::assertSame('auth.stale_session', $payload['reason_code'] ?? null);
+        self::assertSame('auth.stale_session', $response->headers()['X-Volt-Error-Code'] ?? null);
+        self::assertStringContainsString('Max-Age=0', $response->headers()['Set-Cookie'] ?? '');
+        self::assertArrayNotHasKey('WWW-Authenticate', $response->headers());
+    }
 }

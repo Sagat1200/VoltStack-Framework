@@ -8,6 +8,7 @@ use Exception;
 use PHPUnit\Framework\TestCase;
 use Quantum\Auth\Exceptions\AuthExceptionMapper;
 use Quantum\Auth\Exceptions\GuestOnlyException;
+use Quantum\Auth\Exceptions\StaleAuthenticationSessionException;
 use Quantum\Controllers\Security\Exceptions\AuthenticationRequiredException;
 use Quantum\Controllers\Security\Exceptions\AuthorizationDeniedException;
 use Quantum\Controllers\Security\Exceptions\ControllerExposureViolationException;
@@ -382,6 +383,46 @@ final class QuantumExceptionHandlerTest extends TestCase
         self::assertSame('Only guests may access this resource.', $payload['message'] ?? null);
         self::assertSame('auth.guest_only', $payload['reason_code'] ?? null);
         self::assertSame('auth.guest_only', $result->response->headers()['X-Volt-Error-Code'] ?? null);
+        self::assertArrayNotHasKey('WWW-Authenticate', $result->response->headers());
+    }
+
+    public function test_auth_mapper_stale_session_returns_401_without_www_authenticate(): void
+    {
+        $handler = new ExceptionHandler();
+        $handler->addMapper(new AuthExceptionMapper());
+
+        $ex = new StaleAuthenticationSessionException();
+        $request = Request::create(
+            '/protected',
+            'GET',
+            [],
+            [],
+            [],
+            [],
+            [],
+            [
+                'HTTP_ACCEPT' => 'application/json',
+            ],
+        );
+        $context = new ExceptionHandlingContext(
+            throwable: $ex,
+            origin: ExceptionOrigin::Routing,
+            runtime: new RuntimeContext(environment: 'local'),
+            request: $request,
+            controllerExecution: null,
+            transportExecution: new TransportExecution(response: new TransportResponse(), context: new TransportContext()),
+            metadata: new MetadataBag([]),
+            state: new ExceptionHandlingState(),
+            debug: false,
+        );
+
+        $result = $handler->handle($ex, $context);
+        $payload = json_decode($result->response->content(), true);
+
+        self::assertSame(401, $result->response->statusCode());
+        self::assertSame('The authentication session is stale or invalid.', $payload['message'] ?? null);
+        self::assertSame('auth.stale_session', $payload['reason_code'] ?? null);
+        self::assertSame('auth.stale_session', $result->response->headers()['X-Volt-Error-Code'] ?? null);
         self::assertArrayNotHasKey('WWW-Authenticate', $result->response->headers());
     }
 

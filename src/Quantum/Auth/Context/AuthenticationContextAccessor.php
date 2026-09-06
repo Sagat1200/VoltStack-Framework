@@ -8,6 +8,7 @@ use Quantum\Auth\Identity\GenericIdentity;
 use Quantum\Auth\Identity\IdentityIdentifier;
 use Quantum\Auth\Identity\IdentityInterface;
 use Quantum\Auth\Identity\IdentityReference;
+use Quantum\Auth\Support\AuthenticationAssurance;
 use RuntimeException;
 use VoltStack\Runtime\Context\RuntimeContext;
 
@@ -79,6 +80,7 @@ final class AuthenticationContextAccessor
             ),
             requestId: $requestId,
             method: 'manual',
+            attributes: AuthenticationAssurance::enrichAttributes([], 'manual'),
         );
     }
 

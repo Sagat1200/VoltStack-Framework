@@ -8,6 +8,7 @@ use Closure;
 use Quantum\Auth\Contracts\AuthenticationManagerInterface;
 use Quantum\Auth\Exceptions\AuthenticationRequiredException;
 use Quantum\Auth\Exceptions\StaleAuthenticationSessionException;
+use Quantum\Auth\Support\AuthenticationAssurance;
 use Quantum\Config\ConfigRepository;
 use Quantum\Controllers\Security\Context\AuthenticationStrength;
 use Quantum\Controllers\Security\Exceptions\AuthenticationRequiredException as ControllerAuthenticationRequiredException;
@@ -90,20 +91,7 @@ final class AuthMiddleware implements MiddlewareInterface
             return AuthenticationStrength::Anonymous;
         }
 
-        $attributeStrength = $this->normalizeStrength(
-            $context->attribute('authentication_strength')
-                ?? $context->attribute('authentication_strength_name')
-                ?? $context->attribute('authentication_strength_value'),
-        );
-
-        if ($attributeStrength !== null) {
-            return $attributeStrength;
-        }
-
-        return match (strtolower(trim($context->method))) {
-            'password', 'session', 'manual' => AuthenticationStrength::Password,
-            default => AuthenticationStrength::Password,
-        };
+        return $context->authenticationStrength();
     }
 
     private function requiredStrength(Request $request): ?AuthenticationStrength
@@ -129,34 +117,10 @@ final class AuthMiddleware implements MiddlewareInterface
 
     private function normalizeStrength(mixed $value): ?AuthenticationStrength
     {
-        if ($value instanceof AuthenticationStrength) {
-            return $value;
+        if ($value === true) {
+            return AuthenticationStrength::Password;
         }
 
-        if (is_int($value) || (is_string($value) && is_numeric($value))) {
-            return AuthenticationStrength::tryFrom((int) $value);
-        }
-
-        if (! is_string($value)) {
-            return match ($value) {
-                true => AuthenticationStrength::Password,
-                default => null,
-            };
-        }
-
-        $normalized = strtolower(trim($value));
-
-        if ($normalized === '') {
-            return null;
-        }
-
-        return match ($normalized) {
-            'true', '1', 'password', 'session' => AuthenticationStrength::Password,
-            'token', 'bearer' => AuthenticationStrength::Token,
-            'multifactor', 'multi_factor', 'multi-factor', 'mfa' => AuthenticationStrength::MultiFactor,
-            'hardwarebacked', 'hardware_backed', 'hardware-backed', 'hardware' => AuthenticationStrength::HardwareBacked,
-            'anonymous', 'none', 'guest' => AuthenticationStrength::Anonymous,
-            default => null,
-        };
+        return AuthenticationAssurance::resolveExplicitStrength($value);
     }
 }

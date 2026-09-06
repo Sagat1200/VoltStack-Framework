@@ -13,6 +13,7 @@ use Quantum\Auth\Decisions\AuthenticationDecisionStatus;
 use Quantum\Auth\Identity\GenericIdentity;
 use Quantum\Auth\Identity\IdentityIdentifier;
 use Quantum\Auth\Identity\IdentityReference;
+use Quantum\Controllers\Security\Context\AuthenticationStrength;
 
 final class AuthDomainModelTest extends TestCase
 {
@@ -58,6 +59,29 @@ final class AuthDomainModelTest extends TestCase
         self::assertSame('42', (string) $decision->context?->reference->identifier);
         self::assertTrue($decision->context?->attribute('fresh'));
         self::assertSame('test', $decision->metadata['source'] ?? null);
+    }
+
+    public function test_authentication_context_exposes_explicit_strength_and_assurance_profile(): void
+    {
+        $identity = new GenericIdentity(
+            identifier: new IdentityIdentifier('84'),
+            type: 'user',
+            attributes: ['name' => 'Volt MFA'],
+        );
+
+        $context = new AuthenticationContext(
+            identity: $identity,
+            reference: new IdentityReference($identity->identifier(), $identity->type()),
+            requestId: 'req-2',
+            method: 'password',
+            attributes: [
+                'authentication_strength' => 'MultiFactor',
+                'authentication_assurance_profile' => 'multi_factor',
+            ],
+        );
+
+        self::assertSame(AuthenticationStrength::MultiFactor, $context->authenticationStrength());
+        self::assertSame('multi_factor', $context->authenticationAssuranceProfile());
     }
 
     public function test_unauthenticated_decision_has_no_context(): void

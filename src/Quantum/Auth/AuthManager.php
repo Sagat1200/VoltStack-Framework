@@ -17,6 +17,7 @@ use Quantum\Auth\Identity\IdentityReference;
 use Quantum\Auth\Runtime\AuthenticationOperationContext;
 use Quantum\Auth\Sessions\AuthenticationSession;
 use Quantum\Auth\Sessions\AuthenticationSessionId;
+use Quantum\Auth\Support\AuthenticationAssurance;
 use Quantum\Auth\Support\AuthenticationHttpState;
 use Quantum\Config\ConfigRepository;
 use RuntimeException;
@@ -255,7 +256,10 @@ final class AuthManager implements AuthenticationManagerInterface
                 : new IdentityReference($context->identity->identifier(), $context->identity->type()),
             requestId: $context->requestId,
             method: $context->method,
-            attributes: array_merge($context->attributes, ['session_id' => $sessionId->value]),
+            attributes: AuthenticationAssurance::enrichAttributes(
+                array_merge($context->attributes, ['session_id' => $sessionId->value]),
+                $context->method,
+            ),
         );
     }
 

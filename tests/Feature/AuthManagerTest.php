@@ -65,6 +65,8 @@ final class AuthManagerTest extends TestCase
                 'context_identity_id' => $context?->reference->identifier->value,
                 'context_identity_type' => $context?->reference->type,
                 'context_method' => $context?->method,
+                'context_strength' => $context?->authenticationStrength()->name,
+                'context_assurance_profile' => $context?->authenticationAssuranceProfile(),
             ];
         });
 
@@ -78,6 +80,8 @@ final class AuthManagerTest extends TestCase
         self::assertSame('11', $payload['context_identity_id']);
         self::assertSame('array', $payload['context_identity_type']);
         self::assertSame('manual', $payload['context_method']);
+        self::assertSame('Password', $payload['context_strength']);
+        self::assertSame('single_factor', $payload['context_assurance_profile']);
         self::assertNotSame('', (string) ($payload['context_request_id'] ?? ''));
     }
 
@@ -107,6 +111,8 @@ final class AuthManagerTest extends TestCase
                 'id' => auth()->id(),
                 'method' => auth()->context()?->method,
                 'type' => auth()->context()?->reference->type,
+                'strength' => auth()->context()?->authenticationStrength()->name,
+                'assurance_profile' => auth()->context()?->authenticationAssuranceProfile(),
             ];
         });
 
@@ -120,6 +126,8 @@ final class AuthManagerTest extends TestCase
         self::assertSame('21', (string) $payload['id']);
         self::assertSame('password', $payload['method']);
         self::assertSame('user', $payload['type']);
+        self::assertSame('Password', $payload['strength']);
+        self::assertSame('single_factor', $payload['assurance_profile']);
     }
 
     public function test_auth_manager_attempt_rejects_invalid_password_without_authenticating(): void
@@ -225,6 +233,8 @@ final class AuthManagerTest extends TestCase
                 'id' => auth()->id(),
                 'method' => auth()->context()?->method,
                 'session_id' => auth()->context()?->attribute('session_id'),
+                'strength' => auth()->context()?->authenticationStrength()->name,
+                'assurance_profile' => auth()->context()?->authenticationAssuranceProfile(),
             ];
         });
 
@@ -264,6 +274,8 @@ final class AuthManagerTest extends TestCase
         self::assertSame('31', (string) $mePayload['id']);
         self::assertSame('password', $mePayload['method']);
         self::assertSame($sessionId, $mePayload['session_id']);
+        self::assertSame('Password', $mePayload['strength']);
+        self::assertSame('single_factor', $mePayload['assurance_profile']);
 
         $logoutResponse = $kernel->handle(Request::create(
             '/session-logout',

@@ -9,6 +9,7 @@ use Quantum\Auth\Contracts\AuthenticationSessionRepositoryInterface;
 use Quantum\Auth\Contracts\AuthenticatorInterface;
 use Quantum\Auth\Decisions\AuthenticationDecision;
 use Quantum\Auth\Runtime\AuthenticationOperationContext;
+use Quantum\Auth\Support\AuthenticationAssurance;
 
 final class SessionAuthenticator implements AuthenticatorInterface
 {
@@ -61,7 +62,10 @@ final class SessionAuthenticator implements AuthenticatorInterface
                 reference: $session->reference,
                 requestId: $context->request->requestId,
                 method: $session->method,
-                attributes: $session->attributes + ['session_id' => $sessionId],
+                attributes: AuthenticationAssurance::enrichAttributes(
+                    array_merge($session->attributes, ['session_id' => $sessionId]),
+                    $session->method,
+                ),
             ),
             [
                 'authenticator' => 'session',

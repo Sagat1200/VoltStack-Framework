@@ -15,6 +15,7 @@ use Quantum\Auth\Exceptions\IdentityNotEligibleException;
 use Quantum\Auth\Exceptions\InvalidCredentialsException;
 use Quantum\Auth\Identity\IdentityReference;
 use Quantum\Auth\Runtime\AuthenticationOperationContext;
+use Quantum\Auth\Support\AuthenticationAssurance;
 
 final class PasswordAuthenticator implements AuthenticatorInterface
 {
@@ -95,6 +96,7 @@ final class PasswordAuthenticator implements AuthenticatorInterface
                 ),
                 requestId: $context->request->requestId,
                 method: 'password',
+                attributes: AuthenticationAssurance::enrichAttributes([], 'password'),
             ),
             [
                 'authenticator' => 'password',

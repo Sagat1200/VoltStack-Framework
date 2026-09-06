@@ -579,4 +579,164 @@ final class AuthManagerTest extends TestCase
         self::assertTrue($currentPayload['check']);
         self::assertSame('91', (string) $currentPayload['id']);
     }
+
+    public function test_auth_middleware_alias_requires_an_authenticated_session(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 101,
+                'identifier' => 'middleware-user@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'type' => 'user',
+            ],
+        ]);
+
+        $router = $app->make(Router::class);
+        $router->get('/middleware-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'middleware-user@example.com',
+                'password' => 'secret-123',
+            ])];
+        });
+        $router->get('/middleware-protected', function (): array {
+            return [
+                'check' => auth()->check(),
+                'id' => auth()->id(),
+            ];
+        })->middleware('auth');
+
+        $kernel = $app->make(HttpKernel::class);
+
+        $guestResponse = $kernel->handle(Request::create(
+            '/middleware-protected',
+            server: ['HTTP_ACCEPT' => 'application/json'],
+        ));
+        $guestPayload = json_decode($guestResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(401, $guestResponse->statusCode());
+        self::assertSame('Authentication required.', $guestPayload['message'] ?? null);
+        self::assertSame('auth.required', $guestResponse->headers()['X-Volt-Error-Code'] ?? null);
+
+        $loginResponse = $kernel->handle(Request::create('/middleware-login'));
+        $sessionId = $loginResponse->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($sessionId);
+
+        $protectedResponse = $kernel->handle(Request::create(
+            '/middleware-protected',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $sessionId],
+        ));
+        $protectedPayload = json_decode($protectedResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(200, $protectedResponse->statusCode());
+        self::assertTrue($protectedPayload['check']);
+        self::assertSame('101', (string) $protectedPayload['id']);
+    }
+
+    public function test_successful_login_can_persist_a_rehashed_password_hash(): void
+    {
+        $basePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-auth-rehash-' . bin2hex(random_bytes(4));
+        $storagePath = $basePath . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'auth' . DIRECTORY_SEPARATOR . 'identities.json';
+        $originalHash = password_hash('secret-123', PASSWORD_BCRYPT, ['cost' => 4]);
+
+        @mkdir($basePath . DIRECTORY_SEPARATOR . 'config', 0777, true);
+        @mkdir(dirname($storagePath), 0777, true);
+        file_put_contents($storagePath, json_encode([
+            'identities' => [
+                [
+                    'id' => 111,
+                    'identifier' => 'rehash-user@example.com',
+                    'password_hash' => $originalHash,
+                    'type' => 'user',
+                ],
+            ],
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+        try {
+            $app = new Application($basePath);
+            $app->make(ConfigRepository::class)->set('auth.providers.local.storage_path', $storagePath);
+            $app->make(ConfigRepository::class)->set('auth.password.rehash_options', ['cost' => 10]);
+
+            $router = $app->make(Router::class);
+            $router->get('/rehash-login', function (): array {
+                return ['ok' => auth()->attempt([
+                    'identifier' => 'rehash-user@example.com',
+                    'password' => 'secret-123',
+                ])];
+            });
+
+            $response = $app->make(HttpKernel::class)->handle(Request::create('/rehash-login'));
+            $payload = json_decode($response->content(), true, 512, JSON_THROW_ON_ERROR);
+            $stored = json_decode((string) file_get_contents($storagePath), true, 512, JSON_THROW_ON_ERROR);
+            $storedHash = $stored['identities'][0]['password_hash'] ?? null;
+
+            self::assertTrue($payload['ok']);
+            self::assertIsString($storedHash);
+            self::assertTrue(password_verify('secret-123', $storedHash));
+            self::assertNotSame($originalHash, $storedHash);
+            self::assertFalse(password_needs_rehash($storedHash, PASSWORD_DEFAULT, ['cost' => 10]));
+        } finally {
+            @unlink($storagePath);
+            @rmdir($basePath . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'auth');
+            @rmdir($basePath . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework');
+            @rmdir($basePath . DIRECTORY_SEPARATOR . 'storage');
+            @rmdir($basePath . DIRECTORY_SEPARATOR . 'config');
+            @rmdir($basePath);
+        }
+    }
+
+    public function test_guest_middleware_alias_rejects_authenticated_users(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 121,
+                'identifier' => 'guest-middleware-user@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'type' => 'user',
+            ],
+        ]);
+
+        $router = $app->make(Router::class);
+        $router->get('/guest-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'guest-middleware-user@example.com',
+                'password' => 'secret-123',
+            ])];
+        });
+        $router->get('/guest-only', function (): array {
+            return [
+                'guest' => auth()->guest(),
+                'check' => auth()->check(),
+            ];
+        })->middleware('guest');
+
+        $kernel = $app->make(HttpKernel::class);
+
+        $guestResponse = $kernel->handle(Request::create('/guest-only'));
+        $guestPayload = json_decode($guestResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(200, $guestResponse->statusCode());
+        self::assertTrue($guestPayload['guest']);
+        self::assertFalse($guestPayload['check']);
+
+        $loginResponse = $kernel->handle(Request::create('/guest-login'));
+        $sessionId = $loginResponse->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($sessionId);
+
+        $authenticatedResponse = $kernel->handle(Request::create(
+            '/guest-only',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $sessionId],
+            server: ['HTTP_ACCEPT' => 'application/json'],
+        ));
+        $authenticatedPayload = json_decode($authenticatedResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(403, $authenticatedResponse->statusCode());
+        self::assertSame('Only guests may access this resource.', $authenticatedPayload['message'] ?? null);
+        self::assertSame('auth.guest_only', $authenticatedPayload['reason_code'] ?? null);
+        self::assertSame('auth.guest_only', $authenticatedResponse->headers()['X-Volt-Error-Code'] ?? null);
+        self::assertArrayNotHasKey('WWW-Authenticate', $authenticatedResponse->headers());
+    }
 }

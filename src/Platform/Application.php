@@ -5,23 +5,8 @@ declare(strict_types=1);
 namespace VoltStack\Framework;
 
 use Quantum\Config\ConfigRepository;
-use Quantum\Auth\Authenticators\PasswordAuthenticator;
-use Quantum\Auth\Authenticators\SessionAuthenticator;
-use Quantum\Auth\AuthManager;
-use Quantum\Auth\Context\AuthenticationContextAccessor;
-use Quantum\Auth\Contracts\AuthenticationSessionRepositoryInterface;
-use Quantum\Auth\Contracts\AuthenticatorInterface;
-use Quantum\Auth\Contracts\AuthenticatorResolverInterface;
-use Quantum\Auth\Contracts\AuthenticationManagerInterface;
-use Quantum\Auth\Contracts\AuthenticationOrchestratorInterface;
-use Quantum\Auth\Contracts\IdentityProviderInterface;
-use Quantum\Auth\Contracts\PasswordPolicyInterface;
-use Quantum\Auth\Identity\LocalIdentityProvider;
-use Quantum\Auth\Passwords\PasswordPolicy;
-use Quantum\Auth\Runtime\AuthenticationOrchestrator;
-use Quantum\Auth\Runtime\DefaultAuthenticatorResolver;
-use Quantum\Auth\Sessions\FileAuthenticationSessionRepository;
-use Quantum\Auth\Sessions\InMemoryAuthenticationSessionRepository;
+use Quantum\Auth\AuthenticationServiceProvider;
+use Quantum\Auth\Exceptions\AuthExceptionMapper;
 use Quantum\Cache\CacheManager;
 use Quantum\Cache\Repository as CacheRepository;
 use Quantum\Compilation\ArtifactStore;
@@ -298,60 +283,6 @@ class Application extends Container
             $this->singleton(CsrfTokenManager::class, fn(Application $app) => new CsrfTokenManager($app));
         }
 
-        if (! isset($this->bindings[AuthenticationContextAccessor::class])) {
-            $this->scoped(AuthenticationContextAccessor::class);
-        }
-
-        if (! isset($this->bindings[IdentityProviderInterface::class])) {
-            $this->scoped(IdentityProviderInterface::class, LocalIdentityProvider::class);
-        }
-
-        if (! isset($this->bindings[PasswordPolicyInterface::class])) {
-            $this->scoped(PasswordPolicyInterface::class, PasswordPolicy::class);
-        }
-
-        if (! isset($this->bindings[AuthenticatorInterface::class])) {
-            $this->scoped(AuthenticatorInterface::class, PasswordAuthenticator::class);
-        }
-
-        if (! isset($this->bindings[AuthenticationSessionRepositoryInterface::class])) {
-            $this->singleton(AuthenticationSessionRepositoryInterface::class, function (Application $app): AuthenticationSessionRepositoryInterface {
-                $driver = (string) $app->config('auth.session.driver', 'memory');
-
-                return match (strtolower(trim($driver))) {
-                    'file' => new FileAuthenticationSessionRepository(
-                        $app->storagePath('framework/auth/sessions'),
-                    ),
-                    default => new InMemoryAuthenticationSessionRepository(),
-                };
-            });
-        }
-
-        if (! isset($this->bindings[SessionAuthenticator::class])) {
-            $this->scoped(SessionAuthenticator::class);
-        }
-
-        if (! isset($this->bindings[AuthenticatorResolverInterface::class])) {
-            $this->scoped(AuthenticatorResolverInterface::class, DefaultAuthenticatorResolver::class);
-        }
-
-        if (! isset($this->bindings[AuthenticationOrchestratorInterface::class])) {
-            $this->scoped(AuthenticationOrchestratorInterface::class, AuthenticationOrchestrator::class);
-        }
-
-        if (! isset($this->bindings[AuthManager::class])) {
-            $this->scoped(AuthManager::class, fn(Application $app) => new AuthManager(
-                $app->make(AuthenticationContextAccessor::class),
-                $app->make(AuthenticationOrchestratorInterface::class),
-                $app->make(AuthenticationSessionRepositoryInterface::class),
-                $app->make(ConfigRepository::class),
-            ));
-        }
-
-        if (! isset($this->bindings[AuthenticationManagerInterface::class])) {
-            $this->scoped(AuthenticationManagerInterface::class, fn(Application $app) => $app->make(AuthManager::class));
-        }
-
         if (! isset($this->bindings[CsrfMiddleware::class])) {
             $this->singleton(CsrfMiddleware::class);
         }
@@ -372,6 +303,10 @@ class Application extends Container
 
         if (! isset($this->bindings[ControllerInterceptorRegistry::class])) {
             $this->singleton(ControllerInterceptorRegistry::class);
+        }
+
+        if (! isset($this->providers[AuthenticationServiceProvider::class])) {
+            $this->register(AuthenticationServiceProvider::class);
         }
 
         if (! isset($this->bindings[ControllerInterceptorRegistryInterface::class])) {
@@ -766,6 +701,7 @@ class Application extends Container
                     }
                     $securityMapper = new \Quantum\Controllers\Security\Exceptions\ControllerSecurityExceptionMapper($errorResponsesConfig);
                     $handler->addMapper($securityMapper);
+                    $handler->addMapper(new AuthExceptionMapper());
                 } catch (\Throwable) {
                 }
 

@@ -75,4 +75,56 @@ final class LocalIdentityProviderTest extends TestCase
         self::assertInstanceOf(GenericIdentity::class, $identity);
         self::assertSame(IdentitySecurityState::Disabled, $provider->securityStateFor($identity));
     }
+
+    public function test_it_can_persist_upgraded_password_hashes_to_the_configured_storage_file(): void
+    {
+        $directory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-local-provider-' . uniqid('', true);
+        $storagePath = $directory . DIRECTORY_SEPARATOR . 'identities.json';
+        $originalHash = password_hash('secret-123', PASSWORD_BCRYPT, ['cost' => 4]);
+        $upgradedHash = password_hash('secret-123', PASSWORD_BCRYPT, ['cost' => 10]);
+
+        if (! mkdir($directory, 0777, true) && ! is_dir($directory)) {
+            self::fail(sprintf('Unable to create [%s].', $directory));
+        }
+
+        file_put_contents($storagePath, json_encode([
+            'identities' => [
+                [
+                    'id' => 12,
+                    'identifier' => 'rehash@example.com',
+                    'password_hash' => $originalHash,
+                    'type' => 'user',
+                ],
+            ],
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+        try {
+            $config = new ConfigRepository([
+                'auth' => [
+                    'providers' => [
+                        'local' => [
+                            'storage_path' => $storagePath,
+                            'identities' => [],
+                        ],
+                    ],
+                ],
+            ]);
+
+            $provider = new LocalIdentityProvider($config);
+            $identity = $provider->findByIdentifier('rehash@example.com');
+
+            self::assertInstanceOf(GenericIdentity::class, $identity);
+            self::assertTrue($provider->upgradePasswordHash($identity, $upgradedHash));
+
+            $stored = json_decode((string) file_get_contents($storagePath), true, 512, JSON_THROW_ON_ERROR);
+            $storedHash = $stored['identities'][0]['password_hash'] ?? null;
+
+            self::assertIsString($storedHash);
+            self::assertTrue(password_verify('secret-123', $storedHash));
+            self::assertNotSame($originalHash, $storedHash);
+        } finally {
+            @unlink($storagePath);
+            @rmdir($directory);
+        }
+    }
 }

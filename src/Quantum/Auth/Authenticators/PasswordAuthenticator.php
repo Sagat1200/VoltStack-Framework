@@ -8,6 +8,7 @@ use Quantum\Auth\Context\AuthenticationContext;
 use Quantum\Auth\Contracts\AuthenticatorInterface;
 use Quantum\Auth\Contracts\IdentityProviderInterface;
 use Quantum\Auth\Contracts\PasswordPolicyInterface;
+use Quantum\Auth\Contracts\PasswordRehashingIdentityProviderInterface;
 use Quantum\Auth\Credentials\PasswordCredentials;
 use Quantum\Auth\Decisions\AuthenticationDecision;
 use Quantum\Auth\Exceptions\IdentityNotEligibleException;
@@ -75,6 +76,16 @@ final class PasswordAuthenticator implements AuthenticatorInterface
             ]);
         }
 
+        $needsRehash = $this->passwordPolicy->needsRehash($passwordHash);
+        $rehashed = false;
+
+        if ($needsRehash && $this->identityProvider instanceof PasswordRehashingIdentityProviderInterface) {
+            $rehashed = $this->identityProvider->upgradePasswordHash(
+                $identity,
+                $this->passwordPolicy->hash($credentials->password),
+            );
+        }
+
         return AuthenticationDecision::authenticated(
             new AuthenticationContext(
                 identity: $identity,
@@ -88,7 +99,8 @@ final class PasswordAuthenticator implements AuthenticatorInterface
             [
                 'authenticator' => 'password',
                 'identifier' => $credentials->identifier,
-                'password_needs_rehash' => $this->passwordPolicy->needsRehash($passwordHash),
+                'password_needs_rehash' => $needsRehash,
+                'password_rehashed' => $rehashed,
             ],
         );
     }

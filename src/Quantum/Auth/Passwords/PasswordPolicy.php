@@ -31,6 +31,15 @@ final class PasswordPolicy implements PasswordPolicyInterface
         return password_verify($plainPassword, $passwordHash);
     }
 
+    public function hash(string $plainPassword): string
+    {
+        return password_hash(
+            $plainPassword,
+            PASSWORD_DEFAULT,
+            $this->rehashOptions(),
+        );
+    }
+
     public function needsRehash(string $passwordHash): bool
     {
         return password_needs_rehash(

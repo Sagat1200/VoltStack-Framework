@@ -9,6 +9,7 @@ use Quantum\Auth\Contracts\AuthenticationManagerInterface;
 use Quantum\Auth\Exceptions\IdentityNotEligibleException;
 use Quantum\Auth\Support\AuthenticationHttpState;
 use Quantum\Config\ConfigRepository;
+use Quantum\Controllers\Security\Context\AuthenticationStrength;
 use Quantum\Facades\Auth;
 use Quantum\Http\Request;
 use Quantum\HttpKernel\HttpKernel;
@@ -787,5 +788,63 @@ final class AuthManagerTest extends TestCase
         self::assertSame('auth.stale_session', $response->headers()['X-Volt-Error-Code'] ?? null);
         self::assertStringContainsString('Max-Age=0', $response->headers()['Set-Cookie'] ?? '');
         self::assertArrayNotHasKey('WWW-Authenticate', $response->headers());
+    }
+
+    public function test_auth_middleware_can_require_a_higher_authentication_strength_from_route_metadata(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 141,
+                'identifier' => 'strength-user@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'type' => 'user',
+            ],
+        ]);
+
+        $router = $app->make(Router::class);
+        $router->get('/strength-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'strength-user@example.com',
+                'password' => 'secret-123',
+            ])];
+        });
+        $router->get('/strength-protected', function (): array {
+            return [
+                'check' => auth()->check(),
+                'id' => auth()->id(),
+            ];
+        })
+            ->middleware('auth')
+            ->auth([
+                'minimum_strength' => AuthenticationStrength::MultiFactor->name,
+                'minimum_strength_value' => AuthenticationStrength::MultiFactor->value,
+            ]);
+
+        $kernel = $app->make(HttpKernel::class);
+        $loginResponse = $kernel->handle(Request::create('/strength-login'));
+        $sessionId = $loginResponse->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($sessionId);
+
+        $response = $kernel->handle(Request::create(
+            '/strength-protected',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $sessionId],
+            server: ['HTTP_ACCEPT' => 'application/json'],
+        ));
+        $payload = json_decode($response->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(401, $response->statusCode());
+        self::assertSame('Authentication strength is insufficient for this resource.', $payload['message'] ?? null);
+        self::assertSame('authentication_strength_insufficient', $payload['reason_code'] ?? null);
+        self::assertSame(AuthenticationStrength::MultiFactor->value, $payload['challenge']['required_strength_value'] ?? null);
+        self::assertSame(AuthenticationStrength::Password->value, $payload['challenge']['current_strength_value'] ?? null);
+        self::assertSame(
+            'controller.security.authentication.authentication_strength_insufficient',
+            $response->headers()['X-Volt-Error-Code'] ?? null,
+        );
+        self::assertStringContainsString('required_strength_value="30"', $response->headers()['WWW-Authenticate'] ?? '');
+        self::assertStringContainsString('current_strength_value="10"', $response->headers()['WWW-Authenticate'] ?? '');
+        self::assertStringContainsString('error="insufficient_strength"', $response->headers()['WWW-Authenticate'] ?? '');
     }
 }

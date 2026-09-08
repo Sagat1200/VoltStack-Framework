@@ -9,8 +9,8 @@ final readonly class PasswordCredentials
     public function __construct(
         public string $identifier,
         public string $password,
-    ) {
-    }
+        public ?string $secondFactor = null,
+    ) {}
 
     /**
      * @param array<string, mixed> $credentials
@@ -19,6 +19,7 @@ final readonly class PasswordCredentials
     {
         $identifier = self::firstNonEmpty($credentials, ['identifier', 'email', 'username', 'login']);
         $password = isset($credentials['password']) ? trim((string) $credentials['password']) : '';
+        $secondFactor = self::firstOptionalNonEmpty($credentials, ['second_factor', 'mfa_code', 'otp', 'code']);
 
         if ($identifier === '' || $password === '') {
             return null;
@@ -27,7 +28,16 @@ final readonly class PasswordCredentials
         return new self(
             identifier: $identifier,
             password: $password,
+            secondFactor: $secondFactor,
         );
+    }
+
+    /**
+     * @param array<string, mixed> $credentials
+     */
+    public static function secondFactorFromArray(array $credentials): ?string
+    {
+        return self::firstOptionalNonEmpty($credentials, ['second_factor', 'mfa_code', 'otp', 'code']);
     }
 
     /**
@@ -49,5 +59,16 @@ final readonly class PasswordCredentials
         }
 
         return '';
+    }
+
+    /**
+     * @param array<string, mixed> $credentials
+     * @param list<string> $keys
+     */
+    private static function firstOptionalNonEmpty(array $credentials, array $keys): ?string
+    {
+        $value = self::firstNonEmpty($credentials, $keys);
+
+        return $value !== '' ? $value : null;
     }
 }

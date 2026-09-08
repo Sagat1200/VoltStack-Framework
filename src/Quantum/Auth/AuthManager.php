@@ -12,7 +12,11 @@ use Quantum\Auth\Contracts\AuthenticationSessionRepositoryInterface;
 use Quantum\Auth\Context\AuthenticationRequest;
 use Quantum\Auth\Exceptions\AuthenticationException;
 use Quantum\Auth\Exceptions\IdentityNotEligibleException;
+use Quantum\Auth\Exceptions\InvalidSecondFactorException;
 use Quantum\Auth\Exceptions\InvalidCredentialsException;
+use Quantum\Auth\Exceptions\SecondFactorNotAvailableException;
+use Quantum\Auth\Exceptions\SecondFactorRequiredException;
+use Quantum\Auth\Exceptions\StepUpAuthenticationRequiredException;
 use Quantum\Auth\Identity\IdentityReference;
 use Quantum\Auth\Runtime\AuthenticationOperationContext;
 use Quantum\Auth\Sessions\AuthenticationSession;
@@ -20,6 +24,7 @@ use Quantum\Auth\Sessions\AuthenticationSessionId;
 use Quantum\Auth\Support\AuthenticationAssurance;
 use Quantum\Auth\Support\AuthenticationHttpState;
 use Quantum\Config\ConfigRepository;
+use Quantum\Controllers\Security\Context\AuthenticationStrength;
 use RuntimeException;
 use VoltStack\Runtime\Context\RuntimeContext;
 
@@ -56,6 +61,48 @@ final class AuthManager implements AuthenticationManagerInterface
                     transport: 'runtime',
                     attributes: ['credentials' => $credentials],
                 ),
+            ),
+        );
+
+        if (! $decision->isAuthenticated() || $decision->context === null) {
+            throw $this->exceptionFromDecision($decision->metadata);
+        }
+
+        $this->login($decision->context);
+    }
+
+    public function stepUp(array $credentials): bool
+    {
+        try {
+            $this->stepUpOrFail($credentials);
+        } catch (AuthenticationException) {
+            return false;
+        }
+
+        return true;
+    }
+
+    public function stepUpOrFail(array $credentials): void
+    {
+        $current = $this->context();
+
+        if ($current === null) {
+            throw new StepUpAuthenticationRequiredException();
+        }
+
+        if ($current->authenticationStrength()->value >= AuthenticationStrength::MultiFactor->value) {
+            return;
+        }
+
+        $decision = $this->orchestrator->execute(
+            new AuthenticationOperationContext(
+                operation: 'step_up',
+                request: new AuthenticationRequest(
+                    requestId: $this->runtimeContext()->requestId(),
+                    transport: 'runtime',
+                    attributes: ['credentials' => $credentials],
+                ),
+                currentContext: $current,
             ),
         );
 
@@ -339,6 +386,10 @@ final class AuthManager implements AuthenticationManagerInterface
             'identity_not_eligible' => new IdentityNotEligibleException(
                 \Quantum\Auth\Identity\IdentitySecurityState::from((string) ($metadata['security_state'] ?? 'disabled')),
             ),
+            'step_up_requires_authentication' => new StepUpAuthenticationRequiredException(),
+            'second_factor_not_available' => new SecondFactorNotAvailableException(),
+            'second_factor_required' => new SecondFactorRequiredException(),
+            'invalid_second_factor' => new InvalidSecondFactorException(),
             'invalid_credentials', 'missing_credentials' => new InvalidCredentialsException(),
             default => new AuthenticationException('Authentication failed.', 'auth.failed'),
         };

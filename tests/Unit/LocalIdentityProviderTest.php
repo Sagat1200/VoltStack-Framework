@@ -23,6 +23,7 @@ final class LocalIdentityProviderTest extends TestCase
                                 'id' => 7,
                                 'identifier' => 'volt@example.com',
                                 'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                                'mfa_code' => '654321',
                                 'type' => 'user',
                                 'name' => 'Volt User',
                             ],
@@ -39,8 +40,13 @@ final class LocalIdentityProviderTest extends TestCase
         self::assertSame('7', (string) $identity->identifier());
         self::assertSame('user', $identity->type());
         self::assertSame('Volt User', $identity->attributes['name'] ?? null);
+        self::assertArrayNotHasKey('mfa_code', $identity->attributes);
         self::assertNotNull($provider->passwordHashFor($identity));
         self::assertTrue(password_verify('secret-123', (string) $provider->passwordHashFor($identity)));
+        self::assertTrue($provider->supportsSecondFactor($identity));
+        self::assertFalse($provider->requiresSecondFactor($identity));
+        self::assertTrue($provider->verifySecondFactor($identity, '654321'));
+        self::assertFalse($provider->verifySecondFactor($identity, '000000'));
     }
 
     public function test_it_returns_null_when_identifier_is_missing(): void

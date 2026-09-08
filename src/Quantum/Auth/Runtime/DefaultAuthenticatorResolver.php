@@ -21,7 +21,7 @@ final class DefaultAuthenticatorResolver implements AuthenticatorResolverInterfa
     {
         $candidates = match ($context->operation) {
             'recover' => [$this->sessionAuthenticator],
-            'authenticate' => [$this->passwordAuthenticator],
+            'authenticate', 'step_up' => [$this->passwordAuthenticator],
             default => [],
         };
 

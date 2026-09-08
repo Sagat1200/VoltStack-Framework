@@ -21,6 +21,18 @@ interface AuthenticationManagerInterface
      */
     public function attemptOrFail(array $credentials): void;
 
+    /**
+     * @param array<string, mixed> $credentials
+     */
+    public function stepUp(array $credentials): bool;
+
+    /**
+     * @param array<string, mixed> $credentials
+     *
+     * @throws AuthenticationException
+     */
+    public function stepUpOrFail(array $credentials): void;
+
     public function login(mixed $user): void;
 
     public function user(): mixed;

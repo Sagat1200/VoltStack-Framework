@@ -130,6 +130,111 @@ final class AuthManagerTest extends TestCase
         self::assertSame('single_factor', $payload['assurance_profile']);
     }
 
+    public function test_auth_manager_attempt_can_establish_multi_factor_assurance_with_second_factor(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 24,
+                'identifier' => 'mfa-user@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+            ],
+        ]);
+
+        $router = $app->make(Router::class);
+        $router->get('/auth-attempt-mfa', function (): array {
+            $ok = auth()->attempt([
+                'identifier' => 'mfa-user@example.com',
+                'password' => 'secret-123',
+                'second_factor' => '654321',
+            ]);
+
+            return [
+                'ok' => $ok,
+                'check' => auth()->check(),
+                'id' => auth()->id(),
+                'strength' => auth()->context()?->authenticationStrength()->name,
+                'assurance_profile' => auth()->context()?->authenticationAssuranceProfile(),
+                'amr' => auth()->context()?->attribute('amr'),
+            ];
+        });
+
+        $response = $app->make(HttpKernel::class)->handle(Request::create('/auth-attempt-mfa'));
+        $payload = json_decode($response->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertTrue($payload['ok']);
+        self::assertTrue($payload['check']);
+        self::assertSame('24', (string) $payload['id']);
+        self::assertSame('MultiFactor', $payload['strength']);
+        self::assertSame('multi_factor', $payload['assurance_profile']);
+        self::assertSame(['pwd', 'mfa'], $payload['amr']);
+    }
+
+    public function test_step_up_can_elevate_an_existing_authenticated_session_without_relogin(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 25,
+                'identifier' => 'step-up-user@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+            ],
+        ]);
+
+        $router = $app->make(Router::class);
+        $router->get('/step-up-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'step-up-user@example.com',
+                'password' => 'secret-123',
+            ])];
+        });
+        $router->post('/step-up-elevate', function (): array {
+            $before = auth()->context();
+            $ok = auth()->stepUp([
+                'second_factor' => '654321',
+            ]);
+            $after = auth()->context();
+
+            return [
+                'ok' => $ok,
+                'before_strength' => $before?->authenticationStrength()->name,
+                'after_strength' => $after?->authenticationStrength()->name,
+                'after_profile' => $after?->authenticationAssuranceProfile(),
+                'amr' => $after?->attribute('amr'),
+                'before_session_id' => $before?->attribute('session_id'),
+                'after_session_id' => $after?->attribute('session_id'),
+            ];
+        });
+
+        $kernel = $app->make(HttpKernel::class);
+        $loginResponse = $kernel->handle(Request::create('/step-up-login'));
+        $originalSessionId = $loginResponse->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($originalSessionId);
+
+        $stepUpResponse = $kernel->handle(Request::create(
+            '/step-up-elevate',
+            'POST',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $originalSessionId],
+        ));
+        $payload = json_decode($stepUpResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+        $elevatedSessionId = $stepUpResponse->headers()['X-Auth-Session'] ?? null;
+
+        self::assertTrue($payload['ok']);
+        self::assertSame('Password', $payload['before_strength']);
+        self::assertSame('MultiFactor', $payload['after_strength']);
+        self::assertSame('multi_factor', $payload['after_profile']);
+        self::assertSame(['pwd', 'mfa'], $payload['amr']);
+        self::assertIsString($elevatedSessionId);
+        self::assertNotSame($originalSessionId, $elevatedSessionId);
+        self::assertSame($originalSessionId, $payload['before_session_id']);
+        self::assertSame($elevatedSessionId, $payload['after_session_id']);
+    }
+
     public function test_auth_manager_attempt_rejects_invalid_password_without_authenticating(): void
     {
         $app = new Application(sys_get_temp_dir());
@@ -427,6 +532,62 @@ final class AuthManagerTest extends TestCase
         self::assertSame('Identity is not eligible for authentication.', $payload['message'] ?? null);
         self::assertSame('auth.identity_not_eligible', $response->headers()['X-Volt-Error-Code'] ?? null);
         self::assertSame('Session realm="VoltStack", Password realm="VoltStack"', $response->headers()['WWW-Authenticate'] ?? null);
+    }
+
+    public function test_attempt_or_fail_requires_second_factor_when_identity_demands_it(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 62,
+                'identifier' => 'mfa-required@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'mfa_required' => true,
+                'type' => 'user',
+            ],
+        ]);
+
+        $router = $app->make(Router::class);
+        $router->get('/auth-attempt-mfa-required', function (): void {
+            auth()->attemptOrFail([
+                'identifier' => 'mfa-required@example.com',
+                'password' => 'secret-123',
+            ]);
+        });
+
+        $response = $app->make(HttpKernel::class)->handle(Request::create(
+            '/auth-attempt-mfa-required',
+            server: ['HTTP_ACCEPT' => 'application/json'],
+        ));
+        $payload = json_decode($response->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(401, $response->statusCode());
+        self::assertSame('Second factor verification is required.', $payload['message'] ?? null);
+        self::assertSame('auth.second_factor_required', $response->headers()['X-Volt-Error-Code'] ?? null);
+    }
+
+    public function test_step_up_or_fail_requires_an_authenticated_session(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+
+        $router = $app->make(Router::class);
+        $router->post('/step-up-requires-auth', function (): void {
+            auth()->stepUpOrFail([
+                'second_factor' => '654321',
+            ]);
+        });
+
+        $response = $app->make(HttpKernel::class)->handle(Request::create(
+            '/step-up-requires-auth',
+            'POST',
+            server: ['HTTP_ACCEPT' => 'application/json'],
+        ));
+        $payload = json_decode($response->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(401, $response->statusCode());
+        self::assertSame('An authenticated session is required to perform step-up.', $payload['message'] ?? null);
+        self::assertSame('auth.step_up_requires_authentication', $response->headers()['X-Volt-Error-Code'] ?? null);
     }
 
     public function test_auth_manager_can_use_file_session_driver(): void
@@ -858,5 +1019,133 @@ final class AuthManagerTest extends TestCase
         self::assertStringContainsString('required_strength_value="30"', $response->headers()['WWW-Authenticate'] ?? '');
         self::assertStringContainsString('current_strength_value="10"', $response->headers()['WWW-Authenticate'] ?? '');
         self::assertStringContainsString('error="insufficient_strength"', $response->headers()['WWW-Authenticate'] ?? '');
+    }
+
+    public function test_multi_factor_session_can_satisfy_multi_factor_route_requirement_after_recovery(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 142,
+                'identifier' => 'strength-mfa-user@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+            ],
+        ]);
+
+        $router = $app->make(Router::class);
+        $router->get('/strength-mfa-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'strength-mfa-user@example.com',
+                'password' => 'secret-123',
+                'second_factor' => '654321',
+            ])];
+        });
+        $router->get('/strength-mfa-protected', function (): array {
+            return [
+                'check' => auth()->check(),
+                'id' => auth()->id(),
+                'strength' => auth()->context()?->authenticationStrength()->name,
+                'assurance_profile' => auth()->context()?->authenticationAssuranceProfile(),
+                'amr' => auth()->context()?->attribute('amr'),
+            ];
+        })
+            ->middleware('auth')
+            ->auth([
+                'minimum_strength' => AuthenticationStrength::MultiFactor->name,
+                'minimum_strength_value' => AuthenticationStrength::MultiFactor->value,
+            ]);
+
+        $kernel = $app->make(HttpKernel::class);
+        $loginResponse = $kernel->handle(Request::create('/strength-mfa-login'));
+        $sessionId = $loginResponse->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($sessionId);
+
+        $response = $kernel->handle(Request::create(
+            '/strength-mfa-protected',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $sessionId],
+        ));
+        $payload = json_decode($response->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(200, $response->statusCode());
+        self::assertTrue($payload['check']);
+        self::assertSame('142', (string) $payload['id']);
+        self::assertSame('MultiFactor', $payload['strength']);
+        self::assertSame('multi_factor', $payload['assurance_profile']);
+        self::assertSame(['pwd', 'mfa'], $payload['amr']);
+    }
+
+    public function test_step_up_session_can_satisfy_multi_factor_route_requirement_after_recovery(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 143,
+                'identifier' => 'step-up-strength-user@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+            ],
+        ]);
+
+        $router = $app->make(Router::class);
+        $router->get('/step-up-strength-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'step-up-strength-user@example.com',
+                'password' => 'secret-123',
+            ])];
+        });
+        $router->post('/step-up-strength-elevate', function (): array {
+            return ['ok' => auth()->stepUp([
+                'second_factor' => '654321',
+            ])];
+        });
+        $router->get('/step-up-strength-protected', function (): array {
+            return [
+                'check' => auth()->check(),
+                'id' => auth()->id(),
+                'strength' => auth()->context()?->authenticationStrength()->name,
+                'assurance_profile' => auth()->context()?->authenticationAssuranceProfile(),
+                'amr' => auth()->context()?->attribute('amr'),
+            ];
+        })
+            ->middleware('auth')
+            ->auth([
+                'minimum_strength' => AuthenticationStrength::MultiFactor->name,
+                'minimum_strength_value' => AuthenticationStrength::MultiFactor->value,
+            ]);
+
+        $kernel = $app->make(HttpKernel::class);
+        $loginResponse = $kernel->handle(Request::create('/step-up-strength-login'));
+        $initialSessionId = $loginResponse->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($initialSessionId);
+
+        $stepUpResponse = $kernel->handle(Request::create(
+            '/step-up-strength-elevate',
+            'POST',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $initialSessionId],
+        ));
+        $stepUpPayload = json_decode($stepUpResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+        $elevatedSessionId = $stepUpResponse->headers()['X-Auth-Session'] ?? null;
+
+        self::assertTrue($stepUpPayload['ok']);
+        self::assertIsString($elevatedSessionId);
+        self::assertNotSame($initialSessionId, $elevatedSessionId);
+
+        $response = $kernel->handle(Request::create(
+            '/step-up-strength-protected',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $elevatedSessionId],
+        ));
+        $payload = json_decode($response->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(200, $response->statusCode());
+        self::assertTrue($payload['check']);
+        self::assertSame('143', (string) $payload['id']);
+        self::assertSame('MultiFactor', $payload['strength']);
+        self::assertSame('multi_factor', $payload['assurance_profile']);
+        self::assertSame(['pwd', 'mfa'], $payload['amr']);
     }
 }

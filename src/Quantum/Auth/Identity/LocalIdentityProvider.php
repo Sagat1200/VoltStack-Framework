@@ -5,10 +5,11 @@ declare(strict_types=1);
 namespace Quantum\Auth\Identity;
 
 use Quantum\Auth\Contracts\IdentityProviderInterface;
+use Quantum\Auth\Contracts\MultiFactorIdentityProviderInterface;
 use Quantum\Auth\Contracts\PasswordRehashingIdentityProviderInterface;
 use Quantum\Config\ConfigRepository;
 
-final class LocalIdentityProvider implements IdentityProviderInterface, PasswordRehashingIdentityProviderInterface
+final class LocalIdentityProvider implements IdentityProviderInterface, PasswordRehashingIdentityProviderInterface, MultiFactorIdentityProviderInterface
 {
     public function __construct(
         private readonly ConfigRepository $config,
@@ -109,6 +110,49 @@ final class LocalIdentityProvider implements IdentityProviderInterface, Password
         return $this->persistStoredIdentities($storagePath, $identities);
     }
 
+    public function requiresSecondFactor(IdentityInterface $identity): bool
+    {
+        $entry = $this->entryForIdentity($identity);
+
+        if ($entry === null) {
+            return false;
+        }
+
+        return $this->booleanEntryValue($entry, ['mfa_required', 'second_factor_required']);
+    }
+
+    public function supportsSecondFactor(IdentityInterface $identity): bool
+    {
+        $entry = $this->entryForIdentity($identity);
+
+        if ($entry === null) {
+            return false;
+        }
+
+        if ($this->configuredSecondFactorCode($entry) !== null) {
+            return true;
+        }
+
+        return $this->booleanEntryValue($entry, ['mfa_required', 'second_factor_required']);
+    }
+
+    public function verifySecondFactor(IdentityInterface $identity, string $secondFactor): bool
+    {
+        $entry = $this->entryForIdentity($identity);
+
+        if ($entry === null) {
+            return false;
+        }
+
+        $configuredCode = $this->configuredSecondFactorCode($entry);
+
+        if ($configuredCode === null) {
+            return false;
+        }
+
+        return hash_equals($configuredCode, trim($secondFactor));
+    }
+
     /**
      * @return array<int, mixed>
      */
@@ -166,7 +210,7 @@ final class LocalIdentityProvider implements IdentityProviderInterface, Password
         $attributes = [];
 
         foreach ($entry as $key => $value) {
-            if (in_array($key, ['password_hash'], true)) {
+            if (in_array($key, ['password_hash', 'mfa_code', 'second_factor_code', 'otp_code'], true)) {
                 continue;
             }
 
@@ -288,5 +332,50 @@ final class LocalIdentityProvider implements IdentityProviderInterface, Password
         }
 
         return file_put_contents($storagePath, $payload . PHP_EOL) !== false;
+    }
+
+    /**
+     * @param array<string, mixed> $entry
+     */
+    private function configuredSecondFactorCode(array $entry): ?string
+    {
+        foreach (['mfa_code', 'second_factor_code', 'otp_code'] as $key) {
+            $candidate = isset($entry[$key]) ? trim((string) $entry[$key]) : '';
+
+            if ($candidate !== '') {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<string, mixed> $entry
+     * @param list<string> $keys
+     */
+    private function booleanEntryValue(array $entry, array $keys): bool
+    {
+        foreach ($keys as $key) {
+            if (! array_key_exists($key, $entry)) {
+                continue;
+            }
+
+            $value = $entry[$key];
+
+            if (is_bool($value)) {
+                return $value;
+            }
+
+            if (is_int($value)) {
+                return $value === 1;
+            }
+
+            if (is_string($value)) {
+                return in_array(strtolower(trim($value)), ['1', 'true', 'yes', 'on'], true);
+            }
+        }
+
+        return false;
     }
 }

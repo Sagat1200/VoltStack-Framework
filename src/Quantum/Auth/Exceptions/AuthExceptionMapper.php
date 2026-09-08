@@ -14,13 +14,20 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
         return match (true) {
             $throwable instanceof GuestOnlyException => 403,
             $throwable instanceof StaleAuthenticationSessionException => 401,
+            $throwable instanceof StepUpRequiredException => 403,
             default => null,
         };
     }
 
     public function headers(Throwable $throwable): array
     {
-        return [];
+        return match (true) {
+            $throwable instanceof StepUpRequiredException => [
+                'X-Auth-Step-Up' => 'required',
+                'X-Auth-Required-Strength' => $throwable->requiredStrength->name,
+            ],
+            default => [],
+        };
     }
 
     public function jsonExtensions(Throwable $throwable, bool $debug): array
@@ -37,7 +44,8 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
     {
         return match (true) {
             $throwable instanceof GuestOnlyException,
-            $throwable instanceof StaleAuthenticationSessionException => $throwable->getMessage(),
+            $throwable instanceof StaleAuthenticationSessionException,
+            $throwable instanceof StepUpRequiredException => $throwable->getMessage(),
             default => null,
         };
     }
@@ -46,7 +54,8 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
     {
         return match (true) {
             $throwable instanceof GuestOnlyException,
-            $throwable instanceof StaleAuthenticationSessionException => $throwable->reasonCode,
+            $throwable instanceof StaleAuthenticationSessionException,
+            $throwable instanceof StepUpRequiredException => $throwable->reasonCode,
             default => null,
         };
     }
@@ -56,6 +65,7 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
         return match (true) {
             $throwable instanceof GuestOnlyException => '<p>This resource is only available to guest users.</p>',
             $throwable instanceof StaleAuthenticationSessionException => '<p>The authentication session is stale, expired or invalid. Please authenticate again.</p>',
+            $throwable instanceof StepUpRequiredException => '<p>This resource requires elevated authentication. Complete step-up authentication and try again.</p>',
             default => null,
         };
     }
@@ -69,6 +79,13 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
             $throwable instanceof GuestOnlyException,
             $throwable instanceof StaleAuthenticationSessionException => [
                 'reason_code' => $throwable->reasonCode,
+            ],
+            $throwable instanceof StepUpRequiredException => [
+                'reason_code' => $throwable->reasonCode,
+                'required_strength_name' => $throwable->requiredStrength->name,
+                'required_strength_value' => $throwable->requiredStrength->value,
+                'current_strength_name' => $throwable->currentStrength->name,
+                'current_strength_value' => $throwable->currentStrength->value,
             ],
             default => [],
         };

@@ -393,6 +393,14 @@ final class RouteCompilationTest extends TestCase
         self::assertSame('spa', $match->metadata()->get('runtime'));
     }
 
+    public function test_route_mfa_helper_stores_step_up_metadata(): void
+    {
+        $route = new Route(RouteDefinition::make(['GET'], '/admin', 'handler'));
+        $route->middleware('auth')->mfa();
+
+        self::assertSame(true, $route->routeMetadata()->get('mfa'));
+    }
+
     public function test_route_matcher_returns_a_route_match_for_dynamic_routes(): void
     {
         $collection = new RouteCollection();

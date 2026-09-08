@@ -24,6 +24,7 @@ use Quantum\Config\ConfigRepository;
 use Quantum\HttpKernel\MiddlewareAliasRegistry;
 use Quantum\Middlewares\AuthMiddleware;
 use Quantum\Middlewares\GuestMiddleware;
+use Quantum\Middlewares\MfaMiddleware;
 use VoltStack\Framework\Application;
 use VoltStack\Framework\ServiceProvider;
 
@@ -57,9 +58,11 @@ final class AuthenticationServiceProvider extends ServiceProvider
         $this->app->scoped(AuthenticationManagerInterface::class, fn(Application $app) => $app->make(AuthManager::class));
         $this->app->scoped(AuthMiddleware::class);
         $this->app->scoped(GuestMiddleware::class);
+        $this->app->scoped(MfaMiddleware::class);
 
         // The alias must exist before route registration so fluent and attribute routes can resolve it.
         $this->app->make(MiddlewareAliasRegistry::class)->alias('auth', AuthMiddleware::class);
         $this->app->make(MiddlewareAliasRegistry::class)->alias('guest', GuestMiddleware::class);
+        $this->app->make(MiddlewareAliasRegistry::class)->alias('mfa', MfaMiddleware::class);
     }
 }

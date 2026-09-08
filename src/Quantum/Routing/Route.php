@@ -298,6 +298,11 @@ final class Route extends CompiledRoute
         return $this->meta('guest', $value);
     }
 
+    public function mfa(mixed $value = true): static
+    {
+        return $this->meta('mfa', $value);
+    }
+
     public function csrf(mixed $value = true): static
     {
         return $this->meta('csrf', $value);

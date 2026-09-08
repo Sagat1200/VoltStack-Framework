@@ -9,6 +9,7 @@ use PHPUnit\Framework\TestCase;
 use Quantum\Auth\Exceptions\AuthExceptionMapper;
 use Quantum\Auth\Exceptions\GuestOnlyException;
 use Quantum\Auth\Exceptions\StaleAuthenticationSessionException;
+use Quantum\Auth\Exceptions\StepUpRequiredException;
 use Quantum\Controllers\Security\Exceptions\AuthenticationRequiredException;
 use Quantum\Controllers\Security\Exceptions\AuthorizationDeniedException;
 use Quantum\Controllers\Security\Exceptions\ControllerExposureViolationException;
@@ -423,6 +424,53 @@ final class QuantumExceptionHandlerTest extends TestCase
         self::assertSame('The authentication session is stale or invalid.', $payload['message'] ?? null);
         self::assertSame('auth.stale_session', $payload['reason_code'] ?? null);
         self::assertSame('auth.stale_session', $result->response->headers()['X-Volt-Error-Code'] ?? null);
+        self::assertArrayNotHasKey('WWW-Authenticate', $result->response->headers());
+    }
+
+    public function test_auth_mapper_step_up_required_returns_403_without_www_authenticate(): void
+    {
+        $handler = new ExceptionHandler();
+        $handler->addMapper(new AuthExceptionMapper());
+
+        $ex = new StepUpRequiredException(
+            requiredStrength: AuthenticationStrength::MultiFactor,
+            currentStrength: AuthenticationStrength::Password,
+        );
+        $request = Request::create(
+            '/mfa-protected',
+            'GET',
+            [],
+            [],
+            [],
+            [],
+            [],
+            [
+                'HTTP_ACCEPT' => 'application/json',
+            ],
+        );
+        $context = new ExceptionHandlingContext(
+            throwable: $ex,
+            origin: ExceptionOrigin::Routing,
+            runtime: new RuntimeContext(environment: 'local'),
+            request: $request,
+            controllerExecution: null,
+            transportExecution: new TransportExecution(response: new TransportResponse(), context: new TransportContext()),
+            metadata: new MetadataBag([]),
+            state: new ExceptionHandlingState(),
+            debug: false,
+        );
+
+        $result = $handler->handle($ex, $context);
+        $payload = json_decode($result->response->content(), true);
+
+        self::assertSame(403, $result->response->statusCode());
+        self::assertSame('Step-up authentication is required for this resource.', $payload['message'] ?? null);
+        self::assertSame('auth.step_up_required', $payload['reason_code'] ?? null);
+        self::assertSame('MultiFactor', $payload['required_strength_name'] ?? null);
+        self::assertSame('Password', $payload['current_strength_name'] ?? null);
+        self::assertSame('auth.step_up_required', $result->response->headers()['X-Volt-Error-Code'] ?? null);
+        self::assertSame('required', $result->response->headers()['X-Auth-Step-Up'] ?? null);
+        self::assertSame('MultiFactor', $result->response->headers()['X-Auth-Required-Strength'] ?? null);
         self::assertArrayNotHasKey('WWW-Authenticate', $result->response->headers());
     }
 

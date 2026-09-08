@@ -963,7 +963,140 @@ final class AuthManagerTest extends TestCase
         self::assertArrayNotHasKey('WWW-Authenticate', $response->headers());
     }
 
-    public function test_auth_middleware_can_require_a_higher_authentication_strength_from_route_metadata(): void
+    public function test_mfa_middleware_alias_requires_step_up_for_single_factor_sessions(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 135,
+                'identifier' => 'mfa-alias-user@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+            ],
+        ]);
+
+        $router = $app->make(Router::class);
+        $router->get('/mfa-alias-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'mfa-alias-user@example.com',
+                'password' => 'secret-123',
+            ])];
+        });
+        $router->post('/mfa-alias-step-up', function (): array {
+            return ['ok' => auth()->stepUp([
+                'second_factor' => '654321',
+            ])];
+        });
+        $router->get('/mfa-alias-protected', function (): array {
+            return [
+                'check' => auth()->check(),
+                'id' => auth()->id(),
+                'strength' => auth()->context()?->authenticationStrength()->name,
+            ];
+        })->middleware('mfa');
+
+        $kernel = $app->make(HttpKernel::class);
+        $guestResponse = $kernel->handle(Request::create(
+            '/mfa-alias-protected',
+            server: ['HTTP_ACCEPT' => 'application/json'],
+        ));
+        $guestPayload = json_decode($guestResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(401, $guestResponse->statusCode());
+        self::assertSame('Authentication required.', $guestPayload['message'] ?? null);
+        self::assertSame('auth.required', $guestResponse->headers()['X-Volt-Error-Code'] ?? null);
+
+        $loginResponse = $kernel->handle(Request::create('/mfa-alias-login'));
+        $singleFactorSessionId = $loginResponse->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($singleFactorSessionId);
+
+        $insufficientResponse = $kernel->handle(Request::create(
+            '/mfa-alias-protected',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $singleFactorSessionId],
+            server: ['HTTP_ACCEPT' => 'application/json'],
+        ));
+        $insufficientPayload = json_decode($insufficientResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(403, $insufficientResponse->statusCode());
+        self::assertSame('Step-up authentication is required for this resource.', $insufficientPayload['message'] ?? null);
+        self::assertSame('auth.step_up_required', $insufficientPayload['reason_code'] ?? null);
+        self::assertSame('MultiFactor', $insufficientPayload['required_strength_name'] ?? null);
+        self::assertSame('Password', $insufficientPayload['current_strength_name'] ?? null);
+        self::assertSame('required', $insufficientResponse->headers()['X-Auth-Step-Up'] ?? null);
+        self::assertSame('MultiFactor', $insufficientResponse->headers()['X-Auth-Required-Strength'] ?? null);
+        self::assertArrayNotHasKey('WWW-Authenticate', $insufficientResponse->headers());
+
+        $stepUpResponse = $kernel->handle(Request::create(
+            '/mfa-alias-step-up',
+            'POST',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $singleFactorSessionId],
+        ));
+        $stepUpPayload = json_decode($stepUpResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+        $elevatedSessionId = $stepUpResponse->headers()['X-Auth-Session'] ?? null;
+
+        self::assertTrue($stepUpPayload['ok']);
+        self::assertIsString($elevatedSessionId);
+
+        $protectedResponse = $kernel->handle(Request::create(
+            '/mfa-alias-protected',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $elevatedSessionId],
+        ));
+        $protectedPayload = json_decode($protectedResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(200, $protectedResponse->statusCode());
+        self::assertTrue($protectedPayload['check']);
+        self::assertSame('135', (string) $protectedPayload['id']);
+        self::assertSame('MultiFactor', $protectedPayload['strength']);
+    }
+
+    public function test_auth_middleware_honors_route_mfa_metadata_as_step_up_entry_point(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 136,
+                'identifier' => 'mfa-meta-user@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'type' => 'user',
+            ],
+        ]);
+
+        $router = $app->make(Router::class);
+        $router->get('/mfa-meta-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'mfa-meta-user@example.com',
+                'password' => 'secret-123',
+            ])];
+        });
+        $router->get('/mfa-meta-protected', function (): array {
+            return [
+                'check' => auth()->check(),
+                'id' => auth()->id(),
+            ];
+        })->middleware('auth')->mfa();
+
+        $kernel = $app->make(HttpKernel::class);
+        $loginResponse = $kernel->handle(Request::create('/mfa-meta-login'));
+        $sessionId = $loginResponse->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($sessionId);
+
+        $response = $kernel->handle(Request::create(
+            '/mfa-meta-protected',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $sessionId],
+            server: ['HTTP_ACCEPT' => 'application/json'],
+        ));
+        $payload = json_decode($response->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(403, $response->statusCode());
+        self::assertSame('auth.step_up_required', $payload['reason_code'] ?? null);
+        self::assertSame('required', $response->headers()['X-Auth-Step-Up'] ?? null);
+        self::assertArrayNotHasKey('WWW-Authenticate', $response->headers());
+    }
+
+    public function test_auth_middleware_can_require_a_generic_higher_authentication_strength_from_route_metadata(): void
     {
         $app = new Application(sys_get_temp_dir());
         $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
@@ -990,8 +1123,8 @@ final class AuthManagerTest extends TestCase
         })
             ->middleware('auth')
             ->auth([
-                'minimum_strength' => AuthenticationStrength::MultiFactor->name,
-                'minimum_strength_value' => AuthenticationStrength::MultiFactor->value,
+                'minimum_strength' => AuthenticationStrength::HardwareBacked->name,
+                'minimum_strength_value' => AuthenticationStrength::HardwareBacked->value,
             ]);
 
         $kernel = $app->make(HttpKernel::class);
@@ -1010,13 +1143,13 @@ final class AuthManagerTest extends TestCase
         self::assertSame(401, $response->statusCode());
         self::assertSame('Authentication strength is insufficient for this resource.', $payload['message'] ?? null);
         self::assertSame('authentication_strength_insufficient', $payload['reason_code'] ?? null);
-        self::assertSame(AuthenticationStrength::MultiFactor->value, $payload['challenge']['required_strength_value'] ?? null);
+        self::assertSame(AuthenticationStrength::HardwareBacked->value, $payload['challenge']['required_strength_value'] ?? null);
         self::assertSame(AuthenticationStrength::Password->value, $payload['challenge']['current_strength_value'] ?? null);
         self::assertSame(
             'controller.security.authentication.authentication_strength_insufficient',
             $response->headers()['X-Volt-Error-Code'] ?? null,
         );
-        self::assertStringContainsString('required_strength_value="30"', $response->headers()['WWW-Authenticate'] ?? '');
+        self::assertStringContainsString('required_strength_value="40"', $response->headers()['WWW-Authenticate'] ?? '');
         self::assertStringContainsString('current_strength_value="10"', $response->headers()['WWW-Authenticate'] ?? '');
         self::assertStringContainsString('error="insufficient_strength"', $response->headers()['WWW-Authenticate'] ?? '');
     }

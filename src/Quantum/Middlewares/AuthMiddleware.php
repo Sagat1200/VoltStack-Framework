@@ -8,6 +8,7 @@ use Closure;
 use Quantum\Auth\Contracts\AuthenticationManagerInterface;
 use Quantum\Auth\Exceptions\AuthenticationRequiredException;
 use Quantum\Auth\Exceptions\StaleAuthenticationSessionException;
+use Quantum\Auth\Exceptions\StepUpRequiredException;
 use Quantum\Auth\Support\AuthenticationAssurance;
 use Quantum\Config\ConfigRepository;
 use Quantum\Controllers\Security\Context\AuthenticationStrength;
@@ -31,6 +32,13 @@ final class AuthMiddleware implements MiddlewareInterface
                 $currentStrength = $this->currentStrength();
 
                 if ($currentStrength->value < $requiredStrength->value) {
+                    if ($this->isStepUpRoute($request, $requiredStrength)) {
+                        throw new StepUpRequiredException(
+                            requiredStrength: $requiredStrength,
+                            currentStrength: $currentStrength,
+                        );
+                    }
+
                     throw new ControllerAuthenticationRequiredException(
                         reasonCode: 'authentication_strength_insufficient',
                         challengeMetadata: [
@@ -97,22 +105,37 @@ final class AuthMiddleware implements MiddlewareInterface
     private function requiredStrength(Request $request): ?AuthenticationStrength
     {
         $authMeta = $request->routeMeta('auth');
+        $mfaMeta = $request->routeMeta('mfa');
+        $authStrength = null;
+        $mfaStrength = $mfaMeta === null || $mfaMeta === false
+            ? null
+            : AuthenticationStrength::MultiFactor;
 
-        if ($authMeta === null || $authMeta === false) {
-            return null;
+        if ($authMeta !== null && $authMeta !== false) {
+            if (is_array($authMeta)) {
+                $authStrength = $this->normalizeStrength(
+                    $authMeta['minimum_strength']
+                        ?? $authMeta['required_strength']
+                        ?? $authMeta['minimum_strength_value']
+                        ?? $authMeta['required_strength_value']
+                        ?? null,
+                ) ?? AuthenticationStrength::Password;
+            } else {
+                $authStrength = $this->normalizeStrength($authMeta);
+            }
         }
 
-        if (is_array($authMeta)) {
-            return $this->normalizeStrength(
-                $authMeta['minimum_strength']
-                    ?? $authMeta['required_strength']
-                    ?? $authMeta['minimum_strength_value']
-                    ?? $authMeta['required_strength_value']
-                    ?? null,
-            ) ?? AuthenticationStrength::Password;
+        if ($authStrength === null) {
+            return $mfaStrength;
         }
 
-        return $this->normalizeStrength($authMeta);
+        if ($mfaStrength === null) {
+            return $authStrength;
+        }
+
+        return $authStrength->value >= $mfaStrength->value
+            ? $authStrength
+            : $mfaStrength;
     }
 
     private function normalizeStrength(mixed $value): ?AuthenticationStrength
@@ -122,5 +145,16 @@ final class AuthMiddleware implements MiddlewareInterface
         }
 
         return AuthenticationAssurance::resolveExplicitStrength($value);
+    }
+
+    private function isStepUpRoute(Request $request, AuthenticationStrength $requiredStrength): bool
+    {
+        $mfaMeta = $request->routeMeta('mfa');
+
+        if ($mfaMeta !== null && $mfaMeta !== false) {
+            return true;
+        }
+
+        return $requiredStrength === AuthenticationStrength::MultiFactor;
     }
 }

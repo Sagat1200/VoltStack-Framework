@@ -32,4 +32,6 @@ interface AuthenticationSessionRepositoryInterface
     public function touch(AuthenticationSession $session): void;
 
     public function purgeExpired(?int $now = null): int;
+
+    public function purgeRecoveryReasons(?int $now = null): int;
 }

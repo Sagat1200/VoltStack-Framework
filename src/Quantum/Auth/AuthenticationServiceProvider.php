@@ -38,12 +38,15 @@ final class AuthenticationServiceProvider extends ServiceProvider
         $this->app->scoped(AuthenticatorInterface::class, PasswordAuthenticator::class);
         $this->app->singleton(AuthenticationSessionRepositoryInterface::class, function (Application $app): AuthenticationSessionRepositoryInterface {
             $driver = (string) $app->config('auth.session.driver', 'memory');
+            $retention = $app->config('auth.session.cleanup.tombstone_retention', 604800);
+            $retention = is_numeric($retention) ? max(0, (int) $retention) : 604800;
 
             return match (strtolower(trim($driver))) {
                 'file' => new FileAuthenticationSessionRepository(
                     $app->storagePath('framework/auth/sessions'),
+                    $retention,
                 ),
-                default => new InMemoryAuthenticationSessionRepository(),
+                default => new InMemoryAuthenticationSessionRepository($retention),
             };
         });
         $this->app->scoped(SessionAuthenticator::class);

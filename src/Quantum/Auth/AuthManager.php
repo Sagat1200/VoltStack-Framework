@@ -311,6 +311,13 @@ final class AuthManager implements AuthenticationManagerInterface
             expiresAt: null,
             lastActivityAt: null,
             current: true,
+            label: $this->contextStringAttribute($context, 'session_label'),
+            clientFamily: $this->contextStringAttribute($context, 'session_client_family'),
+            clientPlatform: $this->contextStringAttribute($context, 'session_client_platform'),
+            deviceKind: $this->contextStringAttribute($context, 'session_device_kind'),
+            ipPrefix: $this->contextStringAttribute($context, 'session_ip_prefix'),
+            canRevoke: true,
+            requiresReauthentication: false,
         );
     }
 
@@ -324,12 +331,14 @@ final class AuthManager implements AuthenticationManagerInterface
 
         $this->sessions->purgeExpired();
         $currentSessionId = $this->activeSessionId() ?? (is_string($context->attribute('session_id')) ? trim((string) $context->attribute('session_id')) : null);
+        $requiresRemoteReauthentication = $this->requiresFreshAuthenticationHintForCurrentContext($context);
         $summaries = [];
 
         foreach ($this->sessions->listForIdentity($context->identity) as $session) {
             $summary = $this->toSessionSummary(
                 $session,
                 $currentSessionId !== null && $session->id->value === $currentSessionId,
+                $requiresRemoteReauthentication,
             );
 
             if ($summary !== null) {
@@ -554,7 +563,11 @@ final class AuthManager implements AuthenticationManagerInterface
         );
     }
 
-    private function toSessionSummary(AuthenticationSession $session, bool $current): ?AuthenticationSessionSummary
+    private function toSessionSummary(
+        AuthenticationSession $session,
+        bool $current,
+        bool $requiresRemoteReauthentication = false,
+    ): ?AuthenticationSessionSummary
     {
         $publicId = $session->publicId();
 
@@ -571,7 +584,11 @@ final class AuthManager implements AuthenticationManagerInterface
             current: $current,
             label: $session->label(),
             clientFamily: $this->stringAttribute($session, 'session_client_family'),
+            clientPlatform: $this->stringAttribute($session, 'session_client_platform'),
+            deviceKind: $this->stringAttribute($session, 'session_device_kind'),
             ipPrefix: $this->stringAttribute($session, 'session_ip_prefix'),
+            canRevoke: true,
+            requiresReauthentication: ! $current && $requiresRemoteReauthentication,
         );
     }
 
@@ -616,11 +633,15 @@ final class AuthManager implements AuthenticationManagerInterface
     {
         $request = $this->runtimeContext()->request();
         $clientFamily = $this->clientFamily($request);
+        $clientPlatform = $this->clientPlatform($request);
+        $deviceKind = $this->deviceKind($request);
         $ipPrefix = $this->ipPrefix($request);
-        $label = $this->sessionLabel($clientFamily, $ipPrefix);
+        $label = $this->sessionLabel($clientFamily, $clientPlatform, $ipPrefix);
 
         return array_filter([
             'session_client_family' => $clientFamily,
+            'session_client_platform' => $clientPlatform,
+            'session_device_kind' => $deviceKind,
             'session_ip_prefix' => $ipPrefix,
             'session_label' => $label,
             'session_last_activity_at' => time(),
@@ -670,6 +691,52 @@ final class AuthManager implements AuthenticationManagerInterface
         };
     }
 
+    private function clientPlatform(\Quantum\Http\Request $request): ?string
+    {
+        $userAgent = trim((string) $request->header('User-Agent', ''));
+
+        if ($userAgent === '') {
+            return null;
+        }
+
+        $normalized = strtolower($userAgent);
+
+        return match (true) {
+            str_contains($normalized, 'windows') => 'Windows',
+            str_contains($normalized, 'android') => 'Android',
+            str_contains($normalized, 'iphone'),
+            str_contains($normalized, 'ipad'),
+            str_contains($normalized, 'ios') => 'iOS',
+            str_contains($normalized, 'mac os'),
+            str_contains($normalized, 'macintosh') => 'macOS',
+            str_contains($normalized, 'linux') => 'Linux',
+            default => null,
+        };
+    }
+
+    private function deviceKind(\Quantum\Http\Request $request): ?string
+    {
+        $userAgent = trim((string) $request->header('User-Agent', ''));
+
+        if ($userAgent === '') {
+            return null;
+        }
+
+        $normalized = strtolower($userAgent);
+
+        return match (true) {
+            str_contains($normalized, 'ipad'),
+            str_contains($normalized, 'tablet') => 'tablet',
+            str_contains($normalized, 'iphone'),
+            str_contains($normalized, 'android') && str_contains($normalized, 'mobile'),
+            str_contains($normalized, 'mobile') => 'mobile',
+            str_contains($normalized, 'postman'),
+            str_contains($normalized, 'curl'),
+            str_contains($normalized, 'insomnia') => 'scripted',
+            default => 'desktop',
+        };
+    }
+
     private function ipPrefix(\Quantum\Http\Request $request): ?string
     {
         $candidates = [
@@ -703,17 +770,27 @@ final class AuthManager implements AuthenticationManagerInterface
         return null;
     }
 
-    private function sessionLabel(?string $clientFamily, ?string $ipPrefix): ?string
+    private function sessionLabel(?string $clientFamily, ?string $clientPlatform, ?string $ipPrefix): ?string
     {
-        if ($clientFamily === null && $ipPrefix === null) {
+        $base = null;
+
+        if ($clientFamily !== null && $clientPlatform !== null) {
+            $base = sprintf('%s on %s', $clientFamily, $clientPlatform);
+        } elseif ($clientFamily !== null) {
+            $base = $clientFamily;
+        } elseif ($clientPlatform !== null) {
+            $base = $clientPlatform;
+        }
+
+        if ($base === null && $ipPrefix === null) {
             return null;
         }
 
-        if ($clientFamily !== null && $ipPrefix !== null) {
-            return sprintf('%s from %s', $clientFamily, $ipPrefix);
+        if ($base !== null && $ipPrefix !== null) {
+            return sprintf('%s from %s', $base, $ipPrefix);
         }
 
-        return $clientFamily ?? $ipPrefix;
+        return $base ?? $ipPrefix;
     }
 
     private function freshAuthenticationRequiredForRemoteSessionRevocation(): bool
@@ -758,6 +835,26 @@ final class AuthManager implements AuthenticationManagerInterface
         }
 
         return null;
+    }
+
+    private function contextStringAttribute(AuthenticationContext $context, string $key): ?string
+    {
+        $value = $context->attribute($key);
+
+        return is_string($value) && trim($value) !== ''
+            ? trim($value)
+            : null;
+    }
+
+    private function requiresFreshAuthenticationHintForCurrentContext(AuthenticationContext $context): bool
+    {
+        if (! $this->freshAuthenticationRequiredForRemoteSessionRevocation()) {
+            return false;
+        }
+
+        $freshAt = $context->freshAuthenticationAt();
+
+        return $freshAt === null || (time() - $freshAt) > $this->freshAuthenticationWindowSeconds();
     }
 
     /**

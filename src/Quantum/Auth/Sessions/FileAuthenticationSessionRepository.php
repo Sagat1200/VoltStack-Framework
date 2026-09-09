@@ -15,6 +15,7 @@ final class FileAuthenticationSessionRepository implements AuthenticationSession
 {
     public function __construct(
         private readonly string $directory,
+        private readonly int $recoveryRetentionSeconds = 604800,
     ) {}
 
     public function save(AuthenticationSession $session): void
@@ -206,8 +207,48 @@ final class FileAuthenticationSessionRepository implements AuthenticationSession
 
             @unlink($file);
             if ($sessionId !== '') {
-                $this->writeRecoveryReason($sessionId, AuthenticationSessionRecoveryReason::Expired);
+                $this->writeRecoveryReason($sessionId, AuthenticationSessionRecoveryReason::Expired, $instant);
             }
+            $deleted++;
+        }
+
+        return $deleted;
+    }
+
+    public function purgeRecoveryReasons(?int $now = null): int
+    {
+        $this->ensureRecoveryDirectory();
+
+        $deleted = 0;
+        $instant = $now ?? time();
+        $threshold = $this->recoveryRetentionSeconds <= 0
+            ? $instant
+            : $instant - $this->recoveryRetentionSeconds;
+
+        foreach ($this->recoveryFiles() as $file) {
+            $payload = file_get_contents($file);
+
+            if (! is_string($payload) || trim($payload) === '') {
+                if (@unlink($file) || ! is_file($file)) {
+                    $deleted++;
+                }
+
+                continue;
+            }
+
+            /** @var array<string, mixed> $data */
+            $data = json_decode($payload, true, 512, JSON_THROW_ON_ERROR);
+            $recordedAt = $data['recorded_at'] ?? null;
+            $recordedAt = is_numeric($recordedAt) ? (int) $recordedAt : 0;
+
+            if ($recordedAt > $threshold) {
+                continue;
+            }
+
+            if (! @unlink($file) && is_file($file)) {
+                throw new RuntimeException(sprintf('Unable to remove auth recovery tombstone [%s].', $file));
+            }
+
             $deleted++;
         }
 
@@ -272,14 +313,34 @@ final class FileAuthenticationSessionRepository implements AuthenticationSession
         }
     }
 
-    private function writeRecoveryReason(string $sessionId, AuthenticationSessionRecoveryReason $reason): void
+    /**
+     * @return list<string>
+     */
+    private function recoveryFiles(): array
+    {
+        $this->ensureRecoveryDirectory();
+
+        $files = glob($this->recoveryDirectory() . DIRECTORY_SEPARATOR . '*.json');
+
+        if ($files === false) {
+            return [];
+        }
+
+        return array_values(array_filter($files, static fn(mixed $file): bool => is_string($file)));
+    }
+
+    private function writeRecoveryReason(
+        string $sessionId,
+        AuthenticationSessionRecoveryReason $reason,
+        ?int $recordedAt = null,
+    ): void
     {
         $this->ensureDirectory();
 
         file_put_contents($this->recoveryReasonPathFor($sessionId), json_encode([
             'session_id' => $sessionId,
             'reason' => $reason->value,
-            'recorded_at' => time(),
+            'recorded_at' => $recordedAt ?? time(),
         ], JSON_THROW_ON_ERROR), LOCK_EX);
     }
 

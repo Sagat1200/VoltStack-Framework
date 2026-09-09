@@ -9,13 +9,17 @@ use Quantum\Auth\Identity\IdentityInterface;
 
 final class InMemoryAuthenticationSessionRepository implements AuthenticationSessionRepositoryInterface
 {
+    public function __construct(
+        private readonly int $recoveryRetentionSeconds = 604800,
+    ) {}
+
     /**
      * @var array<string, AuthenticationSession>
      */
     private array $sessions = [];
 
     /**
-     * @var array<string, AuthenticationSessionRecoveryReason>
+     * @var array<string, array{reason: AuthenticationSessionRecoveryReason, recorded_at: int}>
      */
     private array $recoveryReasons = [];
 
@@ -43,7 +47,7 @@ final class InMemoryAuthenticationSessionRepository implements AuthenticationSes
         AuthenticationSessionRecoveryReason $reason = AuthenticationSessionRecoveryReason::Revoked,
     ): void {
         unset($this->sessions[$sessionId]);
-        $this->recoveryReasons[$sessionId] = $reason;
+        $this->rememberRecoveryReason($sessionId, $reason);
     }
 
     public function deleteForIdentity(
@@ -61,13 +65,13 @@ final class InMemoryAuthenticationSessionRepository implements AuthenticationSes
             }
 
             unset($this->sessions[$sessionId]);
-            $this->recoveryReasons[$sessionId] = $reason;
+            $this->rememberRecoveryReason($sessionId, $reason);
         }
     }
 
     public function findRecoveryReason(string $sessionId): ?AuthenticationSessionRecoveryReason
     {
-        return $this->recoveryReasons[$sessionId] ?? null;
+        return $this->recoveryReasons[$sessionId]['reason'] ?? null;
     }
 
     public function touch(AuthenticationSession $session): void
@@ -85,10 +89,45 @@ final class InMemoryAuthenticationSessionRepository implements AuthenticationSes
             }
 
             unset($this->sessions[$sessionId]);
-            $this->recoveryReasons[$sessionId] = AuthenticationSessionRecoveryReason::Expired;
+            $this->rememberRecoveryReason($sessionId, AuthenticationSessionRecoveryReason::Expired, $now ?? time());
             $deleted++;
         }
 
         return $deleted;
+    }
+
+    public function purgeRecoveryReasons(?int $now = null): int
+    {
+        if ($this->recoveryReasons === []) {
+            return 0;
+        }
+
+        $deleted = 0;
+        $instant = $now ?? time();
+        $threshold = $this->recoveryRetentionSeconds <= 0
+            ? $instant
+            : $instant - $this->recoveryRetentionSeconds;
+
+        foreach ($this->recoveryReasons as $sessionId => $record) {
+            if (($record['recorded_at'] ?? 0) > $threshold) {
+                continue;
+            }
+
+            unset($this->recoveryReasons[$sessionId]);
+            $deleted++;
+        }
+
+        return $deleted;
+    }
+
+    private function rememberRecoveryReason(
+        string $sessionId,
+        AuthenticationSessionRecoveryReason $reason,
+        ?int $recordedAt = null,
+    ): void {
+        $this->recoveryReasons[$sessionId] = [
+            'reason' => $reason,
+            'recorded_at' => $recordedAt ?? time(),
+        ];
     }
 }

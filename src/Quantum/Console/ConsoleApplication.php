@@ -6,6 +6,7 @@ namespace Quantum\Console;
 
 use Quantum\Bootstrap\Bootstrapper;
 use Quantum\Console\Commands\CacheClearCommand;
+use Quantum\Console\Commands\AuthSessionsCleanupCommand;
 use Quantum\Console\Commands\ControllerCompileClearCommand;
 use Quantum\Console\Commands\ControllerCompileCommand;
 use Quantum\Console\Commands\ControllerCompileWarmupCommand;
@@ -67,6 +68,7 @@ final class ConsoleApplication
             $this->add(new MakeViewCommand($basePath));
             $this->add(new MakeActionCommand($basePath));
             $this->add(new CacheClearCommand($basePath));
+            $this->add(new AuthSessionsCleanupCommand($basePath));
             $this->add(new ViewCacheCommand($basePath));
             $this->add(new ViewClearCommand($basePath));
             $this->add(new ControllerCompileCommand($basePath));

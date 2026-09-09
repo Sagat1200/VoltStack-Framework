@@ -780,9 +780,13 @@ final class AuthManagerTest extends TestCase
                     'public_id' => $session->publicId,
                     'label' => $session->label,
                     'client_family' => $session->clientFamily,
+                    'client_platform' => $session->clientPlatform,
+                    'device_kind' => $session->deviceKind,
                     'ip_prefix' => $session->ipPrefix,
                     'last_activity_at' => $session->lastActivityAt,
                     'issued_at' => $session->issuedAt,
+                    'can_revoke' => $session->canRevoke,
+                    'requires_reauthentication' => $session->requiresReauthentication,
                 ], auth()->sessions()),
             ];
         });
@@ -791,7 +795,7 @@ final class AuthManagerTest extends TestCase
         $loginResponse = $kernel->handle(Request::create(
             '/metadata-login',
             server: [
-                'HTTP_USER_AGENT' => 'Mozilla/5.0 Chrome/128.0',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
                 'REMOTE_ADDR' => '203.0.113.42',
             ],
         ));
@@ -803,7 +807,7 @@ final class AuthManagerTest extends TestCase
             '/metadata-sessions',
             cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $sessionId],
             server: [
-                'HTTP_USER_AGENT' => 'Mozilla/5.0 Chrome/128.0',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
                 'REMOTE_ADDR' => '203.0.113.42',
             ],
         ));
@@ -813,13 +817,118 @@ final class AuthManagerTest extends TestCase
         self::assertIsArray($session);
         self::assertStringStartsWith('sess_pub_', $session['public_id'] ?? '');
         self::assertSame('Chrome', $session['client_family'] ?? null);
+        self::assertSame('Windows', $session['client_platform'] ?? null);
+        self::assertSame('desktop', $session['device_kind'] ?? null);
         self::assertSame('203.0.113.x', $session['ip_prefix'] ?? null);
-        self::assertSame('Chrome from 203.0.113.x', $session['label'] ?? null);
+        self::assertSame('Chrome on Windows from 203.0.113.x', $session['label'] ?? null);
         self::assertIsInt($session['issued_at'] ?? null);
         self::assertIsInt($session['last_activity_at'] ?? null);
         self::assertGreaterThanOrEqual($session['issued_at'], $session['last_activity_at']);
-        self::assertNotSame('Mozilla/5.0 Chrome/128.0', $session['client_family'] ?? null);
+        self::assertTrue((bool) ($session['can_revoke'] ?? false));
+        self::assertFalse((bool) ($session['requires_reauthentication'] ?? true));
+        self::assertNotSame('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0', $session['client_family'] ?? null);
         self::assertNotSame('203.0.113.42', $session['ip_prefix'] ?? null);
+    }
+
+    public function test_auth_manager_inventory_exposes_revocation_hints_for_remote_sessions(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 37,
+                'identifier' => 'inventory-hints@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'type' => 'user',
+            ],
+        ]);
+        $app->make(ConfigRepository::class)->set('auth.session.management.fresh_auth_window', 300);
+
+        $router = $app->make(Router::class);
+        $router->get('/inventory-hints-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'inventory-hints@example.com',
+                'password' => 'secret-123',
+            ])];
+        });
+        $router->get('/inventory-hints-sessions', function (): array {
+            return [
+                'sessions' => array_map(static fn ($session): array => [
+                    'public_id' => $session->publicId,
+                    'current' => $session->current,
+                    'device_kind' => $session->deviceKind,
+                    'client_platform' => $session->clientPlatform,
+                    'can_revoke' => $session->canRevoke,
+                    'requires_reauthentication' => $session->requiresReauthentication,
+                ], auth()->sessions()),
+            ];
+        });
+
+        $kernel = $app->make(HttpKernel::class);
+        $firstLogin = $kernel->handle(Request::create(
+            '/inventory-hints-login',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile Safari/604.1',
+                'REMOTE_ADDR' => '203.0.113.12',
+            ],
+        ));
+        $firstSessionId = $firstLogin->headers()['X-Auth-Session'] ?? null;
+        $secondLogin = $kernel->handle(Request::create(
+            '/inventory-hints-login',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'REMOTE_ADDR' => '203.0.113.33',
+            ],
+        ));
+        $secondSessionId = $secondLogin->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($firstSessionId);
+        self::assertIsString($secondSessionId);
+
+        $repository = $app->make(AuthenticationSessionRepositoryInterface::class);
+        $currentSession = $repository->find($secondSessionId);
+
+        self::assertInstanceOf(AuthenticationSession::class, $currentSession);
+
+        $attributes = $currentSession->attributes;
+        $attributes['authentication_fresh_at'] = time() - 601;
+
+        $repository->touch(new AuthenticationSession(
+            id: $currentSession->id,
+            identity: $currentSession->identity,
+            reference: $currentSession->reference,
+            method: $currentSession->method,
+            issuedAt: $currentSession->issuedAt,
+            expiresAt: $currentSession->expiresAt,
+            attributes: $attributes,
+        ));
+
+        $response = $kernel->handle(Request::create(
+            '/inventory-hints-sessions',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $secondSessionId],
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'REMOTE_ADDR' => '203.0.113.33',
+            ],
+        ));
+        $payload = json_decode($response->content(), true, 512, JSON_THROW_ON_ERROR);
+        $sessions = $payload['sessions'] ?? [];
+
+        self::assertCount(2, $sessions);
+
+        $current = array_values(array_filter($sessions, static fn (array $session): bool => (bool) ($session['current'] ?? false)))[0] ?? null;
+        $remote = array_values(array_filter($sessions, static fn (array $session): bool => ! (bool) ($session['current'] ?? false)))[0] ?? null;
+
+        self::assertIsArray($current);
+        self::assertIsArray($remote);
+        self::assertTrue((bool) ($current['can_revoke'] ?? false));
+        self::assertFalse((bool) ($current['requires_reauthentication'] ?? true));
+        self::assertSame('desktop', $current['device_kind'] ?? null);
+        self::assertSame('Windows', $current['client_platform'] ?? null);
+
+        self::assertTrue((bool) ($remote['can_revoke'] ?? false));
+        self::assertTrue((bool) ($remote['requires_reauthentication'] ?? false));
+        self::assertSame('mobile', $remote['device_kind'] ?? null);
+        self::assertSame('iOS', $remote['client_platform'] ?? null);
     }
 
     public function test_auth_facade_authenticates_and_uses_configured_cookie_name(): void

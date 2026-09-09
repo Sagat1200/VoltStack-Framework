@@ -177,4 +177,19 @@ final class FileAuthenticationSessionRepositoryTest extends TestCase
         self::assertSame(180, $touched->attributes['session_last_activity_at'] ?? null);
         self::assertSame('203.0.113.x', $touched->attributes['session_ip_prefix'] ?? null);
     }
+
+    public function test_it_can_purge_tombstones_after_the_retention_window(): void
+    {
+        $repository = new FileAuthenticationSessionRepository($this->directory, 60);
+        $now = time();
+
+        $repository->delete('file-old', AuthenticationSessionRecoveryReason::Revoked);
+
+        self::assertSame(AuthenticationSessionRecoveryReason::Revoked, $repository->findRecoveryReason('file-old'));
+        self::assertSame(0, $repository->purgeRecoveryReasons($now + 59));
+        self::assertSame(AuthenticationSessionRecoveryReason::Revoked, $repository->findRecoveryReason('file-old'));
+
+        self::assertSame(1, $repository->purgeRecoveryReasons($now + 61));
+        self::assertNull($repository->findRecoveryReason('file-old'));
+    }
 }

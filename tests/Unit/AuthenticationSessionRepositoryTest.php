@@ -153,4 +153,19 @@ final class AuthenticationSessionRepositoryTest extends TestCase
         self::assertSame(150, $touched->attributes['session_last_activity_at'] ?? null);
         self::assertSame('Chrome', $touched->attributes['session_client_family'] ?? null);
     }
+
+    public function test_it_can_purge_recovery_reasons_after_the_retention_window(): void
+    {
+        $repository = new InMemoryAuthenticationSessionRepository(60);
+        $now = time();
+
+        $repository->delete('session-old', AuthenticationSessionRecoveryReason::Revoked);
+        self::assertSame(AuthenticationSessionRecoveryReason::Revoked, $repository->findRecoveryReason('session-old'));
+
+        self::assertSame(0, $repository->purgeRecoveryReasons($now + 59));
+        self::assertSame(AuthenticationSessionRecoveryReason::Revoked, $repository->findRecoveryReason('session-old'));
+
+        self::assertSame(1, $repository->purgeRecoveryReasons($now + 61));
+        self::assertNull($repository->findRecoveryReason('session-old'));
+    }
 }

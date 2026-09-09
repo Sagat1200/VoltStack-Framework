@@ -6,7 +6,9 @@ namespace VoltStack\Test\Feature;
 
 use PHPUnit\Framework\TestCase;
 use Quantum\Auth\Contracts\AuthenticationManagerInterface;
+use Quantum\Auth\Contracts\AuthenticationSessionRepositoryInterface;
 use Quantum\Auth\Exceptions\IdentityNotEligibleException;
+use Quantum\Auth\Sessions\AuthenticationSession;
 use Quantum\Auth\Support\AuthenticationHttpState;
 use Quantum\Config\ConfigRepository;
 use Quantum\Controllers\Security\Context\AuthenticationStrength;
@@ -591,6 +593,233 @@ final class AuthManagerTest extends TestCase
         $currentPayload = json_decode($currentSessionResponse->content(), true, 512, JSON_THROW_ON_ERROR);
         self::assertTrue($currentPayload['check']);
         self::assertSame('33', (string) $currentPayload['id']);
+    }
+
+    public function test_auth_manager_requires_fresh_authentication_for_remote_session_revocation(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 35,
+                'identifier' => 'fresh-remote-revoke@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'type' => 'user',
+            ],
+        ]);
+        $app->make(ConfigRepository::class)->set('auth.session.management.fresh_auth_window', 300);
+
+        $router = $app->make(Router::class);
+        $router->get('/fresh-remote-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'fresh-remote-revoke@example.com',
+                'password' => 'secret-123',
+            ])];
+        });
+        $router->post('/fresh-remote-revoke', function (): array {
+            $target = null;
+
+            foreach (auth()->sessions() as $session) {
+                if (! $session->current) {
+                    $target = $session;
+                    break;
+                }
+            }
+
+            return [
+                'revoked' => $target !== null ? auth()->revokeSession($target->publicId) : false,
+            ];
+        });
+
+        $kernel = $app->make(HttpKernel::class);
+        $firstLogin = $kernel->handle(Request::create('/fresh-remote-login'));
+        $firstSessionId = $firstLogin->headers()['X-Auth-Session'] ?? null;
+        $secondLogin = $kernel->handle(Request::create('/fresh-remote-login'));
+        $secondSessionId = $secondLogin->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($firstSessionId);
+        self::assertIsString($secondSessionId);
+
+        $repository = $app->make(AuthenticationSessionRepositoryInterface::class);
+        $currentSession = $repository->find($secondSessionId);
+
+        self::assertInstanceOf(AuthenticationSession::class, $currentSession);
+
+        $attributes = $currentSession->attributes;
+        $attributes['authentication_fresh_at'] = time() - 601;
+
+        $repository->touch(new AuthenticationSession(
+            id: $currentSession->id,
+            identity: $currentSession->identity,
+            reference: $currentSession->reference,
+            method: $currentSession->method,
+            issuedAt: $currentSession->issuedAt,
+            expiresAt: $currentSession->expiresAt,
+            attributes: $attributes,
+        ));
+
+        $response = $kernel->handle(Request::create(
+            '/fresh-remote-revoke',
+            'POST',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $secondSessionId],
+            server: ['HTTP_ACCEPT' => 'application/json'],
+        ));
+        $payload = json_decode($response->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(403, $response->statusCode());
+        self::assertSame('auth.fresh_authentication_required', $payload['reason_code'] ?? null);
+        self::assertSame('session_revocation', $payload['operation'] ?? null);
+        self::assertSame('required', $response->headers()['X-Auth-Reauthenticate'] ?? null);
+        self::assertSame('300', $response->headers()['X-Auth-Fresh-Window'] ?? null);
+    }
+
+    public function test_auth_manager_allows_revoking_the_current_session_without_fresh_authentication(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 36,
+                'identifier' => 'fresh-self-revoke@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'type' => 'user',
+            ],
+        ]);
+        $app->make(ConfigRepository::class)->set('auth.session.management.fresh_auth_window', 300);
+
+        $router = $app->make(Router::class);
+        $router->get('/fresh-self-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'fresh-self-revoke@example.com',
+                'password' => 'secret-123',
+            ])];
+        });
+        $router->post('/fresh-self-revoke', function (): array {
+            $current = auth()->currentSession();
+
+            return [
+                'current_public_id' => $current?->publicId,
+                'revoked' => $current !== null ? auth()->revokeSession($current->publicId) : false,
+            ];
+        });
+        $router->get('/fresh-self-me', function (): array {
+            return [
+                'check' => auth()->check(),
+                'id' => auth()->id(),
+            ];
+        })->middleware('auth');
+
+        $kernel = $app->make(HttpKernel::class);
+        $login = $kernel->handle(Request::create('/fresh-self-login'));
+        $sessionId = $login->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($sessionId);
+
+        $repository = $app->make(AuthenticationSessionRepositoryInterface::class);
+        $currentSession = $repository->find($sessionId);
+
+        self::assertInstanceOf(AuthenticationSession::class, $currentSession);
+
+        $attributes = $currentSession->attributes;
+        $attributes['authentication_fresh_at'] = time() - 601;
+
+        $repository->touch(new AuthenticationSession(
+            id: $currentSession->id,
+            identity: $currentSession->identity,
+            reference: $currentSession->reference,
+            method: $currentSession->method,
+            issuedAt: $currentSession->issuedAt,
+            expiresAt: $currentSession->expiresAt,
+            attributes: $attributes,
+        ));
+
+        $revokeResponse = $kernel->handle(Request::create(
+            '/fresh-self-revoke',
+            'POST',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $sessionId],
+            server: ['HTTP_ACCEPT' => 'application/json'],
+        ));
+        $revokePayload = json_decode($revokeResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(200, $revokeResponse->statusCode());
+        self::assertTrue($revokePayload['revoked']);
+        self::assertStringStartsWith('sess_pub_', $revokePayload['current_public_id'] ?? '');
+        self::assertSame('cleared', $revokeResponse->headers()['X-Auth-Session'] ?? null);
+
+        $afterResponse = $kernel->handle(Request::create(
+            '/fresh-self-me',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $sessionId],
+            server: ['HTTP_ACCEPT' => 'application/json'],
+        ));
+        $afterPayload = json_decode($afterResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(401, $afterResponse->statusCode());
+        self::assertSame('auth.revoked_session', $afterPayload['reason_code'] ?? null);
+    }
+
+    public function test_auth_manager_inventory_exposes_safe_session_metadata_and_updates_last_activity_on_recovery(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 34,
+                'identifier' => 'session-metadata@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'type' => 'user',
+            ],
+        ]);
+
+        $router = $app->make(Router::class);
+        $router->get('/metadata-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'session-metadata@example.com',
+                'password' => 'secret-123',
+            ])];
+        });
+        $router->get('/metadata-sessions', function (): array {
+            return [
+                'sessions' => array_map(static fn ($session): array => [
+                    'public_id' => $session->publicId,
+                    'label' => $session->label,
+                    'client_family' => $session->clientFamily,
+                    'ip_prefix' => $session->ipPrefix,
+                    'last_activity_at' => $session->lastActivityAt,
+                    'issued_at' => $session->issuedAt,
+                ], auth()->sessions()),
+            ];
+        });
+
+        $kernel = $app->make(HttpKernel::class);
+        $loginResponse = $kernel->handle(Request::create(
+            '/metadata-login',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 Chrome/128.0',
+                'REMOTE_ADDR' => '203.0.113.42',
+            ],
+        ));
+        $sessionId = $loginResponse->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($sessionId);
+
+        $inventoryResponse = $kernel->handle(Request::create(
+            '/metadata-sessions',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $sessionId],
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 Chrome/128.0',
+                'REMOTE_ADDR' => '203.0.113.42',
+            ],
+        ));
+        $inventoryPayload = json_decode($inventoryResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+        $session = $inventoryPayload['sessions'][0] ?? null;
+
+        self::assertIsArray($session);
+        self::assertStringStartsWith('sess_pub_', $session['public_id'] ?? '');
+        self::assertSame('Chrome', $session['client_family'] ?? null);
+        self::assertSame('203.0.113.x', $session['ip_prefix'] ?? null);
+        self::assertSame('Chrome from 203.0.113.x', $session['label'] ?? null);
+        self::assertIsInt($session['issued_at'] ?? null);
+        self::assertIsInt($session['last_activity_at'] ?? null);
+        self::assertGreaterThanOrEqual($session['issued_at'], $session['last_activity_at']);
+        self::assertNotSame('Mozilla/5.0 Chrome/128.0', $session['client_family'] ?? null);
+        self::assertNotSame('203.0.113.42', $session['ip_prefix'] ?? null);
     }
 
     public function test_auth_facade_authenticates_and_uses_configured_cookie_name(): void

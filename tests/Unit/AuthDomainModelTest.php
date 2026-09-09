@@ -107,6 +107,28 @@ final class AuthDomainModelTest extends TestCase
         self::assertSame('raw-secret-session-id', $context->attribute('session_id'));
     }
 
+    public function test_authentication_context_exposes_fresh_authentication_timestamp(): void
+    {
+        $identity = new GenericIdentity(
+            identifier: new IdentityIdentifier('86'),
+            type: 'user',
+            attributes: ['name' => 'Volt Fresh'],
+        );
+
+        $context = new AuthenticationContext(
+            identity: $identity,
+            reference: new IdentityReference($identity->identifier(), $identity->type()),
+            requestId: 'req-4',
+            method: 'password',
+            attributes: [
+                'authentication_fresh_at' => '1700000000',
+            ],
+        );
+
+        self::assertSame(1700000000, $context->freshAuthenticationAt());
+    }
+
+
     public function test_unauthenticated_decision_has_no_context(): void
     {
         $decision = AuthenticationDecision::unauthenticated(['source' => 'none']);

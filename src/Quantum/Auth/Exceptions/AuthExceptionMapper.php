@@ -13,6 +13,7 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
     {
         return match (true) {
             $throwable instanceof GuestOnlyException => 403,
+            $throwable instanceof FreshAuthenticationRequiredException => 403,
             $throwable instanceof RevokedAuthenticationSessionException => 401,
             $throwable instanceof StaleAuthenticationSessionException => 401,
             $throwable instanceof StepUpRequiredException => 403,
@@ -23,6 +24,11 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
     public function headers(Throwable $throwable): array
     {
         return match (true) {
+            $throwable instanceof FreshAuthenticationRequiredException => [
+                'X-Auth-Reauthenticate' => 'required',
+                'X-Auth-Fresh-Window' => (string) $throwable->freshWindowSeconds,
+                'X-Auth-Operation' => $throwable->operation,
+            ],
             $throwable instanceof StepUpRequiredException => [
                 'X-Auth-Step-Up' => 'required',
                 'X-Auth-Required-Strength' => $throwable->requiredStrength->name,
@@ -45,6 +51,7 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
     {
         return match (true) {
             $throwable instanceof GuestOnlyException,
+            $throwable instanceof FreshAuthenticationRequiredException,
             $throwable instanceof RevokedAuthenticationSessionException,
             $throwable instanceof StaleAuthenticationSessionException,
             $throwable instanceof StepUpRequiredException => $throwable->getMessage(),
@@ -56,6 +63,7 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
     {
         return match (true) {
             $throwable instanceof GuestOnlyException,
+            $throwable instanceof FreshAuthenticationRequiredException,
             $throwable instanceof RevokedAuthenticationSessionException,
             $throwable instanceof StaleAuthenticationSessionException,
             $throwable instanceof StepUpRequiredException => $throwable->reasonCode,
@@ -67,6 +75,7 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
     {
         return match (true) {
             $throwable instanceof GuestOnlyException => '<p>This resource is only available to guest users.</p>',
+            $throwable instanceof FreshAuthenticationRequiredException => '<p>Fresh authentication is required before this security-sensitive operation can continue.</p>',
             $throwable instanceof RevokedAuthenticationSessionException => '<p>The authentication session has been revoked. Please authenticate again.</p>',
             $throwable instanceof StaleAuthenticationSessionException => '<p>The authentication session is stale, expired or invalid. Please authenticate again.</p>',
             $throwable instanceof StepUpRequiredException => '<p>This resource requires elevated authentication. Complete step-up authentication and try again.</p>',
@@ -84,6 +93,11 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
             $throwable instanceof RevokedAuthenticationSessionException,
             $throwable instanceof StaleAuthenticationSessionException => [
                 'reason_code' => $throwable->reasonCode,
+            ],
+            $throwable instanceof FreshAuthenticationRequiredException => [
+                'reason_code' => $throwable->reasonCode,
+                'operation' => $throwable->operation,
+                'fresh_window_seconds' => (string) $throwable->freshWindowSeconds,
             ],
             $throwable instanceof StepUpRequiredException => [
                 'reason_code' => $throwable->reasonCode,

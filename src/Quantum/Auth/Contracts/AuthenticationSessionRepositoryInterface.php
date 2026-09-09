@@ -29,5 +29,7 @@ interface AuthenticationSessionRepositoryInterface
 
     public function findRecoveryReason(string $sessionId): ?AuthenticationSessionRecoveryReason;
 
+    public function touch(AuthenticationSession $session): void;
+
     public function purgeExpired(?int $now = null): int;
 }

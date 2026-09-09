@@ -109,4 +109,48 @@ final class AuthenticationSessionRepositoryTest extends TestCase
             $repository->findRecoveryReason('session-drop'),
         );
     }
+
+    public function test_it_can_touch_an_existing_session_with_updated_metadata(): void
+    {
+        $repository = new InMemoryAuthenticationSessionRepository();
+        $identity = new GenericIdentity(
+            identifier: new IdentityIdentifier('88'),
+            type: 'user',
+            attributes: ['name' => 'Volt Session User'],
+        );
+
+        $session = new AuthenticationSession(
+            id: new AuthenticationSessionId('session-touch'),
+            identity: $identity,
+            reference: new IdentityReference($identity->identifier(), $identity->type()),
+            method: 'password',
+            issuedAt: 100,
+            expiresAt: 200,
+            attributes: [
+                'session_public_id' => 'sess_pub_touch',
+                'session_last_activity_at' => 100,
+            ],
+        );
+
+        $repository->save($session);
+        $repository->touch(new AuthenticationSession(
+            id: $session->id,
+            identity: $session->identity,
+            reference: $session->reference,
+            method: $session->method,
+            issuedAt: $session->issuedAt,
+            expiresAt: $session->expiresAt,
+            attributes: [
+                'session_public_id' => 'sess_pub_touch',
+                'session_last_activity_at' => 150,
+                'session_client_family' => 'Chrome',
+            ],
+        ));
+
+        $touched = $repository->find('session-touch');
+
+        self::assertNotNull($touched);
+        self::assertSame(150, $touched->attributes['session_last_activity_at'] ?? null);
+        self::assertSame('Chrome', $touched->attributes['session_client_family'] ?? null);
+    }
 }

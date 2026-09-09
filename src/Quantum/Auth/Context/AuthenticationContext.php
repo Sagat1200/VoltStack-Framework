@@ -51,4 +51,19 @@ final readonly class AuthenticationContext
             ? trim($publicId)
             : null;
     }
+
+    public function freshAuthenticationAt(): ?int
+    {
+        $freshAt = $this->attribute('authentication_fresh_at');
+
+        if (is_int($freshAt)) {
+            return $freshAt;
+        }
+
+        if (is_numeric($freshAt)) {
+            return (int) $freshAt;
+        }
+
+        return null;
+    }
 }

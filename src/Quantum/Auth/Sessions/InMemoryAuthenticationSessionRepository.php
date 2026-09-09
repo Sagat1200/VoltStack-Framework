@@ -70,6 +70,11 @@ final class InMemoryAuthenticationSessionRepository implements AuthenticationSes
         return $this->recoveryReasons[$sessionId] ?? null;
     }
 
+    public function touch(AuthenticationSession $session): void
+    {
+        $this->sessions[(string) $session->id] = $session;
+    }
+
     public function purgeExpired(?int $now = null): int
     {
         $deleted = 0;

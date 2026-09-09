@@ -11,6 +11,7 @@ use Quantum\Auth\Contracts\AuthenticationOrchestratorInterface;
 use Quantum\Auth\Contracts\AuthenticationSessionRepositoryInterface;
 use Quantum\Auth\Context\AuthenticationRequest;
 use Quantum\Auth\Exceptions\AuthenticationException;
+use Quantum\Auth\Exceptions\FreshAuthenticationRequiredException;
 use Quantum\Auth\Exceptions\IdentityNotEligibleException;
 use Quantum\Auth\Exceptions\InvalidSecondFactorException;
 use Quantum\Auth\Exceptions\InvalidCredentialsException;
@@ -251,6 +252,10 @@ final class AuthManager implements AuthenticationManagerInterface
             if ($resolvedSessionId !== null && $this->rotateSessionOnRecover()) {
                 $this->login($decision->context);
             } else {
+                if ($resolvedSessionId !== null) {
+                    $this->touchRecoveredSession($resolvedSessionId);
+                }
+
                 $this->accessor->put($decision->context);
 
                 if ($resolvedSessionId !== null) {
@@ -304,6 +309,7 @@ final class AuthManager implements AuthenticationManagerInterface
             method: $context->method,
             issuedAt: time(),
             expiresAt: null,
+            lastActivityAt: null,
             current: true,
         );
     }
@@ -356,6 +362,10 @@ final class AuthManager implements AuthenticationManagerInterface
                 continue;
             }
 
+            if (! $this->isCurrentSession($context, $session)) {
+                $this->assertFreshAuthenticationForSensitiveSessionOperation($context, 'session_revocation');
+            }
+
             $this->sessions->delete($session->id->value);
 
             if ($this->activeSessionId() === $session->id->value) {
@@ -393,6 +403,7 @@ final class AuthManager implements AuthenticationManagerInterface
         }
 
         if ($revoked > 0) {
+            $this->assertFreshAuthenticationForSensitiveSessionOperation($context, 'session_revocation_bulk');
             $this->sessions->deleteForIdentity($context->identity, $currentSessionId);
         }
 
@@ -447,8 +458,7 @@ final class AuthManager implements AuthenticationManagerInterface
         AuthenticationContext $context,
         AuthenticationSessionId $sessionId,
         AuthenticationSessionPublicId $publicId,
-    ): AuthenticationContext
-    {
+    ): AuthenticationContext {
         return new AuthenticationContext(
             identity: $context->identity,
             reference: $context->reference instanceof IdentityReference
@@ -457,10 +467,15 @@ final class AuthManager implements AuthenticationManagerInterface
             requestId: $context->requestId,
             method: $context->method,
             attributes: AuthenticationAssurance::enrichAttributes(
-                array_merge($context->attributes, [
-                    'session_id' => $sessionId->value,
-                    'session_public_id' => $publicId->value,
-                ]),
+                array_merge(
+                    $context->attributes,
+                    $this->sessionMetadata(),
+                    [
+                        'authentication_fresh_at' => time(),
+                        'session_id' => $sessionId->value,
+                        'session_public_id' => $publicId->value,
+                    ],
+                ),
                 $context->method,
             ),
         );
@@ -552,9 +567,197 @@ final class AuthManager implements AuthenticationManagerInterface
             method: $session->method,
             issuedAt: $session->issuedAt,
             expiresAt: $session->expiresAt,
+            lastActivityAt: $this->timestampAttribute($session, 'session_last_activity_at'),
             current: $current,
             label: $session->label(),
+            clientFamily: $this->stringAttribute($session, 'session_client_family'),
+            ipPrefix: $this->stringAttribute($session, 'session_ip_prefix'),
         );
+    }
+
+    private function isCurrentSession(AuthenticationContext $context, AuthenticationSession $session): bool
+    {
+        $activeSessionId = $this->activeSessionId();
+
+        if ($activeSessionId !== null && $activeSessionId === $session->id->value) {
+            return true;
+        }
+
+        $contextSessionId = $context->attribute('session_id');
+
+        return is_string($contextSessionId)
+            && trim($contextSessionId) !== ''
+            && trim($contextSessionId) === $session->id->value;
+    }
+
+    private function assertFreshAuthenticationForSensitiveSessionOperation(
+        AuthenticationContext $context,
+        string $operation,
+    ): void {
+        if (! $this->freshAuthenticationRequiredForRemoteSessionRevocation()) {
+            return;
+        }
+
+        $freshAt = $context->freshAuthenticationAt();
+        $window = $this->freshAuthenticationWindowSeconds();
+
+        if ($freshAt === null || (time() - $freshAt) > $window) {
+            throw new FreshAuthenticationRequiredException(
+                operation: $operation,
+                freshWindowSeconds: $window,
+            );
+        }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function sessionMetadata(): array
+    {
+        $request = $this->runtimeContext()->request();
+        $clientFamily = $this->clientFamily($request);
+        $ipPrefix = $this->ipPrefix($request);
+        $label = $this->sessionLabel($clientFamily, $ipPrefix);
+
+        return array_filter([
+            'session_client_family' => $clientFamily,
+            'session_ip_prefix' => $ipPrefix,
+            'session_label' => $label,
+            'session_last_activity_at' => time(),
+        ], static fn(mixed $value): bool => $value !== null && $value !== '');
+    }
+
+    private function touchRecoveredSession(string $sessionId): void
+    {
+        $existing = $this->sessions->find($sessionId);
+
+        if ($existing === null) {
+            return;
+        }
+
+        $attributes = array_merge($existing->attributes, $this->sessionMetadata());
+
+        $this->sessions->touch(new AuthenticationSession(
+            id: $existing->id,
+            identity: $existing->identity,
+            reference: $existing->reference,
+            method: $existing->method,
+            issuedAt: $existing->issuedAt,
+            expiresAt: $existing->expiresAt,
+            attributes: $attributes,
+        ));
+    }
+
+    private function clientFamily(\Quantum\Http\Request $request): ?string
+    {
+        $userAgent = trim((string) $request->header('User-Agent', ''));
+
+        if ($userAgent === '') {
+            return null;
+        }
+
+        $normalized = strtolower($userAgent);
+
+        return match (true) {
+            str_contains($normalized, 'firefox') => 'Firefox',
+            str_contains($normalized, 'edg/') => 'Edge',
+            str_contains($normalized, 'chrome') => 'Chrome',
+            str_contains($normalized, 'safari') && ! str_contains($normalized, 'chrome') => 'Safari',
+            str_contains($normalized, 'curl') => 'curl',
+            str_contains($normalized, 'postman') => 'Postman',
+            str_contains($normalized, 'insomnia') => 'Insomnia',
+            default => 'Unknown client',
+        };
+    }
+
+    private function ipPrefix(\Quantum\Http\Request $request): ?string
+    {
+        $candidates = [
+            $request->header('X-Forwarded-For'),
+            $request->server('REMOTE_ADDR'),
+        ];
+
+        foreach ($candidates as $candidate) {
+            if (! is_string($candidate) || trim($candidate) === '') {
+                continue;
+            }
+
+            $raw = trim(explode(',', $candidate)[0]);
+
+            if (filter_var($raw, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4)) {
+                $parts = explode('.', $raw);
+
+                return count($parts) === 4
+                    ? sprintf('%s.%s.%s.x', $parts[0], $parts[1], $parts[2])
+                    : null;
+            }
+
+            if (filter_var($raw, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6)) {
+                $parts = explode(':', $raw);
+                $parts = array_pad($parts, 8, '');
+
+                return strtolower(implode(':', array_slice($parts, 0, 4))) . '::*';
+            }
+        }
+
+        return null;
+    }
+
+    private function sessionLabel(?string $clientFamily, ?string $ipPrefix): ?string
+    {
+        if ($clientFamily === null && $ipPrefix === null) {
+            return null;
+        }
+
+        if ($clientFamily !== null && $ipPrefix !== null) {
+            return sprintf('%s from %s', $clientFamily, $ipPrefix);
+        }
+
+        return $clientFamily ?? $ipPrefix;
+    }
+
+    private function freshAuthenticationRequiredForRemoteSessionRevocation(): bool
+    {
+        return (bool) $this->config->get('auth.session.management.require_fresh_auth_for_remote_revocation', true);
+    }
+
+    private function freshAuthenticationWindowSeconds(): int
+    {
+        $configured = $this->config->get('auth.session.management.fresh_auth_window', 300);
+
+        if (is_int($configured)) {
+            return max(0, $configured);
+        }
+
+        if (is_numeric($configured)) {
+            return max(0, (int) $configured);
+        }
+
+        return 300;
+    }
+
+    private function stringAttribute(AuthenticationSession $session, string $key): ?string
+    {
+        $value = $session->attributes[$key] ?? null;
+
+        return is_string($value) && trim($value) !== ''
+            ? trim($value)
+            : null;
+    }
+
+    private function timestampAttribute(AuthenticationSession $session, string $key): ?int
+    {
+        $value = $session->attributes[$key] ?? null;
+
+        if (is_int($value)) {
+            return $value;
+        }
+
+        if (is_numeric($value)) {
+            return (int) $value;
+        }
+
+        return null;
     }
 
     /**

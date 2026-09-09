@@ -177,6 +177,11 @@ final class FileAuthenticationSessionRepository implements AuthenticationSession
             : null;
     }
 
+    public function touch(AuthenticationSession $session): void
+    {
+        $this->save($session);
+    }
+
     public function purgeExpired(?int $now = null): int
     {
         $deleted = 0;

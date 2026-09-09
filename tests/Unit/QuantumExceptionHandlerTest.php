@@ -7,6 +7,7 @@ namespace VoltStack\Test\Unit;
 use Exception;
 use PHPUnit\Framework\TestCase;
 use Quantum\Auth\Exceptions\AuthExceptionMapper;
+use Quantum\Auth\Exceptions\FreshAuthenticationRequiredException;
 use Quantum\Auth\Exceptions\GuestOnlyException;
 use Quantum\Auth\Exceptions\RevokedAuthenticationSessionException;
 use Quantum\Auth\Exceptions\StaleAuthenticationSessionException;
@@ -465,6 +466,54 @@ final class QuantumExceptionHandlerTest extends TestCase
         self::assertSame('The authentication session has been revoked.', $payload['message'] ?? null);
         self::assertSame('auth.revoked_session', $payload['reason_code'] ?? null);
         self::assertSame('auth.revoked_session', $result->response->headers()['X-Volt-Error-Code'] ?? null);
+        self::assertArrayNotHasKey('WWW-Authenticate', $result->response->headers());
+    }
+
+    public function test_auth_mapper_fresh_authentication_required_returns_403_with_reauth_headers(): void
+    {
+        $handler = new ExceptionHandler();
+        $handler->addMapper(new AuthExceptionMapper());
+
+        $ex = new FreshAuthenticationRequiredException(
+            operation: 'session_revocation_bulk',
+            freshWindowSeconds: 300,
+        );
+        $request = Request::create(
+            '/sessions/revoke-others',
+            'POST',
+            [],
+            [],
+            [],
+            [],
+            [],
+            [
+                'HTTP_ACCEPT' => 'application/json',
+            ],
+        );
+        $context = new ExceptionHandlingContext(
+            throwable: $ex,
+            origin: ExceptionOrigin::Routing,
+            runtime: new RuntimeContext(environment: 'local'),
+            request: $request,
+            controllerExecution: null,
+            transportExecution: new TransportExecution(response: new TransportResponse(), context: new TransportContext()),
+            metadata: new MetadataBag([]),
+            state: new ExceptionHandlingState(),
+            debug: false,
+        );
+
+        $result = $handler->handle($ex, $context);
+        $payload = json_decode($result->response->content(), true);
+
+        self::assertSame(403, $result->response->statusCode());
+        self::assertSame('Fresh authentication is required for this operation.', $payload['message'] ?? null);
+        self::assertSame('auth.fresh_authentication_required', $payload['reason_code'] ?? null);
+        self::assertSame('session_revocation_bulk', $payload['operation'] ?? null);
+        self::assertSame('300', (string) ($payload['fresh_window_seconds'] ?? null));
+        self::assertSame('auth.fresh_authentication_required', $result->response->headers()['X-Volt-Error-Code'] ?? null);
+        self::assertSame('required', $result->response->headers()['X-Auth-Reauthenticate'] ?? null);
+        self::assertSame('300', $result->response->headers()['X-Auth-Fresh-Window'] ?? null);
+        self::assertSame('session_revocation_bulk', $result->response->headers()['X-Auth-Operation'] ?? null);
         self::assertArrayNotHasKey('WWW-Authenticate', $result->response->headers());
     }
 

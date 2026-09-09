@@ -133,4 +133,48 @@ final class FileAuthenticationSessionRepositoryTest extends TestCase
             $repository->findRecoveryReason('file-drop'),
         );
     }
+
+    public function test_it_can_touch_a_file_backed_session_with_updated_metadata(): void
+    {
+        $repository = new FileAuthenticationSessionRepository($this->directory);
+        $identity = new GenericIdentity(
+            identifier: new IdentityIdentifier('109'),
+            type: 'user',
+            attributes: ['name' => 'File Session User'],
+        );
+
+        $session = new AuthenticationSession(
+            id: new AuthenticationSessionId('file-touch'),
+            identity: $identity,
+            reference: new IdentityReference($identity->identifier(), $identity->type()),
+            method: 'password',
+            issuedAt: 100,
+            expiresAt: 400,
+            attributes: [
+                'session_public_id' => 'sess_pub_file_touch',
+                'session_last_activity_at' => 100,
+            ],
+        );
+
+        $repository->save($session);
+        $repository->touch(new AuthenticationSession(
+            id: $session->id,
+            identity: $session->identity,
+            reference: $session->reference,
+            method: $session->method,
+            issuedAt: $session->issuedAt,
+            expiresAt: $session->expiresAt,
+            attributes: [
+                'session_public_id' => 'sess_pub_file_touch',
+                'session_last_activity_at' => 180,
+                'session_ip_prefix' => '203.0.113.x',
+            ],
+        ));
+
+        $touched = $repository->find('file-touch');
+
+        self::assertNotNull($touched);
+        self::assertSame(180, $touched->attributes['session_last_activity_at'] ?? null);
+        self::assertSame('203.0.113.x', $touched->attributes['session_ip_prefix'] ?? null);
+    }
 }

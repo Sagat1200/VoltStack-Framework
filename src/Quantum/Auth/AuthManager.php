@@ -14,13 +14,17 @@ use Quantum\Auth\Exceptions\AuthenticationException;
 use Quantum\Auth\Exceptions\IdentityNotEligibleException;
 use Quantum\Auth\Exceptions\InvalidSecondFactorException;
 use Quantum\Auth\Exceptions\InvalidCredentialsException;
+use Quantum\Auth\Exceptions\RevokedAuthenticationSessionException;
 use Quantum\Auth\Exceptions\SecondFactorNotAvailableException;
 use Quantum\Auth\Exceptions\SecondFactorRequiredException;
+use Quantum\Auth\Exceptions\StaleAuthenticationSessionException;
 use Quantum\Auth\Exceptions\StepUpAuthenticationRequiredException;
 use Quantum\Auth\Identity\IdentityReference;
 use Quantum\Auth\Runtime\AuthenticationOperationContext;
 use Quantum\Auth\Sessions\AuthenticationSession;
 use Quantum\Auth\Sessions\AuthenticationSessionId;
+use Quantum\Auth\Sessions\AuthenticationSessionPublicId;
+use Quantum\Auth\Sessions\AuthenticationSessionSummary;
 use Quantum\Auth\Support\AuthenticationAssurance;
 use Quantum\Auth\Support\AuthenticationHttpState;
 use Quantum\Config\ConfigRepository;
@@ -116,6 +120,7 @@ final class AuthManager implements AuthenticationManagerInterface
     public function login(mixed $user): void
     {
         $this->sessions->purgeExpired();
+        $this->rememberRecoveryFailureReason(null);
 
         $context = $user instanceof AuthenticationContext
             ? $user
@@ -132,7 +137,8 @@ final class AuthManager implements AuthenticationManagerInterface
         }
 
         $sessionId = AuthenticationSessionId::generate();
-        $sessionContext = $this->withSessionContext($context, $sessionId);
+        $sessionPublicId = AuthenticationSessionPublicId::generate();
+        $sessionContext = $this->withSessionContext($context, $sessionId, $sessionPublicId);
 
         $this->sessions->save(new AuthenticationSession(
             id: $sessionId,
@@ -203,6 +209,7 @@ final class AuthManager implements AuthenticationManagerInterface
     {
         $current = $this->accessor->get();
         if ($current !== null) {
+            $this->rememberRecoveryFailureReason(null);
             return $current;
         }
 
@@ -213,11 +220,16 @@ final class AuthManager implements AuthenticationManagerInterface
             $sessionId = $request->header('X-Auth-Session');
         }
 
+        if (! is_string($sessionId) || trim($sessionId) === '') {
+            $this->rememberRecoveryFailureReason(null);
+            return null;
+        }
+
         $request = new AuthenticationRequest(
             requestId: $this->runtimeContext()->requestId(),
             transport: 'runtime',
             attributes: [
-                'session_id' => is_string($sessionId) ? trim($sessionId) : null,
+                'session_id' => trim($sessionId),
             ],
         );
 
@@ -230,6 +242,7 @@ final class AuthManager implements AuthenticationManagerInterface
         );
 
         if ($decision->isAuthenticated() && $decision->context !== null) {
+            $this->rememberRecoveryFailureReason(null);
             $resolvedSessionId = $decision->metadata['session_id'] ?? $decision->context->attribute('session_id');
             $resolvedSessionId = is_string($resolvedSessionId) && trim($resolvedSessionId) !== ''
                 ? trim($resolvedSessionId)
@@ -244,11 +257,146 @@ final class AuthManager implements AuthenticationManagerInterface
                     $this->runtimeContext()->set(AuthenticationHttpState::ACTIVE_SESSION_ID_KEY, $resolvedSessionId);
                 }
             }
-        } elseif (is_string($sessionId) && trim($sessionId) !== '') {
+        } else {
+            $this->rememberRecoveryFailureReason(
+                is_string($decision->metadata['reason'] ?? null) ? trim((string) $decision->metadata['reason']) : null,
+            );
             $this->queueLogoutCookie();
         }
 
         return $this->accessor->get() ?? $decision->context;
+    }
+
+    public function recoveryFailureReason(): ?string
+    {
+        $reason = $this->runtimeContext()->get(AuthenticationHttpState::RECOVERY_FAILURE_REASON_KEY);
+
+        return is_string($reason) && trim($reason) !== ''
+            ? trim($reason)
+            : null;
+    }
+
+    public function currentSession(): ?AuthenticationSessionSummary
+    {
+        $context = $this->context();
+
+        if ($context === null) {
+            return null;
+        }
+
+        $sessionId = $context->attribute('session_id');
+        $resolvedSession = is_string($sessionId) && trim($sessionId) !== ''
+            ? $this->sessions->find(trim($sessionId))
+            : null;
+
+        if ($resolvedSession !== null) {
+            return $this->toSessionSummary($resolvedSession, true);
+        }
+
+        $publicId = $context->sessionPublicId();
+
+        if ($publicId === null) {
+            return null;
+        }
+
+        return new AuthenticationSessionSummary(
+            publicId: $publicId,
+            method: $context->method,
+            issuedAt: time(),
+            expiresAt: null,
+            current: true,
+        );
+    }
+
+    public function sessions(): array
+    {
+        $context = $this->context();
+
+        if ($context === null) {
+            return [];
+        }
+
+        $this->sessions->purgeExpired();
+        $currentSessionId = $this->activeSessionId() ?? (is_string($context->attribute('session_id')) ? trim((string) $context->attribute('session_id')) : null);
+        $summaries = [];
+
+        foreach ($this->sessions->listForIdentity($context->identity) as $session) {
+            $summary = $this->toSessionSummary(
+                $session,
+                $currentSessionId !== null && $session->id->value === $currentSessionId,
+            );
+
+            if ($summary !== null) {
+                $summaries[] = $summary;
+            }
+        }
+
+        usort($summaries, static function (AuthenticationSessionSummary $left, AuthenticationSessionSummary $right): int {
+            if ($left->current !== $right->current) {
+                return $left->current ? -1 : 1;
+            }
+
+            return $right->issuedAt <=> $left->issuedAt;
+        });
+
+        return $summaries;
+    }
+
+    public function revokeSession(string $publicId): bool
+    {
+        $context = $this->context();
+        $publicId = trim($publicId);
+
+        if ($context === null || $publicId === '') {
+            return false;
+        }
+
+        foreach ($this->sessions->listForIdentity($context->identity) as $session) {
+            if ($session->publicId() !== $publicId) {
+                continue;
+            }
+
+            $this->sessions->delete($session->id->value);
+
+            if ($this->activeSessionId() === $session->id->value) {
+                $this->accessor->clear();
+                $this->rememberRecoveryFailureReason(null);
+                $this->runtimeContext()->set(AuthenticationHttpState::ACTIVE_SESSION_ID_KEY, null);
+                $this->queueLogoutCookie();
+                $this->runtimeContext()->set(AuthenticationHttpState::PENDING_SESSION_HEADER_KEY, 'cleared');
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    public function revokeOtherSessions(): int
+    {
+        $context = $this->context();
+
+        if ($context === null) {
+            return 0;
+        }
+
+        $currentSessionId = $this->activeSessionId() ?? (is_string($context->attribute('session_id')) ? trim((string) $context->attribute('session_id')) : null);
+        $sessions = $this->sessions->listForIdentity($context->identity);
+        $revoked = 0;
+
+        foreach ($sessions as $session) {
+            if ($currentSessionId !== null && $session->id->value === $currentSessionId) {
+                continue;
+            }
+
+            $revoked++;
+        }
+
+        if ($revoked > 0) {
+            $this->sessions->deleteForIdentity($context->identity, $currentSessionId);
+        }
+
+        return $revoked;
     }
 
     public function logout(): void
@@ -266,6 +414,7 @@ final class AuthManager implements AuthenticationManagerInterface
         }
 
         $this->accessor->clear();
+        $this->rememberRecoveryFailureReason(null);
         $runtime->set(AuthenticationHttpState::ACTIVE_SESSION_ID_KEY, null);
         $this->queueLogoutCookie();
         $runtime->set(AuthenticationHttpState::PENDING_SESSION_HEADER_KEY, 'cleared');
@@ -294,7 +443,11 @@ final class AuthManager implements AuthenticationManagerInterface
         return $context;
     }
 
-    private function withSessionContext(AuthenticationContext $context, AuthenticationSessionId $sessionId): AuthenticationContext
+    private function withSessionContext(
+        AuthenticationContext $context,
+        AuthenticationSessionId $sessionId,
+        AuthenticationSessionPublicId $publicId,
+    ): AuthenticationContext
     {
         return new AuthenticationContext(
             identity: $context->identity,
@@ -304,7 +457,10 @@ final class AuthManager implements AuthenticationManagerInterface
             requestId: $context->requestId,
             method: $context->method,
             attributes: AuthenticationAssurance::enrichAttributes(
-                array_merge($context->attributes, ['session_id' => $sessionId->value]),
+                array_merge($context->attributes, [
+                    'session_id' => $sessionId->value,
+                    'session_public_id' => $publicId->value,
+                ]),
                 $context->method,
             ),
         );
@@ -375,6 +531,32 @@ final class AuthManager implements AuthenticationManagerInterface
         );
     }
 
+    private function rememberRecoveryFailureReason(?string $reason): void
+    {
+        $this->runtimeContext()->set(
+            AuthenticationHttpState::RECOVERY_FAILURE_REASON_KEY,
+            is_string($reason) && trim($reason) !== '' ? trim($reason) : null,
+        );
+    }
+
+    private function toSessionSummary(AuthenticationSession $session, bool $current): ?AuthenticationSessionSummary
+    {
+        $publicId = $session->publicId();
+
+        if ($publicId === null) {
+            return null;
+        }
+
+        return new AuthenticationSessionSummary(
+            publicId: $publicId,
+            method: $session->method,
+            issuedAt: $session->issuedAt,
+            expiresAt: $session->expiresAt,
+            current: $current,
+            label: $session->label(),
+        );
+    }
+
     /**
      * @param array<string, mixed> $metadata
      */
@@ -390,6 +572,8 @@ final class AuthManager implements AuthenticationManagerInterface
             'second_factor_not_available' => new SecondFactorNotAvailableException(),
             'second_factor_required' => new SecondFactorRequiredException(),
             'invalid_second_factor' => new InvalidSecondFactorException(),
+            'session_revoked' => new RevokedAuthenticationSessionException(),
+            'session_expired', 'session_not_found' => new StaleAuthenticationSessionException(),
             'invalid_credentials', 'missing_credentials' => new InvalidCredentialsException(),
             default => new AuthenticationException('Authentication failed.', 'auth.failed'),
         };

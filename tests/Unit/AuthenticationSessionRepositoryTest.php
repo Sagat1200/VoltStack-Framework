@@ -10,6 +10,7 @@ use Quantum\Auth\Identity\IdentityIdentifier;
 use Quantum\Auth\Identity\IdentityReference;
 use Quantum\Auth\Sessions\AuthenticationSession;
 use Quantum\Auth\Sessions\AuthenticationSessionId;
+use Quantum\Auth\Sessions\AuthenticationSessionRecoveryReason;
 use Quantum\Auth\Sessions\InMemoryAuthenticationSessionRepository;
 
 final class AuthenticationSessionRepositoryTest extends TestCase
@@ -29,16 +30,24 @@ final class AuthenticationSessionRepositoryTest extends TestCase
             reference: new IdentityReference($identity->identifier(), $identity->type()),
             method: 'password',
             issuedAt: time(),
-            attributes: ['session_id' => 'session-55'],
+            attributes: [
+                'session_id' => 'session-55',
+                'session_public_id' => 'sess_pub_session55',
+            ],
         );
 
         $repository->save($session);
 
         self::assertSame($session, $repository->find('session-55'));
+        self::assertCount(1, $repository->listForIdentity($identity));
 
         $repository->delete('session-55');
 
         self::assertNull($repository->find('session-55'));
+        self::assertSame(
+            AuthenticationSessionRecoveryReason::Revoked,
+            $repository->findRecoveryReason('session-55'),
+        );
     }
 
     public function test_it_can_delete_other_sessions_for_the_same_identity_and_purge_expired_sessions(): void
@@ -57,6 +66,7 @@ final class AuthenticationSessionRepositoryTest extends TestCase
             method: 'password',
             issuedAt: time(),
             expiresAt: time() + 600,
+            attributes: ['session_public_id' => 'sess_pub_keep'],
         );
 
         $other = new AuthenticationSession(
@@ -66,6 +76,7 @@ final class AuthenticationSessionRepositoryTest extends TestCase
             method: 'password',
             issuedAt: time(),
             expiresAt: time() + 600,
+            attributes: ['session_public_id' => 'sess_pub_drop'],
         );
 
         $expired = new AuthenticationSession(
@@ -75,6 +86,7 @@ final class AuthenticationSessionRepositoryTest extends TestCase
             method: 'password',
             issuedAt: time() - 600,
             expiresAt: time() - 1,
+            attributes: ['session_public_id' => 'sess_pub_expired'],
         );
 
         $repository->save($active);
@@ -83,10 +95,18 @@ final class AuthenticationSessionRepositoryTest extends TestCase
 
         self::assertSame(1, $repository->purgeExpired());
         self::assertNull($repository->find('session-expired'));
+        self::assertSame(
+            AuthenticationSessionRecoveryReason::Expired,
+            $repository->findRecoveryReason('session-expired'),
+        );
 
         $repository->deleteForIdentity($identity, 'session-keep');
 
         self::assertNotNull($repository->find('session-keep'));
         self::assertNull($repository->find('session-drop'));
+        self::assertSame(
+            AuthenticationSessionRecoveryReason::Revoked,
+            $repository->findRecoveryReason('session-drop'),
+        );
     }
 }

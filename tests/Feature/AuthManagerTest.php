@@ -409,6 +409,190 @@ final class AuthManagerTest extends TestCase
         self::assertNull($afterLogoutPayload['session_id']);
     }
 
+    public function test_auth_manager_can_list_sessions_with_safe_public_identifiers_and_revoke_by_public_id(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 32,
+                'identifier' => 'session-inventory@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'type' => 'user',
+                'name' => 'Session Inventory User',
+            ],
+        ]);
+
+        $router = $app->make(Router::class);
+        $router->get('/inventory-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'session-inventory@example.com',
+                'password' => 'secret-123',
+            ])];
+        });
+        $router->get('/inventory-sessions', function (): array {
+            $current = auth()->currentSession();
+
+            return [
+                'current_public_id' => $current?->publicId,
+                'sessions' => array_map(static fn ($session): array => [
+                    'public_id' => $session->publicId,
+                    'current' => $session->current,
+                    'method' => $session->method,
+                ], auth()->sessions()),
+            ];
+        });
+        $router->post('/inventory-revoke', function (): array {
+            $current = auth()->currentSession();
+            $sessions = auth()->sessions();
+            $target = null;
+
+            foreach ($sessions as $session) {
+                if (! $session->current) {
+                    $target = $session;
+                    break;
+                }
+            }
+
+            return [
+                'current_public_id' => $current?->publicId,
+                'target_public_id' => $target?->publicId,
+                'revoked' => $target !== null ? auth()->revokeSession($target->publicId) : false,
+            ];
+        });
+        $router->get('/inventory-me', function (): array {
+            return [
+                'check' => auth()->check(),
+                'id' => auth()->id(),
+            ];
+        })->middleware('auth');
+
+        $kernel = $app->make(HttpKernel::class);
+        $firstLogin = $kernel->handle(Request::create('/inventory-login'));
+        $firstSessionId = $firstLogin->headers()['X-Auth-Session'] ?? null;
+        $secondLogin = $kernel->handle(Request::create('/inventory-login'));
+        $secondSessionId = $secondLogin->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($firstSessionId);
+        self::assertIsString($secondSessionId);
+        self::assertNotSame($firstSessionId, $secondSessionId);
+
+        $inventoryResponse = $kernel->handle(Request::create(
+            '/inventory-sessions',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $secondSessionId],
+        ));
+        $inventoryPayload = json_decode($inventoryResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+        $sessions = $inventoryPayload['sessions'] ?? [];
+
+        self::assertCount(2, $sessions);
+        self::assertIsString($inventoryPayload['current_public_id'] ?? null);
+        self::assertStringStartsWith('sess_pub_', $inventoryPayload['current_public_id']);
+        self::assertNotSame($secondSessionId, $inventoryPayload['current_public_id']);
+        self::assertSame(1, count(array_filter($sessions, static fn (array $session): bool => ($session['current'] ?? false) === true)));
+        self::assertFalse(in_array($firstSessionId, array_column($sessions, 'public_id'), true));
+        self::assertFalse(in_array($secondSessionId, array_column($sessions, 'public_id'), true));
+
+        $revokeResponse = $kernel->handle(Request::create(
+            '/inventory-revoke',
+            'POST',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $secondSessionId],
+        ));
+        $revokePayload = json_decode($revokeResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertTrue($revokePayload['revoked']);
+        self::assertIsString($revokePayload['target_public_id'] ?? null);
+        self::assertNotSame($revokePayload['current_public_id'], $revokePayload['target_public_id']);
+
+        $oldSessionResponse = $kernel->handle(Request::create(
+            '/inventory-me',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $firstSessionId],
+            server: ['HTTP_ACCEPT' => 'application/json'],
+        ));
+        $oldPayload = json_decode($oldSessionResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(401, $oldSessionResponse->statusCode());
+        self::assertSame('auth.revoked_session', $oldPayload['reason_code'] ?? null);
+
+        $currentInventoryResponse = $kernel->handle(Request::create(
+            '/inventory-sessions',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $secondSessionId],
+        ));
+        $currentInventoryPayload = json_decode($currentInventoryResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertCount(1, $currentInventoryPayload['sessions'] ?? []);
+        self::assertSame($revokePayload['current_public_id'], $currentInventoryPayload['current_public_id'] ?? null);
+    }
+
+    public function test_auth_manager_can_revoke_other_sessions_without_revoking_the_current_one(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 33,
+                'identifier' => 'session-revoke-others@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'type' => 'user',
+            ],
+        ]);
+
+        $router = $app->make(Router::class);
+        $router->get('/revoke-others-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'session-revoke-others@example.com',
+                'password' => 'secret-123',
+            ])];
+        });
+        $router->post('/revoke-others', function (): array {
+            return [
+                'revoked' => auth()->revokeOtherSessions(),
+                'remaining' => count(auth()->sessions()),
+                'current_public_id' => auth()->currentSession()?->publicId,
+            ];
+        });
+        $router->get('/revoke-others-me', function (): array {
+            return [
+                'check' => auth()->check(),
+                'id' => auth()->id(),
+            ];
+        })->middleware('auth');
+
+        $kernel = $app->make(HttpKernel::class);
+        $firstLogin = $kernel->handle(Request::create('/revoke-others-login'));
+        $firstSessionId = $firstLogin->headers()['X-Auth-Session'] ?? null;
+        $secondLogin = $kernel->handle(Request::create('/revoke-others-login'));
+        $secondSessionId = $secondLogin->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($firstSessionId);
+        self::assertIsString($secondSessionId);
+
+        $revokeResponse = $kernel->handle(Request::create(
+            '/revoke-others',
+            'POST',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $secondSessionId],
+        ));
+        $revokePayload = json_decode($revokeResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(1, $revokePayload['revoked']);
+        self::assertSame(1, $revokePayload['remaining']);
+        self::assertStringStartsWith('sess_pub_', $revokePayload['current_public_id'] ?? '');
+
+        $oldSessionResponse = $kernel->handle(Request::create(
+            '/revoke-others-me',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $firstSessionId],
+            server: ['HTTP_ACCEPT' => 'application/json'],
+        ));
+        $oldPayload = json_decode($oldSessionResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+        self::assertSame(401, $oldSessionResponse->statusCode());
+        self::assertSame('auth.revoked_session', $oldPayload['reason_code'] ?? null);
+
+        $currentSessionResponse = $kernel->handle(Request::create(
+            '/revoke-others-me',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $secondSessionId],
+        ));
+        $currentPayload = json_decode($currentSessionResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+        self::assertTrue($currentPayload['check']);
+        self::assertSame('33', (string) $currentPayload['id']);
+    }
+
     public function test_auth_facade_authenticates_and_uses_configured_cookie_name(): void
     {
         $app = new Application(sys_get_temp_dir());
@@ -959,6 +1143,55 @@ final class AuthManagerTest extends TestCase
         self::assertSame('The authentication session is stale or invalid.', $payload['message'] ?? null);
         self::assertSame('auth.stale_session', $payload['reason_code'] ?? null);
         self::assertSame('auth.stale_session', $response->headers()['X-Volt-Error-Code'] ?? null);
+        self::assertStringContainsString('Max-Age=0', $response->headers()['Set-Cookie'] ?? '');
+        self::assertArrayNotHasKey('WWW-Authenticate', $response->headers());
+    }
+
+    public function test_auth_middleware_returns_revoked_session_denial_for_invalidated_session_credentials(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 132,
+                'identifier' => 'revoked-session-user@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'type' => 'user',
+            ],
+        ]);
+        $app->make(ConfigRepository::class)->set('auth.session.revoke_others_on_login', true);
+
+        $router = $app->make(Router::class);
+        $router->get('/revoked-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'revoked-session-user@example.com',
+                'password' => 'secret-123',
+            ])];
+        });
+        $router->get('/revoked-protected', function (): array {
+            return [
+                'check' => auth()->check(),
+                'id' => auth()->id(),
+            ];
+        })->middleware('auth');
+
+        $kernel = $app->make(HttpKernel::class);
+        $firstLogin = $kernel->handle(Request::create('/revoked-login'));
+        $firstSessionId = $firstLogin->headers()['X-Auth-Session'] ?? null;
+        $secondLogin = $kernel->handle(Request::create('/revoked-login'));
+
+        self::assertIsString($firstSessionId);
+
+        $response = $kernel->handle(Request::create(
+            '/revoked-protected',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $firstSessionId],
+            server: ['HTTP_ACCEPT' => 'application/json'],
+        ));
+        $payload = json_decode($response->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(401, $response->statusCode());
+        self::assertSame('The authentication session has been revoked.', $payload['message'] ?? null);
+        self::assertSame('auth.revoked_session', $payload['reason_code'] ?? null);
+        self::assertSame('auth.revoked_session', $response->headers()['X-Volt-Error-Code'] ?? null);
         self::assertStringContainsString('Max-Age=0', $response->headers()['Set-Cookie'] ?? '');
         self::assertArrayNotHasKey('WWW-Authenticate', $response->headers());
     }

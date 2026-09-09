@@ -6,6 +6,7 @@ namespace Quantum\Auth\Contracts;
 
 use Quantum\Auth\Identity\IdentityInterface;
 use Quantum\Auth\Sessions\AuthenticationSession;
+use Quantum\Auth\Sessions\AuthenticationSessionRecoveryReason;
 
 interface AuthenticationSessionRepositoryInterface
 {
@@ -13,9 +14,20 @@ interface AuthenticationSessionRepositoryInterface
 
     public function find(string $sessionId): ?AuthenticationSession;
 
-    public function delete(string $sessionId): void;
+    /**
+     * @return list<AuthenticationSession>
+     */
+    public function listForIdentity(IdentityInterface $identity): array;
 
-    public function deleteForIdentity(IdentityInterface $identity, ?string $exceptSessionId = null): void;
+    public function delete(string $sessionId, AuthenticationSessionRecoveryReason $reason = AuthenticationSessionRecoveryReason::Revoked): void;
+
+    public function deleteForIdentity(
+        IdentityInterface $identity,
+        ?string $exceptSessionId = null,
+        AuthenticationSessionRecoveryReason $reason = AuthenticationSessionRecoveryReason::Revoked,
+    ): void;
+
+    public function findRecoveryReason(string $sessionId): ?AuthenticationSessionRecoveryReason;
 
     public function purgeExpired(?int $now = null): int;
 }

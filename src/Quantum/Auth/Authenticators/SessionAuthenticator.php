@@ -9,14 +9,14 @@ use Quantum\Auth\Contracts\AuthenticationSessionRepositoryInterface;
 use Quantum\Auth\Contracts\AuthenticatorInterface;
 use Quantum\Auth\Decisions\AuthenticationDecision;
 use Quantum\Auth\Runtime\AuthenticationOperationContext;
+use Quantum\Auth\Sessions\AuthenticationSessionRecoveryReason;
 use Quantum\Auth\Support\AuthenticationAssurance;
 
 final class SessionAuthenticator implements AuthenticatorInterface
 {
     public function __construct(
         private readonly AuthenticationSessionRepositoryInterface $sessions,
-    ) {
-    }
+    ) {}
 
     public function supports(AuthenticationOperationContext $context): bool
     {
@@ -41,17 +41,19 @@ final class SessionAuthenticator implements AuthenticatorInterface
         $session = $this->sessions->find($sessionId);
 
         if ($session === null) {
+            $reason = $this->sessions->findRecoveryReason($sessionId);
+
             return AuthenticationDecision::unauthenticated([
-                'reason' => 'session_not_found',
+                'reason' => $reason?->value ?? 'session_not_found',
                 'authenticator' => 'session',
             ]);
         }
 
         if ($session->isExpired()) {
-            $this->sessions->delete($sessionId);
+            $this->sessions->delete($sessionId, AuthenticationSessionRecoveryReason::Expired);
 
             return AuthenticationDecision::unauthenticated([
-                'reason' => 'session_expired',
+                'reason' => AuthenticationSessionRecoveryReason::Expired->value,
                 'authenticator' => 'session',
             ]);
         }

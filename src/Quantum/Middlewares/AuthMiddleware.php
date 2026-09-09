@@ -7,6 +7,7 @@ namespace Quantum\Middlewares;
 use Closure;
 use Quantum\Auth\Contracts\AuthenticationManagerInterface;
 use Quantum\Auth\Exceptions\AuthenticationRequiredException;
+use Quantum\Auth\Exceptions\RevokedAuthenticationSessionException;
 use Quantum\Auth\Exceptions\StaleAuthenticationSessionException;
 use Quantum\Auth\Exceptions\StepUpRequiredException;
 use Quantum\Auth\Support\AuthenticationAssurance;
@@ -62,7 +63,7 @@ final class AuthMiddleware implements MiddlewareInterface
         }
 
         if ($this->hasSessionCredential($request)) {
-            throw new StaleAuthenticationSessionException();
+            throw $this->sessionFailureException();
         }
 
         throw new AuthenticationRequiredException();
@@ -89,6 +90,13 @@ final class AuthMiddleware implements MiddlewareInterface
         return is_string($configured) && trim($configured) !== ''
             ? trim($configured)
             : 'voltstack_auth_session';
+    }
+
+    private function sessionFailureException(): \RuntimeException
+    {
+        return $this->auth->recoveryFailureReason() === 'session_revoked'
+            ? new RevokedAuthenticationSessionException()
+            : new StaleAuthenticationSessionException();
     }
 
     private function currentStrength(): AuthenticationStrength

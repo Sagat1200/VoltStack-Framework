@@ -14,9 +14,15 @@ final class InMemoryAuthenticationSessionRepository implements AuthenticationSes
      */
     private array $sessions = [];
 
+    /**
+     * @var array<string, AuthenticationSessionRecoveryReason>
+     */
+    private array $recoveryReasons = [];
+
     public function save(AuthenticationSession $session): void
     {
         $this->sessions[(string) $session->id] = $session;
+        unset($this->recoveryReasons[(string) $session->id]);
     }
 
     public function find(string $sessionId): ?AuthenticationSession
@@ -24,13 +30,27 @@ final class InMemoryAuthenticationSessionRepository implements AuthenticationSes
         return $this->sessions[$sessionId] ?? null;
     }
 
-    public function delete(string $sessionId): void
+    public function listForIdentity(IdentityInterface $identity): array
     {
-        unset($this->sessions[$sessionId]);
+        return array_values(array_filter(
+            $this->sessions,
+            static fn(AuthenticationSession $session): bool => (string) $session->identity->identifier() === (string) $identity->identifier(),
+        ));
     }
 
-    public function deleteForIdentity(IdentityInterface $identity, ?string $exceptSessionId = null): void
-    {
+    public function delete(
+        string $sessionId,
+        AuthenticationSessionRecoveryReason $reason = AuthenticationSessionRecoveryReason::Revoked,
+    ): void {
+        unset($this->sessions[$sessionId]);
+        $this->recoveryReasons[$sessionId] = $reason;
+    }
+
+    public function deleteForIdentity(
+        IdentityInterface $identity,
+        ?string $exceptSessionId = null,
+        AuthenticationSessionRecoveryReason $reason = AuthenticationSessionRecoveryReason::Revoked,
+    ): void {
         foreach ($this->sessions as $sessionId => $session) {
             if ((string) $session->identity->identifier() !== (string) $identity->identifier()) {
                 continue;
@@ -41,7 +61,13 @@ final class InMemoryAuthenticationSessionRepository implements AuthenticationSes
             }
 
             unset($this->sessions[$sessionId]);
+            $this->recoveryReasons[$sessionId] = $reason;
         }
+    }
+
+    public function findRecoveryReason(string $sessionId): ?AuthenticationSessionRecoveryReason
+    {
+        return $this->recoveryReasons[$sessionId] ?? null;
     }
 
     public function purgeExpired(?int $now = null): int
@@ -54,6 +80,7 @@ final class InMemoryAuthenticationSessionRepository implements AuthenticationSes
             }
 
             unset($this->sessions[$sessionId]);
+            $this->recoveryReasons[$sessionId] = AuthenticationSessionRecoveryReason::Expired;
             $deleted++;
         }
 

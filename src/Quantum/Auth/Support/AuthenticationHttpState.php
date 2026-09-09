@@ -8,6 +8,7 @@ final class AuthenticationHttpState
 {
     public const SESSION_COOKIE_NAME = 'voltstack_auth_session';
     public const ACTIVE_SESSION_ID_KEY = 'auth.active_session_id';
+    public const RECOVERY_FAILURE_REASON_KEY = 'auth.recovery_failure_reason';
     public const PENDING_SESSION_COOKIE_KEY = 'auth.pending_session_cookie';
     public const PENDING_SESSION_HEADER_KEY = 'auth.pending_session_header';
 

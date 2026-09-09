@@ -6,6 +6,7 @@ namespace Quantum\Auth\Contracts;
 
 use Quantum\Auth\Context\AuthenticationContext;
 use Quantum\Auth\Exceptions\AuthenticationException;
+use Quantum\Auth\Sessions\AuthenticationSessionSummary;
 
 interface AuthenticationManagerInterface
 {
@@ -46,6 +47,19 @@ interface AuthenticationManagerInterface
     public function id(): mixed;
 
     public function context(): ?AuthenticationContext;
+
+    public function recoveryFailureReason(): ?string;
+
+    public function currentSession(): ?AuthenticationSessionSummary;
+
+    /**
+     * @return list<AuthenticationSessionSummary>
+     */
+    public function sessions(): array;
+
+    public function revokeSession(string $publicId): bool;
+
+    public function revokeOtherSessions(): int;
 
     public function logout(): void;
 }

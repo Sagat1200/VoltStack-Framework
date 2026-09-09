@@ -20,8 +20,7 @@ final readonly class AuthenticationSession
         public int $issuedAt,
         public ?int $expiresAt = null,
         public array $attributes = [],
-    ) {
-    }
+    ) {}
 
     public function isExpired(?int $now = null): bool
     {
@@ -30,5 +29,23 @@ final readonly class AuthenticationSession
         }
 
         return ($now ?? time()) >= $this->expiresAt;
+    }
+
+    public function publicId(): ?string
+    {
+        $publicId = $this->attributes['session_public_id'] ?? null;
+
+        return is_string($publicId) && trim($publicId) !== ''
+            ? trim($publicId)
+            : null;
+    }
+
+    public function label(): ?string
+    {
+        $label = $this->attributes['session_label'] ?? null;
+
+        return is_string($label) && trim($label) !== ''
+            ? trim($label)
+            : null;
     }
 }

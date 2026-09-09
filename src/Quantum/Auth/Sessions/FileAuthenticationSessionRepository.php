@@ -39,6 +39,7 @@ final class FileAuthenticationSessionRepository implements AuthenticationSession
         ], JSON_THROW_ON_ERROR);
 
         file_put_contents($this->pathFor($session->id->value), $payload, LOCK_EX);
+        $this->deleteRecoveryReason($session->id->value);
     }
 
     public function find(string $sessionId): ?AuthenticationSession
@@ -80,17 +81,54 @@ final class FileAuthenticationSessionRepository implements AuthenticationSession
         );
     }
 
-    public function delete(string $sessionId): void
+    public function listForIdentity(IdentityInterface $identity): array
     {
+        $sessions = [];
+
+        foreach ($this->sessionFiles() as $file) {
+            $payload = file_get_contents($file);
+
+            if (! is_string($payload) || trim($payload) === '') {
+                continue;
+            }
+
+            /** @var array<string, mixed> $data */
+            $data = json_decode($payload, true, 512, JSON_THROW_ON_ERROR);
+            $identityData = is_array($data['identity'] ?? null) ? $data['identity'] : [];
+
+            if ((string) ($identityData['identifier'] ?? '') !== (string) $identity->identifier()) {
+                continue;
+            }
+
+            $sessionId = (string) ($data['id'] ?? '');
+            $session = $sessionId !== '' ? $this->find($sessionId) : null;
+
+            if ($session !== null) {
+                $sessions[] = $session;
+            }
+        }
+
+        return $sessions;
+    }
+
+    public function delete(
+        string $sessionId,
+        AuthenticationSessionRecoveryReason $reason = AuthenticationSessionRecoveryReason::Revoked,
+    ): void {
         $path = $this->pathFor($sessionId);
 
         if (is_file($path)) {
             @unlink($path);
         }
+
+        $this->writeRecoveryReason($sessionId, $reason);
     }
 
-    public function deleteForIdentity(IdentityInterface $identity, ?string $exceptSessionId = null): void
-    {
+    public function deleteForIdentity(
+        IdentityInterface $identity,
+        ?string $exceptSessionId = null,
+        AuthenticationSessionRecoveryReason $reason = AuthenticationSessionRecoveryReason::Revoked,
+    ): void {
         foreach ($this->sessionFiles() as $file) {
             $payload = file_get_contents($file);
 
@@ -112,7 +150,31 @@ final class FileAuthenticationSessionRepository implements AuthenticationSession
             }
 
             @unlink($file);
+            $this->writeRecoveryReason($sessionId, $reason);
         }
+    }
+
+    public function findRecoveryReason(string $sessionId): ?AuthenticationSessionRecoveryReason
+    {
+        $path = $this->recoveryReasonPathFor($sessionId);
+
+        if (! is_file($path)) {
+            return null;
+        }
+
+        $payload = file_get_contents($path);
+
+        if (! is_string($payload) || trim($payload) === '') {
+            return null;
+        }
+
+        /** @var array<string, mixed> $data */
+        $data = json_decode($payload, true, 512, JSON_THROW_ON_ERROR);
+        $reason = $data['reason'] ?? null;
+
+        return is_string($reason)
+            ? AuthenticationSessionRecoveryReason::tryFrom($reason)
+            : null;
     }
 
     public function purgeExpired(?int $now = null): int
@@ -135,7 +197,12 @@ final class FileAuthenticationSessionRepository implements AuthenticationSession
                 continue;
             }
 
+            $sessionId = (string) ($data['id'] ?? '');
+
             @unlink($file);
+            if ($sessionId !== '') {
+                $this->writeRecoveryReason($sessionId, AuthenticationSessionRecoveryReason::Expired);
+            }
             $deleted++;
         }
 
@@ -145,17 +212,25 @@ final class FileAuthenticationSessionRepository implements AuthenticationSession
     private function ensureDirectory(): void
     {
         if (is_dir($this->directory)) {
+            $this->ensureRecoveryDirectory();
             return;
         }
 
         if (! @mkdir($this->directory, 0777, true) && ! is_dir($this->directory)) {
             throw new RuntimeException(sprintf('Unable to create auth session directory [%s].', $this->directory));
         }
+
+        $this->ensureRecoveryDirectory();
     }
 
     private function pathFor(string $sessionId): string
     {
         return rtrim($this->directory, '\\/') . DIRECTORY_SEPARATOR . $sessionId . '.json';
+    }
+
+    private function recoveryReasonPathFor(string $sessionId): string
+    {
+        return $this->recoveryDirectory() . DIRECTORY_SEPARATOR . $sessionId . '.json';
     }
 
     /**
@@ -171,6 +246,44 @@ final class FileAuthenticationSessionRepository implements AuthenticationSession
             return [];
         }
 
-        return array_values(array_filter($files, static fn (mixed $file): bool => is_string($file)));
+        return array_values(array_filter($files, static fn(mixed $file): bool => is_string($file)));
+    }
+
+    private function recoveryDirectory(): string
+    {
+        return rtrim($this->directory, '\\/') . DIRECTORY_SEPARATOR . 'tombstones';
+    }
+
+    private function ensureRecoveryDirectory(): void
+    {
+        $recoveryDirectory = $this->recoveryDirectory();
+
+        if (is_dir($recoveryDirectory)) {
+            return;
+        }
+
+        if (! @mkdir($recoveryDirectory, 0777, true) && ! is_dir($recoveryDirectory)) {
+            throw new RuntimeException(sprintf('Unable to create auth recovery directory [%s].', $recoveryDirectory));
+        }
+    }
+
+    private function writeRecoveryReason(string $sessionId, AuthenticationSessionRecoveryReason $reason): void
+    {
+        $this->ensureDirectory();
+
+        file_put_contents($this->recoveryReasonPathFor($sessionId), json_encode([
+            'session_id' => $sessionId,
+            'reason' => $reason->value,
+            'recorded_at' => time(),
+        ], JSON_THROW_ON_ERROR), LOCK_EX);
+    }
+
+    private function deleteRecoveryReason(string $sessionId): void
+    {
+        $path = $this->recoveryReasonPathFor($sessionId);
+
+        if (is_file($path)) {
+            @unlink($path);
+        }
     }
 }

@@ -84,6 +84,29 @@ final class AuthDomainModelTest extends TestCase
         self::assertSame('multi_factor', $context->authenticationAssuranceProfile());
     }
 
+    public function test_authentication_context_exposes_safe_session_public_identifier(): void
+    {
+        $identity = new GenericIdentity(
+            identifier: new IdentityIdentifier('85'),
+            type: 'user',
+            attributes: ['name' => 'Volt Session'],
+        );
+
+        $context = new AuthenticationContext(
+            identity: $identity,
+            reference: new IdentityReference($identity->identifier(), $identity->type()),
+            requestId: 'req-3',
+            method: 'password',
+            attributes: [
+                'session_id' => 'raw-secret-session-id',
+                'session_public_id' => 'sess_pub_1234567890ab',
+            ],
+        );
+
+        self::assertSame('sess_pub_1234567890ab', $context->sessionPublicId());
+        self::assertSame('raw-secret-session-id', $context->attribute('session_id'));
+    }
+
     public function test_unauthenticated_decision_has_no_context(): void
     {
         $decision = AuthenticationDecision::unauthenticated(['source' => 'none']);

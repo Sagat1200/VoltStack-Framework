@@ -42,4 +42,13 @@ final readonly class AuthenticationContext
 
         return AuthenticationAssurance::profileFor($this->authenticationStrength());
     }
+
+    public function sessionPublicId(): ?string
+    {
+        $publicId = $this->attribute('session_public_id');
+
+        return is_string($publicId) && trim($publicId) !== ''
+            ? trim($publicId)
+            : null;
+    }
 }

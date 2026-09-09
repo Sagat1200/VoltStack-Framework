@@ -11,6 +11,7 @@ use Quantum\Auth\Identity\IdentityReference;
 use Quantum\Auth\Sessions\AuthenticationSession;
 use Quantum\Auth\Sessions\AuthenticationSessionId;
 use Quantum\Auth\Sessions\FileAuthenticationSessionRepository;
+use Quantum\Auth\Sessions\AuthenticationSessionRecoveryReason;
 
 final class FileAuthenticationSessionRepositoryTest extends TestCase
 {
@@ -28,6 +29,15 @@ final class FileAuthenticationSessionRepositoryTest extends TestCase
         if (is_dir($this->directory)) {
             foreach ((array) glob($this->directory . DIRECTORY_SEPARATOR . '*.json') as $file) {
                 @unlink((string) $file);
+            }
+
+            $tombstones = $this->directory . DIRECTORY_SEPARATOR . 'tombstones';
+            if (is_dir($tombstones)) {
+                foreach ((array) glob($tombstones . DIRECTORY_SEPARATOR . '*.json') as $file) {
+                    @unlink((string) $file);
+                }
+
+                @rmdir($tombstones);
             }
 
             @rmdir($this->directory);
@@ -52,7 +62,10 @@ final class FileAuthenticationSessionRepositoryTest extends TestCase
             method: 'password',
             issuedAt: time(),
             expiresAt: time() + 300,
-            attributes: ['session_id' => 'session-file-88'],
+            attributes: [
+                'session_id' => 'session-file-88',
+                'session_public_id' => 'sess_pub_file88',
+            ],
         );
 
         $repository->save($session);
@@ -62,6 +75,7 @@ final class FileAuthenticationSessionRepositoryTest extends TestCase
         self::assertSame('session-file-88', $restored->id->value);
         self::assertSame('88', (string) $restored->identity->identifier());
         self::assertSame('password', $restored->method);
+        self::assertCount(1, $repository->listForIdentity($identity));
     }
 
     public function test_it_can_delete_other_sessions_and_purge_expired_files(): void
@@ -80,6 +94,7 @@ final class FileAuthenticationSessionRepositoryTest extends TestCase
             method: 'password',
             issuedAt: time(),
             expiresAt: time() + 600,
+            attributes: ['session_public_id' => 'sess_pub_file_keep'],
         ));
 
         $repository->save(new AuthenticationSession(
@@ -89,6 +104,7 @@ final class FileAuthenticationSessionRepositoryTest extends TestCase
             method: 'password',
             issuedAt: time(),
             expiresAt: time() + 600,
+            attributes: ['session_public_id' => 'sess_pub_file_drop'],
         ));
 
         $repository->save(new AuthenticationSession(
@@ -98,14 +114,23 @@ final class FileAuthenticationSessionRepositoryTest extends TestCase
             method: 'password',
             issuedAt: time() - 600,
             expiresAt: time() - 1,
+            attributes: ['session_public_id' => 'sess_pub_file_expired'],
         ));
 
         self::assertSame(1, $repository->purgeExpired());
         self::assertNull($repository->find('file-expired'));
+        self::assertSame(
+            AuthenticationSessionRecoveryReason::Expired,
+            $repository->findRecoveryReason('file-expired'),
+        );
 
         $repository->deleteForIdentity($identity, 'file-keep');
 
         self::assertNotNull($repository->find('file-keep'));
         self::assertNull($repository->find('file-drop'));
+        self::assertSame(
+            AuthenticationSessionRecoveryReason::Revoked,
+            $repository->findRecoveryReason('file-drop'),
+        );
     }
 }

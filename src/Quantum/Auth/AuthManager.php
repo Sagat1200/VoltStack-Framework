@@ -9,7 +9,11 @@ use Quantum\Auth\Context\AuthenticationContextAccessor;
 use Quantum\Auth\Contracts\AuthenticationManagerInterface;
 use Quantum\Auth\Contracts\AuthenticationOrchestratorInterface;
 use Quantum\Auth\Contracts\AuthenticationSessionRepositoryInterface;
+use Quantum\Auth\Contracts\TrustedDeviceRepositoryInterface;
 use Quantum\Auth\Context\AuthenticationRequest;
+use Quantum\Auth\Devices\TrustedDevice;
+use Quantum\Auth\Devices\TrustedDevicePublicId;
+use Quantum\Auth\Devices\TrustedDeviceSummary;
 use Quantum\Auth\Exceptions\AuthenticationException;
 use Quantum\Auth\Exceptions\FreshAuthenticationRequiredException;
 use Quantum\Auth\Exceptions\IdentityNotEligibleException;
@@ -39,6 +43,7 @@ final class AuthManager implements AuthenticationManagerInterface
         private readonly AuthenticationContextAccessor $accessor,
         private readonly AuthenticationOrchestratorInterface $orchestrator,
         private readonly AuthenticationSessionRepositoryInterface $sessions,
+        private readonly TrustedDeviceRepositoryInterface $trustedDeviceRepository,
         private readonly ConfigRepository $config,
     ) {}
 
@@ -58,16 +63,27 @@ final class AuthManager implements AuthenticationManagerInterface
 
     public function attemptOrFail(array $credentials): void
     {
+        $request = $this->runtimeContext()->request();
         $decision = $this->orchestrator->execute(
             new AuthenticationOperationContext(
                 operation: 'authenticate',
                 request: new AuthenticationRequest(
                     requestId: $this->runtimeContext()->requestId(),
                     transport: 'runtime',
-                    attributes: ['credentials' => $credentials],
+                    attributes: [
+                        'credentials' => $credentials,
+                        'trusted_device_credential' => $this->trustedDeviceCredentialFromRequest(),
+                        'trusted_device_host' => $request->host(),
+                        'trusted_device_user_agent' => $request->header('User-Agent'),
+                        'trusted_device_accept_language' => $request->header('Accept-Language'),
+                    ],
                 ),
             ),
         );
+
+        if ((bool) ($decision->metadata['trusted_device_invalid'] ?? false)) {
+            $this->queueTrustedDeviceLogoutCookie();
+        }
 
         if (! $decision->isAuthenticated() || $decision->context === null) {
             throw $this->exceptionFromDecision($decision->metadata);
@@ -121,6 +137,7 @@ final class AuthManager implements AuthenticationManagerInterface
     public function login(mixed $user): void
     {
         $this->sessions->purgeExpired();
+        $this->trustedDeviceRepository->purgeExpired();
         $this->rememberRecoveryFailureReason(null);
 
         $context = $user instanceof AuthenticationContext
@@ -152,6 +169,10 @@ final class AuthManager implements AuthenticationManagerInterface
         ));
 
         $this->accessor->put($sessionContext);
+        $this->touchTrustedDeviceForContext(
+            $sessionContext,
+            $this->validatedTrustedDeviceForContext($sessionContext),
+        );
 
         $runtime = $this->runtimeContext();
         $runtime->set(AuthenticationHttpState::ACTIVE_SESSION_ID_KEY, $sessionId->value);
@@ -248,15 +269,18 @@ final class AuthManager implements AuthenticationManagerInterface
             $resolvedSessionId = is_string($resolvedSessionId) && trim($resolvedSessionId) !== ''
                 ? trim($resolvedSessionId)
                 : null;
+            $trustedDevice = $this->validatedTrustedDeviceForContext($decision->context);
+            $resolvedContext = $this->withTrustedDeviceContext($decision->context, $trustedDevice);
 
             if ($resolvedSessionId !== null && $this->rotateSessionOnRecover()) {
-                $this->login($decision->context);
+                $this->login($resolvedContext);
             } else {
                 if ($resolvedSessionId !== null) {
-                    $this->touchRecoveredSession($resolvedSessionId);
+                    $this->touchRecoveredSession($resolvedSessionId, $trustedDevice);
                 }
 
-                $this->accessor->put($decision->context);
+                $this->accessor->put($resolvedContext);
+                $this->touchTrustedDeviceForContext($resolvedContext, $trustedDevice);
 
                 if ($resolvedSessionId !== null) {
                     $this->runtimeContext()->set(AuthenticationHttpState::ACTIVE_SESSION_ID_KEY, $resolvedSessionId);
@@ -293,9 +317,16 @@ final class AuthManager implements AuthenticationManagerInterface
         $resolvedSession = is_string($sessionId) && trim($sessionId) !== ''
             ? $this->sessions->find(trim($sessionId))
             : null;
+        $trustedDeviceReferences = $this->trustedDeviceReferences($context->reference);
 
         if ($resolvedSession !== null) {
-            return $this->toSessionSummary($resolvedSession, true);
+            return $this->toSessionSummary(
+                $resolvedSession,
+                true,
+                false,
+                $trustedDeviceReferences,
+                $context->deviceTrustState(),
+            );
         }
 
         $publicId = $context->sessionPublicId();
@@ -315,9 +346,13 @@ final class AuthManager implements AuthenticationManagerInterface
             clientFamily: $this->contextStringAttribute($context, 'session_client_family'),
             clientPlatform: $this->contextStringAttribute($context, 'session_client_platform'),
             deviceKind: $this->contextStringAttribute($context, 'session_device_kind'),
+            deviceReference: $context->deviceReference(),
+            deviceTrustState: $context->deviceTrustState(),
             ipPrefix: $this->contextStringAttribute($context, 'session_ip_prefix'),
             canRevoke: true,
             requiresReauthentication: false,
+            revocationScope: 'current',
+            revocationMode: 'direct',
         );
     }
 
@@ -330,8 +365,10 @@ final class AuthManager implements AuthenticationManagerInterface
         }
 
         $this->sessions->purgeExpired();
+        $this->trustedDeviceRepository->purgeExpired();
         $currentSessionId = $this->activeSessionId() ?? (is_string($context->attribute('session_id')) ? trim((string) $context->attribute('session_id')) : null);
         $requiresRemoteReauthentication = $this->requiresFreshAuthenticationHintForCurrentContext($context);
+        $trustedDeviceReferences = $this->trustedDeviceReferences($context->reference);
         $summaries = [];
 
         foreach ($this->sessions->listForIdentity($context->identity) as $session) {
@@ -339,6 +376,10 @@ final class AuthManager implements AuthenticationManagerInterface
                 $session,
                 $currentSessionId !== null && $session->id->value === $currentSessionId,
                 $requiresRemoteReauthentication,
+                $trustedDeviceReferences,
+                $currentSessionId !== null && $session->id->value === $currentSessionId
+                    ? $context->deviceTrustState()
+                    : null,
             );
 
             if ($summary !== null) {
@@ -355,6 +396,128 @@ final class AuthManager implements AuthenticationManagerInterface
         });
 
         return $summaries;
+    }
+
+    public function trustedDevices(): array
+    {
+        $context = $this->context();
+
+        if ($context === null) {
+            return [];
+        }
+
+        $this->trustedDeviceRepository->purgeExpired();
+        $currentDeviceReference = $context->deviceReference();
+        $summaries = [];
+
+        foreach ($this->trustedDeviceRepository->listForIdentity($context->reference) as $device) {
+            $summaries[] = $this->toTrustedDeviceSummary(
+                $device,
+                $currentDeviceReference !== null && $device->deviceReference === $currentDeviceReference,
+            );
+        }
+
+        usort($summaries, static function (TrustedDeviceSummary $left, TrustedDeviceSummary $right): int {
+            if ($left->current !== $right->current) {
+                return $left->current ? -1 : 1;
+            }
+
+            return ($right->lastUsedAt ?? $right->issuedAt) <=> ($left->lastUsedAt ?? $left->issuedAt);
+        });
+
+        return $summaries;
+    }
+
+    public function trustCurrentDevice(?string $label = null): bool
+    {
+        $context = $this->context();
+
+        if ($context === null) {
+            return false;
+        }
+
+        $this->trustedDeviceRepository->purgeExpired();
+
+        if ($this->trustedDevicesRequireMultiFactor()
+            && $context->authenticationStrength()->value < AuthenticationStrength::MultiFactor->value) {
+            return false;
+        }
+
+        $deviceReference = $context->deviceReference();
+
+        if ($deviceReference === null) {
+            return false;
+        }
+
+        $existing = $this->trustedDeviceRepository->findActiveForIdentityAndDevice(
+            $context->reference,
+            $deviceReference,
+        );
+
+        if ($existing === null && count($this->trustedDeviceRepository->listForIdentity($context->reference)) >= $this->trustedDevicesMaxDevices()) {
+            return false;
+        }
+
+        $summary = $existing ?? $this->trustedDeviceFromContext($context, $label);
+
+        if ($summary === null) {
+            return false;
+        }
+
+        $resolvedLabel = is_string($label) && trim($label) !== ''
+            ? trim($label)
+            : ($summary->label() ?? $this->contextStringAttribute($context, 'session_label'));
+
+        $attributes = array_filter(array_merge(
+            $summary->attributes,
+            $this->trustedDeviceAttributesFromContext($context),
+            [
+                'label' => $resolvedLabel,
+                'trust_state' => 'trusted',
+            ],
+        ), static fn (mixed $value): bool => $value !== null && $value !== '');
+
+        $trustedDevice = new TrustedDevice(
+            publicId: $summary->publicId,
+            reference: $context->reference,
+            deviceReference: $deviceReference,
+            issuedAt: $existing?->issuedAt ?? time(),
+            expiresAt: $this->trustedDeviceExpiresAt(),
+            lastUsedAt: time(),
+            attributes: $attributes,
+        );
+
+        $trustedDevice = $this->issueTrustedDeviceCredential($trustedDevice);
+        $this->synchronizeCurrentSessionTrustState($context, 'trusted');
+
+        return true;
+    }
+
+    public function forgetTrustedDevice(string $publicId): bool
+    {
+        $context = $this->context();
+        $publicId = trim($publicId);
+
+        if ($context === null || $publicId === '') {
+            return false;
+        }
+
+        foreach ($this->trustedDeviceRepository->listForIdentity($context->reference) as $device) {
+            if ($device->publicId->value !== $publicId) {
+                continue;
+            }
+
+            $this->trustedDeviceRepository->delete($publicId);
+            $this->queueTrustedDeviceLogoutCookie();
+
+            if ($context->deviceReference() !== null && $context->deviceReference() === $device->deviceReference) {
+                $this->synchronizeCurrentSessionTrustState($context, 'unknown');
+            }
+
+            return true;
+        }
+
+        return false;
     }
 
     public function revokeSession(string $publicId): bool
@@ -468,6 +631,10 @@ final class AuthManager implements AuthenticationManagerInterface
         AuthenticationSessionId $sessionId,
         AuthenticationSessionPublicId $publicId,
     ): AuthenticationContext {
+        $deviceReference = $this->deviceReference($context);
+        $trustedDevice = $this->validatedTrustedDeviceForContext($context);
+        $deviceTrustState = $trustedDevice !== null ? 'trusted' : 'unknown';
+
         return new AuthenticationContext(
             identity: $context->identity,
             reference: $context->reference instanceof IdentityReference
@@ -481,6 +648,10 @@ final class AuthManager implements AuthenticationManagerInterface
                     $this->sessionMetadata(),
                     [
                         'authentication_fresh_at' => time(),
+                        'session_device_reference' => $deviceReference,
+                        'session_device_trust_state' => $deviceTrustState,
+                        'trusted_device_credential_present' => $trustedDevice !== null,
+                        'trusted_device_public_id' => $trustedDevice?->publicId->value,
                         'session_id' => $sessionId->value,
                         'session_public_id' => $publicId->value,
                     ],
@@ -497,6 +668,15 @@ final class AuthManager implements AuthenticationManagerInterface
         return is_string($configured) && trim($configured) !== ''
             ? trim($configured)
             : AuthenticationHttpState::SESSION_COOKIE_NAME;
+    }
+
+    private function trustedDeviceCookieName(): string
+    {
+        $configured = $this->config->get('auth.trusted_devices.cookie', AuthenticationHttpState::TRUSTED_DEVICE_COOKIE_NAME);
+
+        return is_string($configured) && trim($configured) !== ''
+            ? trim($configured)
+            : AuthenticationHttpState::TRUSTED_DEVICE_COOKIE_NAME;
     }
 
     private function sessionLifetime(): int
@@ -555,6 +735,26 @@ final class AuthManager implements AuthenticationManagerInterface
         );
     }
 
+    private function queueTrustedDeviceLogoutCookie(): void
+    {
+        $this->runtimeContext()->set(
+            AuthenticationHttpState::PENDING_TRUSTED_DEVICE_COOKIE_KEY,
+            AuthenticationHttpState::clearTrustedDeviceCookie($this->trustedDeviceCookieName()),
+        );
+    }
+
+    private function queueTrustedDeviceCookie(string $value): void
+    {
+        $this->runtimeContext()->set(
+            AuthenticationHttpState::PENDING_TRUSTED_DEVICE_COOKIE_KEY,
+            AuthenticationHttpState::trustedDeviceCookie(
+                $value,
+                $this->trustedDeviceCookieName(),
+                $this->trustedDeviceLifetime(),
+            ),
+        );
+    }
+
     private function rememberRecoveryFailureReason(?string $reason): void
     {
         $this->runtimeContext()->set(
@@ -567,6 +767,8 @@ final class AuthManager implements AuthenticationManagerInterface
         AuthenticationSession $session,
         bool $current,
         bool $requiresRemoteReauthentication = false,
+        array $trustedDeviceReferences = [],
+        ?string $currentTrustState = null,
     ): ?AuthenticationSessionSummary
     {
         $publicId = $session->publicId();
@@ -586,9 +788,32 @@ final class AuthManager implements AuthenticationManagerInterface
             clientFamily: $this->stringAttribute($session, 'session_client_family'),
             clientPlatform: $this->stringAttribute($session, 'session_client_platform'),
             deviceKind: $this->stringAttribute($session, 'session_device_kind'),
+            deviceReference: $this->stringAttribute($session, 'session_device_reference'),
+            deviceTrustState: $current && $currentTrustState !== null
+                ? $currentTrustState
+                : $this->deviceTrustStateForSession($session, $trustedDeviceReferences),
             ipPrefix: $this->stringAttribute($session, 'session_ip_prefix'),
             canRevoke: true,
             requiresReauthentication: ! $current && $requiresRemoteReauthentication,
+            revocationScope: $current ? 'current' : 'peer',
+            revocationMode: $current ? 'direct' : ($requiresRemoteReauthentication ? 'fresh_auth_required' : 'direct'),
+        );
+    }
+
+    private function toTrustedDeviceSummary(TrustedDevice $device, bool $current): TrustedDeviceSummary
+    {
+        return new TrustedDeviceSummary(
+            publicId: $device->publicId->value,
+            deviceReference: $device->deviceReference,
+            trustState: 'trusted',
+            issuedAt: $device->issuedAt,
+            expiresAt: $device->expiresAt,
+            lastUsedAt: $device->lastUsedAt,
+            current: $current,
+            label: $this->trustedDeviceStringAttribute($device, 'label'),
+            clientFamily: $this->trustedDeviceStringAttribute($device, 'client_family'),
+            clientPlatform: $this->trustedDeviceStringAttribute($device, 'client_platform'),
+            deviceKind: $this->trustedDeviceStringAttribute($device, 'device_kind'),
         );
     }
 
@@ -648,7 +873,7 @@ final class AuthManager implements AuthenticationManagerInterface
         ], static fn(mixed $value): bool => $value !== null && $value !== '');
     }
 
-    private function touchRecoveredSession(string $sessionId): void
+    private function touchRecoveredSession(string $sessionId, ?TrustedDevice $trustedDevice = null): void
     {
         $existing = $this->sessions->find($sessionId);
 
@@ -657,6 +882,19 @@ final class AuthManager implements AuthenticationManagerInterface
         }
 
         $attributes = array_merge($existing->attributes, $this->sessionMetadata());
+        $attributes['session_device_reference'] = $this->stableAttribute(
+            $existing->attributes,
+            $attributes,
+            'session_device_reference',
+        );
+        $attributes['session_device_trust_state'] = $this->stableAttribute(
+            $existing->attributes,
+            $attributes,
+            'session_device_trust_state',
+            $trustedDevice !== null ? 'trusted' : 'unknown',
+        );
+        $attributes['trusted_device_credential_present'] = $trustedDevice !== null;
+        $attributes['trusted_device_public_id'] = $trustedDevice?->publicId->value;
 
         $this->sessions->touch(new AuthenticationSession(
             id: $existing->id,
@@ -667,6 +905,101 @@ final class AuthManager implements AuthenticationManagerInterface
             expiresAt: $existing->expiresAt,
             attributes: $attributes,
         ));
+    }
+
+    private function touchTrustedDeviceForContext(AuthenticationContext $context, ?TrustedDevice $trustedDevice = null): void
+    {
+        if ($trustedDevice === null) {
+            return;
+        }
+
+        $this->trustedDeviceRepository->touch(new TrustedDevice(
+            publicId: $trustedDevice->publicId,
+            reference: $trustedDevice->reference,
+            deviceReference: $trustedDevice->deviceReference,
+            issuedAt: $trustedDevice->issuedAt,
+            expiresAt: $trustedDevice->expiresAt,
+            lastUsedAt: time(),
+            attributes: array_merge(
+                $trustedDevice->attributes,
+                $this->trustedDeviceAttributesFromContext($context),
+                ['trust_state' => 'trusted'],
+            ),
+        ));
+    }
+
+    private function validatedTrustedDeviceForContext(AuthenticationContext $context): ?TrustedDevice
+    {
+        $payload = $this->parseTrustedDeviceCredential($this->trustedDeviceCredentialFromRequest());
+
+        if ($payload === null) {
+            return null;
+        }
+
+        $trustedDevice = $this->trustedDeviceRepository->find($payload['public_id']);
+        $deviceReference = $context->deviceReference() ?? $this->deviceReference($context);
+
+        if (
+            $trustedDevice === null
+            || $trustedDevice->isExpired()
+            || $deviceReference === null
+            || $trustedDevice->deviceReference !== $deviceReference
+            || $trustedDevice->reference->type !== $context->reference->type
+            || $trustedDevice->reference->identifier->value !== $context->reference->identifier->value
+        ) {
+            $this->queueTrustedDeviceLogoutCookie();
+
+            return null;
+        }
+
+        $credentialHash = $trustedDevice->attributes['credential_hash'] ?? null;
+
+        if (! is_string($credentialHash) || ! hash_equals($credentialHash, $this->hashTrustedDeviceSecret($payload['secret']))) {
+            $this->queueTrustedDeviceLogoutCookie();
+
+            return null;
+        }
+
+        return $trustedDevice;
+    }
+
+    private function withTrustedDeviceContext(AuthenticationContext $context, ?TrustedDevice $trustedDevice): AuthenticationContext
+    {
+        return new AuthenticationContext(
+            identity: $context->identity,
+            reference: $context->reference,
+            requestId: $context->requestId,
+            method: $context->method,
+            attributes: array_merge($context->attributes, [
+                'session_device_trust_state' => $trustedDevice !== null ? 'trusted' : ($context->attributes['session_device_trust_state'] ?? 'unknown'),
+                'trusted_device_credential_present' => $trustedDevice !== null,
+                'trusted_device_public_id' => $trustedDevice?->publicId->value,
+            ]),
+        );
+    }
+
+    private function issueTrustedDeviceCredential(TrustedDevice $device): TrustedDevice
+    {
+        $secret = bin2hex(random_bytes(32));
+        $issuedAt = time();
+        $trustedDevice = new TrustedDevice(
+            publicId: $device->publicId,
+            reference: $device->reference,
+            deviceReference: $device->deviceReference,
+            issuedAt: $device->issuedAt,
+            expiresAt: $device->expiresAt,
+            lastUsedAt: $device->lastUsedAt,
+            attributes: array_merge($device->attributes, [
+                'credential_hash' => $this->hashTrustedDeviceSecret($secret),
+                'credential_issued_at' => $issuedAt,
+                'trust_state' => 'trusted',
+            ]),
+        );
+
+        $this->trustedDeviceRepository->save($trustedDevice);
+        $this->queueTrustedDeviceCookie($trustedDevice->publicId->value . '.' . $secret);
+
+        return $trustedDevice;
     }
 
     private function clientFamily(\Quantum\Http\Request $request): ?string
@@ -793,6 +1126,58 @@ final class AuthManager implements AuthenticationManagerInterface
         return $base ?? $ipPrefix;
     }
 
+    private function deviceReference(AuthenticationContext $context): ?string
+    {
+        $request = $this->runtimeContext()->request();
+        $fingerprintParts = array_filter([
+            strtolower(trim((string) $request->host())),
+            strtolower(trim((string) $request->header('User-Agent', ''))),
+            strtolower(trim((string) $request->header('Accept-Language', ''))),
+            strtolower((string) ($context->reference->identifier->value ?? '')),
+            strtolower($context->reference->type),
+        ], static fn(string $value): bool => $value !== '');
+
+        if ($fingerprintParts === []) {
+            return null;
+        }
+
+        $hash = hash_hmac(
+            'sha256',
+            implode('|', $fingerprintParts),
+            $this->deviceReferenceSalt(),
+        );
+
+        return 'devref_' . substr($hash, 0, 20);
+    }
+
+    private function trustedDeviceReferences(IdentityReference $reference): array
+    {
+        $references = [];
+
+        foreach ($this->trustedDeviceRepository->listForIdentity($reference) as $device) {
+            $references[$device->deviceReference] = true;
+        }
+
+        return $references;
+    }
+
+    private function deviceReferenceSalt(): string
+    {
+        $configured = $this->config->get('auth.session.device.reference_salt');
+
+        if (is_string($configured) && trim($configured) !== '') {
+            return trim($configured);
+        }
+
+        $appKey = $this->config->get('app.key');
+
+        if (is_string($appKey) && trim($appKey) !== '') {
+            return trim($appKey);
+        }
+
+        return 'voltstack-auth-device-reference';
+    }
+
     private function freshAuthenticationRequiredForRemoteSessionRevocation(): bool
     {
         return (bool) $this->config->get('auth.session.management.require_fresh_auth_for_remote_revocation', true);
@@ -855,6 +1240,226 @@ final class AuthManager implements AuthenticationManagerInterface
         $freshAt = $context->freshAuthenticationAt();
 
         return $freshAt === null || (time() - $freshAt) > $this->freshAuthenticationWindowSeconds();
+    }
+
+    private function trustedDevicesRequireMultiFactor(): bool
+    {
+        return (bool) $this->config->get('auth.trusted_devices.require_multi_factor', true);
+    }
+
+    private function trustedDevicesMaxDevices(): int
+    {
+        $configured = $this->config->get('auth.trusted_devices.max_devices', 10);
+
+        if (is_int($configured)) {
+            return max(1, $configured);
+        }
+
+        if (is_numeric($configured)) {
+            return max(1, (int) $configured);
+        }
+
+        return 10;
+    }
+
+    private function trustedDeviceLifetime(): int
+    {
+        $configured = $this->config->get('auth.trusted_devices.lifetime', 2592000);
+
+        if (is_int($configured)) {
+            return max(0, $configured);
+        }
+
+        if (is_numeric($configured)) {
+            return max(0, (int) $configured);
+        }
+
+        return 2592000;
+    }
+
+    private function trustedDeviceExpiresAt(): ?int
+    {
+        $configured = $this->config->get('auth.trusted_devices.lifetime', 2592000);
+
+        if (is_int($configured)) {
+            return time() + max(0, $configured);
+        }
+
+        if (is_numeric($configured)) {
+            return time() + max(0, (int) $configured);
+        }
+
+        return time() + 2592000;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function trustedDeviceAttributesFromContext(AuthenticationContext $context): array
+    {
+        return array_filter([
+            'label' => $this->contextStringAttribute($context, 'session_label'),
+            'client_family' => $this->contextStringAttribute($context, 'session_client_family'),
+            'client_platform' => $this->contextStringAttribute($context, 'session_client_platform'),
+            'device_kind' => $this->contextStringAttribute($context, 'session_device_kind'),
+        ], static fn (mixed $value): bool => $value !== null && $value !== '');
+    }
+
+    private function trustedDeviceFromContext(AuthenticationContext $context, ?string $label = null): ?TrustedDevice
+    {
+        $deviceReference = $context->deviceReference();
+
+        if ($deviceReference === null) {
+            return null;
+        }
+
+        $attributes = $this->trustedDeviceAttributesFromContext($context);
+
+        if (is_string($label) && trim($label) !== '') {
+            $attributes['label'] = trim($label);
+        }
+
+        $attributes['trust_state'] = 'trusted';
+
+        return new TrustedDevice(
+            publicId: TrustedDevicePublicId::generate(),
+            reference: $context->reference,
+            deviceReference: $deviceReference,
+            issuedAt: time(),
+            expiresAt: $this->trustedDeviceExpiresAt(),
+            lastUsedAt: time(),
+            attributes: $attributes,
+        );
+    }
+
+    private function synchronizeCurrentSessionTrustState(AuthenticationContext $context, string $trustState): void
+    {
+        $trustedDevicePublicId = $trustState === 'trusted'
+            ? ($context->trustedDevicePublicId() ?? $this->validatedTrustedDeviceForContext($context)?->publicId->value)
+            : null;
+        $attributes = array_merge($context->attributes, [
+            'session_device_trust_state' => $trustState,
+            'trusted_device_credential_present' => $trustState === 'trusted',
+            'trusted_device_public_id' => $trustedDevicePublicId,
+        ]);
+
+        $this->accessor->put(new AuthenticationContext(
+            identity: $context->identity,
+            reference: $context->reference,
+            requestId: $context->requestId,
+            method: $context->method,
+            attributes: $attributes,
+        ));
+
+        $sessionId = $context->attribute('session_id');
+
+        if (! is_string($sessionId) || trim($sessionId) === '') {
+            return;
+        }
+
+        $existing = $this->sessions->find(trim($sessionId));
+
+        if ($existing === null) {
+            return;
+        }
+
+        $sessionAttributes = array_merge($existing->attributes, [
+            'session_device_trust_state' => $trustState,
+            'trusted_device_credential_present' => $trustState === 'trusted',
+            'trusted_device_public_id' => $trustedDevicePublicId,
+        ]);
+
+        $this->sessions->touch(new AuthenticationSession(
+            id: $existing->id,
+            identity: $existing->identity,
+            reference: $existing->reference,
+            method: $existing->method,
+            issuedAt: $existing->issuedAt,
+            expiresAt: $existing->expiresAt,
+            attributes: $sessionAttributes,
+        ));
+    }
+
+    private function deviceTrustStateForSession(AuthenticationSession $session, array $trustedDeviceReferences): string
+    {
+        $deviceReference = $this->stringAttribute($session, 'session_device_reference');
+
+        if ($deviceReference !== null && isset($trustedDeviceReferences[$deviceReference])) {
+            return 'trusted';
+        }
+
+        return $this->stringAttribute($session, 'session_device_trust_state') ?? 'unknown';
+    }
+
+    private function trustedDeviceStringAttribute(TrustedDevice $device, string $key): ?string
+    {
+        $value = $device->attributes[$key] ?? null;
+
+        return is_string($value) && trim($value) !== ''
+            ? trim($value)
+            : null;
+    }
+
+    /**
+     * @param array<string, mixed> $existing
+     * @param array<string, mixed> $candidate
+     */
+    private function stableAttribute(array $existing, array $candidate, string $key, ?string $default = null): ?string
+    {
+        $current = $existing[$key] ?? null;
+
+        if (is_string($current) && trim($current) !== '') {
+            return trim($current);
+        }
+
+        $next = $candidate[$key] ?? $default;
+
+        return is_string($next) && trim($next) !== ''
+            ? trim($next)
+            : $default;
+    }
+
+    private function trustedDeviceCredentialFromRequest(): ?string
+    {
+        $credential = $this->runtimeContext()->request()->cookie($this->trustedDeviceCookieName());
+
+        return is_string($credential) && trim($credential) !== ''
+            ? trim(rawurldecode($credential))
+            : null;
+    }
+
+    /**
+     * @return array{public_id: string, secret: string}|null
+     */
+    private function parseTrustedDeviceCredential(?string $credential): ?array
+    {
+        if (! is_string($credential) || trim($credential) === '') {
+            return null;
+        }
+
+        $parts = explode('.', trim($credential), 2);
+
+        if (count($parts) !== 2) {
+            return null;
+        }
+
+        [$publicId, $secret] = $parts;
+        $publicId = trim($publicId);
+        $secret = trim($secret);
+
+        if ($publicId === '' || $secret === '' || ! str_starts_with($publicId, 'tdv_')) {
+            return null;
+        }
+
+        return [
+            'public_id' => $publicId,
+            'secret' => $secret,
+        ];
+    }
+
+    private function hashTrustedDeviceSecret(string $secret): string
+    {
+        return hash_hmac('sha256', $secret, $this->deviceReferenceSalt());
     }
 
     /**

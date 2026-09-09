@@ -721,7 +721,7 @@ final class HtmlDocumentBootstrapper
     private function hasContentType(Response $response): bool
     {
         foreach ($response->headers() as $name => $value) {
-            if (strcasecmp($name, 'Content-Type') === 0 && trim($value) !== '') {
+            if (strcasecmp($name, 'Content-Type') === 0 && is_string($value) && trim($value) !== '') {
                 return true;
             }
         }
@@ -734,6 +734,10 @@ final class HtmlDocumentBootstrapper
         foreach ($response->headers() as $name => $value) {
             if (strcasecmp($name, 'Content-Type') !== 0) {
                 continue;
+            }
+
+            if (! is_string($value)) {
+                return false;
             }
 
             $normalized = strtoupper(trim($value));
@@ -753,6 +757,10 @@ final class HtmlDocumentBootstrapper
         foreach ($response->headers() as $name => $value) {
             if (strcasecmp($name, 'Content-Disposition') !== 0) {
                 continue;
+            }
+
+            if (! is_string($value)) {
+                return false;
             }
 
             return str_contains(strtolower($value), 'attachment');

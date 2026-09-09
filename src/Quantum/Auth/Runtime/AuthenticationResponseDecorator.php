@@ -24,6 +24,11 @@ final class AuthenticationResponseDecorator
             $response->header('Set-Cookie', $pendingCookie);
         }
 
+        $pendingTrustedDeviceCookie = $context->get(AuthenticationHttpState::PENDING_TRUSTED_DEVICE_COOKIE_KEY);
+        if (is_string($pendingTrustedDeviceCookie) && trim($pendingTrustedDeviceCookie) !== '') {
+            $response->header('Set-Cookie', $pendingTrustedDeviceCookie);
+        }
+
         $pendingHeader = $context->get(AuthenticationHttpState::PENDING_SESSION_HEADER_KEY);
         if (is_string($pendingHeader) && trim($pendingHeader) !== '') {
             $response->header('X-Auth-Session', $pendingHeader);

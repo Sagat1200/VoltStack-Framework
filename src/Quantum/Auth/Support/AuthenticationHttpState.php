@@ -7,9 +7,11 @@ namespace Quantum\Auth\Support;
 final class AuthenticationHttpState
 {
     public const SESSION_COOKIE_NAME = 'voltstack_auth_session';
+    public const TRUSTED_DEVICE_COOKIE_NAME = 'voltstack_trusted_device';
     public const ACTIVE_SESSION_ID_KEY = 'auth.active_session_id';
     public const RECOVERY_FAILURE_REASON_KEY = 'auth.recovery_failure_reason';
     public const PENDING_SESSION_COOKIE_KEY = 'auth.pending_session_cookie';
+    public const PENDING_TRUSTED_DEVICE_COOKIE_KEY = 'auth.pending_trusted_device_cookie';
     public const PENDING_SESSION_HEADER_KEY = 'auth.pending_session_header';
 
     public static function loginCookie(string $sessionId, string $cookieName = self::SESSION_COOKIE_NAME, ?int $maxAge = null): string
@@ -31,6 +33,32 @@ final class AuthenticationHttpState
     {
         return sprintf(
             '%s=deleted; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; HttpOnly; SameSite=Lax',
+            $cookieName,
+        );
+    }
+
+    public static function trustedDeviceCookie(
+        string $value,
+        string $cookieName = self::TRUSTED_DEVICE_COOKIE_NAME,
+        ?int $maxAge = null,
+    ): string {
+        $cookie = sprintf(
+            '%s=%s; Path=/; HttpOnly; Secure; SameSite=Lax',
+            $cookieName,
+            rawurlencode($value),
+        );
+
+        if ($maxAge !== null && $maxAge > 0) {
+            $cookie .= '; Max-Age=' . $maxAge;
+        }
+
+        return $cookie;
+    }
+
+    public static function clearTrustedDeviceCookie(string $cookieName = self::TRUSTED_DEVICE_COOKIE_NAME): string
+    {
+        return sprintf(
+            '%s=deleted; Path=/; Expires=Thu, 01 Jan 1970 00:00:00 GMT; Max-Age=0; HttpOnly; Secure; SameSite=Lax',
             $cookieName,
         );
     }

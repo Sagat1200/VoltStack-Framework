@@ -14,6 +14,9 @@ use Quantum\Auth\Contracts\AuthenticatorInterface;
 use Quantum\Auth\Contracts\AuthenticatorResolverInterface;
 use Quantum\Auth\Contracts\IdentityProviderInterface;
 use Quantum\Auth\Contracts\PasswordPolicyInterface;
+use Quantum\Auth\Contracts\TrustedDeviceRepositoryInterface;
+use Quantum\Auth\Devices\FileTrustedDeviceRepository;
+use Quantum\Auth\Devices\InMemoryTrustedDeviceRepository;
 use Quantum\Auth\Identity\LocalIdentityProvider;
 use Quantum\Auth\Passwords\PasswordPolicy;
 use Quantum\Auth\Runtime\AuthenticationOrchestrator;
@@ -35,7 +38,6 @@ final class AuthenticationServiceProvider extends ServiceProvider
         $this->app->scoped(AuthenticationContextAccessor::class);
         $this->app->scoped(IdentityProviderInterface::class, LocalIdentityProvider::class);
         $this->app->scoped(PasswordPolicyInterface::class, PasswordPolicy::class);
-        $this->app->scoped(AuthenticatorInterface::class, PasswordAuthenticator::class);
         $this->app->singleton(AuthenticationSessionRepositoryInterface::class, function (Application $app): AuthenticationSessionRepositoryInterface {
             $driver = (string) $app->config('auth.session.driver', 'memory');
             $retention = $app->config('auth.session.cleanup.tombstone_retention', 604800);
@@ -49,6 +51,25 @@ final class AuthenticationServiceProvider extends ServiceProvider
                 default => new InMemoryAuthenticationSessionRepository($retention),
             };
         });
+        $this->app->singleton(TrustedDeviceRepositoryInterface::class, function (Application $app): TrustedDeviceRepositoryInterface {
+            $driver = $app->config('auth.trusted_devices.driver');
+            $driver = is_string($driver) && trim($driver) !== ''
+                ? trim($driver)
+                : (string) $app->config('auth.session.driver', 'memory');
+
+            return match (strtolower($driver)) {
+                'file' => new FileTrustedDeviceRepository(
+                    $app->storagePath('framework/auth/trusted-devices'),
+                ),
+                default => new InMemoryTrustedDeviceRepository(),
+            };
+        });
+        $this->app->scoped(AuthenticatorInterface::class, fn(Application $app) => new PasswordAuthenticator(
+            $app->make(IdentityProviderInterface::class),
+            $app->make(PasswordPolicyInterface::class),
+            $app->make(TrustedDeviceRepositoryInterface::class),
+            $app->make(ConfigRepository::class),
+        ));
         $this->app->scoped(SessionAuthenticator::class);
         $this->app->scoped(AuthenticatorResolverInterface::class, DefaultAuthenticatorResolver::class);
         $this->app->scoped(AuthenticationOrchestratorInterface::class, AuthenticationOrchestrator::class);
@@ -56,6 +77,7 @@ final class AuthenticationServiceProvider extends ServiceProvider
             $app->make(AuthenticationContextAccessor::class),
             $app->make(AuthenticationOrchestratorInterface::class),
             $app->make(AuthenticationSessionRepositoryInterface::class),
+            $app->make(TrustedDeviceRepositoryInterface::class),
             $app->make(ConfigRepository::class),
         ));
         $this->app->scoped(AuthenticationManagerInterface::class, fn(Application $app) => $app->make(AuthManager::class));

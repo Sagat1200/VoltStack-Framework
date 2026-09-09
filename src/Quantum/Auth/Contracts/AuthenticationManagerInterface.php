@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quantum\Auth\Contracts;
 
 use Quantum\Auth\Context\AuthenticationContext;
+use Quantum\Auth\Devices\TrustedDeviceSummary;
 use Quantum\Auth\Exceptions\AuthenticationException;
 use Quantum\Auth\Sessions\AuthenticationSessionSummary;
 
@@ -56,6 +57,15 @@ interface AuthenticationManagerInterface
      * @return list<AuthenticationSessionSummary>
      */
     public function sessions(): array;
+
+    /**
+     * @return list<TrustedDeviceSummary>
+     */
+    public function trustedDevices(): array;
+
+    public function trustCurrentDevice(?string $label = null): bool;
+
+    public function forgetTrustedDevice(string $publicId): bool;
 
     public function revokeSession(string $publicId): bool;
 

@@ -128,6 +128,52 @@ final class AuthDomainModelTest extends TestCase
         self::assertSame(1700000000, $context->freshAuthenticationAt());
     }
 
+    public function test_authentication_context_exposes_device_reference_and_trust_state(): void
+    {
+        $identity = new GenericIdentity(
+            identifier: new IdentityIdentifier('87'),
+            type: 'user',
+            attributes: ['name' => 'Volt Device'],
+        );
+
+        $context = new AuthenticationContext(
+            identity: $identity,
+            reference: new IdentityReference($identity->identifier(), $identity->type()),
+            requestId: 'req-5',
+            method: 'password',
+            attributes: [
+                'session_device_reference' => 'devref_1234567890abcdef',
+                'session_device_trust_state' => 'unknown',
+            ],
+        );
+
+        self::assertSame('devref_1234567890abcdef', $context->deviceReference());
+        self::assertSame('unknown', $context->deviceTrustState());
+    }
+
+    public function test_authentication_context_exposes_trusted_device_credential_state(): void
+    {
+        $identity = new GenericIdentity(
+            identifier: new IdentityIdentifier('88'),
+            type: 'user',
+            attributes: ['name' => 'Volt Trusted Device'],
+        );
+
+        $context = new AuthenticationContext(
+            identity: $identity,
+            reference: new IdentityReference($identity->identifier(), $identity->type()),
+            requestId: 'req-6',
+            method: 'password',
+            attributes: [
+                'trusted_device_credential_present' => true,
+                'trusted_device_public_id' => 'tdv_1234567890ab',
+            ],
+        );
+
+        self::assertTrue($context->trustedDeviceCredentialPresent());
+        self::assertSame('tdv_1234567890ab', $context->trustedDevicePublicId());
+    }
+
 
     public function test_unauthenticated_decision_has_no_context(): void
     {

@@ -66,4 +66,36 @@ final readonly class AuthenticationContext
 
         return null;
     }
+
+    public function deviceReference(): ?string
+    {
+        $deviceReference = $this->attribute('session_device_reference');
+
+        return is_string($deviceReference) && trim($deviceReference) !== ''
+            ? trim($deviceReference)
+            : null;
+    }
+
+    public function deviceTrustState(): string
+    {
+        $trustState = $this->attribute('session_device_trust_state');
+
+        return is_string($trustState) && trim($trustState) !== ''
+            ? trim($trustState)
+            : 'unknown';
+    }
+
+    public function trustedDeviceCredentialPresent(): bool
+    {
+        return (bool) $this->attribute('trusted_device_credential_present', false);
+    }
+
+    public function trustedDevicePublicId(): ?string
+    {
+        $publicId = $this->attribute('trusted_device_public_id');
+
+        return is_string($publicId) && trim($publicId) !== ''
+            ? trim($publicId)
+            : null;
+    }
 }

@@ -10,6 +10,7 @@ use Quantum\Auth\Contracts\IdentityProviderInterface;
 use Quantum\Auth\Contracts\MultiFactorIdentityProviderInterface;
 use Quantum\Auth\Contracts\PasswordPolicyInterface;
 use Quantum\Auth\Contracts\PasswordRehashingIdentityProviderInterface;
+use Quantum\Auth\Contracts\TrustedDeviceRepositoryInterface;
 use Quantum\Auth\Credentials\PasswordCredentials;
 use Quantum\Auth\Decisions\AuthenticationDecision;
 use Quantum\Auth\Exceptions\IdentityNotEligibleException;
@@ -18,9 +19,11 @@ use Quantum\Auth\Exceptions\InvalidCredentialsException;
 use Quantum\Auth\Exceptions\SecondFactorNotAvailableException;
 use Quantum\Auth\Exceptions\SecondFactorRequiredException;
 use Quantum\Auth\Exceptions\StepUpAuthenticationRequiredException;
+use Quantum\Auth\Identity\IdentityInterface;
 use Quantum\Auth\Identity\IdentityReference;
 use Quantum\Auth\Runtime\AuthenticationOperationContext;
 use Quantum\Auth\Support\AuthenticationAssurance;
+use Quantum\Config\ConfigRepository;
 use Quantum\Controllers\Security\Context\AuthenticationStrength;
 
 final class PasswordAuthenticator implements AuthenticatorInterface
@@ -28,6 +31,8 @@ final class PasswordAuthenticator implements AuthenticatorInterface
     public function __construct(
         private readonly IdentityProviderInterface $identityProvider,
         private readonly PasswordPolicyInterface $passwordPolicy,
+        private readonly TrustedDeviceRepositoryInterface $trustedDevices,
+        private readonly ConfigRepository $config,
     ) {}
 
     public function supports(AuthenticationOperationContext $context): bool
@@ -91,6 +96,10 @@ final class PasswordAuthenticator implements AuthenticatorInterface
         $rehashed = false;
         $contextAttributes = [];
         $secondFactorSatisfied = false;
+        $trustedDeviceCredentialPresented = is_string($context->request->attribute('trusted_device_credential'))
+            && trim((string) $context->request->attribute('trusted_device_credential')) !== '';
+        $trustedDevice = $this->validatedTrustedDevice($context, $identity);
+        $trustedDeviceInvalid = $trustedDeviceCredentialPresented && $trustedDevice === null;
 
         if ($needsRehash && $this->identityProvider instanceof PasswordRehashingIdentityProviderInterface) {
             $rehashed = $this->identityProvider->upgradePasswordHash(
@@ -109,6 +118,7 @@ final class PasswordAuthenticator implements AuthenticatorInterface
                     return AuthenticationDecision::rejected([
                         'reason' => 'invalid_second_factor',
                         'authenticator' => 'password',
+                        'trusted_device_invalid' => $trustedDeviceInvalid,
                         'exception' => InvalidSecondFactorException::class,
                     ]);
                 }
@@ -117,13 +127,20 @@ final class PasswordAuthenticator implements AuthenticatorInterface
                 $contextAttributes['amr'] = ['pwd', 'mfa'];
                 $contextAttributes['authentication_strength'] = AuthenticationStrength::MultiFactor->name;
                 $contextAttributes['authentication_assurance_profile'] = 'multi_factor';
-            } elseif ($requiresSecondFactor) {
+            } elseif ($requiresSecondFactor && $trustedDevice === null) {
                 return AuthenticationDecision::rejected([
                     'reason' => 'second_factor_required',
                     'authenticator' => 'password',
+                    'trusted_device_invalid' => $trustedDeviceInvalid,
                     'exception' => SecondFactorRequiredException::class,
                 ]);
             }
+        }
+
+        if ($trustedDevice !== null) {
+            $contextAttributes['trusted_device_credential_present'] = true;
+            $contextAttributes['trusted_device_public_id'] = $trustedDevice->publicId->value;
+            $contextAttributes['session_device_trust_state'] = 'trusted';
         }
 
         return AuthenticationDecision::authenticated(
@@ -143,6 +160,7 @@ final class PasswordAuthenticator implements AuthenticatorInterface
                 'password_needs_rehash' => $needsRehash,
                 'password_rehashed' => $rehashed,
                 'second_factor_satisfied' => $secondFactorSatisfied,
+                'trusted_device_invalid' => $trustedDeviceInvalid,
             ],
         );
     }
@@ -225,5 +243,95 @@ final class PasswordAuthenticator implements AuthenticatorInterface
                 'step_up_satisfied' => true,
             ],
         );
+    }
+
+    private function validatedTrustedDevice(AuthenticationOperationContext $context, IdentityInterface $identity): ?\Quantum\Auth\Devices\TrustedDevice
+    {
+        $credential = $context->request->attribute('trusted_device_credential');
+
+        if (! is_string($credential) || trim($credential) === '') {
+            return null;
+        }
+
+        $parts = explode('.', trim($credential), 2);
+
+        if (count($parts) !== 2) {
+            return null;
+        }
+
+        [$publicId, $secret] = $parts;
+        $publicId = trim($publicId);
+        $secret = trim($secret);
+
+        if ($publicId === '' || $secret === '' || ! str_starts_with($publicId, 'tdv_')) {
+            return null;
+        }
+
+        $trustedDevice = $this->trustedDevices->find($publicId);
+
+        if ($trustedDevice === null || $trustedDevice->isExpired()) {
+            return null;
+        }
+
+        $expectedReference = new IdentityReference($identity->identifier(), $identity->type());
+
+        if (
+            $trustedDevice->reference->type !== $expectedReference->type
+            || $trustedDevice->reference->identifier->value !== $expectedReference->identifier->value
+            || $trustedDevice->deviceReference !== $this->deviceReference($context, $expectedReference)
+        ) {
+            return null;
+        }
+
+        $credentialHash = $trustedDevice->attributes['credential_hash'] ?? null;
+
+        if (! is_string($credentialHash) || ! hash_equals($credentialHash, $this->hashTrustedDeviceSecret($secret))) {
+            return null;
+        }
+
+        return $trustedDevice;
+    }
+
+    private function deviceReference(AuthenticationOperationContext $context, IdentityReference $reference): ?string
+    {
+        $fingerprintParts = array_filter([
+            strtolower(trim((string) $context->request->attribute('trusted_device_host', ''))),
+            strtolower(trim((string) $context->request->attribute('trusted_device_user_agent', ''))),
+            strtolower(trim((string) $context->request->attribute('trusted_device_accept_language', ''))),
+            strtolower($reference->identifier->value),
+            strtolower($reference->type),
+        ], static fn (string $value): bool => $value !== '');
+
+        if ($fingerprintParts === []) {
+            return null;
+        }
+
+        return 'devref_' . substr(hash_hmac(
+            'sha256',
+            implode('|', $fingerprintParts),
+            $this->deviceReferenceSalt(),
+        ), 0, 20);
+    }
+
+    private function hashTrustedDeviceSecret(string $secret): string
+    {
+        return hash_hmac('sha256', $secret, $this->deviceReferenceSalt());
+    }
+
+    private function deviceReferenceSalt(): string
+    {
+        $configured = $this->config->get('auth.session.device.reference_salt');
+
+        if (is_string($configured) && trim($configured) !== '') {
+            return trim($configured);
+        }
+
+        $appKey = $this->config->get('app.key');
+
+        if (is_string($appKey) && trim($appKey) !== '') {
+            return trim($appKey);
+        }
+
+        return 'voltstack-auth-device-reference';
     }
 }

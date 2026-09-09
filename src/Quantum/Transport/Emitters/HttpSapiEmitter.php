@@ -19,6 +19,14 @@ final class HttpSapiEmitter implements TransportEmitterInterface
         http_response_code($metadata->status);
 
         foreach ($metadata->headers as $name => $value) {
+            if (is_array($value)) {
+                foreach ($value as $index => $headerValue) {
+                    header($name . ': ' . $headerValue, $index === 0);
+                }
+
+                continue;
+            }
+
             header($name . ': ' . $value, true);
         }
 

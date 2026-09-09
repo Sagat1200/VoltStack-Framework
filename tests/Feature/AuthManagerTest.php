@@ -987,6 +987,10 @@ final class AuthManagerTest extends TestCase
                     'device_reference' => $device->deviceReference,
                     'trust_state' => $device->trustState,
                     'current' => $device->current,
+                    'can_forget' => $device->canForget,
+                    'requires_reauthentication' => $device->requiresReauthentication,
+                    'revocation_scope' => $device->revocationScope,
+                    'revocation_mode' => $device->revocationMode,
                     'label' => $device->label,
                     'client_platform' => $device->clientPlatform,
                     'device_kind' => $device->deviceKind,
@@ -1031,6 +1035,10 @@ final class AuthManagerTest extends TestCase
         self::assertSame($session['device_reference'] ?? null, $trustedDevice['device_reference'] ?? null);
         self::assertSame('trusted', $trustedDevice['trust_state'] ?? null);
         self::assertTrue((bool) ($trustedDevice['current'] ?? false));
+        self::assertTrue((bool) ($trustedDevice['can_forget'] ?? false));
+        self::assertFalse((bool) ($trustedDevice['requires_reauthentication'] ?? true));
+        self::assertSame('current', $trustedDevice['revocation_scope'] ?? null);
+        self::assertSame('direct', $trustedDevice['revocation_mode'] ?? null);
         self::assertSame('Office Laptop', $trustedDevice['label'] ?? null);
         self::assertSame('Windows', $trustedDevice['client_platform'] ?? null);
         self::assertSame('desktop', $trustedDevice['device_kind'] ?? null);
@@ -1129,6 +1137,24 @@ final class AuthManagerTest extends TestCase
 
         self::assertTrue($postMfaPayload['trusted']);
 
+        $repository = $app->make(AuthenticationSessionRepositoryInterface::class);
+        $currentSession = $repository->find($elevatedSessionId);
+
+        self::assertInstanceOf(AuthenticationSession::class, $currentSession);
+
+        $attributes = $currentSession->attributes;
+        $attributes['authentication_fresh_at'] = time() - 601;
+
+        $repository->touch(new AuthenticationSession(
+            id: $currentSession->id,
+            identity: $currentSession->identity,
+            reference: $currentSession->reference,
+            method: $currentSession->method,
+            issuedAt: $currentSession->issuedAt,
+            expiresAt: $currentSession->expiresAt,
+            attributes: $attributes,
+        ));
+
         $forgetResponse = $kernel->handle(Request::create(
             '/trusted-step-up-forget',
             'POST',
@@ -1144,6 +1170,177 @@ final class AuthManagerTest extends TestCase
         self::assertTrue($forgetPayload['forgotten']);
         self::assertSame('unknown', $forgetPayload['current_trust_state'] ?? null);
         self::assertSame(0, $forgetPayload['trusted_devices_count'] ?? null);
+    }
+
+    public function test_auth_manager_requires_fresh_authentication_to_forget_remote_trusted_devices(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 46,
+                'identifier' => 'trusted-remote-forget@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+            ],
+        ]);
+        $app->make(ConfigRepository::class)->set('auth.trusted_devices.management.fresh_auth_window', 300);
+
+        $router = $app->make(Router::class);
+        $router->post('/trusted-remote-forget-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'trusted-remote-forget@example.com',
+                'password' => 'secret-123',
+                'second_factor' => '654321',
+            ])];
+        });
+        $router->post('/trusted-remote-forget-enroll', function (): array {
+            return ['trusted' => auth()->trustCurrentDevice()];
+        });
+        $router->get('/trusted-remote-forget-inventory', function (): array {
+            return [
+                'trusted_devices' => array_map(static fn ($device): array => [
+                    'public_id' => $device->publicId,
+                    'current' => $device->current,
+                    'can_forget' => $device->canForget,
+                    'requires_reauthentication' => $device->requiresReauthentication,
+                    'revocation_scope' => $device->revocationScope,
+                    'revocation_mode' => $device->revocationMode,
+                ], auth()->trustedDevices()),
+            ];
+        });
+        $router->post('/trusted-remote-forget', function (): array {
+            $target = null;
+
+            foreach (auth()->trustedDevices() as $device) {
+                if (! $device->current) {
+                    $target = $device;
+                    break;
+                }
+            }
+
+            return [
+                'forgotten' => $target !== null ? auth()->forgetTrustedDevice($target->publicId) : false,
+            ];
+        });
+
+        $kernel = $app->make(HttpKernel::class);
+        $firstLogin = $kernel->handle(Request::create(
+            '/trusted-remote-forget-login',
+            'POST',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.60',
+            ],
+        ));
+        $firstSessionId = $firstLogin->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($firstSessionId);
+
+        $firstEnroll = $kernel->handle(Request::create(
+            '/trusted-remote-forget-enroll',
+            'POST',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $firstSessionId],
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.60',
+            ],
+        ));
+        $firstEnrollPayload = json_decode($firstEnroll->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertTrue($firstEnrollPayload['trusted']);
+
+        $secondLogin = $kernel->handle(Request::create(
+            '/trusted-remote-forget-login',
+            'POST',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.61',
+            ],
+        ));
+        $secondSessionId = $secondLogin->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($secondSessionId);
+
+        $secondEnroll = $kernel->handle(Request::create(
+            '/trusted-remote-forget-enroll',
+            'POST',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $secondSessionId],
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.61',
+            ],
+        ));
+        $secondEnrollPayload = json_decode($secondEnroll->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertTrue($secondEnrollPayload['trusted']);
+
+        $repository = $app->make(AuthenticationSessionRepositoryInterface::class);
+        $currentSession = $repository->find($secondSessionId);
+
+        self::assertInstanceOf(AuthenticationSession::class, $currentSession);
+
+        $attributes = $currentSession->attributes;
+        $attributes['authentication_fresh_at'] = time() - 601;
+
+        $repository->touch(new AuthenticationSession(
+            id: $currentSession->id,
+            identity: $currentSession->identity,
+            reference: $currentSession->reference,
+            method: $currentSession->method,
+            issuedAt: $currentSession->issuedAt,
+            expiresAt: $currentSession->expiresAt,
+            attributes: $attributes,
+        ));
+
+        $inventoryResponse = $kernel->handle(Request::create(
+            '/trusted-remote-forget-inventory',
+            'GET',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $secondSessionId],
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.61',
+            ],
+        ));
+        $inventoryPayload = json_decode($inventoryResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+        $trustedDevices = $inventoryPayload['trusted_devices'] ?? [];
+        $current = array_values(array_filter($trustedDevices, static fn (array $device): bool => (bool) ($device['current'] ?? false)))[0] ?? null;
+        $remote = array_values(array_filter($trustedDevices, static fn (array $device): bool => ! (bool) ($device['current'] ?? false)))[0] ?? null;
+
+        self::assertIsArray($current);
+        self::assertIsArray($remote);
+        self::assertTrue((bool) ($current['can_forget'] ?? false));
+        self::assertFalse((bool) ($current['requires_reauthentication'] ?? true));
+        self::assertSame('current', $current['revocation_scope'] ?? null);
+        self::assertSame('direct', $current['revocation_mode'] ?? null);
+        self::assertTrue((bool) ($remote['can_forget'] ?? false));
+        self::assertTrue((bool) ($remote['requires_reauthentication'] ?? false));
+        self::assertSame('peer', $remote['revocation_scope'] ?? null);
+        self::assertSame('fresh_auth_required', $remote['revocation_mode'] ?? null);
+
+        $forgetResponse = $kernel->handle(Request::create(
+            '/trusted-remote-forget',
+            'POST',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $secondSessionId],
+            server: [
+                'HTTP_ACCEPT' => 'application/json',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.61',
+            ],
+        ));
+        $forgetPayload = json_decode($forgetResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(403, $forgetResponse->statusCode());
+        self::assertSame('auth.fresh_authentication_required', $forgetPayload['reason_code'] ?? null);
+        self::assertSame('trusted_device_revocation', $forgetPayload['operation'] ?? null);
+        self::assertSame('required', $forgetResponse->headers()['X-Auth-Reauthenticate'] ?? null);
+        self::assertSame('300', $forgetResponse->headers()['X-Auth-Fresh-Window'] ?? null);
     }
 
     public function test_auth_manager_can_issue_trusted_device_cookie_alongside_session_cookie_and_reduce_mfa_challenge(): void
@@ -1227,6 +1424,10 @@ final class AuthManagerTest extends TestCase
             ],
         ));
         $payload = json_decode($passwordOnlyResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+        $rotatedTrustedDeviceCredential = $this->extractCookieValue(
+            $passwordOnlyResponse->headers()['Set-Cookie'] ?? null,
+            AuthenticationHttpState::TRUSTED_DEVICE_COOKIE_NAME,
+        );
 
         self::assertTrue($payload['ok']);
         self::assertSame('Password', $payload['strength'] ?? null);
@@ -1235,6 +1436,12 @@ final class AuthManagerTest extends TestCase
         self::assertSame('trusted', $payload['device_trust_state'] ?? null);
         self::assertIsString($payload['trusted_device_public_id'] ?? null);
         self::assertStringStartsWith('tdv_', $payload['trusted_device_public_id'] ?? '');
+        self::assertIsString($rotatedTrustedDeviceCredential);
+        self::assertNotSame($trustedDeviceCredential, $rotatedTrustedDeviceCredential);
+        self::assertSame(
+            strtok($trustedDeviceCredential, '.'),
+            strtok($rotatedTrustedDeviceCredential, '.'),
+        );
     }
 
     public function test_auth_manager_does_not_reduce_mfa_challenge_when_trusted_device_cookie_fingerprint_changes(): void
@@ -1317,6 +1524,127 @@ final class AuthManagerTest extends TestCase
         self::assertSame(401, $response->statusCode());
         self::assertSame('Second factor verification is required.', $payload['message'] ?? null);
         self::assertSame('auth.second_factor_required', $response->headers()['X-Volt-Error-Code'] ?? null);
+        self::assertTrue($clearedCookie);
+    }
+
+    public function test_auth_manager_revokes_trusted_device_when_previous_rotated_cookie_is_replayed(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 45,
+                'identifier' => 'trusted-cookie-replay@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'mfa_required' => true,
+                'type' => 'user',
+            ],
+        ]);
+
+        $router = $app->make(Router::class);
+        $router->post('/trusted-cookie-replay-enroll', function (): array {
+            auth()->attemptOrFail([
+                'identifier' => 'trusted-cookie-replay@example.com',
+                'password' => 'secret-123',
+                'second_factor' => '654321',
+            ]);
+
+            return [
+                'trusted' => auth()->trustCurrentDevice('Replay test laptop'),
+            ];
+        });
+        $router->post('/trusted-cookie-replay-login', function (): array {
+            return [
+                'ok' => auth()->attempt([
+                    'identifier' => 'trusted-cookie-replay@example.com',
+                    'password' => 'secret-123',
+                ]),
+            ];
+        });
+        $router->get('/trusted-cookie-replay-state', function (): array {
+            return [
+                'check' => auth()->check(),
+                'current_trust_state' => auth()->currentSession()?->deviceTrustState,
+                'trusted_devices_count' => count(auth()->trustedDevices()),
+                'trusted_device_public_id' => auth()->context()?->trustedDevicePublicId(),
+            ];
+        });
+
+        $kernel = $app->make(HttpKernel::class);
+        $enrollResponse = $kernel->handle(Request::create(
+            '/trusted-cookie-replay-enroll',
+            'POST',
+            server: [
+                'HTTP_HOST' => 'voltstack.test',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.45',
+            ],
+        ));
+        $initialTrustedDeviceCredential = $this->extractCookieValue(
+            $enrollResponse->headers()['Set-Cookie'] ?? null,
+            AuthenticationHttpState::TRUSTED_DEVICE_COOKIE_NAME,
+        );
+
+        self::assertIsString($initialTrustedDeviceCredential);
+
+        $loginResponse = $kernel->handle(Request::create(
+            '/trusted-cookie-replay-login',
+            'POST',
+            cookies: [
+                AuthenticationHttpState::TRUSTED_DEVICE_COOKIE_NAME => $initialTrustedDeviceCredential,
+            ],
+            server: [
+                'HTTP_HOST' => 'voltstack.test',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.45',
+            ],
+        ));
+        $sessionId = $this->extractCookieValue(
+            $loginResponse->headers()['Set-Cookie'] ?? null,
+            AuthenticationHttpState::SESSION_COOKIE_NAME,
+        );
+        $rotatedTrustedDeviceCredential = $this->extractCookieValue(
+            $loginResponse->headers()['Set-Cookie'] ?? null,
+            AuthenticationHttpState::TRUSTED_DEVICE_COOKIE_NAME,
+        );
+
+        self::assertIsString($sessionId);
+        self::assertIsString($rotatedTrustedDeviceCredential);
+        self::assertNotSame($initialTrustedDeviceCredential, $rotatedTrustedDeviceCredential);
+
+        $replayResponse = $kernel->handle(Request::create(
+            '/trusted-cookie-replay-state',
+            'GET',
+            cookies: [
+                AuthenticationHttpState::SESSION_COOKIE_NAME => $sessionId,
+                AuthenticationHttpState::TRUSTED_DEVICE_COOKIE_NAME => $initialTrustedDeviceCredential,
+            ],
+            server: [
+                'HTTP_HOST' => 'voltstack.test',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.45',
+            ],
+        ));
+        $replayPayload = json_decode($replayResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+        $setCookieHeader = $replayResponse->headers()['Set-Cookie'] ?? null;
+        $setCookieValues = is_array($setCookieHeader) ? $setCookieHeader : (is_string($setCookieHeader) ? [$setCookieHeader] : []);
+        $clearedCookie = false;
+
+        foreach ($setCookieValues as $value) {
+            if (str_contains($value, AuthenticationHttpState::TRUSTED_DEVICE_COOKIE_NAME . '=') && str_contains($value, 'Max-Age=0')) {
+                $clearedCookie = true;
+                break;
+            }
+        }
+
+        self::assertSame(200, $replayResponse->statusCode());
+        self::assertTrue($replayPayload['check']);
+        self::assertSame('unknown', $replayPayload['current_trust_state'] ?? null);
+        self::assertSame(0, $replayPayload['trusted_devices_count'] ?? null);
+        self::assertNull($replayPayload['trusted_device_public_id'] ?? null);
         self::assertTrue($clearedCookie);
     }
 

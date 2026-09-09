@@ -1648,6 +1648,273 @@ final class AuthManagerTest extends TestCase
         self::assertTrue($clearedCookie);
     }
 
+    public function test_auth_manager_devices_inventory_aggregates_sessions_and_trusted_devices_by_device_reference(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 47,
+                'identifier' => 'device-center@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+            ],
+        ]);
+
+        $router = $app->make(Router::class);
+        $router->post('/device-center-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'device-center@example.com',
+                'password' => 'secret-123',
+                'second_factor' => '654321',
+            ])];
+        });
+        $router->post('/device-center-enroll', function (): array {
+            return ['trusted' => auth()->trustCurrentDevice('Current work laptop')];
+        });
+        $router->get('/device-center-inventory', function (): array {
+            return [
+                'devices' => array_map(static fn ($device): array => [
+                    'device_reference' => $device->deviceReference,
+                    'trust_state' => $device->trustState,
+                    'session_count' => $device->sessionCount,
+                    'current_session_count' => $device->currentSessionCount,
+                    'current' => $device->current,
+                    'has_trusted_device' => $device->hasTrustedDevice,
+                    'trusted_device_public_id' => $device->trustedDevicePublicId,
+                    'session_public_ids' => $device->sessionPublicIds,
+                    'can_revoke_sessions' => $device->canRevokeSessions,
+                    'can_forget_trusted_device' => $device->canForgetTrustedDevice,
+                    'requires_reauthentication' => $device->requiresReauthentication,
+                    'management_scope' => $device->managementScope,
+                    'management_mode' => $device->managementMode,
+                    'client_platform' => $device->clientPlatform,
+                    'device_kind' => $device->deviceKind,
+                ], auth()->devices()),
+            ];
+        });
+
+        $kernel = $app->make(HttpKernel::class);
+        $firstLogin = $kernel->handle(Request::create(
+            '/device-center-login',
+            'POST',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.70',
+            ],
+        ));
+        $firstSessionId = $firstLogin->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($firstSessionId);
+
+        $secondLogin = $kernel->handle(Request::create(
+            '/device-center-login',
+            'POST',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.71',
+            ],
+        ));
+        $secondSessionId = $secondLogin->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($secondSessionId);
+
+        $enrollResponse = $kernel->handle(Request::create(
+            '/device-center-enroll',
+            'POST',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $secondSessionId],
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.71',
+            ],
+        ));
+        $enrollPayload = json_decode($enrollResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertTrue($enrollPayload['trusted']);
+
+        $inventoryResponse = $kernel->handle(Request::create(
+            '/device-center-inventory',
+            'GET',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $secondSessionId],
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.71',
+            ],
+        ));
+        $inventoryPayload = json_decode($inventoryResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+        $devices = $inventoryPayload['devices'] ?? [];
+
+        self::assertCount(2, $devices);
+
+        $current = array_values(array_filter($devices, static fn (array $device): bool => (bool) ($device['current'] ?? false)))[0] ?? null;
+        $remote = array_values(array_filter($devices, static fn (array $device): bool => ! (bool) ($device['current'] ?? false)))[0] ?? null;
+
+        self::assertIsArray($current);
+        self::assertIsArray($remote);
+
+        self::assertSame('trusted', $current['trust_state'] ?? null);
+        self::assertSame(1, $current['session_count'] ?? null);
+        self::assertSame(1, $current['current_session_count'] ?? null);
+        self::assertTrue((bool) ($current['has_trusted_device'] ?? false));
+        self::assertIsString($current['trusted_device_public_id'] ?? null);
+        self::assertStringStartsWith('tdv_', $current['trusted_device_public_id'] ?? '');
+        self::assertCount(1, $current['session_public_ids'] ?? []);
+        self::assertTrue((bool) ($current['can_revoke_sessions'] ?? false));
+        self::assertTrue((bool) ($current['can_forget_trusted_device'] ?? false));
+        self::assertFalse((bool) ($current['requires_reauthentication'] ?? true));
+        self::assertSame('current', $current['management_scope'] ?? null);
+        self::assertSame('direct', $current['management_mode'] ?? null);
+        self::assertSame('Windows', $current['client_platform'] ?? null);
+        self::assertSame('desktop', $current['device_kind'] ?? null);
+
+        self::assertSame('unknown', $remote['trust_state'] ?? null);
+        self::assertSame(1, $remote['session_count'] ?? null);
+        self::assertSame(0, $remote['current_session_count'] ?? null);
+        self::assertFalse((bool) ($remote['has_trusted_device'] ?? true));
+        self::assertNull($remote['trusted_device_public_id'] ?? null);
+        self::assertCount(1, $remote['session_public_ids'] ?? []);
+        self::assertTrue((bool) ($remote['can_revoke_sessions'] ?? false));
+        self::assertFalse((bool) ($remote['can_forget_trusted_device'] ?? true));
+        self::assertFalse((bool) ($remote['requires_reauthentication'] ?? true));
+        self::assertSame('peer', $remote['management_scope'] ?? null);
+        self::assertSame('direct', $remote['management_mode'] ?? null);
+        self::assertSame('macOS', $remote['client_platform'] ?? null);
+        self::assertSame('desktop', $remote['device_kind'] ?? null);
+    }
+
+    public function test_auth_manager_devices_inventory_reads_shared_file_store_across_app_instances(): void
+    {
+        $sharedRoot = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-auth-shared-' . bin2hex(random_bytes(8));
+        $identityConfig = [
+            [
+                'id' => 48,
+                'identifier' => 'shared-device-center@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+            ],
+        ];
+
+        $firstApp = new Application($sharedRoot);
+        $firstApp->make(ConfigRepository::class)->set('auth.providers.local.identities', $identityConfig);
+        $firstApp->make(ConfigRepository::class)->set('auth.session.driver', 'file');
+        $firstApp->make(ConfigRepository::class)->set('auth.trusted_devices.driver', 'file');
+        $firstRouter = $firstApp->make(Router::class);
+        $firstRouter->post('/shared-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'shared-device-center@example.com',
+                'password' => 'secret-123',
+                'second_factor' => '654321',
+            ])];
+        });
+        $firstRouter->post('/shared-enroll', function (): array {
+            return ['trusted' => auth()->trustCurrentDevice('Shared Mac')];
+        });
+
+        $secondApp = new Application($sharedRoot);
+        $secondApp->make(ConfigRepository::class)->set('auth.providers.local.identities', $identityConfig);
+        $secondApp->make(ConfigRepository::class)->set('auth.session.driver', 'file');
+        $secondApp->make(ConfigRepository::class)->set('auth.trusted_devices.driver', 'file');
+        $secondRouter = $secondApp->make(Router::class);
+        $secondRouter->post('/shared-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'shared-device-center@example.com',
+                'password' => 'secret-123',
+                'second_factor' => '654321',
+            ])];
+        });
+        $secondRouter->get('/shared-inventory', function (): array {
+            return [
+                'devices' => array_map(static fn ($device): array => [
+                    'device_reference' => $device->deviceReference,
+                    'trust_state' => $device->trustState,
+                    'session_count' => $device->sessionCount,
+                    'current' => $device->current,
+                    'has_trusted_device' => $device->hasTrustedDevice,
+                    'trusted_device_public_id' => $device->trustedDevicePublicId,
+                    'management_scope' => $device->managementScope,
+                ], auth()->devices()),
+            ];
+        });
+
+        $firstKernel = $firstApp->make(HttpKernel::class);
+        $firstLogin = $firstKernel->handle(Request::create(
+            '/shared-login',
+            'POST',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.80',
+            ],
+        ));
+        $firstSessionId = $firstLogin->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($firstSessionId);
+
+        $firstEnroll = $firstKernel->handle(Request::create(
+            '/shared-enroll',
+            'POST',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $firstSessionId],
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.80',
+            ],
+        ));
+        $firstEnrollPayload = json_decode($firstEnroll->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertTrue($firstEnrollPayload['trusted']);
+
+        $secondKernel = $secondApp->make(HttpKernel::class);
+        $secondLogin = $secondKernel->handle(Request::create(
+            '/shared-login',
+            'POST',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.81',
+            ],
+        ));
+        $secondSessionId = $secondLogin->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($secondSessionId);
+
+        $inventoryResponse = $secondKernel->handle(Request::create(
+            '/shared-inventory',
+            'GET',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $secondSessionId],
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.81',
+            ],
+        ));
+        $inventoryPayload = json_decode($inventoryResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+        $devices = $inventoryPayload['devices'] ?? [];
+
+        self::assertCount(2, $devices);
+
+        $current = array_values(array_filter($devices, static fn (array $device): bool => (bool) ($device['current'] ?? false)))[0] ?? null;
+        $remoteTrusted = array_values(array_filter($devices, static fn (array $device): bool => ! (bool) ($device['current'] ?? false) && (bool) ($device['has_trusted_device'] ?? false)))[0] ?? null;
+
+        self::assertIsArray($current);
+        self::assertIsArray($remoteTrusted);
+        self::assertSame(1, $current['session_count'] ?? null);
+        self::assertFalse((bool) ($current['has_trusted_device'] ?? true));
+        self::assertSame('current', $current['management_scope'] ?? null);
+
+        self::assertSame('trusted', $remoteTrusted['trust_state'] ?? null);
+        self::assertSame(1, $remoteTrusted['session_count'] ?? null);
+        self::assertTrue((bool) ($remoteTrusted['has_trusted_device'] ?? false));
+        self::assertIsString($remoteTrusted['trusted_device_public_id'] ?? null);
+        self::assertStringStartsWith('tdv_', $remoteTrusted['trusted_device_public_id'] ?? '');
+        self::assertSame('peer', $remoteTrusted['management_scope'] ?? null);
+    }
+
     public function test_auth_facade_authenticates_and_uses_configured_cookie_name(): void
     {
         $app = new Application(sys_get_temp_dir());

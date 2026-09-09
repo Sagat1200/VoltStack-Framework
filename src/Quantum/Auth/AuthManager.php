@@ -14,6 +14,7 @@ use Quantum\Auth\Context\AuthenticationRequest;
 use Quantum\Auth\Devices\TrustedDevice;
 use Quantum\Auth\Devices\TrustedDeviceCredentialValidationResult;
 use Quantum\Auth\Devices\TrustedDeviceCredentialValidator;
+use Quantum\Auth\Devices\DeviceInventorySummary;
 use Quantum\Auth\Devices\TrustedDevicePublicId;
 use Quantum\Auth\Devices\TrustedDeviceSummary;
 use Quantum\Auth\Exceptions\AuthenticationException;
@@ -438,6 +439,154 @@ final class AuthManager implements AuthenticationManagerInterface
             }
 
             return ($right->lastUsedAt ?? $right->issuedAt) <=> ($left->lastUsedAt ?? $left->issuedAt);
+        });
+
+        return $summaries;
+    }
+
+    public function devices(): array
+    {
+        $context = $this->context();
+
+        if ($context === null) {
+            return [];
+        }
+
+        $entries = [];
+
+        foreach ($this->sessions() as $session) {
+            if ($session->deviceReference === null || trim($session->deviceReference) === '') {
+                continue;
+            }
+
+            $deviceReference = trim($session->deviceReference);
+            $lastSeenAt = $session->lastActivityAt ?? $session->issuedAt;
+
+            if (! isset($entries[$deviceReference])) {
+                $entries[$deviceReference] = [
+                    'device_reference' => $deviceReference,
+                    'trust_state' => $session->deviceTrustState,
+                    'session_count' => 0,
+                    'current_session_count' => 0,
+                    'current' => false,
+                    'has_trusted_device' => false,
+                    'trusted_device_public_id' => null,
+                    'session_public_ids' => [],
+                    'last_seen_at' => $lastSeenAt,
+                    'requires_reauthentication' => false,
+                    'label' => $session->label,
+                    'client_family' => $session->clientFamily,
+                    'client_platform' => $session->clientPlatform,
+                    'device_kind' => $session->deviceKind,
+                ];
+            }
+
+            $entries[$deviceReference]['session_count']++;
+            $entries[$deviceReference]['current_session_count'] += $session->current ? 1 : 0;
+            $entries[$deviceReference]['current'] = $entries[$deviceReference]['current'] || $session->current;
+            $entries[$deviceReference]['requires_reauthentication'] = $entries[$deviceReference]['requires_reauthentication']
+                || (! $session->current && $session->requiresReauthentication);
+            $entries[$deviceReference]['session_public_ids'][] = $session->publicId;
+            $entries[$deviceReference]['last_seen_at'] = max(
+                (int) ($entries[$deviceReference]['last_seen_at'] ?? 0),
+                $lastSeenAt,
+            );
+            $entries[$deviceReference]['label'] = $this->preferredInventoryValue(
+                $entries[$deviceReference]['label'] ?? null,
+                $session->label,
+            );
+            $entries[$deviceReference]['client_family'] = $this->preferredInventoryValue(
+                $entries[$deviceReference]['client_family'] ?? null,
+                $session->clientFamily,
+            );
+            $entries[$deviceReference]['client_platform'] = $this->preferredInventoryValue(
+                $entries[$deviceReference]['client_platform'] ?? null,
+                $session->clientPlatform,
+            );
+            $entries[$deviceReference]['device_kind'] = $this->preferredInventoryValue(
+                $entries[$deviceReference]['device_kind'] ?? null,
+                $session->deviceKind,
+            );
+
+            if ($session->deviceTrustState === 'trusted') {
+                $entries[$deviceReference]['trust_state'] = 'trusted';
+            }
+        }
+
+        foreach ($this->trustedDevices() as $device) {
+            $deviceReference = trim($device->deviceReference);
+
+            if ($deviceReference === '') {
+                continue;
+            }
+
+            $lastSeenAt = $device->lastUsedAt ?? $device->issuedAt;
+
+            if (! isset($entries[$deviceReference])) {
+                $entries[$deviceReference] = [
+                    'device_reference' => $deviceReference,
+                    'trust_state' => $device->trustState,
+                    'session_count' => 0,
+                    'current_session_count' => 0,
+                    'current' => $device->current,
+                    'has_trusted_device' => true,
+                    'trusted_device_public_id' => $device->publicId,
+                    'session_public_ids' => [],
+                    'last_seen_at' => $lastSeenAt,
+                    'requires_reauthentication' => ! $device->current && $device->requiresReauthentication,
+                    'label' => $device->label,
+                    'client_family' => $device->clientFamily,
+                    'client_platform' => $device->clientPlatform,
+                    'device_kind' => $device->deviceKind,
+                ];
+            } else {
+                $entries[$deviceReference]['has_trusted_device'] = true;
+                $entries[$deviceReference]['trusted_device_public_id'] = $device->publicId;
+                $entries[$deviceReference]['current'] = $entries[$deviceReference]['current'] || $device->current;
+                $entries[$deviceReference]['requires_reauthentication'] = $entries[$deviceReference]['requires_reauthentication']
+                    || (! $device->current && $device->requiresReauthentication);
+                $entries[$deviceReference]['last_seen_at'] = max(
+                    (int) ($entries[$deviceReference]['last_seen_at'] ?? 0),
+                    $lastSeenAt,
+                );
+                $entries[$deviceReference]['label'] = $this->preferredInventoryValue(
+                    $entries[$deviceReference]['label'] ?? null,
+                    $device->label,
+                );
+                $entries[$deviceReference]['client_family'] = $this->preferredInventoryValue(
+                    $entries[$deviceReference]['client_family'] ?? null,
+                    $device->clientFamily,
+                );
+                $entries[$deviceReference]['client_platform'] = $this->preferredInventoryValue(
+                    $entries[$deviceReference]['client_platform'] ?? null,
+                    $device->clientPlatform,
+                );
+                $entries[$deviceReference]['device_kind'] = $this->preferredInventoryValue(
+                    $entries[$deviceReference]['device_kind'] ?? null,
+                    $device->deviceKind,
+                );
+            }
+
+            if ($device->trustState === 'trusted') {
+                $entries[$deviceReference]['trust_state'] = 'trusted';
+            }
+        }
+
+        $summaries = array_map(
+            fn (array $entry): DeviceInventorySummary => $this->toDeviceInventorySummary($entry),
+            array_values($entries),
+        );
+
+        usort($summaries, static function (DeviceInventorySummary $left, DeviceInventorySummary $right): int {
+            if ($left->current !== $right->current) {
+                return $left->current ? -1 : 1;
+            }
+
+            if ($left->hasTrustedDevice !== $right->hasTrustedDevice) {
+                return $left->hasTrustedDevice ? -1 : 1;
+            }
+
+            return ($right->lastSeenAt ?? 0) <=> ($left->lastSeenAt ?? 0);
         });
 
         return $summaries;
@@ -1488,6 +1637,82 @@ final class AuthManager implements AuthenticationManagerInterface
 
         return is_string($value) && trim($value) !== ''
             ? trim($value)
+            : null;
+    }
+
+    /**
+     * @param array{
+     *   device_reference: string,
+     *   trust_state: string,
+     *   session_count: int,
+     *   current_session_count: int,
+     *   current: bool,
+     *   has_trusted_device: bool,
+     *   trusted_device_public_id: ?string,
+     *   session_public_ids: list<string>,
+     *   last_seen_at: ?int,
+     *   requires_reauthentication: bool,
+     *   label: ?string,
+     *   client_family: ?string,
+     *   client_platform: ?string,
+     *   device_kind: ?string
+     * } $entry
+     */
+    private function toDeviceInventorySummary(array $entry): DeviceInventorySummary
+    {
+        $scope = $this->deviceInventoryScope(
+            (bool) $entry['current'],
+            (int) $entry['session_count'],
+            (int) $entry['current_session_count'],
+            (bool) $entry['has_trusted_device'],
+        );
+        $requiresReauthentication = (bool) $entry['requires_reauthentication'];
+
+        return new DeviceInventorySummary(
+            deviceReference: $entry['device_reference'],
+            trustState: $entry['trust_state'],
+            sessionCount: $entry['session_count'],
+            currentSessionCount: $entry['current_session_count'],
+            current: $entry['current'],
+            hasTrustedDevice: $entry['has_trusted_device'],
+            trustedDevicePublicId: $entry['trusted_device_public_id'],
+            sessionPublicIds: $entry['session_public_ids'],
+            lastSeenAt: $entry['last_seen_at'],
+            canRevokeSessions: $entry['session_count'] > 0,
+            canForgetTrustedDevice: $entry['has_trusted_device'],
+            requiresReauthentication: $requiresReauthentication,
+            managementScope: $scope,
+            managementMode: $requiresReauthentication ? 'fresh_auth_required' : 'direct',
+            label: $entry['label'],
+            clientFamily: $entry['client_family'],
+            clientPlatform: $entry['client_platform'],
+            deviceKind: $entry['device_kind'],
+        );
+    }
+
+    private function deviceInventoryScope(
+        bool $current,
+        int $sessionCount,
+        int $currentSessionCount,
+        bool $hasTrustedDevice,
+    ): string {
+        $hasRemoteSessions = $sessionCount > $currentSessionCount;
+
+        if ($current && $hasRemoteSessions) {
+            return 'mixed';
+        }
+
+        return $current ? 'current' : 'peer';
+    }
+
+    private function preferredInventoryValue(?string $current, ?string $candidate): ?string
+    {
+        if (is_string($current) && trim($current) !== '') {
+            return trim($current);
+        }
+
+        return is_string($candidate) && trim($candidate) !== ''
+            ? trim($candidate)
             : null;
     }
 

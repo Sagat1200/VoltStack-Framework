@@ -688,6 +688,66 @@ final class AuthManager implements AuthenticationManagerInterface
         return false;
     }
 
+    public function revokeDevice(string $deviceReference): bool
+    {
+        $context = $this->context();
+        $deviceReference = trim($deviceReference);
+
+        if ($context === null || $deviceReference === '') {
+            return false;
+        }
+
+        $sessions = $this->sessionsForDeviceReference($context, $deviceReference);
+        $trustedDevices = $this->trustedDevicesForDeviceReference($context, $deviceReference);
+
+        if ($sessions === [] && $trustedDevices === []) {
+            return false;
+        }
+
+        $currentDeviceReference = $context->deviceReference();
+        $targetsCurrentDevice = $currentDeviceReference !== null && $currentDeviceReference === $deviceReference;
+        $touchesRemoteSessions = false;
+        $touchesRemoteTrustedDevices = ! $targetsCurrentDevice && $trustedDevices !== [];
+        $revokeCurrentSession = false;
+
+        foreach ($sessions as $session) {
+            if ($this->isCurrentSession($context, $session)) {
+                $revokeCurrentSession = true;
+                continue;
+            }
+
+            $touchesRemoteSessions = true;
+        }
+
+        if ($touchesRemoteSessions) {
+            $this->assertFreshAuthenticationForSensitiveSessionOperation($context, 'device_revocation');
+        }
+
+        if ($touchesRemoteTrustedDevices) {
+            $this->assertFreshAuthenticationForSensitiveTrustedDeviceOperation($context, 'device_revocation');
+        }
+
+        foreach ($sessions as $session) {
+            $this->sessions->delete($session->id->value);
+        }
+
+        foreach ($trustedDevices as $trustedDevice) {
+            $this->trustedDeviceRepository->delete($trustedDevice->publicId->value);
+        }
+
+        if ($targetsCurrentDevice && $trustedDevices !== []) {
+            $this->queueTrustedDeviceLogoutCookie();
+        }
+
+        if ($revokeCurrentSession) {
+            $this->clearCurrentAuthenticationStateAfterSessionRevocation();
+        } elseif ($targetsCurrentDevice && $trustedDevices !== []) {
+            $this->synchronizeCurrentSessionTrustState($context, 'unknown');
+        }
+
+        return true;
+    }
+
     public function revokeSession(string $publicId): bool
     {
         $context = $this->context();
@@ -709,11 +769,7 @@ final class AuthManager implements AuthenticationManagerInterface
             $this->sessions->delete($session->id->value);
 
             if ($this->activeSessionId() === $session->id->value) {
-                $this->accessor->clear();
-                $this->rememberRecoveryFailureReason(null);
-                $this->runtimeContext()->set(AuthenticationHttpState::ACTIVE_SESSION_ID_KEY, null);
-                $this->queueLogoutCookie();
-                $this->runtimeContext()->set(AuthenticationHttpState::PENDING_SESSION_HEADER_KEY, 'cleared');
+                $this->clearCurrentAuthenticationStateAfterSessionRevocation();
             }
 
             return true;
@@ -1714,6 +1770,51 @@ final class AuthManager implements AuthenticationManagerInterface
         return is_string($candidate) && trim($candidate) !== ''
             ? trim($candidate)
             : null;
+    }
+
+    /**
+     * @return list<AuthenticationSession>
+     */
+    private function sessionsForDeviceReference(AuthenticationContext $context, string $deviceReference): array
+    {
+        $matches = [];
+
+        foreach ($this->sessions->listForIdentity($context->identity) as $session) {
+            if ($this->stringAttribute($session, 'session_device_reference') !== $deviceReference) {
+                continue;
+            }
+
+            $matches[] = $session;
+        }
+
+        return $matches;
+    }
+
+    /**
+     * @return list<TrustedDevice>
+     */
+    private function trustedDevicesForDeviceReference(AuthenticationContext $context, string $deviceReference): array
+    {
+        $matches = [];
+
+        foreach ($this->trustedDeviceRepository->listForIdentity($context->reference) as $device) {
+            if ($device->deviceReference !== $deviceReference) {
+                continue;
+            }
+
+            $matches[] = $device;
+        }
+
+        return $matches;
+    }
+
+    private function clearCurrentAuthenticationStateAfterSessionRevocation(): void
+    {
+        $this->accessor->clear();
+        $this->rememberRecoveryFailureReason(null);
+        $this->runtimeContext()->set(AuthenticationHttpState::ACTIVE_SESSION_ID_KEY, null);
+        $this->queueLogoutCookie();
+        $this->runtimeContext()->set(AuthenticationHttpState::PENDING_SESSION_HEADER_KEY, 'cleared');
     }
 
     /**

@@ -73,6 +73,8 @@ interface AuthenticationManagerInterface
 
     public function forgetTrustedDevice(string $publicId): bool;
 
+    public function revokeDevice(string $deviceReference): bool;
+
     public function revokeSession(string $publicId): bool;
 
     public function revokeOtherSessions(): int;

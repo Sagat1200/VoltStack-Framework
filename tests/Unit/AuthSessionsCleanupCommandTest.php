@@ -6,6 +6,9 @@ namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
 use Quantum\Auth\Contracts\AuthenticationSessionRepositoryInterface;
+use Quantum\Auth\Contracts\TrustedDeviceRepositoryInterface;
+use Quantum\Auth\Devices\TrustedDevice;
+use Quantum\Auth\Devices\TrustedDevicePublicId;
 use Quantum\Auth\Identity\GenericIdentity;
 use Quantum\Auth\Identity\IdentityIdentifier;
 use Quantum\Auth\Identity\IdentityReference;
@@ -44,6 +47,7 @@ use VoltStack\Framework\Application;
 \$app = new Application({$escapedBasePath});
 \$config = \$app->make(ConfigRepository::class);
 \$config->set('auth.session.driver', 'file');
+\$config->set('auth.trusted_devices.driver', 'file');
 \$config->set('auth.session.cleanup.tombstone_retention', 60);
 
 return \$app;
@@ -63,6 +67,7 @@ PHP
         $seedNow = time();
         $app = $this->bootstrappedApplication();
         $repository = $app->make(AuthenticationSessionRepositoryInterface::class);
+        $trustedDevices = $app->make(TrustedDeviceRepositoryInterface::class);
         $identity = new GenericIdentity(
             identifier: new IdentityIdentifier('501'),
             type: 'user',
@@ -91,6 +96,23 @@ PHP
 
         $repository->delete('session-old-tombstone', AuthenticationSessionRecoveryReason::Revoked);
 
+        $trustedDevices->save(new TrustedDevice(
+            publicId: new TrustedDevicePublicId('tdv_live'),
+            reference: new IdentityReference($identity->identifier(), $identity->type()),
+            deviceReference: 'devref_live',
+            issuedAt: $seedNow,
+            expiresAt: $seedNow + 600,
+            lastUsedAt: $seedNow + 60,
+        ));
+        $trustedDevices->save(new TrustedDevice(
+            publicId: new TrustedDevicePublicId('tdv_expired'),
+            reference: new IdentityReference($identity->identifier(), $identity->type()),
+            deviceReference: 'devref_expired',
+            issuedAt: $seedNow - 600,
+            expiresAt: $seedNow - 1,
+            lastUsedAt: $seedNow - 10,
+        ));
+
         $command = new AuthSessionsCleanupCommand($this->basePath);
         $output = new Output();
 
@@ -109,10 +131,14 @@ PHP
         self::assertNull($repository->find('session-expired'));
         self::assertSame(AuthenticationSessionRecoveryReason::Expired, $repository->findRecoveryReason('session-expired'));
         self::assertNull($repository->findRecoveryReason('session-old-tombstone'));
+        self::assertNotNull($trustedDevices->find('tdv_live'));
+        self::assertNull($trustedDevices->find('tdv_expired'));
         self::assertStringContainsString('Cleanup de Authentication ejecutado correctamente.', $output->stdout());
         self::assertStringContainsString('Sesiones expiradas purgadas: 1', $output->stdout());
+        self::assertStringContainsString('Trusted devices expirados purgados: 1', $output->stdout());
         self::assertStringContainsString('Tombstones purgados: 1', $output->stdout());
         self::assertStringContainsString('Driver activo: file', $output->stdout());
+        self::assertStringContainsString('Driver trusted devices: file', $output->stdout());
     }
 
     private function bootstrappedApplication(): Application

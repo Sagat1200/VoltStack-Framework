@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quantum\Console\Commands;
 
 use Quantum\Auth\Contracts\AuthenticationSessionRepositoryInterface;
+use Quantum\Auth\Contracts\TrustedDeviceRepositoryInterface;
 use Quantum\Console\Command;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
@@ -18,7 +19,7 @@ final class AuthSessionsCleanupCommand extends Command
 
     public function description(): string
     {
-        return 'Purga sesiones expiradas y tombstones de recovery vencidos del subsistema Authentication.';
+        return 'Purga sesiones expiradas, trusted devices vencidos y tombstones de recovery del subsistema Authentication.';
     }
 
     public function usage(): string
@@ -43,16 +44,23 @@ final class AuthSessionsCleanupCommand extends Command
     {
         $app = $this->bootstrapApplication();
         $repository = $app->make(AuthenticationSessionRepositoryInterface::class);
+        $trustedDevices = $app->make(TrustedDeviceRepositoryInterface::class);
         $now = $this->resolveNow($input);
         $expired = $repository->purgeExpired($now);
+        $expiredTrustedDevices = $trustedDevices->purgeExpired($now);
         $tombstones = $repository->purgeRecoveryReasons($now);
 
         if ($input->hasOption('verbose')) {
             $driver = (string) $app->config('auth.session.driver', 'memory');
+            $trustedDeviceDriver = $app->config('auth.trusted_devices.driver', $driver);
+            $trustedDeviceDriver = is_string($trustedDeviceDriver) && trim($trustedDeviceDriver) !== ''
+                ? trim($trustedDeviceDriver)
+                : $driver;
             $retention = $app->config('auth.session.cleanup.tombstone_retention', 604800);
             $retention = is_numeric($retention) ? (int) $retention : 604800;
 
             $output->writeln(sprintf('Driver activo: %s', $driver));
+            $output->writeln(sprintf('Driver trusted devices: %s', $trustedDeviceDriver));
             $output->writeln(sprintf('Retention tombstones: %d segundos', max(0, $retention)));
             $output->writeln(sprintf('Evaluado en: %d', $now ?? time()));
             $output->writeln();
@@ -60,6 +68,7 @@ final class AuthSessionsCleanupCommand extends Command
 
         $output->writeln('Cleanup de Authentication ejecutado correctamente.');
         $output->writeln(sprintf('  Sesiones expiradas purgadas: %d', $expired));
+        $output->writeln(sprintf('  Trusted devices expirados purgados: %d', $expiredTrustedDevices));
         $output->writeln(sprintf('  Tombstones purgados: %d', $tombstones));
 
         return 0;

@@ -2344,6 +2344,248 @@ final class AuthManagerTest extends TestCase
         self::assertSame('auth.revoked_session', $afterPayload['reason_code'] ?? null);
     }
 
+    public function test_auth_manager_can_revoke_other_devices_in_bulk_from_aggregated_inventory(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 52,
+                'identifier' => 'device-bulk-revoke@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+            ],
+        ]);
+
+        $router = $app->make(Router::class);
+        $router->post('/device-bulk-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'device-bulk-revoke@example.com',
+                'password' => 'secret-123',
+                'second_factor' => '654321',
+            ])];
+        });
+        $router->post('/device-bulk-enroll', function (): array {
+            return ['trusted' => auth()->trustCurrentDevice()];
+        });
+        $router->post('/device-bulk-revoke-others', function (): array {
+            return [
+                'revoked' => auth()->revokeOtherDevices(),
+                'remaining_devices' => count(auth()->devices()),
+            ];
+        });
+        $router->get('/device-bulk-protected', function (): array {
+            return ['check' => auth()->check()];
+        })->middleware('auth');
+
+        $kernel = $app->make(HttpKernel::class);
+
+        $firstLogin = $kernel->handle(Request::create(
+            '/device-bulk-login',
+            'POST',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.95',
+            ],
+        ));
+        $firstSessionId = $firstLogin->headers()['X-Auth-Session'] ?? null;
+        self::assertIsString($firstSessionId);
+        $firstEnroll = $kernel->handle(Request::create(
+            '/device-bulk-enroll',
+            'POST',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $firstSessionId],
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.95',
+            ],
+        ));
+        self::assertTrue((json_decode($firstEnroll->content(), true, 512, JSON_THROW_ON_ERROR)['trusted'] ?? false));
+
+        $secondLogin = $kernel->handle(Request::create(
+            '/device-bulk-login',
+            'POST',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (X11; Linux x86_64) Firefox/129.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.96',
+            ],
+        ));
+        $secondSessionId = $secondLogin->headers()['X-Auth-Session'] ?? null;
+        self::assertIsString($secondSessionId);
+
+        $thirdLogin = $kernel->handle(Request::create(
+            '/device-bulk-login',
+            'POST',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.97',
+            ],
+        ));
+        $thirdSessionId = $thirdLogin->headers()['X-Auth-Session'] ?? null;
+        self::assertIsString($thirdSessionId);
+
+        $revokeResponse = $kernel->handle(Request::create(
+            '/device-bulk-revoke-others',
+            'POST',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $thirdSessionId],
+            server: [
+                'HTTP_ACCEPT' => 'application/json',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.97',
+            ],
+        ));
+        $revokePayload = json_decode($revokeResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(200, $revokeResponse->statusCode());
+        self::assertSame(2, $revokePayload['revoked'] ?? null);
+        self::assertSame(1, $revokePayload['remaining_devices'] ?? null);
+
+        $firstProtected = $kernel->handle(Request::create(
+            '/device-bulk-protected',
+            'GET',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $firstSessionId],
+            server: [
+                'HTTP_ACCEPT' => 'application/json',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.95',
+            ],
+        ));
+        self::assertSame(401, $firstProtected->statusCode());
+
+        $secondProtected = $kernel->handle(Request::create(
+            '/device-bulk-protected',
+            'GET',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $secondSessionId],
+            server: [
+                'HTTP_ACCEPT' => 'application/json',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (X11; Linux x86_64) Firefox/129.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.96',
+            ],
+        ));
+        self::assertSame(401, $secondProtected->statusCode());
+
+        $currentProtected = $kernel->handle(Request::create(
+            '/device-bulk-protected',
+            'GET',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $thirdSessionId],
+            server: [
+                'HTTP_ACCEPT' => 'application/json',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.97',
+            ],
+        ));
+        self::assertSame(200, $currentProtected->statusCode());
+    }
+
+    public function test_auth_manager_requires_fresh_authentication_to_revoke_other_devices_in_bulk(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 53,
+                'identifier' => 'device-bulk-fresh@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+            ],
+        ]);
+        $app->make(ConfigRepository::class)->set('auth.session.management.fresh_auth_window', 300);
+        $app->make(ConfigRepository::class)->set('auth.trusted_devices.management.fresh_auth_window', 300);
+
+        $router = $app->make(Router::class);
+        $router->post('/device-bulk-fresh-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'device-bulk-fresh@example.com',
+                'password' => 'secret-123',
+                'second_factor' => '654321',
+            ])];
+        });
+        $router->post('/device-bulk-fresh-enroll', function (): array {
+            return ['trusted' => auth()->trustCurrentDevice()];
+        });
+        $router->post('/device-bulk-fresh-revoke-others', function (): array {
+            return ['revoked' => auth()->revokeOtherDevices()];
+        });
+
+        $kernel = $app->make(HttpKernel::class);
+
+        $firstLogin = $kernel->handle(Request::create(
+            '/device-bulk-fresh-login',
+            'POST',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.98',
+            ],
+        ));
+        $firstSessionId = $firstLogin->headers()['X-Auth-Session'] ?? null;
+        self::assertIsString($firstSessionId);
+
+        $firstEnroll = $kernel->handle(Request::create(
+            '/device-bulk-fresh-enroll',
+            'POST',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $firstSessionId],
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.98',
+            ],
+        ));
+        self::assertTrue((json_decode($firstEnroll->content(), true, 512, JSON_THROW_ON_ERROR)['trusted'] ?? false));
+
+        $secondLogin = $kernel->handle(Request::create(
+            '/device-bulk-fresh-login',
+            'POST',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.99',
+            ],
+        ));
+        $secondSessionId = $secondLogin->headers()['X-Auth-Session'] ?? null;
+        self::assertIsString($secondSessionId);
+
+        $repository = $app->make(AuthenticationSessionRepositoryInterface::class);
+        $currentSession = $repository->find($secondSessionId);
+        self::assertInstanceOf(AuthenticationSession::class, $currentSession);
+        $attributes = $currentSession->attributes;
+        $attributes['authentication_fresh_at'] = time() - 601;
+        $repository->touch(new AuthenticationSession(
+            id: $currentSession->id,
+            identity: $currentSession->identity,
+            reference: $currentSession->reference,
+            method: $currentSession->method,
+            issuedAt: $currentSession->issuedAt,
+            expiresAt: $currentSession->expiresAt,
+            attributes: $attributes,
+        ));
+
+        $revokeResponse = $kernel->handle(Request::create(
+            '/device-bulk-fresh-revoke-others',
+            'POST',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $secondSessionId],
+            server: [
+                'HTTP_ACCEPT' => 'application/json',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.99',
+            ],
+        ));
+        $revokePayload = json_decode($revokeResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(403, $revokeResponse->statusCode());
+        self::assertSame('auth.fresh_authentication_required', $revokePayload['reason_code'] ?? null);
+        self::assertSame('device_revocation_bulk', $revokePayload['operation'] ?? null);
+        self::assertSame('required', $revokeResponse->headers()['X-Auth-Reauthenticate'] ?? null);
+    }
+
     public function test_auth_facade_authenticates_and_uses_configured_cookie_name(): void
     {
         $app = new Application(sys_get_temp_dir());

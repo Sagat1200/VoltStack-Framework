@@ -690,6 +690,50 @@ final class AuthManager implements AuthenticationManagerInterface
 
     public function revokeDevice(string $deviceReference): bool
     {
+        return $this->revokeDeviceInternal($deviceReference, true);
+    }
+
+    public function revokeOtherDevices(): int
+    {
+        $context = $this->context();
+
+        if ($context === null) {
+            return 0;
+        }
+
+        $deviceReferences = [];
+
+        foreach ($this->devices() as $device) {
+            if ($device->current) {
+                continue;
+            }
+
+            $deviceReferences[$device->deviceReference] = true;
+        }
+
+        $count = count($deviceReferences);
+
+        if ($count === 0) {
+            return 0;
+        }
+
+        if ($this->bulkDeviceRevocationTouchesRemoteSessions($context, array_keys($deviceReferences))) {
+            $this->assertFreshAuthenticationForSensitiveSessionOperation($context, 'device_revocation_bulk');
+        }
+
+        if ($this->bulkDeviceRevocationTouchesRemoteTrustedDevices($context, array_keys($deviceReferences))) {
+            $this->assertFreshAuthenticationForSensitiveTrustedDeviceOperation($context, 'device_revocation_bulk');
+        }
+
+        foreach (array_keys($deviceReferences) as $deviceReference) {
+            $this->revokeDeviceInternal($deviceReference, false);
+        }
+
+        return $count;
+    }
+
+    private function revokeDeviceInternal(string $deviceReference, bool $enforceFreshAuthentication): bool
+    {
         $context = $this->context();
         $deviceReference = trim($deviceReference);
 
@@ -719,11 +763,11 @@ final class AuthManager implements AuthenticationManagerInterface
             $touchesRemoteSessions = true;
         }
 
-        if ($touchesRemoteSessions) {
+        if ($enforceFreshAuthentication && $touchesRemoteSessions) {
             $this->assertFreshAuthenticationForSensitiveSessionOperation($context, 'device_revocation');
         }
 
-        if ($touchesRemoteTrustedDevices) {
+        if ($enforceFreshAuthentication && $touchesRemoteTrustedDevices) {
             $this->assertFreshAuthenticationForSensitiveTrustedDeviceOperation($context, 'device_revocation');
         }
 
@@ -1815,6 +1859,44 @@ final class AuthManager implements AuthenticationManagerInterface
         $this->runtimeContext()->set(AuthenticationHttpState::ACTIVE_SESSION_ID_KEY, null);
         $this->queueLogoutCookie();
         $this->runtimeContext()->set(AuthenticationHttpState::PENDING_SESSION_HEADER_KEY, 'cleared');
+    }
+
+    /**
+     * @param list<string> $deviceReferences
+     */
+    private function bulkDeviceRevocationTouchesRemoteSessions(
+        AuthenticationContext $context,
+        array $deviceReferences,
+    ): bool {
+        foreach ($deviceReferences as $deviceReference) {
+            $sessions = $this->sessionsForDeviceReference($context, $deviceReference);
+
+            foreach ($sessions as $session) {
+                if (! $this->isCurrentSession($context, $session)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param list<string> $deviceReferences
+     */
+    private function bulkDeviceRevocationTouchesRemoteTrustedDevices(
+        AuthenticationContext $context,
+        array $deviceReferences,
+    ): bool {
+        foreach ($deviceReferences as $deviceReference) {
+            $trustedDevices = $this->trustedDevicesForDeviceReference($context, $deviceReference);
+
+            if ($trustedDevices !== []) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

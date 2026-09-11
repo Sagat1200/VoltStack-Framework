@@ -18,6 +18,11 @@ interface TrustedDeviceRepositoryInterface
      */
     public function listForIdentity(IdentityReference $reference, ?int $now = null): array;
 
+    /**
+     * @return list<TrustedDevice>
+     */
+    public function all(?int $now = null): array;
+
     public function findActiveForIdentityAndDevice(
         IdentityReference $reference,
         string $deviceReference,

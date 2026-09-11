@@ -71,6 +71,23 @@ final class FileTrustedDeviceRepository implements TrustedDeviceRepositoryInterf
         return $devices;
     }
 
+    public function all(?int $now = null): array
+    {
+        $devices = [];
+
+        foreach ($this->deviceFiles() as $file) {
+            $device = $this->decode(null, $file);
+
+            if ($device === null || $device->isExpired($now)) {
+                continue;
+            }
+
+            $devices[] = $device;
+        }
+
+        return $devices;
+    }
+
     public function findActiveForIdentityAndDevice(
         IdentityReference $reference,
         string $deviceReference,

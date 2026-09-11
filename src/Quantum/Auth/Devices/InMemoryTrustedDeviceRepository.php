@@ -34,6 +34,14 @@ final class InMemoryTrustedDeviceRepository implements TrustedDeviceRepositoryIn
         ));
     }
 
+    public function all(?int $now = null): array
+    {
+        return array_values(array_filter(
+            $this->devices,
+            static fn (TrustedDevice $device): bool => ! $device->isExpired($now),
+        ));
+    }
+
     public function findActiveForIdentityAndDevice(
         IdentityReference $reference,
         string $deviceReference,

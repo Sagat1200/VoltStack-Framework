@@ -112,6 +112,30 @@ final class FileAuthenticationSessionRepository implements AuthenticationSession
         return $sessions;
     }
 
+    public function all(): array
+    {
+        $sessions = [];
+
+        foreach ($this->sessionFiles() as $file) {
+            $payload = file_get_contents($file);
+
+            if (! is_string($payload) || trim($payload) === '') {
+                continue;
+            }
+
+            /** @var array<string, mixed> $data */
+            $data = json_decode($payload, true, 512, JSON_THROW_ON_ERROR);
+            $sessionId = (string) ($data['id'] ?? '');
+            $session = $sessionId !== '' ? $this->find($sessionId) : null;
+
+            if ($session !== null) {
+                $sessions[] = $session;
+            }
+        }
+
+        return $sessions;
+    }
+
     public function delete(
         string $sessionId,
         AuthenticationSessionRecoveryReason $reason = AuthenticationSessionRecoveryReason::Revoked,

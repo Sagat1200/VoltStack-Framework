@@ -19,6 +19,11 @@ interface AuthenticationSessionRepositoryInterface
      */
     public function listForIdentity(IdentityInterface $identity): array;
 
+    /**
+     * @return list<AuthenticationSession>
+     */
+    public function all(): array;
+
     public function delete(string $sessionId, AuthenticationSessionRecoveryReason $reason = AuthenticationSessionRecoveryReason::Revoked): void;
 
     public function deleteForIdentity(

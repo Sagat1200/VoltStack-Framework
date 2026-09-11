@@ -42,6 +42,11 @@ final class InMemoryAuthenticationSessionRepository implements AuthenticationSes
         ));
     }
 
+    public function all(): array
+    {
+        return array_values($this->sessions);
+    }
+
     public function delete(
         string $sessionId,
         AuthenticationSessionRecoveryReason $reason = AuthenticationSessionRecoveryReason::Revoked,

@@ -24,6 +24,8 @@ final readonly class DeviceInventorySummary
         public bool $requiresReauthentication = false,
         public string $managementScope = 'current',
         public string $managementMode = 'direct',
+        public string $managementSensitivity = 'standard',
+        public string $managementReasonCode = 'current_device_management',
         public ?string $label = null,
         public ?string $clientFamily = null,
         public ?string $clientPlatform = null,

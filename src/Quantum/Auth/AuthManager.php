@@ -1767,6 +1767,17 @@ final class AuthManager implements AuthenticationManagerInterface
             (bool) $entry['has_trusted_device'],
         );
         $requiresReauthentication = (bool) $entry['requires_reauthentication'];
+        $managementSensitivity = ($requiresReauthentication || $scope !== 'current')
+            ? 'elevated'
+            : 'standard';
+        $managementReasonCode = $requiresReauthentication
+            ? 'fresh_authentication_required'
+            : match ($scope) {
+                'peer', 'mixed' => 'remote_device_management',
+                default => ((bool) $entry['has_trusted_device'])
+                    ? 'trusted_device_management'
+                    : 'current_device_management',
+            };
 
         return new DeviceInventorySummary(
             deviceReference: $entry['device_reference'],
@@ -1783,6 +1794,8 @@ final class AuthManager implements AuthenticationManagerInterface
             requiresReauthentication: $requiresReauthentication,
             managementScope: $scope,
             managementMode: $requiresReauthentication ? 'fresh_auth_required' : 'direct',
+            managementSensitivity: $managementSensitivity,
+            managementReasonCode: $managementReasonCode,
             label: $entry['label'],
             clientFamily: $entry['client_family'],
             clientPlatform: $entry['client_platform'],

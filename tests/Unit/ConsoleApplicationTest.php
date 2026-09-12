@@ -169,6 +169,28 @@ final class ConsoleApplicationTest extends TestCase
         self::assertStringContainsString('view:cache', $output->stdout());
     }
 
+    public function test_it_registers_security_center_report_in_default_console_commands(): void
+    {
+        $basePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-console-defaults-' . uniqid('', true);
+        mkdir($basePath);
+
+        try {
+            $output = new Output();
+            $application = new ConsoleApplication($basePath, [], $output);
+
+            $exitCode = $application->run([
+                'volt',
+            ]);
+
+            self::assertSame(0, $exitCode);
+            self::assertStringContainsString('auth:security-center:report', $output->stdout());
+        } finally {
+            if (is_dir($basePath)) {
+                rmdir($basePath);
+            }
+        }
+    }
+
     private function application(Output $output): ConsoleApplication
     {
         return new ConsoleApplication(

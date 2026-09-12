@@ -184,6 +184,7 @@ final class ConsoleApplicationTest extends TestCase
 
             self::assertSame(0, $exitCode);
             self::assertStringContainsString('auth:security-center:report', $output->stdout());
+            self::assertStringContainsString('auth:security-center:revoke-device', $output->stdout());
         } finally {
             if (is_dir($basePath)) {
                 rmdir($basePath);

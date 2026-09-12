@@ -198,6 +198,8 @@ final class AuthDomainModelTest extends TestCase
             'identity_session_management',
             'identity_device_management',
         ], $context->managementScopes());
+        self::assertSame('self_service_defaults', $context->managementClaimsSource());
+        self::assertSame('self_service', $context->managementPrivilegeLevel());
     }
 
     public function test_authentication_context_exposes_explicit_management_claim_overrides(): void
@@ -220,6 +222,8 @@ final class AuthDomainModelTest extends TestCase
                     'identity_device_management',
                     'identity_session_management',
                 ],
+                'auth_management_claims_source' => 'runtime_override',
+                'auth_management_privilege_level' => 'delegated_support',
             ],
         );
 
@@ -229,6 +233,44 @@ final class AuthDomainModelTest extends TestCase
             'identity_device_management',
             'identity_session_management',
         ], $context->managementScopes());
+        self::assertSame('runtime_override', $context->managementClaimsSource());
+        self::assertSame('delegated_support', $context->managementPrivilegeLevel());
+    }
+
+    public function test_authentication_context_falls_back_to_identity_attributes_for_privileged_management_claims(): void
+    {
+        $identity = new GenericIdentity(
+            identifier: new IdentityIdentifier('91'),
+            type: 'user',
+            attributes: [
+                'name' => 'Ops Admin',
+                'auth_management_authority' => 'administrative_actor',
+                'auth_management_ownership_proof' => 'privileged_session',
+                'auth_management_scopes' => [
+                    'security_center_export',
+                    'admin_device_management',
+                ],
+                'auth_management_claims_source' => 'identity_attributes',
+                'auth_management_privilege_level' => 'privileged_admin',
+            ],
+        );
+
+        $context = new AuthenticationContext(
+            identity: $identity,
+            reference: new IdentityReference($identity->identifier(), $identity->type()),
+            requestId: 'req-9',
+            method: 'password',
+            attributes: [],
+        );
+
+        self::assertSame('administrative_actor', $context->managementAuthority());
+        self::assertSame('privileged_session', $context->managementOwnershipProof());
+        self::assertSame([
+            'security_center_export',
+            'admin_device_management',
+        ], $context->managementScopes());
+        self::assertSame('identity_attributes', $context->managementClaimsSource());
+        self::assertSame('privileged_admin', $context->managementPrivilegeLevel());
     }
 
 

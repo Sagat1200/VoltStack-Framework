@@ -214,6 +214,8 @@ final class ControllerSecurityContextFactory implements ControllerSecurityContex
             'management_authority' => $context->managementAuthority(),
             'management_ownership_proof' => $context->managementOwnershipProof(),
             'management_scopes' => $context->managementScopes(),
+            'management_claims_source' => $context->managementClaimsSource(),
+            'management_privilege_level' => $context->managementPrivilegeLevel(),
         ];
 
         foreach ([
@@ -250,6 +252,8 @@ final class ControllerSecurityContextFactory implements ControllerSecurityContex
             'auth_management_authority' => $context->managementAuthority(),
             'auth_management_ownership_proof' => $context->managementOwnershipProof(),
             'auth_management_scopes' => $context->managementScopes(),
+            'auth_management_claims_source' => $context->managementClaimsSource(),
+            'auth_management_privilege_level' => $context->managementPrivilegeLevel(),
             'amr' => $this->stringListAttribute($context, 'amr'),
         ], static fn (mixed $value): bool => $value !== null && $value !== '');
 

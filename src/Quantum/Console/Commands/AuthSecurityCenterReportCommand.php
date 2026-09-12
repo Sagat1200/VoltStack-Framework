@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quantum\Console\Commands;
 
+use Quantum\Auth\Context\AuthenticationContext;
 use Quantum\Auth\Contracts\AuthenticationSessionRepositoryInterface;
 use Quantum\Auth\Contracts\TrustedDeviceRepositoryInterface;
 use Quantum\Auth\Sessions\AuthenticationSession;
@@ -25,7 +26,7 @@ final class AuthSecurityCenterReportCommand extends Command
 
     public function usage(): string
     {
-        return 'auth:security-center:report [--now=timestamp] [--identity=value] [--type=value] [--include-public-ids] [--json] [--verbose]';
+        return 'auth:security-center:report [--now=timestamp] [--identity=value] [--type=value] [--include-public-ids] [--management-actors] [--json] [--verbose]';
     }
 
     public function category(): string
@@ -40,6 +41,7 @@ final class AuthSecurityCenterReportCommand extends Command
             '--identity=' => 'Filtra el reporte detallado a un identifier concreto.',
             '--type=' => 'Filtra por tipo de identidad. Default: user.',
             '--include-public-ids' => 'Incluye session_public_ids y trusted_device_public_id en el detalle.',
+            '--management-actors' => 'Incluye export operativo de actores con claims administrativas gobernadas.',
             '--json' => 'Emite el reporte en JSON.',
             '--verbose' => 'Muestra distribuciones adicionales y metadatos del reporte.',
         ];
@@ -54,6 +56,7 @@ final class AuthSecurityCenterReportCommand extends Command
         $identity = $this->resolveIdentityFilter($input);
         $type = $this->resolveTypeFilter($input);
         $includePublicIds = $input->hasOption('include-public-ids');
+        $includeManagementActors = $input->hasOption('management-actors');
         $json = $input->hasOption('json');
 
         $activeSessions = array_values(array_filter(
@@ -63,6 +66,8 @@ final class AuthSecurityCenterReportCommand extends Command
         $activeTrustedDevices = $trustedDevices->all($now);
 
         $sessionRows = [];
+        $managementActors = [];
+        $filteredManagementActors = [];
         $identityKeys = [];
         $platformCounts = [];
         $kindCounts = [];
@@ -71,9 +76,18 @@ final class AuthSecurityCenterReportCommand extends Command
             $identifier = $session->reference->identifier->value;
             $identityType = $session->reference->type;
             $identityKeys[strtolower($identityType) . '|' . $identifier] = true;
+            $managementActor = $this->managementActorRow($session, $includePublicIds);
+
+            if ($managementActor !== null) {
+                $this->mergeManagementActorRow($managementActors, $managementActor);
+            }
 
             if ($identity !== null && ($identifier !== $identity || $identityType !== $type)) {
                 continue;
+            }
+
+            if ($managementActor !== null) {
+                $this->mergeManagementActorRow($filteredManagementActors, $managementActor);
             }
 
             $platform = $this->stringAttribute($session->attributes, 'session_client_platform');
@@ -147,6 +161,7 @@ final class AuthSecurityCenterReportCommand extends Command
                 'identity' => $identity,
                 'type' => $identity !== null ? $type : null,
                 'include_public_ids' => $includePublicIds,
+                'management_actors' => $includeManagementActors ? true : null,
             ], static fn (mixed $value): bool => $value !== null),
             'summary' => [
                 'active_sessions' => count($activeSessions),
@@ -155,6 +170,11 @@ final class AuthSecurityCenterReportCommand extends Command
                 'aggregated_devices' => count($devices),
                 'trusted_aggregates' => $trustedAggregates,
                 'elevated_management_aggregates' => $elevatedAggregates,
+                'governed_management_sessions' => array_sum(array_map(
+                    static fn (array $actor): int => (int) ($actor['session_count'] ?? 0),
+                    array_values($managementActors),
+                )),
+                'governed_management_identities' => count($managementActors),
             ],
         ];
 
@@ -171,6 +191,10 @@ final class AuthSecurityCenterReportCommand extends Command
             $payload['devices'] = $devices;
         }
 
+        if ($includeManagementActors) {
+            $payload['management_actors'] = array_values($identity !== null ? $filteredManagementActors : $managementActors);
+        }
+
         if ($json) {
             $output->writeln((string) json_encode($payload, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
 
@@ -184,6 +208,8 @@ final class AuthSecurityCenterReportCommand extends Command
         $output->writeln(sprintf('  Dispositivos agregados: %d', $payload['summary']['aggregated_devices']));
         $output->writeln(sprintf('  Agregados trusted: %d', $payload['summary']['trusted_aggregates']));
         $output->writeln(sprintf('  Agregados de management elevado: %d', $payload['summary']['elevated_management_aggregates']));
+        $output->writeln(sprintf('  Sesiones con management gobernado: %d', $payload['summary']['governed_management_sessions']));
+        $output->writeln(sprintf('  Identidades con management gobernado: %d', $payload['summary']['governed_management_identities']));
 
         if ($identity !== null) {
             $output->writeln();
@@ -213,6 +239,36 @@ final class AuthSecurityCenterReportCommand extends Command
         } elseif ($includePublicIds) {
             $output->writeln();
             $output->writeln('Nota: --include-public-ids solo expone detalle cuando se filtra una identidad concreta.');
+        }
+
+        if ($includeManagementActors) {
+            $actors = array_values($identity !== null ? $filteredManagementActors : $managementActors);
+            $output->writeln();
+            $output->writeln('Actores administrativos gobernados:');
+
+            if ($actors === []) {
+                $output->writeln('  - none');
+            }
+
+            foreach ($actors as $actor) {
+                $output->writeln(sprintf(
+                    '  - %s:%s | sessions=%d | authority=%s | source=%s | privilege=%s | scopes=%s',
+                    $actor['identity_type'],
+                    $actor['identity_identifier'],
+                    $actor['session_count'],
+                    $actor['management_authority'],
+                    $actor['management_claims_source'],
+                    $actor['management_privilege_level'],
+                    implode(',', $actor['management_scopes']),
+                ));
+
+                if ($includePublicIds && ($actor['session_public_ids'] ?? []) !== []) {
+                    $output->writeln(sprintf(
+                        '    session_public_ids=%s',
+                        implode(',', $actor['session_public_ids']),
+                    ));
+                }
+            }
         }
 
         return 0;
@@ -393,5 +449,86 @@ final class AuthSecurityCenterReportCommand extends Command
         }
 
         return is_numeric($value) ? (int) $value : null;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function managementActorRow(AuthenticationSession $session, bool $includePublicIds): ?array
+    {
+        $context = new AuthenticationContext(
+            identity: $session->identity,
+            reference: $session->reference,
+            requestId: 'security-center-report',
+            method: $session->method,
+            attributes: $session->attributes,
+        );
+
+        $claimsSource = $context->managementClaimsSource();
+        $privilegeLevel = $context->managementPrivilegeLevel();
+        $authority = $context->managementAuthority();
+
+        if ($claimsSource === 'self_service_defaults'
+            && $privilegeLevel === 'self_service'
+            && $authority !== 'administrative_actor') {
+            return null;
+        }
+
+        $row = [
+            'identity_identifier' => $session->reference->identifier->value,
+            'identity_type' => $session->reference->type,
+            'session_count' => 1,
+            'last_seen_at' => $this->timestampAttribute($session->attributes, 'session_last_activity_at') ?? $session->issuedAt,
+            'management_authority' => $authority,
+            'management_ownership_proof' => $context->managementOwnershipProof(),
+            'management_claims_source' => $claimsSource,
+            'management_privilege_level' => $privilegeLevel,
+            'management_scopes' => $context->managementScopes(),
+        ];
+
+        if ($includePublicIds) {
+            $row['session_public_ids'] = array_values(array_filter([
+                $session->publicId(),
+            ], static fn (mixed $value): bool => is_string($value) && trim($value) !== ''));
+        }
+
+        return $row;
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $actors
+     * @param array<string, mixed> $row
+     */
+    private function mergeManagementActorRow(array &$actors, array $row): void
+    {
+        $key = strtolower((string) $row['identity_type']) . '|' . (string) $row['identity_identifier'];
+
+        if (! isset($actors[$key])) {
+            $actors[$key] = $row;
+            $actors[$key]['management_scopes'] = array_values(array_unique(array_map(
+                'strval',
+                (array) ($row['management_scopes'] ?? []),
+            )));
+            $actors[$key]['session_public_ids'] = array_values(array_unique(array_map(
+                'strval',
+                (array) ($row['session_public_ids'] ?? []),
+            )));
+
+            return;
+        }
+
+        $actors[$key]['session_count'] = (int) ($actors[$key]['session_count'] ?? 0) + 1;
+        $actors[$key]['last_seen_at'] = max(
+            (int) ($actors[$key]['last_seen_at'] ?? 0),
+            (int) ($row['last_seen_at'] ?? 0),
+        );
+        $actors[$key]['management_scopes'] = array_values(array_unique(array_merge(
+            array_map('strval', (array) ($actors[$key]['management_scopes'] ?? [])),
+            array_map('strval', (array) ($row['management_scopes'] ?? [])),
+        )));
+        $actors[$key]['session_public_ids'] = array_values(array_unique(array_merge(
+            array_map('strval', (array) ($actors[$key]['session_public_ids'] ?? [])),
+            array_map('strval', (array) ($row['session_public_ids'] ?? [])),
+        )));
     }
 }

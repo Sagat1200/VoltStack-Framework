@@ -100,6 +100,21 @@ final class SkeletonSecuritySmokeTest extends TestCase
                 'roles' => ['admin'],
                 'permissions' => ['admin.panel'],
             ],
+            [
+                'id' => 9902,
+                'identifier' => 'ops-admin@example.com',
+                'password_hash' => password_hash('secret-ops-123', PASSWORD_DEFAULT),
+                'mfa_code' => '777777',
+                'type' => 'user',
+                'name' => 'Ops Admin',
+                'roles' => ['admin'],
+                'permissions' => ['admin.panel', 'security-center.export'],
+                'auth_management_authority' => 'administrative_actor',
+                'auth_management_ownership_proof' => 'privileged_session',
+                'auth_management_scopes' => ['security_center_export', 'admin_device_management'],
+                'auth_management_claims_source' => 'identity_attributes',
+                'auth_management_privilege_level' => 'privileged_admin',
+            ],
         ]);
 
         $router = $this->app->make(Router::class);
@@ -124,9 +139,10 @@ final class SkeletonSecuritySmokeTest extends TestCase
 
         $reg->registerExpression('role:admin && permission:admin.panel');
         $reg->registerExpression('auth_management_authority:session_owner && auth_management_scopes:identity_device_management');
+        $reg->registerExpression('auth_management_authority:administrative_actor && auth_management_scopes:security_center_export && auth_management_claims_source:identity_attributes');
         $reg->registerExpression('role:admin || (role:officer && permission:gdpr.export)');
         $reg->registerExpression('role:user && tenant:acme-corp');
-        self::assertSame(6, $reg->count(), sprintf('All 6 demo policies registered (actual count=%d)', $reg->count()));
+        self::assertSame(7, $reg->count(), sprintf('All 7 demo policies registered (actual count=%d)', $reg->count()));
 
         $found = false;
         foreach ($reg->all() as $p) {
@@ -145,10 +161,18 @@ final class SkeletonSecuritySmokeTest extends TestCase
                     'second_factor' => '654321',
                 ])];
             })->name('smoke.sessionAdminLogin');
+            $router->get('/ops-admin-login', function (): array {
+                return ['ok' => auth()->attempt([
+                    'identifier' => 'ops-admin@example.com',
+                    'password' => 'secret-ops-123',
+                    'second_factor' => '777777',
+                ])];
+            })->name('smoke.opsAdminLogin');
             $router->get('/public', [SecurityDemoController::class, 'public'])->name('smoke.public');
             $router->get('/auth-token', [SecurityDemoController::class, 'authToken'])->name('smoke.authToken');
             $router->get('/admin-mfa', [SecurityDemoController::class, 'adminMfa'])->name('smoke.adminMfa');
             $router->get('/self-service-remote-devices', [SecurityDemoController::class, 'selfServiceRemoteDevices'])->name('smoke.selfServiceRemoteDevices');
+            $router->get('/privileged-security-center-export', [SecurityDemoController::class, 'privilegedSecurityCenterExport'])->name('smoke.privilegedSecurityCenterExport');
             $router->get('/tenant-scoped', [SecurityDemoController::class, 'tenantScoped'])->name('smoke.tenantScoped');
             $router->get('/gdpr-exposed', [SecurityDemoController::class, 'gdprExposed'])->name('smoke.gdprExposed');
         });
@@ -402,6 +426,65 @@ final class SkeletonSecuritySmokeTest extends TestCase
         self::assertSame('session_owner', $payload['management_authority'] ?? null);
         self::assertSame('current_session', $payload['management_ownership_proof'] ?? null);
         self::assertContains('identity_device_management', (array) ($payload['management_scopes'] ?? []));
+    }
+
+    public function test_12_privileged_security_center_export_requires_governed_admin_claims(): void
+    {
+        $sessionAdminLogin = $this->dispatch('/security/demo/session-admin-login');
+        self::assertSame(200, $sessionAdminLogin['status'], sprintf(
+            'Session admin login expected 200 got %d (%s)',
+            $sessionAdminLogin['status'],
+            $sessionAdminLogin['content'],
+        ));
+
+        $sessionAdminSessionId = $sessionAdminLogin['headers']['X-Auth-Session'][0] ?? null;
+        self::assertIsString($sessionAdminSessionId);
+
+        $sessionAdminDenied = $this->dispatch(
+            '/security/demo/privileged-security-center-export',
+            [],
+            [AuthenticationHttpState::SESSION_COOKIE_NAME => $sessionAdminSessionId],
+        );
+        self::assertContains($sessionAdminDenied['status'], [401, 403, 500], sprintf(
+            'Self-service admin must not pass privileged export; got %d (%s)',
+            $sessionAdminDenied['status'],
+            $sessionAdminDenied['content'],
+        ));
+
+        $opsAdminLogin = $this->dispatch('/security/demo/ops-admin-login');
+        self::assertSame(200, $opsAdminLogin['status'], sprintf(
+            'Ops admin login expected 200 got %d (%s)',
+            $opsAdminLogin['status'],
+            $opsAdminLogin['content'],
+        ));
+
+        $opsAdminPayload = $this->json($opsAdminLogin);
+        self::assertNotNull($opsAdminPayload);
+        self::assertTrue((bool) ($opsAdminPayload['ok'] ?? false));
+
+        $opsAdminSessionId = $opsAdminLogin['headers']['X-Auth-Session'][0] ?? null;
+        self::assertIsString($opsAdminSessionId);
+
+        $response = $this->dispatch(
+            '/security/demo/privileged-security-center-export',
+            [],
+            [AuthenticationHttpState::SESSION_COOKIE_NAME => $opsAdminSessionId],
+        );
+
+        self::assertSame(200, $response['status'], sprintf(
+            'Ops admin privileged export expected 200 got %d (%s)',
+            $response['status'],
+            $response['content'],
+        ));
+
+        $payload = $this->json($response);
+        self::assertNotNull($payload);
+        self::assertSame('security/demo/privileged-security-center-export', $payload['endpoint'] ?? null);
+        self::assertSame('administrative_actor', $payload['management_authority'] ?? null);
+        self::assertSame('identity_attributes', $payload['management_claims_source'] ?? null);
+        self::assertSame('privileged_admin', $payload['management_privilege_level'] ?? null);
+        self::assertContains('security_center_export', (array) ($payload['management_scopes'] ?? []));
+        self::assertSame('MultiFactor', $payload['authentication_strength'] ?? null);
     }
 
     private function removeDirectory(string $dir): void

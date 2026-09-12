@@ -101,7 +101,7 @@ final readonly class AuthenticationContext
 
     public function managementAuthority(): string
     {
-        $authority = $this->attribute('auth_management_authority');
+        $authority = $this->managementStringAttribute('auth_management_authority');
 
         return is_string($authority) && trim($authority) !== ''
             ? trim($authority)
@@ -110,7 +110,7 @@ final readonly class AuthenticationContext
 
     public function managementOwnershipProof(): string
     {
-        $proof = $this->attribute('auth_management_ownership_proof');
+        $proof = $this->managementStringAttribute('auth_management_ownership_proof');
 
         return is_string($proof) && trim($proof) !== ''
             ? trim($proof)
@@ -122,7 +122,7 @@ final readonly class AuthenticationContext
      */
     public function managementScopes(): array
     {
-        $scopes = $this->attribute('auth_management_scopes');
+        $scopes = $this->managementListAttribute('auth_management_scopes');
 
         if (! is_array($scopes)) {
             return [
@@ -137,5 +137,72 @@ final readonly class AuthenticationContext
             array_map(static fn (mixed $scope): string => trim((string) $scope), $scopes),
             static fn (string $scope): bool => $scope !== '',
         ));
+    }
+
+    public function managementClaimsSource(): string
+    {
+        $source = $this->managementStringAttribute('auth_management_claims_source');
+
+        return is_string($source) && trim($source) !== ''
+            ? trim($source)
+            : 'self_service_defaults';
+    }
+
+    public function managementPrivilegeLevel(): string
+    {
+        $level = $this->managementStringAttribute('auth_management_privilege_level');
+
+        if (is_string($level) && trim($level) !== '') {
+            return trim($level);
+        }
+
+        return $this->managementAuthority() === 'administrative_actor'
+            ? 'privileged_admin'
+            : 'self_service';
+    }
+
+    private function managementStringAttribute(string $key): ?string
+    {
+        $contextValue = $this->attribute($key);
+
+        if (is_string($contextValue) && trim($contextValue) !== '') {
+            return trim($contextValue);
+        }
+
+        $identityAttributes = $this->identityAttributes();
+        $identityValue = $identityAttributes[$key] ?? null;
+
+        return is_string($identityValue) && trim($identityValue) !== ''
+            ? trim($identityValue)
+            : null;
+    }
+
+    /**
+     * @return list<string>|null
+     */
+    private function managementListAttribute(string $key): ?array
+    {
+        $value = $this->attribute($key);
+
+        if (is_array($value)) {
+            return $value;
+        }
+
+        $identityAttributes = $this->identityAttributes();
+        $identityValue = $identityAttributes[$key] ?? null;
+
+        return is_array($identityValue)
+            ? $identityValue
+            : null;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function identityAttributes(): array
+    {
+        return property_exists($this->identity, 'attributes') && is_array($this->identity->attributes ?? null)
+            ? $this->identity->attributes
+            : [];
     }
 }

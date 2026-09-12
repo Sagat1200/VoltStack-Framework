@@ -86,9 +86,12 @@ PHP
         self::assertStringContainsString('Dispositivos agregados: 3', $output->stdout());
         self::assertStringContainsString('Agregados trusted: 1', $output->stdout());
         self::assertStringContainsString('Agregados de management elevado: 1', $output->stdout());
+        self::assertStringContainsString('Sesiones con management gobernado: 1', $output->stdout());
+        self::assertStringContainsString('Identidades con management gobernado: 1', $output->stdout());
         self::assertStringNotContainsString('Detalle para', $output->stdout());
         self::assertStringNotContainsString('session_public_ids=', $output->stdout());
         self::assertStringNotContainsString('trusted_device_public_id=', $output->stdout());
+        self::assertStringNotContainsString('Actores administrativos gobernados:', $output->stdout());
     }
 
     public function test_it_emits_filtered_json_detail_with_public_ids_only_for_a_specific_identity(): void
@@ -144,6 +147,45 @@ PHP
         self::assertSame('tdv_report_beta', $elevated['trusted_device_public_id'] ?? null);
     }
 
+    public function test_it_exports_governed_management_actors_only_when_requested(): void
+    {
+        $seedNow = time();
+        $app = $this->bootstrappedApplication();
+        $this->seedSecurityCenterFixtures($app, $seedNow);
+
+        $command = new AuthSecurityCenterReportCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'auth:security-center:report',
+                '--now=' . $seedNow,
+                '--management-actors',
+                '--include-public-ids',
+                '--json',
+            ]),
+            $output,
+        );
+
+        /** @var array<string, mixed> $payload */
+        $payload = json_decode($output->stdout(), true, 512, JSON_THROW_ON_ERROR);
+        $actors = $payload['management_actors'] ?? [];
+
+        self::assertSame(0, $exitCode);
+        self::assertTrue((bool) ($payload['filters']['management_actors'] ?? false));
+        self::assertSame(1, $payload['summary']['governed_management_sessions'] ?? null);
+        self::assertSame(1, $payload['summary']['governed_management_identities'] ?? null);
+        self::assertCount(1, $actors);
+        self::assertSame('702', $actors[0]['identity_identifier'] ?? null);
+        self::assertSame('user', $actors[0]['identity_type'] ?? null);
+        self::assertSame('administrative_actor', $actors[0]['management_authority'] ?? null);
+        self::assertSame('identity_attributes', $actors[0]['management_claims_source'] ?? null);
+        self::assertSame('privileged_admin', $actors[0]['management_privilege_level'] ?? null);
+        self::assertSame(['security_center_export', 'admin_device_management'], $actors[0]['management_scopes'] ?? []);
+        self::assertSame(['sess_pub_report_gamma'], $actors[0]['session_public_ids'] ?? []);
+    }
+
     private function seedSecurityCenterFixtures(Application $app, int $seedNow): void
     {
         $sessions = $app->make(AuthenticationSessionRepositoryInterface::class);
@@ -159,7 +201,17 @@ PHP
         $secondaryIdentity = new GenericIdentity(
             identifier: new IdentityIdentifier('702'),
             type: 'user',
-            attributes: ['name' => 'Secondary Security User'],
+            attributes: [
+                'name' => 'Secondary Security User',
+                'auth_management_authority' => 'administrative_actor',
+                'auth_management_ownership_proof' => 'privileged_session',
+                'auth_management_scopes' => [
+                    'security_center_export',
+                    'admin_device_management',
+                ],
+                'auth_management_claims_source' => 'identity_attributes',
+                'auth_management_privilege_level' => 'privileged_admin',
+            ],
         );
         $secondaryReference = new IdentityReference($secondaryIdentity->identifier(), $secondaryIdentity->type());
 

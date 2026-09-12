@@ -292,6 +292,8 @@ final class ControllerSecurityContextFactoryTest extends TestCase
             'identity_session_management',
             'identity_device_management',
         ], $claims['management_scopes'] ?? []);
+        self::assertSame('self_service_defaults', $claims['management_claims_source'] ?? null);
+        self::assertSame('self_service', $claims['management_privilege_level'] ?? null);
         self::assertSame('multi_factor', $attributes['auth_assurance_profile'] ?? null);
         self::assertSame('sess_pub_controller_ctx', $attributes['auth_session_public_id'] ?? null);
         self::assertSame('devref_controller_ctx', $attributes['auth_device_reference'] ?? null);
@@ -306,6 +308,98 @@ final class ControllerSecurityContextFactoryTest extends TestCase
             'identity_session_management',
             'identity_device_management',
         ], $attributes['auth_management_scopes'] ?? []);
+        self::assertSame('self_service_defaults', $attributes['auth_management_claims_source'] ?? null);
+        self::assertSame('self_service', $attributes['auth_management_privilege_level'] ?? null);
         self::assertSame(['pwd', 'mfa'], $attributes['amr'] ?? []);
+    }
+
+    public function test_factory_projects_privileged_management_claims_from_identity_attributes(): void
+    {
+        $auth = new class implements AuthenticationManagerInterface {
+            public function attempt(array $credentials): bool
+            {
+                return false;
+            }
+
+            public function attemptOrFail(array $credentials): void
+            {
+                throw new AuthenticationException('Not implemented.');
+            }
+
+            public function stepUp(array $credentials): bool
+            {
+                return false;
+            }
+
+            public function stepUpOrFail(array $credentials): void
+            {
+                throw new AuthenticationException('Not implemented.');
+            }
+
+            public function login(mixed $user): void {}
+            public function user(): mixed { return null; }
+            public function setUser(mixed $user): void {}
+            public function check(): bool { return true; }
+            public function guest(): bool { return false; }
+            public function id(): mixed { return 'ops-admin@example.com'; }
+
+            public function context(): ?AuthenticationContext
+            {
+                $identity = new GenericIdentity(
+                    identifier: new IdentityIdentifier('ops-admin@example.com'),
+                    type: 'user',
+                    attributes: [
+                        'name' => 'Ops Admin',
+                        'roles' => ['admin'],
+                        'permissions' => ['admin.panel', 'security-center.export'],
+                        'auth_management_authority' => 'administrative_actor',
+                        'auth_management_ownership_proof' => 'privileged_session',
+                        'auth_management_scopes' => ['security_center_export', 'admin_device_management'],
+                        'auth_management_claims_source' => 'identity_attributes',
+                        'auth_management_privilege_level' => 'privileged_admin',
+                    ],
+                );
+
+                return new AuthenticationContext(
+                    identity: $identity,
+                    reference: new IdentityReference($identity->identifier(), $identity->type()),
+                    requestId: 'req-ops-admin',
+                    method: 'password',
+                    attributes: [
+                        'authentication_strength' => AuthenticationStrength::MultiFactor->name,
+                        'authentication_assurance_profile' => 'multi_factor',
+                        'amr' => ['pwd', 'mfa'],
+                    ],
+                );
+            }
+
+            public function recoveryFailureReason(): ?string { return null; }
+            public function currentSession(): ?AuthenticationSessionSummary { return null; }
+            public function sessions(): array { return []; }
+            public function trustedDevices(): array { return []; }
+            public function devices(): array { return []; }
+            public function trustCurrentDevice(?string $label = null): bool { return false; }
+            public function forgetTrustedDevice(string $publicId): bool { return false; }
+            public function revokeDevice(string $deviceReference): bool { return false; }
+            public function revokeOtherDevices(): int { return 0; }
+            public function revokeSession(string $publicId): bool { return false; }
+            public function revokeOtherSessions(): int { return 0; }
+            public function logout(): void {}
+        };
+
+        $factory = new ControllerSecurityContextFactory(auth: $auth);
+        $req = Request::create('/t', 'GET');
+        $ctx = $factory->create($req, $this->buildExecCtx($req));
+        $claims = $ctx->principal->claims();
+        $attributes = $ctx->attributes->attributes;
+
+        self::assertSame('administrative_actor', $claims['management_authority'] ?? null);
+        self::assertSame('privileged_session', $claims['management_ownership_proof'] ?? null);
+        self::assertSame(['security_center_export', 'admin_device_management'], $claims['management_scopes'] ?? []);
+        self::assertSame('identity_attributes', $claims['management_claims_source'] ?? null);
+        self::assertSame('privileged_admin', $claims['management_privilege_level'] ?? null);
+        self::assertSame('administrative_actor', $attributes['auth_management_authority'] ?? null);
+        self::assertSame('identity_attributes', $attributes['auth_management_claims_source'] ?? null);
+        self::assertSame('privileged_admin', $attributes['auth_management_privilege_level'] ?? null);
     }
 }

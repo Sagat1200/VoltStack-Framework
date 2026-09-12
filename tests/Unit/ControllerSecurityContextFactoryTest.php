@@ -284,12 +284,28 @@ final class ControllerSecurityContextFactoryTest extends TestCase
         self::assertSame(['admin'], $claims['roles'] ?? []);
         self::assertSame(['admin.panel'], $claims['permissions'] ?? []);
         self::assertSame('Session Admin', $claims['name'] ?? null);
+        self::assertSame('session_owner', $claims['management_authority'] ?? null);
+        self::assertSame('current_session', $claims['management_ownership_proof'] ?? null);
+        self::assertSame([
+            'current_session_management',
+            'current_device_management',
+            'identity_session_management',
+            'identity_device_management',
+        ], $claims['management_scopes'] ?? []);
         self::assertSame('multi_factor', $attributes['auth_assurance_profile'] ?? null);
         self::assertSame('sess_pub_controller_ctx', $attributes['auth_session_public_id'] ?? null);
         self::assertSame('devref_controller_ctx', $attributes['auth_device_reference'] ?? null);
         self::assertSame('trusted', $attributes['auth_device_trust_state'] ?? null);
         self::assertSame('tdv_controller_ctx', $attributes['auth_trusted_device_public_id'] ?? null);
         self::assertTrue((bool) ($attributes['auth_trusted_device_credential_present'] ?? false));
+        self::assertSame('session_owner', $attributes['auth_management_authority'] ?? null);
+        self::assertSame('current_session', $attributes['auth_management_ownership_proof'] ?? null);
+        self::assertSame([
+            'current_session_management',
+            'current_device_management',
+            'identity_session_management',
+            'identity_device_management',
+        ], $attributes['auth_management_scopes'] ?? []);
         self::assertSame(['pwd', 'mfa'], $attributes['amr'] ?? []);
     }
 }

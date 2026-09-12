@@ -123,9 +123,10 @@ final class SkeletonSecuritySmokeTest extends TestCase
         self::assertSame(2, $reg->count(), sprintf('After auth-token expression count=%d', $reg->count()));
 
         $reg->registerExpression('role:admin && permission:admin.panel');
+        $reg->registerExpression('auth_management_authority:session_owner && auth_management_scopes:identity_device_management');
         $reg->registerExpression('role:admin || (role:officer && permission:gdpr.export)');
         $reg->registerExpression('role:user && tenant:acme-corp');
-        self::assertSame(5, $reg->count(), sprintf('All 5 demo policies registered (actual count=%d)', $reg->count()));
+        self::assertSame(6, $reg->count(), sprintf('All 6 demo policies registered (actual count=%d)', $reg->count()));
 
         $found = false;
         foreach ($reg->all() as $p) {
@@ -147,6 +148,7 @@ final class SkeletonSecuritySmokeTest extends TestCase
             $router->get('/public', [SecurityDemoController::class, 'public'])->name('smoke.public');
             $router->get('/auth-token', [SecurityDemoController::class, 'authToken'])->name('smoke.authToken');
             $router->get('/admin-mfa', [SecurityDemoController::class, 'adminMfa'])->name('smoke.adminMfa');
+            $router->get('/self-service-remote-devices', [SecurityDemoController::class, 'selfServiceRemoteDevices'])->name('smoke.selfServiceRemoteDevices');
             $router->get('/tenant-scoped', [SecurityDemoController::class, 'tenantScoped'])->name('smoke.tenantScoped');
             $router->get('/gdpr-exposed', [SecurityDemoController::class, 'gdprExposed'])->name('smoke.gdprExposed');
         });
@@ -365,6 +367,41 @@ final class SkeletonSecuritySmokeTest extends TestCase
         self::assertSame('9901', (string) ($payload['principal_id'] ?? ''));
         self::assertSame('MultiFactor', $payload['authentication_strength'] ?? null);
         self::assertContains('admin', (array) ($payload['roles'] ?? []));
+    }
+
+    public function test_11_self_service_remote_devices_requires_shared_auth_management_claims_and_passes_for_auth_session(): void
+    {
+        $anonymous = $this->dispatch('/security/demo/self-service-remote-devices');
+        self::assertContains($anonymous['status'], [401, 403, 500], sprintf(
+            'Self-service remote devices must not pass anonymously; got %d (%s)',
+            $anonymous['status'],
+            $anonymous['content'],
+        ));
+
+        $login = $this->dispatch('/security/demo/session-admin-login');
+        self::assertSame(200, $login['status'], sprintf('Session admin login expected 200 got %d (%s)', $login['status'], $login['content']));
+
+        $sessionId = $login['headers']['X-Auth-Session'][0] ?? null;
+        self::assertIsString($sessionId);
+
+        $response = $this->dispatch(
+            '/security/demo/self-service-remote-devices',
+            [],
+            [AuthenticationHttpState::SESSION_COOKIE_NAME => $sessionId],
+        );
+
+        self::assertSame(200, $response['status'], sprintf(
+            'Self-service remote devices with auth session expected 200 got %d (%s)',
+            $response['status'],
+            $response['content'],
+        ));
+
+        $payload = $this->json($response);
+        self::assertNotNull($payload);
+        self::assertSame('security/demo/self-service-remote-devices', $payload['endpoint'] ?? null);
+        self::assertSame('session_owner', $payload['management_authority'] ?? null);
+        self::assertSame('current_session', $payload['management_ownership_proof'] ?? null);
+        self::assertContains('identity_device_management', (array) ($payload['management_scopes'] ?? []));
     }
 
     private function removeDirectory(string $dir): void

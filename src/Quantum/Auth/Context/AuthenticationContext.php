@@ -98,4 +98,44 @@ final readonly class AuthenticationContext
             ? trim($publicId)
             : null;
     }
+
+    public function managementAuthority(): string
+    {
+        $authority = $this->attribute('auth_management_authority');
+
+        return is_string($authority) && trim($authority) !== ''
+            ? trim($authority)
+            : 'session_owner';
+    }
+
+    public function managementOwnershipProof(): string
+    {
+        $proof = $this->attribute('auth_management_ownership_proof');
+
+        return is_string($proof) && trim($proof) !== ''
+            ? trim($proof)
+            : 'current_session';
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function managementScopes(): array
+    {
+        $scopes = $this->attribute('auth_management_scopes');
+
+        if (! is_array($scopes)) {
+            return [
+                'current_session_management',
+                'current_device_management',
+                'identity_session_management',
+                'identity_device_management',
+            ];
+        }
+
+        return array_values(array_filter(
+            array_map(static fn (mixed $scope): string => trim((string) $scope), $scopes),
+            static fn (string $scope): bool => $scope !== '',
+        ));
+    }
 }

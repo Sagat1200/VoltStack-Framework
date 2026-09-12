@@ -211,6 +211,9 @@ final class ControllerSecurityContextFactory implements ControllerSecurityContex
         $claims = [
             'roles' => $roles,
             'permissions' => $permissions,
+            'management_authority' => $context->managementAuthority(),
+            'management_ownership_proof' => $context->managementOwnershipProof(),
+            'management_scopes' => $context->managementScopes(),
         ];
 
         foreach ([
@@ -244,6 +247,9 @@ final class ControllerSecurityContextFactory implements ControllerSecurityContex
             'auth_device_trust_state' => $context->deviceTrustState(),
             'auth_trusted_device_public_id' => $context->trustedDevicePublicId(),
             'auth_trusted_device_credential_present' => $context->trustedDeviceCredentialPresent(),
+            'auth_management_authority' => $context->managementAuthority(),
+            'auth_management_ownership_proof' => $context->managementOwnershipProof(),
+            'auth_management_scopes' => $context->managementScopes(),
             'amr' => $this->stringListAttribute($context, 'amr'),
         ], static fn (mixed $value): bool => $value !== null && $value !== '');
 

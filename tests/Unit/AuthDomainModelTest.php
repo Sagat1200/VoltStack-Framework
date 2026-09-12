@@ -174,6 +174,63 @@ final class AuthDomainModelTest extends TestCase
         self::assertSame('tdv_1234567890ab', $context->trustedDevicePublicId());
     }
 
+    public function test_authentication_context_exposes_default_management_claims_for_self_service_operations(): void
+    {
+        $identity = new GenericIdentity(
+            identifier: new IdentityIdentifier('89'),
+            type: 'user',
+            attributes: ['name' => 'Volt Management'],
+        );
+
+        $context = new AuthenticationContext(
+            identity: $identity,
+            reference: new IdentityReference($identity->identifier(), $identity->type()),
+            requestId: 'req-7',
+            method: 'password',
+            attributes: [],
+        );
+
+        self::assertSame('session_owner', $context->managementAuthority());
+        self::assertSame('current_session', $context->managementOwnershipProof());
+        self::assertSame([
+            'current_session_management',
+            'current_device_management',
+            'identity_session_management',
+            'identity_device_management',
+        ], $context->managementScopes());
+    }
+
+    public function test_authentication_context_exposes_explicit_management_claim_overrides(): void
+    {
+        $identity = new GenericIdentity(
+            identifier: new IdentityIdentifier('90'),
+            type: 'user',
+            attributes: ['name' => 'Volt Delegated Management'],
+        );
+
+        $context = new AuthenticationContext(
+            identity: $identity,
+            reference: new IdentityReference($identity->identifier(), $identity->type()),
+            requestId: 'req-8',
+            method: 'password',
+            attributes: [
+                'auth_management_authority' => 'identity_owner',
+                'auth_management_ownership_proof' => 'fresh_auth_session',
+                'auth_management_scopes' => [
+                    'identity_device_management',
+                    'identity_session_management',
+                ],
+            ],
+        );
+
+        self::assertSame('identity_owner', $context->managementAuthority());
+        self::assertSame('fresh_auth_session', $context->managementOwnershipProof());
+        self::assertSame([
+            'identity_device_management',
+            'identity_session_management',
+        ], $context->managementScopes());
+    }
+
 
     public function test_unauthenticated_decision_has_no_context(): void
     {

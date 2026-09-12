@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Quantum\Controllers\Security\Context;
 
+use Quantum\Auth\Context\AuthenticationContext;
+use Quantum\Auth\Contracts\AuthenticationManagerInterface;
+use Quantum\Auth\Identity\GenericIdentity;
 use Quantum\Controllers\ControllerExecutionContext;
 use Quantum\Controllers\Security\Budget\ControllerSecurityBudget;
 use Quantum\Controllers\Security\Contracts\ControllerSecurityContextFactoryInterface;
@@ -14,6 +17,7 @@ final class ControllerSecurityContextFactory implements ControllerSecurityContex
 {
     public function __construct(
         private readonly int $defaultMaxEvaluations = 64,
+        private readonly ?AuthenticationManagerInterface $auth = null,
     ) {}
 
     public function create(
@@ -40,6 +44,7 @@ final class ControllerSecurityContextFactory implements ControllerSecurityContex
         $roles = [];
         $permissions = [];
         $extraClaims = [];
+        $extraAttributes = [];
 
         if (is_string($authHeader) && $authHeader !== '' && str_starts_with(strtolower($authHeader), 'bearer ')) {
             $token = trim(substr($authHeader, 7));
@@ -69,6 +74,7 @@ final class ControllerSecurityContextFactory implements ControllerSecurityContex
                         default => AuthenticationStrength::Password,
                     };
                     $extraClaims = $payloadDecoded;
+                    $extraAttributes = ['token_claims' => $payloadDecoded];
                     $principal = new Principal(
                         id: is_string($sub) && $sub !== '' ? $sub : ('api-' . substr(hash('xxh128', $token), 0, 10)),
                         type: $type,
@@ -87,6 +93,24 @@ final class ControllerSecurityContextFactory implements ControllerSecurityContex
                     );
                     $authStrength = AuthenticationStrength::Token;
                 }
+            }
+        }
+
+        if ($principal->type() === PrincipalType::Anonymous && $this->auth !== null) {
+            try {
+                $authContext = $this->auth->context();
+            } catch (\Throwable) {
+                $authContext = null;
+            }
+
+            if ($authContext !== null) {
+                $principal = $this->principalFromAuthenticationContext($authContext);
+                $authStrength = $authContext->authenticationStrength();
+                $claims = $principal->claims();
+                $roles = array_values(array_unique(array_map('strval', (array) ($claims['roles'] ?? []))));
+                $permissions = array_values(array_unique(array_map('strval', (array) ($claims['permissions'] ?? []))));
+                $extraClaims = $this->securityAttributesFromAuthenticationContext($authContext);
+                $extraAttributes = $extraClaims;
             }
         }
 
@@ -118,7 +142,7 @@ final class ControllerSecurityContextFactory implements ControllerSecurityContex
         $attributes = new SecurityAttributes(array_merge([
             'scopes' => $scopes,
             'tenant_id' => $tenant?->id,
-        ], $extraClaims !== [] ? ['token_claims' => $extraClaims] : []));
+        ], $extraAttributes));
 
         $decisions = new SecurityDecisionCache(maxItems: $this->defaultMaxEvaluations);
         $executionId = $this->buildExecutionId($request, $execution);
@@ -145,5 +169,127 @@ final class ControllerSecurityContextFactory implements ControllerSecurityContex
             'exec-%s',
             substr(hash('xxh128', $method . '|' . $routePath . '|' . spl_object_id($request)), 0, 16),
         );
+    }
+
+    private function principalFromAuthenticationContext(AuthenticationContext $context): Principal
+    {
+        $claims = $this->principalClaimsFromAuthenticationContext($context);
+
+        return new Principal(
+            id: (string) $context->identity->identifier(),
+            type: $this->principalTypeFromAuthenticationContext($context),
+            authenticated: true,
+            claims: $claims,
+        );
+    }
+
+    private function principalTypeFromAuthenticationContext(AuthenticationContext $context): PrincipalType
+    {
+        $type = trim($context->identity->type());
+        $direct = PrincipalType::tryFrom($type);
+
+        if ($direct !== null) {
+            return $direct;
+        }
+
+        return match (strtolower($type)) {
+            'admin', 'administrator', 'member', 'customer' => PrincipalType::User,
+            'service_account', 'workload', 'daemon' => PrincipalType::Service,
+            'api-key', 'apikey', 'client' => PrincipalType::ApiClient,
+            default => PrincipalType::User,
+        };
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function principalClaimsFromAuthenticationContext(AuthenticationContext $context): array
+    {
+        $identityAttributes = $this->identityAttributes($context);
+        $roles = array_values(array_unique(array_map('strval', (array) ($identityAttributes['roles'] ?? []))));
+        $permissions = array_values(array_unique(array_map('strval', (array) ($identityAttributes['permissions'] ?? []))));
+        $claims = [
+            'roles' => $roles,
+            'permissions' => $permissions,
+        ];
+
+        foreach ([
+            'email',
+            'name',
+            'display_name',
+            'username',
+        ] as $key) {
+            $value = $identityAttributes[$key] ?? null;
+
+            if (is_string($value) && trim($value) !== '') {
+                $claims[$key] = trim($value);
+            }
+        }
+
+        return $claims;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function securityAttributesFromAuthenticationContext(AuthenticationContext $context): array
+    {
+        $attributes = array_filter([
+            'auth_subject' => (string) $context->identity->identifier(),
+            'auth_identity_type' => $context->identity->type(),
+            'auth_method' => $context->method,
+            'auth_assurance_profile' => $context->authenticationAssuranceProfile(),
+            'auth_session_public_id' => $context->sessionPublicId(),
+            'auth_device_reference' => $context->deviceReference(),
+            'auth_device_trust_state' => $context->deviceTrustState(),
+            'auth_trusted_device_public_id' => $context->trustedDevicePublicId(),
+            'auth_trusted_device_credential_present' => $context->trustedDeviceCredentialPresent(),
+            'amr' => $this->stringListAttribute($context, 'amr'),
+        ], static fn (mixed $value): bool => $value !== null && $value !== '');
+
+        $claims = $this->principalClaimsFromAuthenticationContext($context);
+
+        if ($claims['roles'] !== []) {
+            $attributes['roles'] = $claims['roles'];
+        }
+
+        if ($claims['permissions'] !== []) {
+            $attributes['permissions'] = $claims['permissions'];
+        }
+
+        return $attributes;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function identityAttributes(AuthenticationContext $context): array
+    {
+        $identity = $context->identity;
+
+        if ($identity instanceof GenericIdentity) {
+            return $identity->attributes;
+        }
+
+        return property_exists($identity, 'attributes') && is_array($identity->attributes ?? null)
+            ? $identity->attributes
+            : [];
+    }
+
+    /**
+     * @return list<string>|null
+     */
+    private function stringListAttribute(AuthenticationContext $context, string $key): ?array
+    {
+        $value = $context->attribute($key);
+
+        if (! is_array($value)) {
+            return null;
+        }
+
+        return array_values(array_filter(
+            array_map(static fn (mixed $entry): string => trim((string) $entry), $value),
+            static fn (string $entry): bool => $entry !== '',
+        ));
     }
 }

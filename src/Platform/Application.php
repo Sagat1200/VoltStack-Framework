@@ -942,8 +942,15 @@ HTML;
             $this->singleton(ControllerSecurityContextFactoryInterface::class, function (Application $app): ControllerSecurityContextFactoryInterface {
                 $max = $app->config('controller_security.authorization.max_policy_evaluations', 64);
                 $max = is_numeric($max) ? (int) $max : 64;
+                $authManager = null;
 
-                return new ControllerSecurityContextFactory(max(1, $max));
+                try {
+                    $authManager = $app->make(\Quantum\Auth\Contracts\AuthenticationManagerInterface::class);
+                } catch (\Throwable) {
+                    $authManager = null;
+                }
+
+                return new ControllerSecurityContextFactory(max(1, $max), $authManager);
             });
         }
 

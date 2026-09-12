@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace VoltStack\Test\Feature;
 
 use PHPUnit\Framework\TestCase;
+use Quantum\Auth\Support\AuthenticationHttpState;
 use Quantum\Config\ConfigRepository;
 use Quantum\Http\Request;
 use Quantum\HttpKernel\HttpKernel;
@@ -88,6 +89,18 @@ final class SkeletonSecuritySmokeTest extends TestCase
             'policies' => [],
         ]);
         $this->app->make(ConfigRepository::class)->set('controller_compilation.enabled', false);
+        $this->app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 9901,
+                'identifier' => 'session-admin@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+                'name' => 'Session Admin',
+                'roles' => ['admin'],
+                'permissions' => ['admin.panel'],
+            ],
+        ]);
 
         $router = $this->app->make(Router::class);
 
@@ -124,6 +137,13 @@ final class SkeletonSecuritySmokeTest extends TestCase
         self::assertTrue($found, 'Expression auth-token must be stored under its string id for resolve() lookup.');
 
         $router->group(['prefix' => '/security/demo'], function () use ($router): void {
+            $router->get('/session-admin-login', function (): array {
+                return ['ok' => auth()->attempt([
+                    'identifier' => 'session-admin@example.com',
+                    'password' => 'secret-123',
+                    'second_factor' => '654321',
+                ])];
+            })->name('smoke.sessionAdminLogin');
             $router->get('/public', [SecurityDemoController::class, 'public'])->name('smoke.public');
             $router->get('/auth-token', [SecurityDemoController::class, 'authToken'])->name('smoke.authToken');
             $router->get('/admin-mfa', [SecurityDemoController::class, 'adminMfa'])->name('smoke.adminMfa');
@@ -156,9 +176,10 @@ final class SkeletonSecuritySmokeTest extends TestCase
     /**
      * Helper: Simulate an HTTP request against the test kernel.
      * @param array<string,string> $headers
+     * @param array<string,string> $cookies
      * @return array{status:int,content:string,headers:array<string,string[]>,debugThrowable:?string}
      */
-    private function dispatch(string $path, array $headers = []): array
+    private function dispatch(string $path, array $headers = [], array $cookies = []): array
     {
         $server = [];
         foreach ($headers as $name => $value) {
@@ -173,7 +194,7 @@ final class SkeletonSecuritySmokeTest extends TestCase
         $kernel = $this->app->make(HttpKernel::class);
         $throwableStr = null;
         try {
-            $response = $kernel->handle(Request::create($path, 'GET', [], [], [], [], [], $server));
+            $response = $kernel->handle(Request::create($path, 'GET', cookies: $cookies, server: $server));
         } catch (\Throwable $t) {
             $throwableStr = $t::class . ': ' . $t->getMessage() . PHP_EOL . 'File=' . $t->getFile() . '@' . $t->getLine() . PHP_EOL . $t->getTraceAsString();
             $response = new \Quantum\Http\Response(500, [
@@ -312,6 +333,38 @@ final class SkeletonSecuritySmokeTest extends TestCase
         self::assertSame('security/demo/gdpr-exposed', $j['endpoint'] ?? null);
         self::assertSame('Jane Doe', $j['user_personal_data']['name'] ?? null);
         self::assertSame('jane.doe@acme.corp', $j['user_personal_data']['email'] ?? null);
+    }
+
+    public function test_10_admin_mfa_passes_with_multi_factor_auth_session_without_bearer_token(): void
+    {
+        $login = $this->dispatch('/security/demo/session-admin-login');
+        self::assertSame(200, $login['status'], sprintf('Session admin login expected 200 got %d (%s)', $login['status'], $login['content']));
+
+        $loginPayload = $this->json($login);
+        self::assertNotNull($loginPayload);
+        self::assertTrue((bool) ($loginPayload['ok'] ?? false));
+
+        $sessionId = $login['headers']['X-Auth-Session'][0] ?? null;
+        self::assertIsString($sessionId);
+
+        $response = $this->dispatch(
+            '/security/demo/admin-mfa',
+            [],
+            [AuthenticationHttpState::SESSION_COOKIE_NAME => $sessionId],
+        );
+
+        self::assertSame(200, $response['status'], sprintf(
+            'Admin MFA with auth session expected 200 got %d (%s)',
+            $response['status'],
+            $response['content'],
+        ));
+
+        $payload = $this->json($response);
+        self::assertNotNull($payload);
+        self::assertSame('security/demo/admin-mfa', $payload['endpoint'] ?? null);
+        self::assertSame('9901', (string) ($payload['principal_id'] ?? ''));
+        self::assertSame('MultiFactor', $payload['authentication_strength'] ?? null);
+        self::assertContains('admin', (array) ($payload['roles'] ?? []));
     }
 
     private function removeDirectory(string $dir): void

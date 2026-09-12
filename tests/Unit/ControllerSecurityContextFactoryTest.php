@@ -5,6 +5,13 @@ declare(strict_types=1);
 namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
+use Quantum\Auth\Context\AuthenticationContext;
+use Quantum\Auth\Contracts\AuthenticationManagerInterface;
+use Quantum\Auth\Exceptions\AuthenticationException;
+use Quantum\Auth\Identity\GenericIdentity;
+use Quantum\Auth\Identity\IdentityIdentifier;
+use Quantum\Auth\Identity\IdentityReference;
+use Quantum\Auth\Sessions\AuthenticationSessionSummary;
 use Quantum\Controllers\Security\Context\ControllerSecurityContext;
 use Quantum\Controllers\Security\Context\ControllerSecurityContextFactory;
 use Quantum\Controllers\Security\Context\Principal;
@@ -126,5 +133,163 @@ final class ControllerSecurityContextFactoryTest extends TestCase
         self::assertTrue($ctx->principal->authenticated());
         self::assertSame(AuthenticationStrength::Token, $ctx->authenticationStrength);
         self::assertSame(PrincipalType::ApiClient, $ctx->principal->type());
+    }
+
+    public function test_factory_can_derive_principal_from_quantum_auth_context_when_no_bearer_token_exists(): void
+    {
+        $auth = new class implements AuthenticationManagerInterface {
+            public function attempt(array $credentials): bool
+            {
+                return false;
+            }
+
+            public function attemptOrFail(array $credentials): void
+            {
+                throw new AuthenticationException('Not implemented.');
+            }
+
+            public function stepUp(array $credentials): bool
+            {
+                return false;
+            }
+
+            public function stepUpOrFail(array $credentials): void
+            {
+                throw new AuthenticationException('Not implemented.');
+            }
+
+            public function login(mixed $user): void {}
+
+            public function user(): mixed
+            {
+                return null;
+            }
+
+            public function setUser(mixed $user): void {}
+
+            public function check(): bool
+            {
+                return true;
+            }
+
+            public function guest(): bool
+            {
+                return false;
+            }
+
+            public function id(): mixed
+            {
+                return 'session-admin@example.com';
+            }
+
+            public function context(): ?AuthenticationContext
+            {
+                $identity = new GenericIdentity(
+                    identifier: new IdentityIdentifier('session-admin@example.com'),
+                    type: 'user',
+                    attributes: [
+                        'name' => 'Session Admin',
+                        'roles' => ['admin'],
+                        'permissions' => ['admin.panel'],
+                    ],
+                );
+
+                return new AuthenticationContext(
+                    identity: $identity,
+                    reference: new IdentityReference($identity->identifier(), $identity->type()),
+                    requestId: 'req-session-auth',
+                    method: 'password',
+                    attributes: [
+                        'authentication_strength' => AuthenticationStrength::MultiFactor->name,
+                        'authentication_assurance_profile' => 'multi_factor',
+                        'authentication_fresh_at' => time(),
+                        'session_public_id' => 'sess_pub_controller_ctx',
+                        'session_device_reference' => 'devref_controller_ctx',
+                        'session_device_trust_state' => 'trusted',
+                        'trusted_device_public_id' => 'tdv_controller_ctx',
+                        'trusted_device_credential_present' => true,
+                        'amr' => ['pwd', 'mfa'],
+                    ],
+                );
+            }
+
+            public function recoveryFailureReason(): ?string
+            {
+                return null;
+            }
+
+            public function currentSession(): ?AuthenticationSessionSummary
+            {
+                return null;
+            }
+
+            public function sessions(): array
+            {
+                return [];
+            }
+
+            public function trustedDevices(): array
+            {
+                return [];
+            }
+
+            public function devices(): array
+            {
+                return [];
+            }
+
+            public function trustCurrentDevice(?string $label = null): bool
+            {
+                return false;
+            }
+
+            public function forgetTrustedDevice(string $publicId): bool
+            {
+                return false;
+            }
+
+            public function revokeDevice(string $deviceReference): bool
+            {
+                return false;
+            }
+
+            public function revokeOtherDevices(): int
+            {
+                return 0;
+            }
+
+            public function revokeSession(string $publicId): bool
+            {
+                return false;
+            }
+
+            public function revokeOtherSessions(): int
+            {
+                return 0;
+            }
+
+            public function logout(): void {}
+        };
+
+        $factory = new ControllerSecurityContextFactory(auth: $auth);
+        $req = Request::create('/t', 'GET');
+        $ctx = $factory->create($req, $this->buildExecCtx($req));
+        $claims = $ctx->principal->claims();
+        $attributes = $ctx->attributes->attributes;
+
+        self::assertTrue($ctx->principal->authenticated());
+        self::assertSame(PrincipalType::User, $ctx->principal->type());
+        self::assertSame('session-admin@example.com', $ctx->principal->id());
+        self::assertSame(AuthenticationStrength::MultiFactor, $ctx->authenticationStrength);
+        self::assertSame(['admin'], $claims['roles'] ?? []);
+        self::assertSame(['admin.panel'], $claims['permissions'] ?? []);
+        self::assertSame('Session Admin', $claims['name'] ?? null);
+        self::assertSame('multi_factor', $attributes['auth_assurance_profile'] ?? null);
+        self::assertSame('sess_pub_controller_ctx', $attributes['auth_session_public_id'] ?? null);
+        self::assertSame('devref_controller_ctx', $attributes['auth_device_reference'] ?? null);
+        self::assertSame('trusted', $attributes['auth_device_trust_state'] ?? null);
+        self::assertSame('tdv_controller_ctx', $attributes['auth_trusted_device_public_id'] ?? null);
+        self::assertTrue((bool) ($attributes['auth_trusted_device_credential_present'] ?? false));
+        self::assertSame(['pwd', 'mfa'], $attributes['amr'] ?? []);
     }
 }

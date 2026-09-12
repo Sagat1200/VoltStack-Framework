@@ -1767,6 +1767,12 @@ final class AuthManager implements AuthenticationManagerInterface
             (bool) $entry['has_trusted_device'],
         );
         $requiresReauthentication = (bool) $entry['requires_reauthentication'];
+        $managementAuthority = $scope === 'current'
+            ? 'session_owner'
+            : 'identity_owner';
+        $managementOwnershipProof = $scope === 'current'
+            ? 'current_session'
+            : 'identity_session';
         $managementSensitivity = ($requiresReauthentication || $scope !== 'current')
             ? 'elevated'
             : 'standard';
@@ -1794,6 +1800,8 @@ final class AuthManager implements AuthenticationManagerInterface
             requiresReauthentication: $requiresReauthentication,
             managementScope: $scope,
             managementMode: $requiresReauthentication ? 'fresh_auth_required' : 'direct',
+            managementAuthority: $managementAuthority,
+            managementOwnershipProof: $managementOwnershipProof,
             managementSensitivity: $managementSensitivity,
             managementReasonCode: $managementReasonCode,
             label: $entry['label'],

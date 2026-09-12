@@ -1688,6 +1688,8 @@ final class AuthManagerTest extends TestCase
                     'requires_reauthentication' => $device->requiresReauthentication,
                     'management_scope' => $device->managementScope,
                     'management_mode' => $device->managementMode,
+                    'management_authority' => $device->managementAuthority,
+                    'management_ownership_proof' => $device->managementOwnershipProof,
                     'management_sensitivity' => $device->managementSensitivity,
                     'management_reason_code' => $device->managementReasonCode,
                     'client_platform' => $device->clientPlatform,
@@ -1770,6 +1772,8 @@ final class AuthManagerTest extends TestCase
         self::assertFalse((bool) ($current['requires_reauthentication'] ?? true));
         self::assertSame('current', $current['management_scope'] ?? null);
         self::assertSame('direct', $current['management_mode'] ?? null);
+        self::assertSame('session_owner', $current['management_authority'] ?? null);
+        self::assertSame('current_session', $current['management_ownership_proof'] ?? null);
         self::assertSame('standard', $current['management_sensitivity'] ?? null);
         self::assertSame('trusted_device_management', $current['management_reason_code'] ?? null);
         self::assertSame('Windows', $current['client_platform'] ?? null);
@@ -1786,6 +1790,8 @@ final class AuthManagerTest extends TestCase
         self::assertFalse((bool) ($remote['requires_reauthentication'] ?? true));
         self::assertSame('peer', $remote['management_scope'] ?? null);
         self::assertSame('direct', $remote['management_mode'] ?? null);
+        self::assertSame('identity_owner', $remote['management_authority'] ?? null);
+        self::assertSame('identity_session', $remote['management_ownership_proof'] ?? null);
         self::assertSame('elevated', $remote['management_sensitivity'] ?? null);
         self::assertSame('remote_device_management', $remote['management_reason_code'] ?? null);
         self::assertSame('macOS', $remote['client_platform'] ?? null);
@@ -1843,6 +1849,8 @@ final class AuthManagerTest extends TestCase
                     'has_trusted_device' => $device->hasTrustedDevice,
                     'trusted_device_public_id' => $device->trustedDevicePublicId,
                     'management_scope' => $device->managementScope,
+                    'management_authority' => $device->managementAuthority,
+                    'management_ownership_proof' => $device->managementOwnershipProof,
                     'management_sensitivity' => $device->managementSensitivity,
                     'management_reason_code' => $device->managementReasonCode,
                 ], auth()->devices()),
@@ -1914,6 +1922,8 @@ final class AuthManagerTest extends TestCase
         self::assertSame(1, $current['session_count'] ?? null);
         self::assertFalse((bool) ($current['has_trusted_device'] ?? true));
         self::assertSame('current', $current['management_scope'] ?? null);
+        self::assertSame('session_owner', $current['management_authority'] ?? null);
+        self::assertSame('current_session', $current['management_ownership_proof'] ?? null);
         self::assertSame('standard', $current['management_sensitivity'] ?? null);
         self::assertSame('current_device_management', $current['management_reason_code'] ?? null);
 
@@ -1923,6 +1933,8 @@ final class AuthManagerTest extends TestCase
         self::assertIsString($remoteTrusted['trusted_device_public_id'] ?? null);
         self::assertStringStartsWith('tdv_', $remoteTrusted['trusted_device_public_id'] ?? '');
         self::assertSame('peer', $remoteTrusted['management_scope'] ?? null);
+        self::assertSame('identity_owner', $remoteTrusted['management_authority'] ?? null);
+        self::assertSame('identity_session', $remoteTrusted['management_ownership_proof'] ?? null);
         self::assertSame('elevated', $remoteTrusted['management_sensitivity'] ?? null);
         self::assertSame('remote_device_management', $remoteTrusted['management_reason_code'] ?? null);
     }
@@ -2108,6 +2120,8 @@ final class AuthManagerTest extends TestCase
                     'current' => $device->current,
                     'requires_reauthentication' => $device->requiresReauthentication,
                     'management_mode' => $device->managementMode,
+                    'management_authority' => $device->managementAuthority,
+                    'management_ownership_proof' => $device->managementOwnershipProof,
                     'management_sensitivity' => $device->managementSensitivity,
                     'management_reason_code' => $device->managementReasonCode,
                 ], auth()->devices()),
@@ -2204,6 +2218,8 @@ final class AuthManagerTest extends TestCase
         self::assertIsArray($remote);
         self::assertTrue((bool) ($remote['requires_reauthentication'] ?? false));
         self::assertSame('fresh_auth_required', $remote['management_mode'] ?? null);
+        self::assertSame('identity_owner', $remote['management_authority'] ?? null);
+        self::assertSame('identity_session', $remote['management_ownership_proof'] ?? null);
         self::assertSame('elevated', $remote['management_sensitivity'] ?? null);
         self::assertSame('fresh_authentication_required', $remote['management_reason_code'] ?? null);
 

@@ -130,11 +130,15 @@ PHP
         self::assertIsArray($elevated);
 
         self::assertSame('current_device_management', $standard['management_reason_code'] ?? null);
+        self::assertSame('identity_owner', $standard['management_authority'] ?? null);
+        self::assertSame('identity_session', $standard['management_ownership_proof'] ?? null);
         self::assertSame('devref_report_alpha', $standard['device_reference'] ?? null);
         self::assertSame(['sess_pub_report_alpha'], $standard['session_public_ids'] ?? []);
         self::assertNull($standard['trusted_device_public_id'] ?? null);
 
         self::assertSame('trusted_device_management', $elevated['management_reason_code'] ?? null);
+        self::assertSame('identity_owner', $elevated['management_authority'] ?? null);
+        self::assertSame('identity_session', $elevated['management_ownership_proof'] ?? null);
         self::assertSame('devref_report_beta', $elevated['device_reference'] ?? null);
         self::assertSame(['sess_pub_report_beta'], $elevated['session_public_ids'] ?? []);
         self::assertSame('tdv_report_beta', $elevated['trusted_device_public_id'] ?? null);

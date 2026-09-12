@@ -191,10 +191,12 @@ final class AuthSecurityCenterReportCommand extends Command
 
             foreach ($devices as $device) {
                 $output->writeln(sprintf(
-                    '  - %s | sessions=%d | trusted=%s | sensitivity=%s | platform=%s | kind=%s',
+                    '  - %s | sessions=%d | trusted=%s | authority=%s | proof=%s | sensitivity=%s | platform=%s | kind=%s',
                     $device['device_reference'],
                     $device['session_count'],
                     $device['has_trusted_device'] ? 'si' : 'no',
+                    $device['management_authority'],
+                    $device['management_ownership_proof'],
                     $device['management_sensitivity'],
                     $device['client_platform'] ?? 'n/a',
                     $device['device_kind'] ?? 'n/a',
@@ -292,6 +294,8 @@ final class AuthSecurityCenterReportCommand extends Command
                     'trust_state' => $session['trust_state'],
                     'session_count' => 0,
                     'has_trusted_device' => false,
+                    'management_authority' => 'identity_owner',
+                    'management_ownership_proof' => 'identity_session',
                     'trusted_device_public_id' => null,
                     'session_public_ids' => [],
                     'last_seen_at' => $session['last_seen_at'],
@@ -327,6 +331,8 @@ final class AuthSecurityCenterReportCommand extends Command
                     'trust_state' => 'trusted',
                     'session_count' => 0,
                     'has_trusted_device' => true,
+                    'management_authority' => 'identity_owner',
+                    'management_ownership_proof' => 'identity_session',
                     'trusted_device_public_id' => $includePublicIds ? $trusted['trusted_device_public_id'] : null,
                     'session_public_ids' => [],
                     'last_seen_at' => $trusted['last_seen_at'],

@@ -26,7 +26,7 @@ final class AuthSecurityCenterReportCommand extends Command
 
     public function usage(): string
     {
-        return 'auth:security-center:report [--now=timestamp] [--identity=value] [--type=value] [--include-public-ids] [--management-actors] [--json] [--verbose]';
+        return 'auth:security-center:report [--now=timestamp] [--identity=value] [--type=value] [--include-public-ids] [--management-actors] [--export-log=path] [--json] [--verbose]';
     }
 
     public function category(): string
@@ -42,6 +42,7 @@ final class AuthSecurityCenterReportCommand extends Command
             '--type=' => 'Filtra por tipo de identidad. Default: user.',
             '--include-public-ids' => 'Incluye session_public_ids y trusted_device_public_id en el detalle.',
             '--management-actors' => 'Incluye export operativo de actores con claims administrativas gobernadas.',
+            '--export-log=' => 'Anexa un snapshot JSONL durable del reporte operativo generado.',
             '--json' => 'Emite el reporte en JSON.',
             '--verbose' => 'Muestra distribuciones adicionales y metadatos del reporte.',
         ];
@@ -57,7 +58,9 @@ final class AuthSecurityCenterReportCommand extends Command
         $type = $this->resolveTypeFilter($input);
         $includePublicIds = $input->hasOption('include-public-ids');
         $includeManagementActors = $input->hasOption('management-actors');
+        $exportLogPath = $this->resolveOptionalStringOption($input, 'export-log');
         $json = $input->hasOption('json');
+        $generatedAt = $now ?? time();
 
         $activeSessions = array_values(array_filter(
             $sessions->all(),
@@ -156,7 +159,7 @@ final class AuthSecurityCenterReportCommand extends Command
         }
 
         $payload = [
-            'generated_at' => $now ?? time(),
+            'generated_at' => $generatedAt,
             'filters' => array_filter([
                 'identity' => $identity,
                 'type' => $identity !== null ? $type : null,
@@ -214,6 +217,13 @@ final class AuthSecurityCenterReportCommand extends Command
         if ($includeManagementActors) {
             $payload['management_actors'] = array_values($identity !== null ? $filteredManagementActors : $managementActors);
         }
+
+        $this->writeExportEvent($exportLogPath, [
+            'event' => 'security_center_report_exported',
+            'occurred_at' => $generatedAt,
+            'result' => 'exported',
+            'report' => $payload,
+        ]);
 
         if ($json) {
             $output->writeln((string) json_encode($payload, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
@@ -294,6 +304,11 @@ final class AuthSecurityCenterReportCommand extends Command
             }
         }
 
+        if ($exportLogPath !== null) {
+            $output->writeln();
+            $output->writeln(sprintf('Snapshot exportado en: %s', $exportLogPath));
+        }
+
         return 0;
     }
 
@@ -324,6 +339,15 @@ final class AuthSecurityCenterReportCommand extends Command
         return is_string($option) && trim($option) !== ''
             ? trim($option)
             : 'user';
+    }
+
+    private function resolveOptionalStringOption(Input $input, string $key): ?string
+    {
+        $option = $input->option($key);
+
+        return is_string($option) && trim($option) !== ''
+            ? trim($option)
+            : null;
     }
 
     /**
@@ -554,5 +578,27 @@ final class AuthSecurityCenterReportCommand extends Command
             array_map('strval', (array) ($actors[$key]['session_public_ids'] ?? [])),
             array_map('strval', (array) ($row['session_public_ids'] ?? [])),
         )));
+    }
+
+    /**
+     * @param array<string, mixed> $event
+     */
+    private function writeExportEvent(?string $path, array $event): void
+    {
+        if ($path === null) {
+            return;
+        }
+
+        $directory = dirname($path);
+
+        if ($directory !== '' && $directory !== '.' && ! is_dir($directory)) {
+            mkdir($directory, 0777, true);
+        }
+
+        file_put_contents(
+            $path,
+            (string) json_encode($event, JSON_THROW_ON_ERROR) . PHP_EOL,
+            FILE_APPEND,
+        );
     }
 }

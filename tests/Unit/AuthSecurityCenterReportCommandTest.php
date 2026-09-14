@@ -203,6 +203,82 @@ PHP
         self::assertSame(['sess_pub_report_delta'], $byIdentity['703']['session_public_ids'] ?? []);
     }
 
+    public function test_it_persists_a_safe_summary_snapshot_when_export_log_is_requested(): void
+    {
+        $seedNow = time();
+        $app = $this->bootstrappedApplication();
+        $this->seedSecurityCenterFixtures($app, $seedNow);
+        $exportLogPath = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'exports' . DIRECTORY_SEPARATOR . 'security-center-report.jsonl';
+
+        $command = new AuthSecurityCenterReportCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'auth:security-center:report',
+                '--now=' . $seedNow,
+                '--export-log=' . $exportLogPath,
+            ]),
+            $output,
+        );
+
+        $events = $this->readExportEvents($exportLogPath);
+
+        self::assertSame(0, $exitCode);
+        self::assertStringContainsString('Snapshot exportado en: ' . $exportLogPath, $output->stdout());
+        self::assertCount(1, $events);
+        self::assertSame('security_center_report_exported', $events[0]['event'] ?? null);
+        self::assertSame('exported', $events[0]['result'] ?? null);
+        self::assertSame(4, $events[0]['report']['summary']['active_sessions'] ?? null);
+        self::assertSame(4, $events[0]['report']['summary']['aggregated_devices'] ?? null);
+        self::assertArrayNotHasKey('devices', $events[0]['report']);
+        self::assertArrayNotHasKey('management_actors', $events[0]['report']);
+    }
+
+    public function test_it_persists_detailed_snapshot_only_when_identity_and_management_flags_are_requested(): void
+    {
+        $seedNow = time();
+        $app = $this->bootstrappedApplication();
+        $this->seedSecurityCenterFixtures($app, $seedNow);
+        $exportLogPath = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'exports' . DIRECTORY_SEPARATOR . 'security-center-report.jsonl';
+
+        $command = new AuthSecurityCenterReportCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'auth:security-center:report',
+                '--now=' . $seedNow,
+                '--identity=701',
+                '--type=user',
+                '--include-public-ids',
+                '--management-actors',
+                '--export-log=' . $exportLogPath,
+                '--json',
+            ]),
+            $output,
+        );
+
+        $events = $this->readExportEvents($exportLogPath);
+
+        self::assertSame(0, $exitCode);
+        self::assertCount(1, $events);
+        self::assertSame('701', $events[0]['report']['filters']['identity'] ?? null);
+        self::assertTrue((bool) ($events[0]['report']['filters']['include_public_ids'] ?? false));
+        self::assertTrue((bool) ($events[0]['report']['filters']['management_actors'] ?? false));
+        self::assertCount(2, $events[0]['report']['devices'] ?? []);
+        self::assertCount(0, $events[0]['report']['management_actors'] ?? []);
+
+        $devices = $events[0]['report']['devices'] ?? [];
+        $elevated = array_values(array_filter($devices, static fn (array $device): bool => ($device['management_sensitivity'] ?? null) === 'elevated'))[0] ?? null;
+
+        self::assertIsArray($elevated);
+        self::assertSame(['sess_pub_report_beta'], $elevated['session_public_ids'] ?? []);
+        self::assertSame('tdv_report_beta', $elevated['trusted_device_public_id'] ?? null);
+    }
+
     private function seedSecurityCenterFixtures(Application $app, int $seedNow): void
     {
         $sessions = $app->make(AuthenticationSessionRepositoryInterface::class);
@@ -341,6 +417,22 @@ PHP
         self::assertInstanceOf(Application::class, $app);
 
         return $app;
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function readExportEvents(string $path): array
+    {
+        self::assertFileExists($path);
+
+        $lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        self::assertIsArray($lines);
+
+        return array_values(array_map(
+            static fn (string $line): array => json_decode($line, true, 512, JSON_THROW_ON_ERROR),
+            $lines,
+        ));
     }
 
     private function deleteDirectory(string $path): void

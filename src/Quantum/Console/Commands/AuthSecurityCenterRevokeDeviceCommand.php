@@ -28,7 +28,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
 
     public function usage(): string
     {
-        return 'auth:security-center:revoke-device --identity=value --device-reference=value --actor-identity=value --actor-session-public-id=value [--type=value] [--actor-type=value] [--scope=all|sessions|trusted-devices] [--include-public-ids] [--dry-run] [--json] [--verbose]';
+        return 'auth:security-center:revoke-device --identity=value --device-reference=value --actor-identity=value --actor-session-public-id=value [--type=value] [--actor-type=value] [--scope=all|sessions|trusted-devices] [--include-public-ids] [--audit-log=path] [--dry-run] [--json] [--verbose]';
     }
 
     public function category(): string
@@ -47,6 +47,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             '--actor-type=' => 'Tipo de identidad del actor. Default: user.',
             '--scope=' => 'Alcance de la revocacion: all, sessions o trusted-devices. Default: all.',
             '--include-public-ids' => 'Incluye session_public_ids y trusted_device_public_ids en el resultado.',
+            '--audit-log=' => 'Anexa un evento JSONL durable con actor, target y resultado operativo.',
             '--dry-run' => 'Calcula la revocacion sin persistir cambios.',
             '--json' => 'Emite el resultado en JSON.',
             '--verbose' => 'Muestra detalle adicional del driver, filtro y conteos.',
@@ -63,27 +64,92 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         $actorType = $this->resolveActorType($input);
         $scope = $this->resolveScope($input);
         $includePublicIds = $input->hasOption('include-public-ids');
+        $auditLogPath = $this->resolveOptionalStringOption($input, 'audit-log');
         $dryRun = $input->hasOption('dry-run');
         $json = $input->hasOption('json');
         $now = $this->resolveNow($input);
+        $eventTimestamp = $now ?? time();
 
         if ($identity === null) {
+            $this->writeAuditEvent($auditLogPath, [
+                'event' => 'security_center_device_revocation_rejected',
+                'occurred_at' => $eventTimestamp,
+                'result' => 'validation_failed',
+                'reason_code' => 'missing_identity',
+            ]);
+
             return $this->renderValidationFailure($output, $json, 'La opcion --identity es obligatoria.');
         }
 
         if ($deviceReference === null) {
+            $this->writeAuditEvent($auditLogPath, [
+                'event' => 'security_center_device_revocation_rejected',
+                'occurred_at' => $eventTimestamp,
+                'result' => 'validation_failed',
+                'reason_code' => 'missing_device_reference',
+                'target' => [
+                    'identity' => $identity,
+                    'type' => $type,
+                ],
+            ]);
+
             return $this->renderValidationFailure($output, $json, 'La opcion --device-reference es obligatoria.');
         }
 
         if ($actorIdentity === null) {
+            $this->writeAuditEvent($auditLogPath, [
+                'event' => 'security_center_device_revocation_rejected',
+                'occurred_at' => $eventTimestamp,
+                'result' => 'validation_failed',
+                'reason_code' => 'missing_actor_identity',
+                'target' => [
+                    'identity' => $identity,
+                    'type' => $type,
+                    'device_reference' => $deviceReference,
+                ],
+            ]);
+
             return $this->renderValidationFailure($output, $json, 'La opcion --actor-identity es obligatoria.');
         }
 
         if ($actorSessionPublicId === null) {
+            $this->writeAuditEvent($auditLogPath, [
+                'event' => 'security_center_device_revocation_rejected',
+                'occurred_at' => $eventTimestamp,
+                'result' => 'validation_failed',
+                'reason_code' => 'missing_actor_session_public_id',
+                'target' => [
+                    'identity' => $identity,
+                    'type' => $type,
+                    'device_reference' => $deviceReference,
+                ],
+                'actor' => [
+                    'identity' => $actorIdentity,
+                    'type' => $actorType,
+                ],
+            ]);
+
             return $this->renderValidationFailure($output, $json, 'La opcion --actor-session-public-id es obligatoria.');
         }
 
         if ($scope === null) {
+            $this->writeAuditEvent($auditLogPath, [
+                'event' => 'security_center_device_revocation_rejected',
+                'occurred_at' => $eventTimestamp,
+                'result' => 'validation_failed',
+                'reason_code' => 'invalid_scope',
+                'target' => [
+                    'identity' => $identity,
+                    'type' => $type,
+                    'device_reference' => $deviceReference,
+                ],
+                'actor' => [
+                    'identity' => $actorIdentity,
+                    'type' => $actorType,
+                    'session_public_id' => $actorSessionPublicId,
+                ],
+            ]);
+
             return $this->renderValidationFailure(
                 $output,
                 $json,
@@ -103,6 +169,24 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         );
 
         if ($actorAuthorization === null) {
+            $this->writeAuditEvent($auditLogPath, [
+                'event' => 'security_center_device_revocation_rejected',
+                'occurred_at' => $eventTimestamp,
+                'result' => 'authorization_failed',
+                'reason_code' => 'unauthorized_management_actor',
+                'target' => [
+                    'identity' => $identity,
+                    'type' => $type,
+                    'device_reference' => $deviceReference,
+                    'scope' => $scope,
+                ],
+                'actor' => [
+                    'identity' => $actorIdentity,
+                    'type' => $actorType,
+                    'session_public_id' => $actorSessionPublicId,
+                ],
+            ]);
+
             return $this->renderAuthorizationFailure(
                 $output,
                 $json,
@@ -121,7 +205,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         $trustedDevicesToRevoke = $scope === 'sessions' ? [] : $matchedTrustedDevices;
 
         $payload = [
-            'generated_at' => $now ?? time(),
+            'generated_at' => $eventTimestamp,
             'filters' => [
                 'identity' => $identity,
                 'type' => $type,
@@ -181,6 +265,31 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 $trustedDevices->delete($device->publicId->value);
             }
         }
+
+        $this->writeAuditEvent($auditLogPath, [
+            'event' => 'security_center_device_revocation_' . ($dryRun ? 'planned' : 'executed'),
+            'occurred_at' => $eventTimestamp,
+            'result' => $dryRun ? 'dry_run' : 'executed',
+            'target' => [
+                'identity' => $identity,
+                'type' => $type,
+                'device_reference' => $deviceReference,
+                'scope' => $scope,
+            ],
+            'actor' => [
+                'identity' => $actorIdentity,
+                'type' => $actorType,
+                'session_public_id' => $actorSessionPublicId,
+                'management_authority' => $actorContext->managementAuthority(),
+                'management_ownership_proof' => $actorContext->managementOwnershipProof(),
+                'management_claims_source' => $actorContext->managementClaimsSource(),
+                'management_privilege_level' => $actorContext->managementPrivilegeLevel(),
+                'management_authorization_mode' => $actorAuthorizationMode,
+                'management_scopes' => $actorContext->managementScopes(),
+            ],
+            'summary' => $payload['summary'],
+            'detail' => $payload['detail'] ?? null,
+        ]);
 
         if ($json) {
             $output->writeln((string) json_encode($payload, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
@@ -260,6 +369,11 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             : null;
     }
 
+    private function resolveOptionalStringOption(Input $input, string $key): ?string
+    {
+        return $this->resolveRequiredStringOption($input, $key);
+    }
+
     private function resolveType(Input $input): string
     {
         $type = $input->option('type');
@@ -322,6 +436,28 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         $output->error($message);
 
         return 1;
+    }
+
+    /**
+     * @param array<string, mixed> $event
+     */
+    private function writeAuditEvent(?string $path, array $event): void
+    {
+        if ($path === null) {
+            return;
+        }
+
+        $directory = dirname($path);
+
+        if ($directory !== '' && $directory !== '.' && ! is_dir($directory)) {
+            mkdir($directory, 0777, true);
+        }
+
+        file_put_contents(
+            $path,
+            (string) json_encode($event, JSON_THROW_ON_ERROR) . PHP_EOL,
+            FILE_APPEND,
+        );
     }
 
     /**

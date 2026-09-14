@@ -66,6 +66,7 @@ PHP
         $seedNow = time();
         $app = $this->bootstrappedApplication();
         $this->seedFixtures($app, $seedNow);
+        $auditLogPath = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'audit' . DIRECTORY_SEPARATOR . 'security-center.jsonl';
 
         $command = new AuthSecurityCenterRevokeDeviceCommand($this->basePath);
         $output = new Output();
@@ -81,6 +82,7 @@ PHP
                 '--actor-type=user',
                 '--actor-session-public-id=sess_pub_ops_admin',
                 '--include-public-ids',
+                '--audit-log=' . $auditLogPath,
                 '--dry-run',
                 '--verbose',
             ]),
@@ -102,6 +104,15 @@ PHP
         self::assertStringContainsString('Actor autorizado: user:901 | authority=administrative_actor | privilege=privileged_admin | mode=direct_admin | scopes=security_center_export,admin_device_management', $output->stdout());
         self::assertStringContainsString('session_public_ids=sess_pub_admin_alpha,sess_pub_admin_alpha_peer', $output->stdout());
         self::assertStringContainsString('trusted_device_public_ids=tdv_admin_alpha', $output->stdout());
+
+        $events = $this->readAuditEvents($auditLogPath);
+        self::assertCount(1, $events);
+        self::assertSame('security_center_device_revocation_planned', $events[0]['event'] ?? null);
+        self::assertSame('dry_run', $events[0]['result'] ?? null);
+        self::assertSame('direct_admin', $events[0]['actor']['management_authorization_mode'] ?? null);
+        self::assertSame('801', $events[0]['target']['identity'] ?? null);
+        self::assertSame(2, $events[0]['summary']['revoked_sessions'] ?? null);
+        self::assertSame(1, $events[0]['summary']['revoked_trusted_devices'] ?? null);
     }
 
     public function test_it_revokes_sessions_and_trusted_devices_for_an_aggregated_device(): void
@@ -109,6 +120,7 @@ PHP
         $seedNow = time();
         $app = $this->bootstrappedApplication();
         $this->seedFixtures($app, $seedNow);
+        $auditLogPath = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'audit' . DIRECTORY_SEPARATOR . 'security-center.jsonl';
 
         $command = new AuthSecurityCenterRevokeDeviceCommand($this->basePath);
         $output = new Output();
@@ -124,6 +136,7 @@ PHP
                 '--actor-type=user',
                 '--actor-session-public-id=sess_pub_ops_admin',
                 '--include-public-ids',
+                '--audit-log=' . $auditLogPath,
             ]),
             $output,
         );
@@ -146,6 +159,13 @@ PHP
         self::assertNull($trustedDevices->find('tdv_admin_alpha'));
         self::assertInstanceOf(TrustedDevice::class, $trustedDevices->find('tdv_admin_beta'));
         self::assertStringContainsString('Revocacion operacional ejecutada correctamente.', $output->stdout());
+
+        $events = $this->readAuditEvents($auditLogPath);
+        self::assertCount(1, $events);
+        self::assertSame('security_center_device_revocation_executed', $events[0]['event'] ?? null);
+        self::assertSame('executed', $events[0]['result'] ?? null);
+        self::assertSame('privileged_admin', $events[0]['actor']['management_privilege_level'] ?? null);
+        self::assertSame('devref_admin_alpha', $events[0]['target']['device_reference'] ?? null);
     }
 
     public function test_it_can_limit_the_revocation_scope_to_trusted_devices(): void
@@ -239,6 +259,7 @@ PHP
         $seedNow = time();
         $app = $this->bootstrappedApplication();
         $this->seedFixtures($app, $seedNow);
+        $auditLogPath = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'audit' . DIRECTORY_SEPARATOR . 'security-center.jsonl';
 
         $command = new AuthSecurityCenterRevokeDeviceCommand($this->basePath);
         $output = new Output();
@@ -253,6 +274,7 @@ PHP
                 '--actor-identity=802',
                 '--actor-type=user',
                 '--actor-session-public-id=sess_pub_other',
+                '--audit-log=' . $auditLogPath,
                 '--json',
             ]),
             $output,
@@ -271,6 +293,13 @@ PHP
         );
         self::assertInstanceOf(AuthenticationSession::class, $sessions->find('session-admin-alpha'));
         self::assertInstanceOf(TrustedDevice::class, $trustedDevices->find('tdv_admin_alpha'));
+
+        $events = $this->readAuditEvents($auditLogPath);
+        self::assertCount(1, $events);
+        self::assertSame('security_center_device_revocation_rejected', $events[0]['event'] ?? null);
+        self::assertSame('authorization_failed', $events[0]['result'] ?? null);
+        self::assertSame('unauthorized_management_actor', $events[0]['reason_code'] ?? null);
+        self::assertSame('802', $events[0]['actor']['identity'] ?? null);
     }
 
     private function seedFixtures(Application $app, int $seedNow): void
@@ -434,6 +463,22 @@ PHP
         self::assertInstanceOf(Application::class, $app);
 
         return $app;
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function readAuditEvents(string $path): array
+    {
+        self::assertFileExists($path);
+
+        $lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        self::assertIsArray($lines);
+
+        return array_values(array_map(
+            static fn (string $line): array => json_decode($line, true, 512, JSON_THROW_ON_ERROR),
+            $lines,
+        ));
     }
 
     private function deleteDirectory(string $path): void

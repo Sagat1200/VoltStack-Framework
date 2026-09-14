@@ -109,7 +109,9 @@ PHP
         self::assertCount(1, $events);
         self::assertSame('security_center_device_revocation_planned', $events[0]['event'] ?? null);
         self::assertSame('dry_run', $events[0]['result'] ?? null);
+        self::assertTrue((bool) ($events[0]['actor']['management_authorized'] ?? false));
         self::assertSame('direct_admin', $events[0]['actor']['management_authorization_mode'] ?? null);
+        self::assertNull($events[0]['actor']['management_authorization_reason_code'] ?? null);
         self::assertSame('801', $events[0]['target']['identity'] ?? null);
         self::assertSame(2, $events[0]['summary']['revoked_sessions'] ?? null);
         self::assertSame(1, $events[0]['summary']['revoked_trusted_devices'] ?? null);
@@ -203,7 +205,9 @@ PHP
         self::assertSame('901', $payload['actor']['identity'] ?? null);
         self::assertSame('administrative_actor', $payload['actor']['management_authority'] ?? null);
         self::assertSame('privileged_admin', $payload['actor']['management_privilege_level'] ?? null);
+        self::assertTrue((bool) ($payload['actor']['management_authorized'] ?? false));
         self::assertSame('direct_admin', $payload['actor']['management_authorization_mode'] ?? null);
+        self::assertNull($payload['actor']['management_authorization_reason_code'] ?? null);
         self::assertSame(2, $payload['summary']['matched_sessions'] ?? null);
         self::assertSame(1, $payload['summary']['matched_trusted_devices'] ?? null);
         self::assertSame(0, $payload['summary']['revoked_sessions'] ?? null);
@@ -245,7 +249,9 @@ PHP
         self::assertSame(0, $exitCode);
         self::assertSame('902', $payload['actor']['identity'] ?? null);
         self::assertSame('delegated_support', $payload['actor']['management_privilege_level'] ?? null);
+        self::assertTrue((bool) ($payload['actor']['management_authorized'] ?? false));
         self::assertSame('delegated_admin', $payload['actor']['management_authorization_mode'] ?? null);
+        self::assertNull($payload['actor']['management_authorization_reason_code'] ?? null);
         self::assertSame(1, $payload['summary']['matched_sessions'] ?? null);
         self::assertSame(1, $payload['summary']['matched_trusted_devices'] ?? null);
         self::assertSame(1, $payload['summary']['revoked_sessions'] ?? null);
@@ -300,6 +306,7 @@ PHP
         self::assertSame('authorization_failed', $events[0]['result'] ?? null);
         self::assertSame('unauthorized_management_actor', $events[0]['reason_code'] ?? null);
         self::assertSame('802', $events[0]['actor']['identity'] ?? null);
+        self::assertSame('not_administrative_actor', $events[0]['actor']['management_authorization_reason_code'] ?? null);
     }
 
     private function seedFixtures(Application $app, int $seedNow): void

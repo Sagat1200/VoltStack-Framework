@@ -168,7 +168,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             $now,
         );
 
-        if ($actorAuthorization === null) {
+        if ($actorAuthorization === null || ! (bool) ($actorAuthorization['authorized'] ?? false)) {
             $this->writeAuditEvent($auditLogPath, [
                 'event' => 'security_center_device_revocation_rejected',
                 'occurred_at' => $eventTimestamp,
@@ -184,6 +184,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                     'identity' => $actorIdentity,
                     'type' => $actorType,
                     'session_public_id' => $actorSessionPublicId,
+                    'management_authorization_reason_code' => $actorAuthorization['authorization_reason_code'] ?? null,
                 ],
             ]);
 
@@ -231,7 +232,9 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 'management_ownership_proof' => $actorContext->managementOwnershipProof(),
                 'management_claims_source' => $actorContext->managementClaimsSource(),
                 'management_privilege_level' => $actorContext->managementPrivilegeLevel(),
+                'management_authorized' => true,
                 'management_authorization_mode' => $actorAuthorizationMode,
+                'management_authorization_reason_code' => $actorContext->managementAuthorizationReasonCode(),
                 'management_scopes' => $actorContext->managementScopes(),
                 'authorized' => true,
             ],
@@ -284,7 +287,9 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 'management_ownership_proof' => $actorContext->managementOwnershipProof(),
                 'management_claims_source' => $actorContext->managementClaimsSource(),
                 'management_privilege_level' => $actorContext->managementPrivilegeLevel(),
+                'management_authorized' => true,
                 'management_authorization_mode' => $actorAuthorizationMode,
+                'management_authorization_reason_code' => $actorContext->managementAuthorizationReasonCode(),
                 'management_scopes' => $actorContext->managementScopes(),
             ],
             'summary' => $payload['summary'],
@@ -541,15 +546,11 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 attributes: $session->attributes,
             );
 
-            $authorizationMode = $context->managementAuthorizationMode();
-
-            if ($authorizationMode === null) {
-                return null;
-            }
-
             return [
                 'context' => $context,
-                'authorization_mode' => $authorizationMode,
+                'authorized' => $context->canAdministrativelyManageDevices(),
+                'authorization_mode' => $context->managementAuthorizationMode(),
+                'authorization_reason_code' => $context->managementAuthorizationReasonCode(),
             ];
         }
 

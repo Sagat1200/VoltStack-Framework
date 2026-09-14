@@ -511,13 +511,7 @@ final class AuthSecurityCenterReportCommand extends Command
             attributes: $session->attributes,
         );
 
-        $claimsSource = $context->managementClaimsSource();
-        $privilegeLevel = $context->managementPrivilegeLevel();
-        $authority = $context->managementAuthority();
-
-        if ($claimsSource === 'self_service_defaults'
-            && $privilegeLevel === 'self_service'
-            && $authority !== 'administrative_actor') {
+        if (! $context->hasGovernedManagementClaims()) {
             return null;
         }
 
@@ -526,11 +520,13 @@ final class AuthSecurityCenterReportCommand extends Command
             'identity_type' => $session->reference->type,
             'session_count' => 1,
             'last_seen_at' => $this->timestampAttribute($session->attributes, 'session_last_activity_at') ?? $session->issuedAt,
-            'management_authority' => $authority,
+            'management_authority' => $context->managementAuthority(),
             'management_ownership_proof' => $context->managementOwnershipProof(),
-            'management_claims_source' => $claimsSource,
-            'management_privilege_level' => $privilegeLevel,
+            'management_claims_source' => $context->managementClaimsSource(),
+            'management_privilege_level' => $context->managementPrivilegeLevel(),
+            'management_authorized' => $context->canAdministrativelyManageDevices(),
             'management_authorization_mode' => $context->managementAuthorizationMode(),
+            'management_authorization_reason_code' => $context->managementAuthorizationReasonCode(),
             'management_scopes' => $context->managementScopes(),
         ];
 

@@ -191,16 +191,66 @@ PHP
         self::assertSame('administrative_actor', $byIdentity['702']['management_authority'] ?? null);
         self::assertSame('identity_attributes', $byIdentity['702']['management_claims_source'] ?? null);
         self::assertSame('privileged_admin', $byIdentity['702']['management_privilege_level'] ?? null);
+        self::assertTrue((bool) ($byIdentity['702']['management_authorized'] ?? false));
         self::assertSame('direct_admin', $byIdentity['702']['management_authorization_mode'] ?? null);
+        self::assertNull($byIdentity['702']['management_authorization_reason_code'] ?? null);
         self::assertSame(['security_center_export', 'admin_device_management'], $byIdentity['702']['management_scopes'] ?? []);
         self::assertSame(['sess_pub_report_gamma'], $byIdentity['702']['session_public_ids'] ?? []);
 
         self::assertSame('administrative_actor', $byIdentity['703']['management_authority'] ?? null);
         self::assertSame('identity_attributes', $byIdentity['703']['management_claims_source'] ?? null);
         self::assertSame('delegated_support', $byIdentity['703']['management_privilege_level'] ?? null);
+        self::assertTrue((bool) ($byIdentity['703']['management_authorized'] ?? false));
         self::assertSame('delegated_admin', $byIdentity['703']['management_authorization_mode'] ?? null);
+        self::assertNull($byIdentity['703']['management_authorization_reason_code'] ?? null);
         self::assertSame(['admin_device_management'], $byIdentity['703']['management_scopes'] ?? []);
         self::assertSame(['sess_pub_report_delta'], $byIdentity['703']['session_public_ids'] ?? []);
+    }
+
+    public function test_it_exports_governed_actor_with_rejection_reason_when_claims_are_present_but_scope_is_insufficient(): void
+    {
+        $seedNow = time();
+        $app = $this->bootstrappedApplication();
+        $this->seedSecurityCenterFixtures($app, $seedNow);
+        $this->seedRejectedGovernedActor($app, $seedNow);
+
+        $command = new AuthSecurityCenterReportCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'auth:security-center:report',
+                '--now=' . $seedNow,
+                '--management-actors',
+                '--include-public-ids',
+                '--json',
+            ]),
+            $output,
+        );
+
+        /** @var array<string, mixed> $payload */
+        $payload = json_decode($output->stdout(), true, 512, JSON_THROW_ON_ERROR);
+        $actors = $payload['management_actors'] ?? [];
+        $byIdentity = [];
+
+        foreach ($actors as $actor) {
+            $byIdentity[(string) ($actor['identity_identifier'] ?? '')] = $actor;
+        }
+
+        self::assertSame(0, $exitCode);
+        self::assertSame(3, $payload['summary']['governed_management_sessions'] ?? null);
+        self::assertSame(3, $payload['summary']['governed_management_identities'] ?? null);
+        self::assertCount(3, $actors);
+        self::assertFalse((bool) ($byIdentity['704']['management_authorized'] ?? true));
+        self::assertArrayHasKey('management_authorization_mode', $byIdentity['704']);
+        self::assertNull($byIdentity['704']['management_authorization_mode']);
+        self::assertSame(
+            'missing_admin_device_management_scope',
+            $byIdentity['704']['management_authorization_reason_code'] ?? null,
+        );
+        self::assertSame(['security_center_export'], $byIdentity['704']['management_scopes'] ?? []);
+        self::assertSame(['sess_pub_report_epsilon'], $byIdentity['704']['session_public_ids'] ?? []);
     }
 
     public function test_it_persists_a_safe_summary_snapshot_when_export_log_is_requested(): void
@@ -406,6 +456,45 @@ PHP
                 'label' => 'Trusted laptop',
                 'client_platform' => 'macOS',
                 'device_kind' => 'desktop',
+            ],
+        ));
+    }
+
+    private function seedRejectedGovernedActor(Application $app, int $seedNow): void
+    {
+        $sessions = $app->make(AuthenticationSessionRepositoryInterface::class);
+
+        $identity = new GenericIdentity(
+            identifier: new IdentityIdentifier('704'),
+            type: 'user',
+            attributes: [
+                'name' => 'Report Only Admin',
+                'auth_management_authority' => 'administrative_actor',
+                'auth_management_ownership_proof' => 'privileged_session',
+                'auth_management_scopes' => [
+                    'security_center_export',
+                ],
+                'auth_management_claims_source' => 'identity_attributes',
+                'auth_management_privilege_level' => 'privileged_admin',
+            ],
+        );
+        $reference = new IdentityReference($identity->identifier(), $identity->type());
+
+        $sessions->save(new AuthenticationSession(
+            id: new AuthenticationSessionId('session-report-epsilon'),
+            identity: $identity,
+            reference: $reference,
+            method: 'password',
+            issuedAt: $seedNow - 30,
+            expiresAt: $seedNow + 600,
+            attributes: [
+                'session_public_id' => 'sess_pub_report_epsilon',
+                'session_device_reference' => 'devref_report_epsilon',
+                'session_device_trust_state' => 'unknown',
+                'session_client_platform' => 'Linux',
+                'session_device_kind' => 'desktop',
+                'session_label' => 'Report only admin terminal',
+                'session_last_activity_at' => $seedNow - 3,
             ],
         ));
     }

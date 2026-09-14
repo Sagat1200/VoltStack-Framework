@@ -200,8 +200,10 @@ final class AuthDomainModelTest extends TestCase
         ], $context->managementScopes());
         self::assertSame('self_service_defaults', $context->managementClaimsSource());
         self::assertSame('self_service', $context->managementPrivilegeLevel());
+        self::assertFalse($context->hasGovernedManagementClaims());
         self::assertFalse($context->canAdministrativelyManageDevices());
         self::assertNull($context->managementAuthorizationMode());
+        self::assertSame('not_administrative_actor', $context->managementAuthorizationReasonCode());
     }
 
     public function test_authentication_context_exposes_explicit_management_claim_overrides(): void
@@ -237,8 +239,10 @@ final class AuthDomainModelTest extends TestCase
         ], $context->managementScopes());
         self::assertSame('runtime_override', $context->managementClaimsSource());
         self::assertSame('delegated_support', $context->managementPrivilegeLevel());
+        self::assertFalse($context->hasGovernedManagementClaims());
         self::assertFalse($context->canAdministrativelyManageDevices());
         self::assertNull($context->managementAuthorizationMode());
+        self::assertSame('not_administrative_actor', $context->managementAuthorizationReasonCode());
     }
 
     public function test_authentication_context_falls_back_to_identity_attributes_for_privileged_management_claims(): void
@@ -275,8 +279,10 @@ final class AuthDomainModelTest extends TestCase
         ], $context->managementScopes());
         self::assertSame('identity_attributes', $context->managementClaimsSource());
         self::assertSame('privileged_admin', $context->managementPrivilegeLevel());
+        self::assertTrue($context->hasGovernedManagementClaims());
         self::assertTrue($context->canAdministrativelyManageDevices());
         self::assertSame('direct_admin', $context->managementAuthorizationMode());
+        self::assertNull($context->managementAuthorizationReasonCode());
     }
 
     public function test_authentication_context_authorizes_delegated_admin_device_management_from_identity_attributes(): void
@@ -304,8 +310,41 @@ final class AuthDomainModelTest extends TestCase
             attributes: [],
         );
 
+        self::assertTrue($context->hasGovernedManagementClaims());
         self::assertTrue($context->canAdministrativelyManageDevices());
         self::assertSame('delegated_admin', $context->managementAuthorizationMode());
+        self::assertNull($context->managementAuthorizationReasonCode());
+    }
+
+    public function test_authentication_context_exposes_reason_for_governed_actor_rejected_without_device_management_scope(): void
+    {
+        $identity = new GenericIdentity(
+            identifier: new IdentityIdentifier('93'),
+            type: 'user',
+            attributes: [
+                'name' => 'Report Only Admin',
+                'auth_management_authority' => 'administrative_actor',
+                'auth_management_ownership_proof' => 'privileged_session',
+                'auth_management_scopes' => [
+                    'security_center_export',
+                ],
+                'auth_management_claims_source' => 'identity_attributes',
+                'auth_management_privilege_level' => 'privileged_admin',
+            ],
+        );
+
+        $context = new AuthenticationContext(
+            identity: $identity,
+            reference: new IdentityReference($identity->identifier(), $identity->type()),
+            requestId: 'req-11',
+            method: 'password',
+            attributes: [],
+        );
+
+        self::assertTrue($context->hasGovernedManagementClaims());
+        self::assertFalse($context->canAdministrativelyManageDevices());
+        self::assertNull($context->managementAuthorizationMode());
+        self::assertSame('missing_admin_device_management_scope', $context->managementAuthorizationReasonCode());
     }
 
 

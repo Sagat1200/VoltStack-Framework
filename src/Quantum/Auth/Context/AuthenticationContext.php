@@ -161,26 +161,57 @@ final readonly class AuthenticationContext
             : 'self_service';
     }
 
+    public function hasGovernedManagementClaims(): bool
+    {
+        return $this->managementAuthority() === 'administrative_actor'
+            && $this->managementClaimsSource() === 'identity_attributes';
+    }
+
     public function canAdministrativelyManageDevices(): bool
     {
-        return $this->managementAuthorizationMode() !== null;
+        return $this->managementDeviceAuthorizationDecision()['authorized'];
     }
 
     public function managementAuthorizationMode(): ?string
     {
+        return $this->managementDeviceAuthorizationDecision()['authorization_mode'];
+    }
+
+    public function managementAuthorizationReasonCode(): ?string
+    {
+        return $this->managementDeviceAuthorizationDecision()['reason_code'];
+    }
+
+    /**
+     * @return array{authorized: bool, authorization_mode: ?string, reason_code: ?string}
+     */
+    private function managementDeviceAuthorizationDecision(): array
+    {
         if ($this->managementAuthority() !== 'administrative_actor') {
-            return null;
+            return [
+                'authorized' => false,
+                'authorization_mode' => null,
+                'reason_code' => 'not_administrative_actor',
+            ];
         }
 
         if ($this->managementClaimsSource() !== 'identity_attributes') {
-            return null;
+            return [
+                'authorized' => false,
+                'authorization_mode' => null,
+                'reason_code' => 'unsupported_management_claims_source',
+            ];
         }
 
         if (! in_array('admin_device_management', $this->managementScopes(), true)) {
-            return null;
+            return [
+                'authorized' => false,
+                'authorization_mode' => null,
+                'reason_code' => 'missing_admin_device_management_scope',
+            ];
         }
 
-        return match ($this->managementPrivilegeLevel()) {
+        $authorizationMode = match ($this->managementPrivilegeLevel()) {
             'privileged_admin' => 'direct_admin',
             'delegated_support' => in_array($this->managementOwnershipProof(), [
                 'delegated_session',
@@ -190,6 +221,22 @@ final readonly class AuthenticationContext
                 : null,
             default => null,
         };
+
+        if ($authorizationMode !== null) {
+            return [
+                'authorized' => true,
+                'authorization_mode' => $authorizationMode,
+                'reason_code' => null,
+            ];
+        }
+
+        return [
+            'authorized' => false,
+            'authorization_mode' => null,
+            'reason_code' => $this->managementPrivilegeLevel() === 'delegated_support'
+                ? 'invalid_delegated_management_proof'
+                : 'unsupported_management_privilege_level',
+        ];
     }
 
     private function managementStringAttribute(string $key): ?string

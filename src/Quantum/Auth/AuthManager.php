@@ -1760,6 +1760,7 @@ final class AuthManager implements AuthenticationManagerInterface
      */
     private function toDeviceInventorySummary(array $entry): DeviceInventorySummary
     {
+        $context = $this->context();
         $scope = $this->deviceInventoryScope(
             (bool) $entry['current'],
             (int) $entry['session_count'],
@@ -1784,6 +1785,10 @@ final class AuthManager implements AuthenticationManagerInterface
                     ? 'trusted_device_management'
                     : 'current_device_management',
             };
+        $managementActorGoverned = $context?->hasGovernedManagementClaims() ?? false;
+        $managementActorAuthorized = $context?->canAdministrativelyManageDevices() ?? false;
+        $managementActorAuthorizationMode = $context?->managementAuthorizationMode();
+        $managementActorAuthorizationReasonCode = $context?->managementAuthorizationReasonCode();
 
         return new DeviceInventorySummary(
             deviceReference: $entry['device_reference'],
@@ -1804,6 +1809,10 @@ final class AuthManager implements AuthenticationManagerInterface
             managementOwnershipProof: $managementOwnershipProof,
             managementSensitivity: $managementSensitivity,
             managementReasonCode: $managementReasonCode,
+            managementActorGoverned: $managementActorGoverned,
+            managementActorAuthorized: $managementActorAuthorized,
+            managementActorAuthorizationMode: $managementActorAuthorizationMode,
+            managementActorAuthorizationReasonCode: $managementActorAuthorizationReasonCode,
             label: $entry['label'],
             clientFamily: $entry['client_family'],
             clientPlatform: $entry['client_platform'],

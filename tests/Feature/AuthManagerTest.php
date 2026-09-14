@@ -1692,6 +1692,10 @@ final class AuthManagerTest extends TestCase
                     'management_ownership_proof' => $device->managementOwnershipProof,
                     'management_sensitivity' => $device->managementSensitivity,
                     'management_reason_code' => $device->managementReasonCode,
+                    'management_actor_governed' => $device->managementActorGoverned,
+                    'management_actor_authorized' => $device->managementActorAuthorized,
+                    'management_actor_authorization_mode' => $device->managementActorAuthorizationMode,
+                    'management_actor_authorization_reason_code' => $device->managementActorAuthorizationReasonCode,
                     'client_platform' => $device->clientPlatform,
                     'device_kind' => $device->deviceKind,
                 ], auth()->devices()),
@@ -1776,6 +1780,10 @@ final class AuthManagerTest extends TestCase
         self::assertSame('current_session', $current['management_ownership_proof'] ?? null);
         self::assertSame('standard', $current['management_sensitivity'] ?? null);
         self::assertSame('trusted_device_management', $current['management_reason_code'] ?? null);
+        self::assertFalse((bool) ($current['management_actor_governed'] ?? true));
+        self::assertFalse((bool) ($current['management_actor_authorized'] ?? true));
+        self::assertNull($current['management_actor_authorization_mode'] ?? null);
+        self::assertSame('not_administrative_actor', $current['management_actor_authorization_reason_code'] ?? null);
         self::assertSame('Windows', $current['client_platform'] ?? null);
         self::assertSame('desktop', $current['device_kind'] ?? null);
 
@@ -1794,8 +1802,91 @@ final class AuthManagerTest extends TestCase
         self::assertSame('identity_session', $remote['management_ownership_proof'] ?? null);
         self::assertSame('elevated', $remote['management_sensitivity'] ?? null);
         self::assertSame('remote_device_management', $remote['management_reason_code'] ?? null);
+        self::assertFalse((bool) ($remote['management_actor_governed'] ?? true));
+        self::assertFalse((bool) ($remote['management_actor_authorized'] ?? true));
+        self::assertNull($remote['management_actor_authorization_mode'] ?? null);
+        self::assertSame('not_administrative_actor', $remote['management_actor_authorization_reason_code'] ?? null);
         self::assertSame('macOS', $remote['client_platform'] ?? null);
         self::assertSame('desktop', $remote['device_kind'] ?? null);
+    }
+
+    public function test_auth_manager_devices_inventory_projects_governed_actor_hints_from_current_context(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 48,
+                'identifier' => 'governed-device-center@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+                'auth_management_authority' => 'administrative_actor',
+                'auth_management_ownership_proof' => 'privileged_session',
+                'auth_management_scopes' => [
+                    'security_center_export',
+                    'admin_device_management',
+                ],
+                'auth_management_claims_source' => 'identity_attributes',
+                'auth_management_privilege_level' => 'privileged_admin',
+            ],
+        ]);
+
+        $router = $app->make(Router::class);
+        $router->post('/governed-device-center-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'governed-device-center@example.com',
+                'password' => 'secret-123',
+                'second_factor' => '654321',
+            ])];
+        });
+        $router->get('/governed-device-center-inventory', function (): array {
+            return [
+                'devices' => array_map(static fn ($device): array => [
+                    'device_reference' => $device->deviceReference,
+                    'current' => $device->current,
+                    'management_actor_governed' => $device->managementActorGoverned,
+                    'management_actor_authorized' => $device->managementActorAuthorized,
+                    'management_actor_authorization_mode' => $device->managementActorAuthorizationMode,
+                    'management_actor_authorization_reason_code' => $device->managementActorAuthorizationReasonCode,
+                ], auth()->devices()),
+            ];
+        });
+
+        $kernel = $app->make(HttpKernel::class);
+        $loginResponse = $kernel->handle(Request::create(
+            '/governed-device-center-login',
+            'POST',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (X11; Linux x86_64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.72',
+            ],
+        ));
+        $sessionId = $loginResponse->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($sessionId);
+
+        $inventoryResponse = $kernel->handle(Request::create(
+            '/governed-device-center-inventory',
+            'GET',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $sessionId],
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (X11; Linux x86_64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.72',
+            ],
+        ));
+        $inventoryPayload = json_decode($inventoryResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+        $devices = $inventoryPayload['devices'] ?? [];
+        $current = $devices[0] ?? null;
+
+        self::assertCount(1, $devices);
+        self::assertIsArray($current);
+        self::assertTrue((bool) ($current['current'] ?? false));
+        self::assertTrue((bool) ($current['management_actor_governed'] ?? false));
+        self::assertTrue((bool) ($current['management_actor_authorized'] ?? false));
+        self::assertSame('direct_admin', $current['management_actor_authorization_mode'] ?? null);
+        self::assertNull($current['management_actor_authorization_reason_code'] ?? null);
     }
 
     public function test_auth_manager_devices_inventory_reads_shared_file_store_across_app_instances(): void
@@ -1853,6 +1944,10 @@ final class AuthManagerTest extends TestCase
                     'management_ownership_proof' => $device->managementOwnershipProof,
                     'management_sensitivity' => $device->managementSensitivity,
                     'management_reason_code' => $device->managementReasonCode,
+                    'management_actor_governed' => $device->managementActorGoverned,
+                    'management_actor_authorized' => $device->managementActorAuthorized,
+                    'management_actor_authorization_mode' => $device->managementActorAuthorizationMode,
+                    'management_actor_authorization_reason_code' => $device->managementActorAuthorizationReasonCode,
                 ], auth()->devices()),
             ];
         });
@@ -1926,6 +2021,10 @@ final class AuthManagerTest extends TestCase
         self::assertSame('current_session', $current['management_ownership_proof'] ?? null);
         self::assertSame('standard', $current['management_sensitivity'] ?? null);
         self::assertSame('current_device_management', $current['management_reason_code'] ?? null);
+        self::assertFalse((bool) ($current['management_actor_governed'] ?? true));
+        self::assertFalse((bool) ($current['management_actor_authorized'] ?? true));
+        self::assertNull($current['management_actor_authorization_mode'] ?? null);
+        self::assertSame('not_administrative_actor', $current['management_actor_authorization_reason_code'] ?? null);
 
         self::assertSame('trusted', $remoteTrusted['trust_state'] ?? null);
         self::assertSame(1, $remoteTrusted['session_count'] ?? null);
@@ -1937,6 +2036,10 @@ final class AuthManagerTest extends TestCase
         self::assertSame('identity_session', $remoteTrusted['management_ownership_proof'] ?? null);
         self::assertSame('elevated', $remoteTrusted['management_sensitivity'] ?? null);
         self::assertSame('remote_device_management', $remoteTrusted['management_reason_code'] ?? null);
+        self::assertFalse((bool) ($remoteTrusted['management_actor_governed'] ?? true));
+        self::assertFalse((bool) ($remoteTrusted['management_actor_authorized'] ?? true));
+        self::assertNull($remoteTrusted['management_actor_authorization_mode'] ?? null);
+        self::assertSame('not_administrative_actor', $remoteTrusted['management_actor_authorization_reason_code'] ?? null);
     }
 
     public function test_auth_manager_can_revoke_remote_device_from_aggregated_inventory(): void
@@ -2124,6 +2227,10 @@ final class AuthManagerTest extends TestCase
                     'management_ownership_proof' => $device->managementOwnershipProof,
                     'management_sensitivity' => $device->managementSensitivity,
                     'management_reason_code' => $device->managementReasonCode,
+                    'management_actor_governed' => $device->managementActorGoverned,
+                    'management_actor_authorized' => $device->managementActorAuthorized,
+                    'management_actor_authorization_mode' => $device->managementActorAuthorizationMode,
+                    'management_actor_authorization_reason_code' => $device->managementActorAuthorizationReasonCode,
                 ], auth()->devices()),
             ];
         });
@@ -2222,6 +2329,10 @@ final class AuthManagerTest extends TestCase
         self::assertSame('identity_session', $remote['management_ownership_proof'] ?? null);
         self::assertSame('elevated', $remote['management_sensitivity'] ?? null);
         self::assertSame('fresh_authentication_required', $remote['management_reason_code'] ?? null);
+        self::assertFalse((bool) ($remote['management_actor_governed'] ?? true));
+        self::assertFalse((bool) ($remote['management_actor_authorized'] ?? true));
+        self::assertNull($remote['management_actor_authorization_mode'] ?? null);
+        self::assertSame('not_administrative_actor', $remote['management_actor_authorization_reason_code'] ?? null);
 
         $revokeResponse = $kernel->handle(Request::create(
             '/device-revoke-fresh-remote',

@@ -200,6 +200,8 @@ final class AuthDomainModelTest extends TestCase
         ], $context->managementScopes());
         self::assertSame('self_service_defaults', $context->managementClaimsSource());
         self::assertSame('self_service', $context->managementPrivilegeLevel());
+        self::assertFalse($context->canAdministrativelyManageDevices());
+        self::assertNull($context->managementAuthorizationMode());
     }
 
     public function test_authentication_context_exposes_explicit_management_claim_overrides(): void
@@ -235,6 +237,8 @@ final class AuthDomainModelTest extends TestCase
         ], $context->managementScopes());
         self::assertSame('runtime_override', $context->managementClaimsSource());
         self::assertSame('delegated_support', $context->managementPrivilegeLevel());
+        self::assertFalse($context->canAdministrativelyManageDevices());
+        self::assertNull($context->managementAuthorizationMode());
     }
 
     public function test_authentication_context_falls_back_to_identity_attributes_for_privileged_management_claims(): void
@@ -271,6 +275,37 @@ final class AuthDomainModelTest extends TestCase
         ], $context->managementScopes());
         self::assertSame('identity_attributes', $context->managementClaimsSource());
         self::assertSame('privileged_admin', $context->managementPrivilegeLevel());
+        self::assertTrue($context->canAdministrativelyManageDevices());
+        self::assertSame('direct_admin', $context->managementAuthorizationMode());
+    }
+
+    public function test_authentication_context_authorizes_delegated_admin_device_management_from_identity_attributes(): void
+    {
+        $identity = new GenericIdentity(
+            identifier: new IdentityIdentifier('92'),
+            type: 'user',
+            attributes: [
+                'name' => 'Delegated Support',
+                'auth_management_authority' => 'administrative_actor',
+                'auth_management_ownership_proof' => 'delegated_session',
+                'auth_management_scopes' => [
+                    'admin_device_management',
+                ],
+                'auth_management_claims_source' => 'identity_attributes',
+                'auth_management_privilege_level' => 'delegated_support',
+            ],
+        );
+
+        $context = new AuthenticationContext(
+            identity: $identity,
+            reference: new IdentityReference($identity->identifier(), $identity->type()),
+            requestId: 'req-10',
+            method: 'password',
+            attributes: [],
+        );
+
+        self::assertTrue($context->canAdministrativelyManageDevices());
+        self::assertSame('delegated_admin', $context->managementAuthorizationMode());
     }
 
 

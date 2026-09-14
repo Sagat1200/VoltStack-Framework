@@ -94,7 +94,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         $app = $this->bootstrapApplication();
         $sessions = $app->make(AuthenticationSessionRepositoryInterface::class);
         $trustedDevices = $app->make(TrustedDeviceRepositoryInterface::class);
-        $actorContext = $this->authorizedActorContext(
+        $actorAuthorization = $this->authorizedActorContext(
             $sessions->all(),
             $actorIdentity,
             $actorType,
@@ -102,13 +102,17 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             $now,
         );
 
-        if ($actorContext === null) {
+        if ($actorAuthorization === null) {
             return $this->renderAuthorizationFailure(
                 $output,
                 $json,
                 'El actor administrativo no tiene una sesion gobernada valida para revocar dispositivos agregados.',
             );
         }
+
+        /** @var AuthenticationContext $actorContext */
+        $actorContext = $actorAuthorization['context'];
+        $actorAuthorizationMode = (string) $actorAuthorization['authorization_mode'];
 
         $matchedSessions = $this->matchingSessions($sessions->all(), $identity, $type, $deviceReference, $now);
         $matchedTrustedDevices = $this->matchingTrustedDevices($trustedDevices->all($now), $identity, $type, $deviceReference);
@@ -143,6 +147,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 'management_ownership_proof' => $actorContext->managementOwnershipProof(),
                 'management_claims_source' => $actorContext->managementClaimsSource(),
                 'management_privilege_level' => $actorContext->managementPrivilegeLevel(),
+                'management_authorization_mode' => $actorAuthorizationMode,
                 'management_scopes' => $actorContext->managementScopes(),
                 'authorized' => true,
             ],
@@ -209,11 +214,12 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         $output->writeln(sprintf('  Sesiones revocadas: %d', $payload['summary']['revoked_sessions']));
         $output->writeln(sprintf('  Trusted devices revocados: %d', $payload['summary']['revoked_trusted_devices']));
         $output->writeln(sprintf(
-            '  Actor autorizado: %s:%s | authority=%s | privilege=%s | scopes=%s',
+            '  Actor autorizado: %s:%s | authority=%s | privilege=%s | mode=%s | scopes=%s',
             $actorType,
             $actorIdentity,
             $payload['actor']['management_authority'],
             $payload['actor']['management_privilege_level'],
+            $payload['actor']['management_authorization_mode'],
             implode(',', $payload['actor']['management_scopes']),
         ));
 
@@ -373,7 +379,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         string $actorType,
         string $actorSessionPublicId,
         ?int $now,
-    ): ?AuthenticationContext {
+    ): ?array {
         foreach ($sessions as $session) {
             if ($session->isExpired($now)) {
                 continue;
@@ -399,18 +405,16 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 attributes: $session->attributes,
             );
 
-            $scopes = $context->managementScopes();
+            $authorizationMode = $context->managementAuthorizationMode();
 
-            if (
-                $context->managementAuthority() !== 'administrative_actor'
-                || $context->managementClaimsSource() !== 'identity_attributes'
-                || $context->managementPrivilegeLevel() !== 'privileged_admin'
-                || ! in_array('admin_device_management', $scopes, true)
-            ) {
+            if ($authorizationMode === null) {
                 return null;
             }
 
-            return $context;
+            return [
+                'context' => $context,
+                'authorization_mode' => $authorizationMode,
+            ];
         }
 
         return null;

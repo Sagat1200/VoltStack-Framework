@@ -175,6 +175,26 @@ final class AuthSecurityCenterReportCommand extends Command
                     array_values($managementActors),
                 )),
                 'governed_management_identities' => count($managementActors),
+                'direct_admin_sessions' => array_sum(array_map(
+                    static fn (array $actor): int => ($actor['management_authorization_mode'] ?? null) === 'direct_admin'
+                        ? (int) ($actor['session_count'] ?? 0)
+                        : 0,
+                    array_values($managementActors),
+                )),
+                'delegated_admin_sessions' => array_sum(array_map(
+                    static fn (array $actor): int => ($actor['management_authorization_mode'] ?? null) === 'delegated_admin'
+                        ? (int) ($actor['session_count'] ?? 0)
+                        : 0,
+                    array_values($managementActors),
+                )),
+                'direct_admin_identities' => count(array_filter(
+                    $managementActors,
+                    static fn (array $actor): bool => ($actor['management_authorization_mode'] ?? null) === 'direct_admin',
+                )),
+                'delegated_admin_identities' => count(array_filter(
+                    $managementActors,
+                    static fn (array $actor): bool => ($actor['management_authorization_mode'] ?? null) === 'delegated_admin',
+                )),
             ],
         ];
 
@@ -210,6 +230,8 @@ final class AuthSecurityCenterReportCommand extends Command
         $output->writeln(sprintf('  Agregados de management elevado: %d', $payload['summary']['elevated_management_aggregates']));
         $output->writeln(sprintf('  Sesiones con management gobernado: %d', $payload['summary']['governed_management_sessions']));
         $output->writeln(sprintf('  Identidades con management gobernado: %d', $payload['summary']['governed_management_identities']));
+        $output->writeln(sprintf('  Sesiones direct_admin: %d', $payload['summary']['direct_admin_sessions']));
+        $output->writeln(sprintf('  Sesiones delegated_admin: %d', $payload['summary']['delegated_admin_sessions']));
 
         if ($identity !== null) {
             $output->writeln();
@@ -252,13 +274,14 @@ final class AuthSecurityCenterReportCommand extends Command
 
             foreach ($actors as $actor) {
                 $output->writeln(sprintf(
-                    '  - %s:%s | sessions=%d | authority=%s | source=%s | privilege=%s | scopes=%s',
+                    '  - %s:%s | sessions=%d | authority=%s | source=%s | privilege=%s | mode=%s | scopes=%s',
                     $actor['identity_type'],
                     $actor['identity_identifier'],
                     $actor['session_count'],
                     $actor['management_authority'],
                     $actor['management_claims_source'],
                     $actor['management_privilege_level'],
+                    $actor['management_authorization_mode'] ?? 'none',
                     implode(',', $actor['management_scopes']),
                 ));
 
@@ -483,6 +506,7 @@ final class AuthSecurityCenterReportCommand extends Command
             'management_ownership_proof' => $context->managementOwnershipProof(),
             'management_claims_source' => $claimsSource,
             'management_privilege_level' => $privilegeLevel,
+            'management_authorization_mode' => $context->managementAuthorizationMode(),
             'management_scopes' => $context->managementScopes(),
         ];
 

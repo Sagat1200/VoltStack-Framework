@@ -161,6 +161,37 @@ final readonly class AuthenticationContext
             : 'self_service';
     }
 
+    public function canAdministrativelyManageDevices(): bool
+    {
+        return $this->managementAuthorizationMode() !== null;
+    }
+
+    public function managementAuthorizationMode(): ?string
+    {
+        if ($this->managementAuthority() !== 'administrative_actor') {
+            return null;
+        }
+
+        if ($this->managementClaimsSource() !== 'identity_attributes') {
+            return null;
+        }
+
+        if (! in_array('admin_device_management', $this->managementScopes(), true)) {
+            return null;
+        }
+
+        return match ($this->managementPrivilegeLevel()) {
+            'privileged_admin' => 'direct_admin',
+            'delegated_support' => in_array($this->managementOwnershipProof(), [
+                'delegated_session',
+                'delegated_admin_session',
+            ], true)
+                ? 'delegated_admin'
+                : null,
+            default => null,
+        };
+    }
+
     private function managementStringAttribute(string $key): ?string
     {
         $contextValue = $this->attribute($key);

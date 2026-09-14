@@ -80,14 +80,16 @@ PHP
 
         self::assertSame(0, $exitCode);
         self::assertStringContainsString('Reporte de security center generado correctamente.', $output->stdout());
-        self::assertStringContainsString('Sesiones activas: 3', $output->stdout());
+        self::assertStringContainsString('Sesiones activas: 4', $output->stdout());
         self::assertStringContainsString('Trusted devices activos: 1', $output->stdout());
-        self::assertStringContainsString('Identidades unicas: 2', $output->stdout());
-        self::assertStringContainsString('Dispositivos agregados: 3', $output->stdout());
+        self::assertStringContainsString('Identidades unicas: 3', $output->stdout());
+        self::assertStringContainsString('Dispositivos agregados: 4', $output->stdout());
         self::assertStringContainsString('Agregados trusted: 1', $output->stdout());
         self::assertStringContainsString('Agregados de management elevado: 1', $output->stdout());
-        self::assertStringContainsString('Sesiones con management gobernado: 1', $output->stdout());
-        self::assertStringContainsString('Identidades con management gobernado: 1', $output->stdout());
+        self::assertStringContainsString('Sesiones con management gobernado: 2', $output->stdout());
+        self::assertStringContainsString('Identidades con management gobernado: 2', $output->stdout());
+        self::assertStringContainsString('Sesiones direct_admin: 1', $output->stdout());
+        self::assertStringContainsString('Sesiones delegated_admin: 1', $output->stdout());
         self::assertStringNotContainsString('Detalle para', $output->stdout());
         self::assertStringNotContainsString('session_public_ids=', $output->stdout());
         self::assertStringNotContainsString('trusted_device_public_id=', $output->stdout());
@@ -174,16 +176,31 @@ PHP
 
         self::assertSame(0, $exitCode);
         self::assertTrue((bool) ($payload['filters']['management_actors'] ?? false));
-        self::assertSame(1, $payload['summary']['governed_management_sessions'] ?? null);
-        self::assertSame(1, $payload['summary']['governed_management_identities'] ?? null);
-        self::assertCount(1, $actors);
-        self::assertSame('702', $actors[0]['identity_identifier'] ?? null);
-        self::assertSame('user', $actors[0]['identity_type'] ?? null);
-        self::assertSame('administrative_actor', $actors[0]['management_authority'] ?? null);
-        self::assertSame('identity_attributes', $actors[0]['management_claims_source'] ?? null);
-        self::assertSame('privileged_admin', $actors[0]['management_privilege_level'] ?? null);
-        self::assertSame(['security_center_export', 'admin_device_management'], $actors[0]['management_scopes'] ?? []);
-        self::assertSame(['sess_pub_report_gamma'], $actors[0]['session_public_ids'] ?? []);
+        self::assertSame(2, $payload['summary']['governed_management_sessions'] ?? null);
+        self::assertSame(2, $payload['summary']['governed_management_identities'] ?? null);
+        self::assertSame(1, $payload['summary']['direct_admin_sessions'] ?? null);
+        self::assertSame(1, $payload['summary']['delegated_admin_sessions'] ?? null);
+        self::assertCount(2, $actors);
+
+        $byIdentity = [];
+
+        foreach ($actors as $actor) {
+            $byIdentity[(string) ($actor['identity_identifier'] ?? '')] = $actor;
+        }
+
+        self::assertSame('administrative_actor', $byIdentity['702']['management_authority'] ?? null);
+        self::assertSame('identity_attributes', $byIdentity['702']['management_claims_source'] ?? null);
+        self::assertSame('privileged_admin', $byIdentity['702']['management_privilege_level'] ?? null);
+        self::assertSame('direct_admin', $byIdentity['702']['management_authorization_mode'] ?? null);
+        self::assertSame(['security_center_export', 'admin_device_management'], $byIdentity['702']['management_scopes'] ?? []);
+        self::assertSame(['sess_pub_report_gamma'], $byIdentity['702']['session_public_ids'] ?? []);
+
+        self::assertSame('administrative_actor', $byIdentity['703']['management_authority'] ?? null);
+        self::assertSame('identity_attributes', $byIdentity['703']['management_claims_source'] ?? null);
+        self::assertSame('delegated_support', $byIdentity['703']['management_privilege_level'] ?? null);
+        self::assertSame('delegated_admin', $byIdentity['703']['management_authorization_mode'] ?? null);
+        self::assertSame(['admin_device_management'], $byIdentity['703']['management_scopes'] ?? []);
+        self::assertSame(['sess_pub_report_delta'], $byIdentity['703']['session_public_ids'] ?? []);
     }
 
     private function seedSecurityCenterFixtures(Application $app, int $seedNow): void
@@ -214,6 +231,22 @@ PHP
             ],
         );
         $secondaryReference = new IdentityReference($secondaryIdentity->identifier(), $secondaryIdentity->type());
+
+        $delegatedIdentity = new GenericIdentity(
+            identifier: new IdentityIdentifier('703'),
+            type: 'user',
+            attributes: [
+                'name' => 'Delegated Support',
+                'auth_management_authority' => 'administrative_actor',
+                'auth_management_ownership_proof' => 'delegated_session',
+                'auth_management_scopes' => [
+                    'admin_device_management',
+                ],
+                'auth_management_claims_source' => 'identity_attributes',
+                'auth_management_privilege_level' => 'delegated_support',
+            ],
+        );
+        $delegatedReference = new IdentityReference($delegatedIdentity->identifier(), $delegatedIdentity->type());
 
         $sessions->save(new AuthenticationSession(
             id: new AuthenticationSessionId('session-report-alpha'),
@@ -266,6 +299,23 @@ PHP
                 'session_device_kind' => 'desktop',
                 'session_label' => 'Ops terminal',
                 'session_last_activity_at' => $seedNow - 5,
+            ],
+        ));
+        $sessions->save(new AuthenticationSession(
+            id: new AuthenticationSessionId('session-report-delta'),
+            identity: $delegatedIdentity,
+            reference: $delegatedReference,
+            method: 'password',
+            issuedAt: $seedNow - 35,
+            expiresAt: $seedNow + 600,
+            attributes: [
+                'session_public_id' => 'sess_pub_report_delta',
+                'session_device_reference' => 'devref_report_delta',
+                'session_device_trust_state' => 'unknown',
+                'session_client_platform' => 'Linux',
+                'session_device_kind' => 'desktop',
+                'session_label' => 'Delegated support terminal',
+                'session_last_activity_at' => $seedNow - 4,
             ],
         ));
 

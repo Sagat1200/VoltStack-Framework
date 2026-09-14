@@ -99,7 +99,7 @@ PHP
         self::assertStringContainsString('Trusted devices objetivo: 1', $output->stdout());
         self::assertStringContainsString('Sesiones revocadas: 2', $output->stdout());
         self::assertStringContainsString('Trusted devices revocados: 1', $output->stdout());
-        self::assertStringContainsString('Actor autorizado: user:901 | authority=administrative_actor | privilege=privileged_admin | scopes=security_center_export,admin_device_management', $output->stdout());
+        self::assertStringContainsString('Actor autorizado: user:901 | authority=administrative_actor | privilege=privileged_admin | mode=direct_admin | scopes=security_center_export,admin_device_management', $output->stdout());
         self::assertStringContainsString('session_public_ids=sess_pub_admin_alpha,sess_pub_admin_alpha_peer', $output->stdout());
         self::assertStringContainsString('trusted_device_public_ids=tdv_admin_alpha', $output->stdout());
     }
@@ -183,6 +183,7 @@ PHP
         self::assertSame('901', $payload['actor']['identity'] ?? null);
         self::assertSame('administrative_actor', $payload['actor']['management_authority'] ?? null);
         self::assertSame('privileged_admin', $payload['actor']['management_privilege_level'] ?? null);
+        self::assertSame('direct_admin', $payload['actor']['management_authorization_mode'] ?? null);
         self::assertSame(2, $payload['summary']['matched_sessions'] ?? null);
         self::assertSame(1, $payload['summary']['matched_trusted_devices'] ?? null);
         self::assertSame(0, $payload['summary']['revoked_sessions'] ?? null);
@@ -190,6 +191,47 @@ PHP
         self::assertInstanceOf(AuthenticationSession::class, $sessions->find('session-admin-alpha'));
         self::assertInstanceOf(AuthenticationSession::class, $sessions->find('session-admin-alpha-peer'));
         self::assertNull($trustedDevices->find('tdv_admin_alpha'));
+    }
+
+    public function test_it_allows_a_governed_delegated_actor_to_revoke_an_aggregated_device(): void
+    {
+        $seedNow = time();
+        $app = $this->bootstrappedApplication();
+        $this->seedFixtures($app, $seedNow);
+
+        $command = new AuthSecurityCenterRevokeDeviceCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'auth:security-center:revoke-device',
+                '--identity=801',
+                '--type=user',
+                '--device-reference=devref_admin_beta',
+                '--actor-identity=902',
+                '--actor-type=user',
+                '--actor-session-public-id=sess_pub_support_admin',
+                '--json',
+            ]),
+            $output,
+        );
+
+        /** @var array<string, mixed> $payload */
+        $payload = json_decode($output->stdout(), true, 512, JSON_THROW_ON_ERROR);
+        $sessions = $app->make(AuthenticationSessionRepositoryInterface::class);
+        $trustedDevices = $app->make(TrustedDeviceRepositoryInterface::class);
+
+        self::assertSame(0, $exitCode);
+        self::assertSame('902', $payload['actor']['identity'] ?? null);
+        self::assertSame('delegated_support', $payload['actor']['management_privilege_level'] ?? null);
+        self::assertSame('delegated_admin', $payload['actor']['management_authorization_mode'] ?? null);
+        self::assertSame(1, $payload['summary']['matched_sessions'] ?? null);
+        self::assertSame(1, $payload['summary']['matched_trusted_devices'] ?? null);
+        self::assertSame(1, $payload['summary']['revoked_sessions'] ?? null);
+        self::assertSame(1, $payload['summary']['revoked_trusted_devices'] ?? null);
+        self::assertNull($sessions->find('session-admin-beta'));
+        self::assertNull($trustedDevices->find('tdv_admin_beta'));
     }
 
     public function test_it_rejects_revocation_when_actor_session_is_not_governed_for_admin_device_management(): void
@@ -267,6 +309,25 @@ PHP
         );
         $opsAdminReference = new IdentityReference($opsAdminIdentity->identifier(), $opsAdminIdentity->type());
 
+        $delegatedSupportIdentity = new GenericIdentity(
+            identifier: new IdentityIdentifier('902'),
+            type: 'user',
+            attributes: [
+                'name' => 'Delegated Support',
+                'auth_management_authority' => 'administrative_actor',
+                'auth_management_ownership_proof' => 'delegated_session',
+                'auth_management_scopes' => [
+                    'admin_device_management',
+                ],
+                'auth_management_claims_source' => 'identity_attributes',
+                'auth_management_privilege_level' => 'delegated_support',
+            ],
+        );
+        $delegatedSupportReference = new IdentityReference(
+            $delegatedSupportIdentity->identifier(),
+            $delegatedSupportIdentity->type(),
+        );
+
         $sessions->save(new AuthenticationSession(
             id: new AuthenticationSessionId('session-admin-alpha'),
             identity: $primaryIdentity,
@@ -325,6 +386,18 @@ PHP
             attributes: [
                 'session_public_id' => 'sess_pub_ops_admin',
                 'session_device_reference' => 'devref_ops_admin',
+            ],
+        ));
+        $sessions->save(new AuthenticationSession(
+            id: new AuthenticationSessionId('session-support-admin'),
+            identity: $delegatedSupportIdentity,
+            reference: $delegatedSupportReference,
+            method: 'password',
+            issuedAt: $seedNow - 35,
+            expiresAt: $seedNow + 600,
+            attributes: [
+                'session_public_id' => 'sess_pub_support_admin',
+                'session_device_reference' => 'devref_support_admin',
             ],
         ));
 

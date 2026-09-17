@@ -631,6 +631,7 @@ final class AuthManager implements AuthenticationManagerInterface
         string $identity,
         string $deviceReference,
         ?string $type = null,
+        string $scope = 'all',
     ): bool {
         $context = $this->context();
         $identity = trim($identity);
@@ -638,8 +639,9 @@ final class AuthManager implements AuthenticationManagerInterface
         $type = is_string($type) && trim($type) !== ''
             ? trim($type)
             : 'user';
+        $scope = $this->normalizeManagedDeviceScope($scope);
 
-        if ($context === null || $identity === '' || $deviceReference === '') {
+        if ($context === null || $identity === '' || $deviceReference === '' || $scope === null) {
             return false;
         }
 
@@ -650,8 +652,12 @@ final class AuthManager implements AuthenticationManagerInterface
         $this->sessions->purgeExpired();
         $this->trustedDeviceRepository->purgeExpired();
 
-        $sessions = $this->managedSessionsForDeviceReference($identity, $type, $deviceReference);
-        $trustedDevices = $this->managedTrustedDevicesForDeviceReference($identity, $type, $deviceReference);
+        $sessions = $scope === 'trusted-devices'
+            ? []
+            : $this->managedSessionsForDeviceReference($identity, $type, $deviceReference);
+        $trustedDevices = $scope === 'sessions'
+            ? []
+            : $this->managedTrustedDevicesForDeviceReference($identity, $type, $deviceReference);
 
         if ($sessions === [] && $trustedDevices === []) {
             return false;
@@ -1506,6 +1512,18 @@ final class AuthManager implements AuthenticationManagerInterface
     private function canBypassFreshAuthenticationForRemoteDeviceManagement(AuthenticationContext $context): bool
     {
         return $context->canAdministrativelyManageDevices();
+    }
+
+    private function normalizeManagedDeviceScope(string $scope): ?string
+    {
+        $scope = trim($scope);
+
+        return match ($scope) {
+            '', 'all' => 'all',
+            'sessions' => 'sessions',
+            'trusted-devices' => 'trusted-devices',
+            default => null,
+        };
     }
 
     private function trustedDevicesRequireMultiFactor(): bool

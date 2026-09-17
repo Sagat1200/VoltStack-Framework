@@ -86,6 +86,7 @@ interface AuthenticationManagerInterface
         string $identity,
         string $deviceReference,
         ?string $type = null,
+        string $scope = 'all',
     ): bool;
 
     public function revokeSession(string $publicId): bool;

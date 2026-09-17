@@ -3068,6 +3068,19 @@ final class AuthManagerTest extends TestCase
                 'second_factor' => '654321',
             ])];
         });
+        $router->get('/managed-admin-devices', function (): array {
+            return [
+                'devices' => array_map(static fn ($device): array => [
+                    'device_reference' => $device->deviceReference,
+                    'session_count' => $device->sessionCount,
+                    'has_trusted_device' => $device->hasTrustedDevice,
+                    'management_actor_governed' => $device->managementActorGoverned,
+                    'management_actor_authorized' => $device->managementActorAuthorized,
+                    'management_actor_authorization_mode' => $device->managementActorAuthorizationMode,
+                    'management_actor_authorization_reason_code' => $device->managementActorAuthorizationReasonCode,
+                ], auth()->managedDevices('201')),
+            ];
+        });
         $router->post('/managed-admin-revoke', function (): array {
             $request = RuntimeContext::current()?->request();
             $targetIdentity = is_string($request?->input('identity')) ? trim((string) $request?->input('identity')) : '';
@@ -3116,10 +3129,33 @@ final class AuthManagerTest extends TestCase
         $adminSessionId = $adminLogin->headers()['X-Auth-Session'] ?? null;
         self::assertIsString($adminSessionId);
 
+        $managedDevicesResponse = $kernel->handle(Request::create(
+            '/managed-admin-devices',
+            'GET',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $adminSessionId],
+            server: [
+                'HTTP_ACCEPT' => 'application/json',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.131',
+            ],
+        ));
+        $managedDevicesPayload = json_decode($managedDevicesResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+        $managedDevice = $managedDevicesPayload['devices'][0] ?? null;
+
+        self::assertSame(200, $managedDevicesResponse->statusCode());
+        self::assertIsArray($managedDevice);
+        self::assertSame(1, $managedDevice['session_count'] ?? null);
+        self::assertTrue((bool) ($managedDevice['has_trusted_device'] ?? false));
+        self::assertTrue((bool) ($managedDevice['management_actor_governed'] ?? false));
+        self::assertTrue((bool) ($managedDevice['management_actor_authorized'] ?? false));
+        self::assertSame('direct_admin', $managedDevice['management_actor_authorization_mode'] ?? null);
+        self::assertNull($managedDevice['management_actor_authorization_reason_code'] ?? null);
+
         $sessionRepository = $app->make(AuthenticationSessionRepositoryInterface::class);
         $targetSession = $sessionRepository->find($targetSessionId);
         self::assertInstanceOf(AuthenticationSession::class, $targetSession);
-        $targetDeviceReference = $targetSession->attributes['session_device_reference'] ?? null;
+        $targetDeviceReference = $managedDevice['device_reference'] ?? null;
         self::assertIsString($targetDeviceReference);
 
         $revokeResponse = $kernel->handle(Request::create(
@@ -3202,6 +3238,13 @@ final class AuthManagerTest extends TestCase
                 'second_factor' => '654321',
             ])];
         });
+        $router->get('/managed-reject-actor-devices', function (): array {
+            return [
+                'devices' => array_map(static fn ($device): array => [
+                    'device_reference' => $device->deviceReference,
+                ], auth()->managedDevices('211')),
+            ];
+        });
         $router->post('/managed-reject-actor-revoke', function (): array {
             $request = RuntimeContext::current()?->request();
             $targetIdentity = is_string($request?->input('identity')) ? trim((string) $request?->input('identity')) : '';
@@ -3237,6 +3280,22 @@ final class AuthManagerTest extends TestCase
         ));
         $actorSessionId = $actorLogin->headers()['X-Auth-Session'] ?? null;
         self::assertIsString($actorSessionId);
+
+        $managedDevicesResponse = $kernel->handle(Request::create(
+            '/managed-reject-actor-devices',
+            'GET',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $actorSessionId],
+            server: [
+                'HTTP_ACCEPT' => 'application/json',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.133',
+            ],
+        ));
+        $managedDevicesPayload = json_decode($managedDevicesResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(200, $managedDevicesResponse->statusCode());
+        self::assertSame([], $managedDevicesPayload['devices'] ?? null);
 
         $sessionRepository = $app->make(AuthenticationSessionRepositoryInterface::class);
         $targetSession = $sessionRepository->find($targetSessionId);

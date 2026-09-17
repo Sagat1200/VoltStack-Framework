@@ -69,6 +69,11 @@ interface AuthenticationManagerInterface
      */
     public function devices(): array;
 
+    /**
+     * @return list<DeviceInventorySummary>
+     */
+    public function managedDevices(string $identity, ?string $type = null): array;
+
     public function trustCurrentDevice(?string $label = null): bool;
 
     public function forgetTrustedDevice(string $publicId): bool;

@@ -452,144 +452,37 @@ final class AuthManager implements AuthenticationManagerInterface
             return [];
         }
 
-        $entries = [];
-
-        foreach ($this->sessions() as $session) {
-            if ($session->deviceReference === null || trim($session->deviceReference) === '') {
-                continue;
-            }
-
-            $deviceReference = trim($session->deviceReference);
-            $lastSeenAt = $session->lastActivityAt ?? $session->issuedAt;
-
-            if (! isset($entries[$deviceReference])) {
-                $entries[$deviceReference] = [
-                    'device_reference' => $deviceReference,
-                    'trust_state' => $session->deviceTrustState,
-                    'session_count' => 0,
-                    'current_session_count' => 0,
-                    'current' => false,
-                    'has_trusted_device' => false,
-                    'trusted_device_public_id' => null,
-                    'session_public_ids' => [],
-                    'last_seen_at' => $lastSeenAt,
-                    'requires_reauthentication' => false,
-                    'label' => $session->label,
-                    'client_family' => $session->clientFamily,
-                    'client_platform' => $session->clientPlatform,
-                    'device_kind' => $session->deviceKind,
-                ];
-            }
-
-            $entries[$deviceReference]['session_count']++;
-            $entries[$deviceReference]['current_session_count'] += $session->current ? 1 : 0;
-            $entries[$deviceReference]['current'] = $entries[$deviceReference]['current'] || $session->current;
-            $entries[$deviceReference]['requires_reauthentication'] = $entries[$deviceReference]['requires_reauthentication']
-                || (! $session->current && $session->requiresReauthentication);
-            $entries[$deviceReference]['session_public_ids'][] = $session->publicId;
-            $entries[$deviceReference]['last_seen_at'] = max(
-                (int) ($entries[$deviceReference]['last_seen_at'] ?? 0),
-                $lastSeenAt,
-            );
-            $entries[$deviceReference]['label'] = $this->preferredInventoryValue(
-                $entries[$deviceReference]['label'] ?? null,
-                $session->label,
-            );
-            $entries[$deviceReference]['client_family'] = $this->preferredInventoryValue(
-                $entries[$deviceReference]['client_family'] ?? null,
-                $session->clientFamily,
-            );
-            $entries[$deviceReference]['client_platform'] = $this->preferredInventoryValue(
-                $entries[$deviceReference]['client_platform'] ?? null,
-                $session->clientPlatform,
-            );
-            $entries[$deviceReference]['device_kind'] = $this->preferredInventoryValue(
-                $entries[$deviceReference]['device_kind'] ?? null,
-                $session->deviceKind,
-            );
-
-            if ($session->deviceTrustState === 'trusted') {
-                $entries[$deviceReference]['trust_state'] = 'trusted';
-            }
-        }
-
-        foreach ($this->trustedDevices() as $device) {
-            $deviceReference = trim($device->deviceReference);
-
-            if ($deviceReference === '') {
-                continue;
-            }
-
-            $lastSeenAt = $device->lastUsedAt ?? $device->issuedAt;
-
-            if (! isset($entries[$deviceReference])) {
-                $entries[$deviceReference] = [
-                    'device_reference' => $deviceReference,
-                    'trust_state' => $device->trustState,
-                    'session_count' => 0,
-                    'current_session_count' => 0,
-                    'current' => $device->current,
-                    'has_trusted_device' => true,
-                    'trusted_device_public_id' => $device->publicId,
-                    'session_public_ids' => [],
-                    'last_seen_at' => $lastSeenAt,
-                    'requires_reauthentication' => ! $device->current && $device->requiresReauthentication,
-                    'label' => $device->label,
-                    'client_family' => $device->clientFamily,
-                    'client_platform' => $device->clientPlatform,
-                    'device_kind' => $device->deviceKind,
-                ];
-            } else {
-                $entries[$deviceReference]['has_trusted_device'] = true;
-                $entries[$deviceReference]['trusted_device_public_id'] = $device->publicId;
-                $entries[$deviceReference]['current'] = $entries[$deviceReference]['current'] || $device->current;
-                $entries[$deviceReference]['requires_reauthentication'] = $entries[$deviceReference]['requires_reauthentication']
-                    || (! $device->current && $device->requiresReauthentication);
-                $entries[$deviceReference]['last_seen_at'] = max(
-                    (int) ($entries[$deviceReference]['last_seen_at'] ?? 0),
-                    $lastSeenAt,
-                );
-                $entries[$deviceReference]['label'] = $this->preferredInventoryValue(
-                    $entries[$deviceReference]['label'] ?? null,
-                    $device->label,
-                );
-                $entries[$deviceReference]['client_family'] = $this->preferredInventoryValue(
-                    $entries[$deviceReference]['client_family'] ?? null,
-                    $device->clientFamily,
-                );
-                $entries[$deviceReference]['client_platform'] = $this->preferredInventoryValue(
-                    $entries[$deviceReference]['client_platform'] ?? null,
-                    $device->clientPlatform,
-                );
-                $entries[$deviceReference]['device_kind'] = $this->preferredInventoryValue(
-                    $entries[$deviceReference]['device_kind'] ?? null,
-                    $device->deviceKind,
-                );
-            }
-
-            if ($device->trustState === 'trusted') {
-                $entries[$deviceReference]['trust_state'] = 'trusted';
-            }
-        }
-
-        $summaries = array_map(
-            fn (array $entry): DeviceInventorySummary => $this->toDeviceInventorySummary($entry),
-            array_values($entries),
+        return $this->deviceInventorySummaries(
+            $context,
+            $this->sessions(),
+            $this->trustedDevices(),
         );
+    }
 
-        usort($summaries, static function (DeviceInventorySummary $left, DeviceInventorySummary $right): int {
-            if ($left->current !== $right->current) {
-                return $left->current ? -1 : 1;
-            }
+    public function managedDevices(string $identity, ?string $type = null): array
+    {
+        $context = $this->context();
+        $identity = trim($identity);
+        $type = is_string($type) && trim($type) !== ''
+            ? trim($type)
+            : 'user';
 
-            if ($left->hasTrustedDevice !== $right->hasTrustedDevice) {
-                return $left->hasTrustedDevice ? -1 : 1;
-            }
+        if ($context === null || $identity === '') {
+            return [];
+        }
 
-            return ($right->lastSeenAt ?? 0) <=> ($left->lastSeenAt ?? 0);
-        });
+        if (! $context->canAdministrativelyManageDevices()) {
+            return [];
+        }
 
-        return $summaries;
+        $this->sessions->purgeExpired();
+        $this->trustedDeviceRepository->purgeExpired();
+
+        return $this->deviceInventorySummaries(
+            $context,
+            $this->managedSessionsForIdentity($identity, $type),
+            $this->managedTrustedDevicesForIdentity($identity, $type),
+        );
     }
 
     public function trustCurrentDevice(?string $label = null): bool
@@ -1910,6 +1803,232 @@ final class AuthManager implements AuthenticationManagerInterface
     }
 
     /**
+     * @param list<AuthenticationSessionSummary|AuthenticationSession> $sessions
+     * @param list<TrustedDeviceSummary|TrustedDevice> $trustedDevices
+     * @return list<DeviceInventorySummary>
+     */
+    private function deviceInventorySummaries(
+        AuthenticationContext $context,
+        array $sessions,
+        array $trustedDevices,
+    ): array {
+        $entries = [];
+
+        foreach ($sessions as $session) {
+            $deviceReference = match (true) {
+                $session instanceof AuthenticationSessionSummary => $session->deviceReference,
+                $session instanceof AuthenticationSession => $this->stringAttribute($session, 'session_device_reference'),
+                default => null,
+            };
+
+            if ($deviceReference === null || trim($deviceReference) === '') {
+                continue;
+            }
+
+            $deviceReference = trim($deviceReference);
+            $current = match (true) {
+                $session instanceof AuthenticationSessionSummary => $session->current,
+                $session instanceof AuthenticationSession => $this->isCurrentSession($context, $session),
+                default => false,
+            };
+            $requiresReauthentication = match (true) {
+                $session instanceof AuthenticationSessionSummary => ! $current && $session->requiresReauthentication,
+                $session instanceof AuthenticationSession => ! $current && $this->requiresFreshAuthenticationHintForCurrentContext($context),
+                default => false,
+            };
+            $publicId = match (true) {
+                $session instanceof AuthenticationSessionSummary => $session->publicId,
+                $session instanceof AuthenticationSession => $session->publicId(),
+                default => '',
+            };
+            $lastSeenAt = match (true) {
+                $session instanceof AuthenticationSessionSummary => $session->lastActivityAt ?? $session->issuedAt,
+                $session instanceof AuthenticationSession => $this->timestampAttribute($session, 'session_last_activity_at') ?? $session->issuedAt,
+                default => null,
+            };
+            $label = match (true) {
+                $session instanceof AuthenticationSessionSummary => $session->label,
+                $session instanceof AuthenticationSession => $this->stringAttribute($session, 'session_label'),
+                default => null,
+            };
+            $clientFamily = match (true) {
+                $session instanceof AuthenticationSessionSummary => $session->clientFamily,
+                $session instanceof AuthenticationSession => $this->stringAttribute($session, 'session_client_family'),
+                default => null,
+            };
+            $clientPlatform = match (true) {
+                $session instanceof AuthenticationSessionSummary => $session->clientPlatform,
+                $session instanceof AuthenticationSession => $this->stringAttribute($session, 'session_client_platform'),
+                default => null,
+            };
+            $deviceKind = match (true) {
+                $session instanceof AuthenticationSessionSummary => $session->deviceKind,
+                $session instanceof AuthenticationSession => $this->stringAttribute($session, 'session_device_kind'),
+                default => null,
+            };
+            $trustState = match (true) {
+                $session instanceof AuthenticationSessionSummary => $session->deviceTrustState,
+                $session instanceof AuthenticationSession => $this->stringAttribute($session, 'session_device_trust_state') ?? 'unknown',
+                default => 'unknown',
+            };
+
+            if (! isset($entries[$deviceReference])) {
+                $entries[$deviceReference] = [
+                    'device_reference' => $deviceReference,
+                    'trust_state' => $trustState,
+                    'session_count' => 0,
+                    'current_session_count' => 0,
+                    'current' => false,
+                    'has_trusted_device' => false,
+                    'trusted_device_public_id' => null,
+                    'session_public_ids' => [],
+                    'last_seen_at' => $lastSeenAt,
+                    'requires_reauthentication' => false,
+                    'label' => $label,
+                    'client_family' => $clientFamily,
+                    'client_platform' => $clientPlatform,
+                    'device_kind' => $deviceKind,
+                ];
+            }
+
+            $entries[$deviceReference]['session_count']++;
+            $entries[$deviceReference]['current_session_count'] += $current ? 1 : 0;
+            $entries[$deviceReference]['current'] = $entries[$deviceReference]['current'] || $current;
+            $entries[$deviceReference]['requires_reauthentication'] = $entries[$deviceReference]['requires_reauthentication']
+                || $requiresReauthentication;
+            $entries[$deviceReference]['session_public_ids'][] = $publicId;
+            $entries[$deviceReference]['last_seen_at'] = max(
+                (int) ($entries[$deviceReference]['last_seen_at'] ?? 0),
+                (int) $lastSeenAt,
+            );
+            $entries[$deviceReference]['label'] = $this->preferredInventoryValue(
+                $entries[$deviceReference]['label'] ?? null,
+                $label,
+            );
+            $entries[$deviceReference]['client_family'] = $this->preferredInventoryValue(
+                $entries[$deviceReference]['client_family'] ?? null,
+                $clientFamily,
+            );
+            $entries[$deviceReference]['client_platform'] = $this->preferredInventoryValue(
+                $entries[$deviceReference]['client_platform'] ?? null,
+                $clientPlatform,
+            );
+            $entries[$deviceReference]['device_kind'] = $this->preferredInventoryValue(
+                $entries[$deviceReference]['device_kind'] ?? null,
+                $deviceKind,
+            );
+
+            if ($trustState === 'trusted') {
+                $entries[$deviceReference]['trust_state'] = 'trusted';
+            }
+        }
+
+        foreach ($trustedDevices as $device) {
+            $deviceReference = trim($device->deviceReference);
+
+            if ($deviceReference === '') {
+                continue;
+            }
+
+            $current = $device instanceof TrustedDeviceSummary
+                ? $device->current
+                : ($context->deviceReference() !== null && $context->deviceReference() === $deviceReference);
+            $lastSeenAt = $device instanceof TrustedDeviceSummary
+                ? ($device->lastUsedAt ?? $device->issuedAt)
+                : ($device->lastUsedAt ?? $device->issuedAt);
+            $requiresReauthentication = $device instanceof TrustedDeviceSummary
+                ? (! $device->current && $device->requiresReauthentication)
+                : (! $current && $this->requiresFreshAuthenticationHintForCurrentTrustedDeviceContext($context));
+            $trustState = $device instanceof TrustedDeviceSummary
+                ? $device->trustState
+                : ($this->trustedDeviceStringAttribute($device, 'trust_state') ?? 'trusted');
+            $publicId = $device instanceof TrustedDeviceSummary
+                ? $device->publicId
+                : $device->publicId->value;
+            $label = $device instanceof TrustedDeviceSummary
+                ? $device->label
+                : $this->trustedDeviceStringAttribute($device, 'label');
+            $clientFamily = $device instanceof TrustedDeviceSummary
+                ? $device->clientFamily
+                : $this->trustedDeviceStringAttribute($device, 'client_family');
+            $clientPlatform = $device instanceof TrustedDeviceSummary
+                ? $device->clientPlatform
+                : $this->trustedDeviceStringAttribute($device, 'client_platform');
+            $deviceKind = $device instanceof TrustedDeviceSummary
+                ? $device->deviceKind
+                : $this->trustedDeviceStringAttribute($device, 'device_kind');
+
+            if (! isset($entries[$deviceReference])) {
+                $entries[$deviceReference] = [
+                    'device_reference' => $deviceReference,
+                    'trust_state' => $trustState,
+                    'session_count' => 0,
+                    'current_session_count' => 0,
+                    'current' => $current,
+                    'has_trusted_device' => true,
+                    'trusted_device_public_id' => $publicId,
+                    'session_public_ids' => [],
+                    'last_seen_at' => $lastSeenAt,
+                    'requires_reauthentication' => $requiresReauthentication,
+                    'label' => $label,
+                    'client_family' => $clientFamily,
+                    'client_platform' => $clientPlatform,
+                    'device_kind' => $deviceKind,
+                ];
+            } else {
+                $entries[$deviceReference]['has_trusted_device'] = true;
+                $entries[$deviceReference]['trusted_device_public_id'] = $publicId;
+                $entries[$deviceReference]['current'] = $entries[$deviceReference]['current'] || $current;
+                $entries[$deviceReference]['requires_reauthentication'] = $entries[$deviceReference]['requires_reauthentication']
+                    || $requiresReauthentication;
+                $entries[$deviceReference]['last_seen_at'] = max(
+                    (int) ($entries[$deviceReference]['last_seen_at'] ?? 0),
+                    (int) $lastSeenAt,
+                );
+                $entries[$deviceReference]['label'] = $this->preferredInventoryValue(
+                    $entries[$deviceReference]['label'] ?? null,
+                    $label,
+                );
+                $entries[$deviceReference]['client_family'] = $this->preferredInventoryValue(
+                    $entries[$deviceReference]['client_family'] ?? null,
+                    $clientFamily,
+                );
+                $entries[$deviceReference]['client_platform'] = $this->preferredInventoryValue(
+                    $entries[$deviceReference]['client_platform'] ?? null,
+                    $clientPlatform,
+                );
+                $entries[$deviceReference]['device_kind'] = $this->preferredInventoryValue(
+                    $entries[$deviceReference]['device_kind'] ?? null,
+                    $deviceKind,
+                );
+            }
+
+            if ($trustState === 'trusted') {
+                $entries[$deviceReference]['trust_state'] = 'trusted';
+            }
+        }
+
+        $summaries = array_map(
+            fn (array $entry): DeviceInventorySummary => $this->toDeviceInventorySummary($entry),
+            array_values($entries),
+        );
+
+        usort($summaries, static function (DeviceInventorySummary $left, DeviceInventorySummary $right): int {
+            if ($left->current !== $right->current) {
+                return $left->current ? -1 : 1;
+            }
+
+            if ($left->hasTrustedDevice !== $right->hasTrustedDevice) {
+                return $left->hasTrustedDevice ? -1 : 1;
+            }
+
+            return ($right->lastSeenAt ?? 0) <=> ($left->lastSeenAt ?? 0);
+        });
+
+        return $summaries;
+    }
+
+    /**
      * @return list<AuthenticationSession>
      */
     private function sessionsForDeviceReference(AuthenticationContext $context, string $deviceReference): array
@@ -1943,6 +2062,31 @@ final class AuthManager implements AuthenticationManagerInterface
         }
 
         return $matches;
+    }
+
+    /**
+     * @return list<AuthenticationSession>
+     */
+    private function managedSessionsForIdentity(string $identity, string $type): array
+    {
+        return array_values(array_filter(
+            $this->sessions->all(),
+            fn (AuthenticationSession $session): bool => ! $session->isExpired()
+                && $session->reference->type === $type
+                && $session->reference->identifier->value === $identity,
+        ));
+    }
+
+    /**
+     * @return list<TrustedDevice>
+     */
+    private function managedTrustedDevicesForIdentity(string $identity, string $type): array
+    {
+        return array_values(array_filter(
+            $this->trustedDeviceRepository->all(),
+            static fn (TrustedDevice $device): bool => $device->reference->type === $type
+                && $device->reference->identifier->value === $identity,
+        ));
     }
 
     /**

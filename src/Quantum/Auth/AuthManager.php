@@ -456,6 +456,8 @@ final class AuthManager implements AuthenticationManagerInterface
             $context,
             $this->sessions(),
             $this->trustedDevices(),
+            $context->reference->identifier->value,
+            $context->reference->type,
         );
     }
 
@@ -482,6 +484,8 @@ final class AuthManager implements AuthenticationManagerInterface
             $context,
             $this->managedSessionsForIdentity($identity, $type),
             $this->managedTrustedDevicesForIdentity($identity, $type),
+            $identity,
+            $type,
         );
     }
 
@@ -1722,6 +1726,8 @@ final class AuthManager implements AuthenticationManagerInterface
      *   session_public_ids: list<string>,
      *   last_seen_at: ?int,
      *   requires_reauthentication: bool,
+     *   target_identity?: ?string,
+     *   target_type?: ?string,
      *   label: ?string,
      *   client_family: ?string,
      *   client_platform: ?string,
@@ -1741,6 +1747,17 @@ final class AuthManager implements AuthenticationManagerInterface
         $managementActorAuthorized = $context?->canAdministrativelyManageDevices() ?? false;
         $managementActorAuthorizationMode = $context?->managementAuthorizationMode();
         $managementActorAuthorizationReasonCode = $context?->managementAuthorizationReasonCode();
+        $managementTargetIdentity = isset($entry['target_identity']) && is_string($entry['target_identity']) && trim($entry['target_identity']) !== ''
+            ? trim($entry['target_identity'])
+            : null;
+        $managementTargetType = isset($entry['target_type']) && is_string($entry['target_type']) && trim($entry['target_type']) !== ''
+            ? trim($entry['target_type'])
+            : null;
+        $managementTargetMatchesCurrentIdentity = $context !== null
+            && $managementTargetIdentity !== null
+            && $managementTargetType !== null
+            && $context->reference->identifier->value === $managementTargetIdentity
+            && $context->reference->type === $managementTargetType;
         $requiresReauthentication = (bool) $entry['requires_reauthentication'];
 
         if ($requiresReauthentication && $managementActorAuthorized && $scope !== 'current') {
@@ -1787,6 +1804,9 @@ final class AuthManager implements AuthenticationManagerInterface
             managementActorAuthorized: $managementActorAuthorized,
             managementActorAuthorizationMode: $managementActorAuthorizationMode,
             managementActorAuthorizationReasonCode: $managementActorAuthorizationReasonCode,
+            managementTargetIdentity: $managementTargetIdentity,
+            managementTargetType: $managementTargetType,
+            managementTargetMatchesCurrentIdentity: $managementTargetMatchesCurrentIdentity,
             label: $entry['label'],
             clientFamily: $entry['client_family'],
             clientPlatform: $entry['client_platform'],
@@ -1829,6 +1849,8 @@ final class AuthManager implements AuthenticationManagerInterface
         AuthenticationContext $context,
         array $sessions,
         array $trustedDevices,
+        ?string $targetIdentity = null,
+        ?string $targetType = null,
     ): array {
         $entries = [];
 
@@ -1902,6 +1924,8 @@ final class AuthManager implements AuthenticationManagerInterface
                     'session_public_ids' => [],
                     'last_seen_at' => $lastSeenAt,
                     'requires_reauthentication' => false,
+                    'target_identity' => $targetIdentity,
+                    'target_type' => $targetType,
                     'label' => $label,
                     'client_family' => $clientFamily,
                     'client_platform' => $clientPlatform,
@@ -1988,6 +2012,8 @@ final class AuthManager implements AuthenticationManagerInterface
                     'session_public_ids' => [],
                     'last_seen_at' => $lastSeenAt,
                     'requires_reauthentication' => $requiresReauthentication,
+                    'target_identity' => $targetIdentity,
+                    'target_type' => $targetType,
                     'label' => $label,
                     'client_family' => $clientFamily,
                     'client_platform' => $clientPlatform,

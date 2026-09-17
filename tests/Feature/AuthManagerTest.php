@@ -1698,6 +1698,9 @@ final class AuthManagerTest extends TestCase
                     'management_actor_authorized' => $device->managementActorAuthorized,
                     'management_actor_authorization_mode' => $device->managementActorAuthorizationMode,
                     'management_actor_authorization_reason_code' => $device->managementActorAuthorizationReasonCode,
+                    'management_target_identity' => $device->managementTargetIdentity,
+                    'management_target_type' => $device->managementTargetType,
+                    'management_target_matches_current_identity' => $device->managementTargetMatchesCurrentIdentity,
                     'client_platform' => $device->clientPlatform,
                     'device_kind' => $device->deviceKind,
                 ], auth()->devices()),
@@ -1782,6 +1785,9 @@ final class AuthManagerTest extends TestCase
         self::assertSame('current_session', $current['management_ownership_proof'] ?? null);
         self::assertSame('standard', $current['management_sensitivity'] ?? null);
         self::assertSame('trusted_device_management', $current['management_reason_code'] ?? null);
+        self::assertSame('47', $current['management_target_identity'] ?? null);
+        self::assertSame('user', $current['management_target_type'] ?? null);
+        self::assertTrue((bool) ($current['management_target_matches_current_identity'] ?? false));
         self::assertFalse((bool) ($current['management_actor_governed'] ?? true));
         self::assertFalse((bool) ($current['management_actor_authorized'] ?? true));
         self::assertNull($current['management_actor_authorization_mode'] ?? null);
@@ -1804,6 +1810,9 @@ final class AuthManagerTest extends TestCase
         self::assertSame('identity_session', $remote['management_ownership_proof'] ?? null);
         self::assertSame('elevated', $remote['management_sensitivity'] ?? null);
         self::assertSame('remote_device_management', $remote['management_reason_code'] ?? null);
+        self::assertSame('47', $remote['management_target_identity'] ?? null);
+        self::assertSame('user', $remote['management_target_type'] ?? null);
+        self::assertTrue((bool) ($remote['management_target_matches_current_identity'] ?? false));
         self::assertFalse((bool) ($remote['management_actor_governed'] ?? true));
         self::assertFalse((bool) ($remote['management_actor_authorized'] ?? true));
         self::assertNull($remote['management_actor_authorization_mode'] ?? null);
@@ -3078,6 +3087,9 @@ final class AuthManagerTest extends TestCase
                     'management_actor_authorized' => $device->managementActorAuthorized,
                     'management_actor_authorization_mode' => $device->managementActorAuthorizationMode,
                     'management_actor_authorization_reason_code' => $device->managementActorAuthorizationReasonCode,
+                    'management_target_identity' => $device->managementTargetIdentity,
+                    'management_target_type' => $device->managementTargetType,
+                    'management_target_matches_current_identity' => $device->managementTargetMatchesCurrentIdentity,
                 ], auth()->managedDevices('201')),
             ];
         });
@@ -3151,6 +3163,9 @@ final class AuthManagerTest extends TestCase
         self::assertTrue((bool) ($managedDevice['management_actor_authorized'] ?? false));
         self::assertSame('direct_admin', $managedDevice['management_actor_authorization_mode'] ?? null);
         self::assertNull($managedDevice['management_actor_authorization_reason_code'] ?? null);
+        self::assertSame('201', $managedDevice['management_target_identity'] ?? null);
+        self::assertSame('user', $managedDevice['management_target_type'] ?? null);
+        self::assertFalse((bool) ($managedDevice['management_target_matches_current_identity'] ?? true));
 
         $sessionRepository = $app->make(AuthenticationSessionRepositoryInterface::class);
         $targetSession = $sessionRepository->find($targetSessionId);

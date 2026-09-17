@@ -734,6 +734,57 @@ final class AuthManager implements AuthenticationManagerInterface
         return $count;
     }
 
+    public function revokeManagedDevice(
+        string $identity,
+        string $deviceReference,
+        ?string $type = null,
+    ): bool {
+        $context = $this->context();
+        $identity = trim($identity);
+        $deviceReference = trim($deviceReference);
+        $type = is_string($type) && trim($type) !== ''
+            ? trim($type)
+            : 'user';
+
+        if ($context === null || $identity === '' || $deviceReference === '') {
+            return false;
+        }
+
+        if (! $context->canAdministrativelyManageDevices()) {
+            return false;
+        }
+
+        $this->sessions->purgeExpired();
+        $this->trustedDeviceRepository->purgeExpired();
+
+        $sessions = $this->managedSessionsForDeviceReference($identity, $type, $deviceReference);
+        $trustedDevices = $this->managedTrustedDevicesForDeviceReference($identity, $type, $deviceReference);
+
+        if ($sessions === [] && $trustedDevices === []) {
+            return false;
+        }
+
+        $revokeCurrentSession = false;
+
+        foreach ($sessions as $session) {
+            if ($this->isCurrentSession($context, $session)) {
+                $revokeCurrentSession = true;
+            }
+
+            $this->sessions->delete($session->id->value);
+        }
+
+        foreach ($trustedDevices as $trustedDevice) {
+            $this->trustedDeviceRepository->delete($trustedDevice->publicId->value);
+        }
+
+        if ($revokeCurrentSession) {
+            $this->clearCurrentAuthenticationStateAfterSessionRevocation();
+        }
+
+        return true;
+    }
+
     private function revokeDeviceInternal(string $deviceReference, bool $enforceFreshAuthentication): bool
     {
         $context = $this->context();
@@ -1892,6 +1943,33 @@ final class AuthManager implements AuthenticationManagerInterface
         }
 
         return $matches;
+    }
+
+    /**
+     * @return list<AuthenticationSession>
+     */
+    private function managedSessionsForDeviceReference(string $identity, string $type, string $deviceReference): array
+    {
+        return array_values(array_filter(
+            $this->sessions->all(),
+            fn (AuthenticationSession $session): bool => ! $session->isExpired()
+                && $session->reference->type === $type
+                && $session->reference->identifier->value === $identity
+                && $this->stringAttribute($session, 'session_device_reference') === $deviceReference,
+        ));
+    }
+
+    /**
+     * @return list<TrustedDevice>
+     */
+    private function managedTrustedDevicesForDeviceReference(string $identity, string $type, string $deviceReference): array
+    {
+        return array_values(array_filter(
+            $this->trustedDeviceRepository->all(),
+            static fn (TrustedDevice $device): bool => $device->reference->type === $type
+                && $device->reference->identifier->value === $identity
+                && $device->deviceReference === $deviceReference,
+        ));
     }
 
     private function clearCurrentAuthenticationStateAfterSessionRevocation(): void

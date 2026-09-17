@@ -77,6 +77,12 @@ interface AuthenticationManagerInterface
 
     public function revokeOtherDevices(): int;
 
+    public function revokeManagedDevice(
+        string $identity,
+        string $deviceReference,
+        ?string $type = null,
+    ): bool;
+
     public function revokeSession(string $publicId): bool;
 
     public function revokeOtherSessions(): int;

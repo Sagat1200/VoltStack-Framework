@@ -7,6 +7,7 @@ namespace VoltStack\Test\Feature;
 use PHPUnit\Framework\TestCase;
 use Quantum\Auth\Contracts\AuthenticationManagerInterface;
 use Quantum\Auth\Contracts\AuthenticationSessionRepositoryInterface;
+use Quantum\Auth\Contracts\TrustedDeviceRepositoryInterface;
 use Quantum\Auth\Exceptions\IdentityNotEligibleException;
 use Quantum\Auth\Sessions\AuthenticationSession;
 use Quantum\Auth\Support\AuthenticationHttpState;
@@ -17,6 +18,7 @@ use Quantum\Http\Request;
 use Quantum\HttpKernel\HttpKernel;
 use Quantum\Routing\Router;
 use VoltStack\Framework\Application;
+use VoltStack\Runtime\Context\RuntimeContext;
 
 final class AuthManagerTest extends TestCase
 {
@@ -3015,6 +3017,266 @@ final class AuthManagerTest extends TestCase
         self::assertSame(200, $revokeResponse->statusCode());
         self::assertSame(2, $revokePayload['revoked'] ?? null);
         self::assertSame(1, $revokePayload['remaining_devices'] ?? null);
+    }
+
+    public function test_auth_manager_can_revoke_managed_device_for_other_identity_when_actor_is_governed_admin(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 201,
+                'identifier' => 'managed-target@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+            ],
+            [
+                'id' => 202,
+                'identifier' => 'managed-admin@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+                'auth_management_authority' => 'administrative_actor',
+                'auth_management_ownership_proof' => 'privileged_session',
+                'auth_management_scopes' => [
+                    'security_center_export',
+                    'admin_device_management',
+                ],
+                'auth_management_claims_source' => 'identity_attributes',
+                'auth_management_privilege_level' => 'privileged_admin',
+            ],
+        ]);
+
+        $router = $app->make(Router::class);
+        $router->post('/managed-target-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'managed-target@example.com',
+                'password' => 'secret-123',
+                'second_factor' => '654321',
+            ])];
+        });
+        $router->post('/managed-target-enroll', function (): array {
+            return ['trusted' => auth()->trustCurrentDevice()];
+        });
+        $router->get('/managed-target-protected', function (): array {
+            return ['check' => auth()->check()];
+        })->middleware('auth');
+        $router->post('/managed-admin-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'managed-admin@example.com',
+                'password' => 'secret-123',
+                'second_factor' => '654321',
+            ])];
+        });
+        $router->post('/managed-admin-revoke', function (): array {
+            $request = RuntimeContext::current()?->request();
+            $targetIdentity = is_string($request?->input('identity')) ? trim((string) $request?->input('identity')) : '';
+            $deviceReference = is_string($request?->input('device_reference')) ? trim((string) $request?->input('device_reference')) : '';
+
+            return [
+                'revoked' => auth()->revokeManagedDevice($targetIdentity, $deviceReference),
+            ];
+        });
+
+        $kernel = $app->make(HttpKernel::class);
+
+        $targetLogin = $kernel->handle(Request::create(
+            '/managed-target-login',
+            'POST',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.130',
+            ],
+        ));
+        $targetSessionId = $targetLogin->headers()['X-Auth-Session'] ?? null;
+        self::assertIsString($targetSessionId);
+
+        $targetEnroll = $kernel->handle(Request::create(
+            '/managed-target-enroll',
+            'POST',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $targetSessionId],
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.130',
+            ],
+        ));
+        self::assertTrue((json_decode($targetEnroll->content(), true, 512, JSON_THROW_ON_ERROR)['trusted'] ?? false));
+
+        $adminLogin = $kernel->handle(Request::create(
+            '/managed-admin-login',
+            'POST',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.131',
+            ],
+        ));
+        $adminSessionId = $adminLogin->headers()['X-Auth-Session'] ?? null;
+        self::assertIsString($adminSessionId);
+
+        $sessionRepository = $app->make(AuthenticationSessionRepositoryInterface::class);
+        $targetSession = $sessionRepository->find($targetSessionId);
+        self::assertInstanceOf(AuthenticationSession::class, $targetSession);
+        $targetDeviceReference = $targetSession->attributes['session_device_reference'] ?? null;
+        self::assertIsString($targetDeviceReference);
+
+        $revokeResponse = $kernel->handle(Request::create(
+            '/managed-admin-revoke',
+            'POST',
+            [
+                'identity' => '201',
+                'device_reference' => $targetDeviceReference,
+            ],
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $adminSessionId],
+            server: [
+                'HTTP_ACCEPT' => 'application/json',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.131',
+            ],
+        ));
+        $revokePayload = json_decode($revokeResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(200, $revokeResponse->statusCode());
+        self::assertTrue((bool) ($revokePayload['revoked'] ?? false));
+        self::assertNull($sessionRepository->find($targetSessionId));
+
+        $trustedDeviceRepository = $app->make(TrustedDeviceRepositoryInterface::class);
+        self::assertCount(0, array_filter(
+            $trustedDeviceRepository->all(),
+            static fn ($device): bool => $device->reference->identifier->value === '201'
+                && $device->deviceReference === $targetDeviceReference,
+        ));
+
+        $targetProtected = $kernel->handle(Request::create(
+            '/managed-target-protected',
+            'GET',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $targetSessionId],
+            server: [
+                'HTTP_ACCEPT' => 'application/json',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.130',
+            ],
+        ));
+        self::assertSame(401, $targetProtected->statusCode());
+    }
+
+    public function test_auth_manager_rejects_managed_device_revocation_for_non_governed_actor(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 211,
+                'identifier' => 'managed-target-reject@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+            ],
+            [
+                'id' => 212,
+                'identifier' => 'managed-plain-user@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+            ],
+        ]);
+
+        $router = $app->make(Router::class);
+        $router->post('/managed-reject-target-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'managed-target-reject@example.com',
+                'password' => 'secret-123',
+                'second_factor' => '654321',
+            ])];
+        });
+        $router->get('/managed-reject-target-protected', function (): array {
+            return ['check' => auth()->check()];
+        })->middleware('auth');
+        $router->post('/managed-reject-actor-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'managed-plain-user@example.com',
+                'password' => 'secret-123',
+                'second_factor' => '654321',
+            ])];
+        });
+        $router->post('/managed-reject-actor-revoke', function (): array {
+            $request = RuntimeContext::current()?->request();
+            $targetIdentity = is_string($request?->input('identity')) ? trim((string) $request?->input('identity')) : '';
+            $deviceReference = is_string($request?->input('device_reference')) ? trim((string) $request?->input('device_reference')) : '';
+
+            return [
+                'revoked' => auth()->revokeManagedDevice($targetIdentity, $deviceReference),
+            ];
+        });
+
+        $kernel = $app->make(HttpKernel::class);
+
+        $targetLogin = $kernel->handle(Request::create(
+            '/managed-reject-target-login',
+            'POST',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (X11; Linux x86_64) Firefox/129.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.132',
+            ],
+        ));
+        $targetSessionId = $targetLogin->headers()['X-Auth-Session'] ?? null;
+        self::assertIsString($targetSessionId);
+
+        $actorLogin = $kernel->handle(Request::create(
+            '/managed-reject-actor-login',
+            'POST',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.133',
+            ],
+        ));
+        $actorSessionId = $actorLogin->headers()['X-Auth-Session'] ?? null;
+        self::assertIsString($actorSessionId);
+
+        $sessionRepository = $app->make(AuthenticationSessionRepositoryInterface::class);
+        $targetSession = $sessionRepository->find($targetSessionId);
+        self::assertInstanceOf(AuthenticationSession::class, $targetSession);
+        $targetDeviceReference = $targetSession->attributes['session_device_reference'] ?? null;
+        self::assertIsString($targetDeviceReference);
+
+        $revokeResponse = $kernel->handle(Request::create(
+            '/managed-reject-actor-revoke',
+            'POST',
+            [
+                'identity' => '211',
+                'device_reference' => $targetDeviceReference,
+            ],
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $actorSessionId],
+            server: [
+                'HTTP_ACCEPT' => 'application/json',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.133',
+            ],
+        ));
+        $revokePayload = json_decode($revokeResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(200, $revokeResponse->statusCode());
+        self::assertFalse((bool) ($revokePayload['revoked'] ?? true));
+        self::assertInstanceOf(AuthenticationSession::class, $sessionRepository->find($targetSessionId));
+
+        $targetProtected = $kernel->handle(Request::create(
+            '/managed-reject-target-protected',
+            'GET',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $targetSessionId],
+            server: [
+                'HTTP_ACCEPT' => 'application/json',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (X11; Linux x86_64) Firefox/129.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.132',
+            ],
+        ));
+        self::assertSame(200, $targetProtected->statusCode());
     }
 
     public function test_auth_facade_authenticates_and_uses_configured_cookie_name(): void

@@ -1698,6 +1698,11 @@ final class AuthManagerTest extends TestCase
                     'management_actor_authorized' => $device->managementActorAuthorized,
                     'management_actor_authorization_mode' => $device->managementActorAuthorizationMode,
                     'management_actor_authorization_reason_code' => $device->managementActorAuthorizationReasonCode,
+                    'management_actor_authority' => $device->managementActorAuthority,
+                    'management_actor_ownership_proof' => $device->managementActorOwnershipProof,
+                    'management_actor_claims_source' => $device->managementActorClaimsSource,
+                    'management_actor_privilege_level' => $device->managementActorPrivilegeLevel,
+                    'management_actor_scopes' => $device->managementActorScopes,
                     'management_target_identity' => $device->managementTargetIdentity,
                     'management_target_type' => $device->managementTargetType,
                     'management_target_matches_current_identity' => $device->managementTargetMatchesCurrentIdentity,
@@ -1788,6 +1793,11 @@ final class AuthManagerTest extends TestCase
         self::assertSame('47', $current['management_target_identity'] ?? null);
         self::assertSame('user', $current['management_target_type'] ?? null);
         self::assertTrue((bool) ($current['management_target_matches_current_identity'] ?? false));
+        self::assertSame('session_owner', $current['management_actor_authority'] ?? null);
+        self::assertSame('current_session', $current['management_actor_ownership_proof'] ?? null);
+        self::assertSame('self_service_defaults', $current['management_actor_claims_source'] ?? null);
+        self::assertSame('self_service', $current['management_actor_privilege_level'] ?? null);
+        self::assertContains('current_device_management', $current['management_actor_scopes'] ?? []);
         self::assertFalse((bool) ($current['management_actor_governed'] ?? true));
         self::assertFalse((bool) ($current['management_actor_authorized'] ?? true));
         self::assertNull($current['management_actor_authorization_mode'] ?? null);
@@ -1813,6 +1823,11 @@ final class AuthManagerTest extends TestCase
         self::assertSame('47', $remote['management_target_identity'] ?? null);
         self::assertSame('user', $remote['management_target_type'] ?? null);
         self::assertTrue((bool) ($remote['management_target_matches_current_identity'] ?? false));
+        self::assertSame('session_owner', $remote['management_actor_authority'] ?? null);
+        self::assertSame('current_session', $remote['management_actor_ownership_proof'] ?? null);
+        self::assertSame('self_service_defaults', $remote['management_actor_claims_source'] ?? null);
+        self::assertSame('self_service', $remote['management_actor_privilege_level'] ?? null);
+        self::assertContains('identity_device_management', $remote['management_actor_scopes'] ?? []);
         self::assertFalse((bool) ($remote['management_actor_governed'] ?? true));
         self::assertFalse((bool) ($remote['management_actor_authorized'] ?? true));
         self::assertNull($remote['management_actor_authorization_mode'] ?? null);
@@ -1859,6 +1874,11 @@ final class AuthManagerTest extends TestCase
                     'management_actor_authorized' => $device->managementActorAuthorized,
                     'management_actor_authorization_mode' => $device->managementActorAuthorizationMode,
                     'management_actor_authorization_reason_code' => $device->managementActorAuthorizationReasonCode,
+                    'management_actor_authority' => $device->managementActorAuthority,
+                    'management_actor_ownership_proof' => $device->managementActorOwnershipProof,
+                    'management_actor_claims_source' => $device->managementActorClaimsSource,
+                    'management_actor_privilege_level' => $device->managementActorPrivilegeLevel,
+                    'management_actor_scopes' => $device->managementActorScopes,
                 ], auth()->devices()),
             ];
         });
@@ -1898,6 +1918,11 @@ final class AuthManagerTest extends TestCase
         self::assertTrue((bool) ($current['management_actor_authorized'] ?? false));
         self::assertSame('direct_admin', $current['management_actor_authorization_mode'] ?? null);
         self::assertNull($current['management_actor_authorization_reason_code'] ?? null);
+        self::assertSame('administrative_actor', $current['management_actor_authority'] ?? null);
+        self::assertSame('privileged_session', $current['management_actor_ownership_proof'] ?? null);
+        self::assertSame('identity_attributes', $current['management_actor_claims_source'] ?? null);
+        self::assertSame('privileged_admin', $current['management_actor_privilege_level'] ?? null);
+        self::assertContains('admin_device_management', $current['management_actor_scopes'] ?? []);
     }
 
     public function test_auth_manager_devices_inventory_reads_shared_file_store_across_app_instances(): void
@@ -3087,6 +3112,11 @@ final class AuthManagerTest extends TestCase
                     'management_actor_authorized' => $device->managementActorAuthorized,
                     'management_actor_authorization_mode' => $device->managementActorAuthorizationMode,
                     'management_actor_authorization_reason_code' => $device->managementActorAuthorizationReasonCode,
+                    'management_actor_authority' => $device->managementActorAuthority,
+                    'management_actor_ownership_proof' => $device->managementActorOwnershipProof,
+                    'management_actor_claims_source' => $device->managementActorClaimsSource,
+                    'management_actor_privilege_level' => $device->managementActorPrivilegeLevel,
+                    'management_actor_scopes' => $device->managementActorScopes,
                     'management_target_identity' => $device->managementTargetIdentity,
                     'management_target_type' => $device->managementTargetType,
                     'management_target_matches_current_identity' => $device->managementTargetMatchesCurrentIdentity,
@@ -3163,6 +3193,11 @@ final class AuthManagerTest extends TestCase
         self::assertTrue((bool) ($managedDevice['management_actor_authorized'] ?? false));
         self::assertSame('direct_admin', $managedDevice['management_actor_authorization_mode'] ?? null);
         self::assertNull($managedDevice['management_actor_authorization_reason_code'] ?? null);
+        self::assertSame('administrative_actor', $managedDevice['management_actor_authority'] ?? null);
+        self::assertSame('privileged_session', $managedDevice['management_actor_ownership_proof'] ?? null);
+        self::assertSame('identity_attributes', $managedDevice['management_actor_claims_source'] ?? null);
+        self::assertSame('privileged_admin', $managedDevice['management_actor_privilege_level'] ?? null);
+        self::assertContains('admin_device_management', $managedDevice['management_actor_scopes'] ?? []);
         self::assertSame('201', $managedDevice['management_target_identity'] ?? null);
         self::assertSame('user', $managedDevice['management_target_type'] ?? null);
         self::assertFalse((bool) ($managedDevice['management_target_matches_current_identity'] ?? true));

@@ -8,6 +8,7 @@ final readonly class DeviceInventorySummary
 {
     /**
      * @param list<string> $sessionPublicIds
+     * @param list<string> $managementActorScopes
      */
     public function __construct(
         public string $deviceReference,
@@ -32,6 +33,11 @@ final readonly class DeviceInventorySummary
         public bool $managementActorAuthorized = false,
         public ?string $managementActorAuthorizationMode = null,
         public ?string $managementActorAuthorizationReasonCode = null,
+        public string $managementActorAuthority = 'session_owner',
+        public string $managementActorOwnershipProof = 'current_session',
+        public string $managementActorClaimsSource = 'self_service_defaults',
+        public string $managementActorPrivilegeLevel = 'self_service',
+        public array $managementActorScopes = [],
         public ?string $managementTargetIdentity = null,
         public ?string $managementTargetType = null,
         public bool $managementTargetMatchesCurrentIdentity = true,

@@ -1747,6 +1747,16 @@ final class AuthManager implements AuthenticationManagerInterface
         $managementActorAuthorized = $context?->canAdministrativelyManageDevices() ?? false;
         $managementActorAuthorizationMode = $context?->managementAuthorizationMode();
         $managementActorAuthorizationReasonCode = $context?->managementAuthorizationReasonCode();
+        $managementActorAuthority = $context?->managementAuthority() ?? 'session_owner';
+        $managementActorOwnershipProof = $context?->managementOwnershipProof() ?? 'current_session';
+        $managementActorClaimsSource = $context?->managementClaimsSource() ?? 'self_service_defaults';
+        $managementActorPrivilegeLevel = $context?->managementPrivilegeLevel() ?? 'self_service';
+        $managementActorScopes = $context?->managementScopes() ?? [
+            'current_session_management',
+            'current_device_management',
+            'identity_session_management',
+            'identity_device_management',
+        ];
         $managementTargetIdentity = isset($entry['target_identity']) && is_string($entry['target_identity']) && trim($entry['target_identity']) !== ''
             ? trim($entry['target_identity'])
             : null;
@@ -1804,6 +1814,11 @@ final class AuthManager implements AuthenticationManagerInterface
             managementActorAuthorized: $managementActorAuthorized,
             managementActorAuthorizationMode: $managementActorAuthorizationMode,
             managementActorAuthorizationReasonCode: $managementActorAuthorizationReasonCode,
+            managementActorAuthority: $managementActorAuthority,
+            managementActorOwnershipProof: $managementActorOwnershipProof,
+            managementActorClaimsSource: $managementActorClaimsSource,
+            managementActorPrivilegeLevel: $managementActorPrivilegeLevel,
+            managementActorScopes: $managementActorScopes,
             managementTargetIdentity: $managementTargetIdentity,
             managementTargetType: $managementTargetType,
             managementTargetMatchesCurrentIdentity: $managementTargetMatchesCurrentIdentity,

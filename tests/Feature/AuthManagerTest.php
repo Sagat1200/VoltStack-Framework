@@ -1703,6 +1703,8 @@ final class AuthManagerTest extends TestCase
                     'management_actor_claims_source' => $device->managementActorClaimsSource,
                     'management_actor_privilege_level' => $device->managementActorPrivilegeLevel,
                     'management_actor_scopes' => $device->managementActorScopes,
+                    'management_actor_target_relation' => $device->managementActorTargetRelation,
+                    'management_actor_target_reason_code' => $device->managementActorTargetReasonCode,
                     'management_target_identity' => $device->managementTargetIdentity,
                     'management_target_type' => $device->managementTargetType,
                     'management_target_matches_current_identity' => $device->managementTargetMatchesCurrentIdentity,
@@ -1798,6 +1800,8 @@ final class AuthManagerTest extends TestCase
         self::assertSame('self_service_defaults', $current['management_actor_claims_source'] ?? null);
         self::assertSame('self_service', $current['management_actor_privilege_level'] ?? null);
         self::assertContains('current_device_management', $current['management_actor_scopes'] ?? []);
+        self::assertSame('self', $current['management_actor_target_relation'] ?? null);
+        self::assertSame('current_identity_target', $current['management_actor_target_reason_code'] ?? null);
         self::assertFalse((bool) ($current['management_actor_governed'] ?? true));
         self::assertFalse((bool) ($current['management_actor_authorized'] ?? true));
         self::assertNull($current['management_actor_authorization_mode'] ?? null);
@@ -1828,6 +1832,8 @@ final class AuthManagerTest extends TestCase
         self::assertSame('self_service_defaults', $remote['management_actor_claims_source'] ?? null);
         self::assertSame('self_service', $remote['management_actor_privilege_level'] ?? null);
         self::assertContains('identity_device_management', $remote['management_actor_scopes'] ?? []);
+        self::assertSame('self', $remote['management_actor_target_relation'] ?? null);
+        self::assertSame('current_identity_target', $remote['management_actor_target_reason_code'] ?? null);
         self::assertFalse((bool) ($remote['management_actor_governed'] ?? true));
         self::assertFalse((bool) ($remote['management_actor_authorized'] ?? true));
         self::assertNull($remote['management_actor_authorization_mode'] ?? null);
@@ -1879,6 +1885,8 @@ final class AuthManagerTest extends TestCase
                     'management_actor_claims_source' => $device->managementActorClaimsSource,
                     'management_actor_privilege_level' => $device->managementActorPrivilegeLevel,
                     'management_actor_scopes' => $device->managementActorScopes,
+                    'management_actor_target_relation' => $device->managementActorTargetRelation,
+                    'management_actor_target_reason_code' => $device->managementActorTargetReasonCode,
                 ], auth()->devices()),
             ];
         });
@@ -1923,6 +1931,8 @@ final class AuthManagerTest extends TestCase
         self::assertSame('identity_attributes', $current['management_actor_claims_source'] ?? null);
         self::assertSame('privileged_admin', $current['management_actor_privilege_level'] ?? null);
         self::assertContains('admin_device_management', $current['management_actor_scopes'] ?? []);
+        self::assertSame('self_governed', $current['management_actor_target_relation'] ?? null);
+        self::assertSame('governed_current_identity_target', $current['management_actor_target_reason_code'] ?? null);
     }
 
     public function test_auth_manager_devices_inventory_reads_shared_file_store_across_app_instances(): void
@@ -3117,6 +3127,8 @@ final class AuthManagerTest extends TestCase
                     'management_actor_claims_source' => $device->managementActorClaimsSource,
                     'management_actor_privilege_level' => $device->managementActorPrivilegeLevel,
                     'management_actor_scopes' => $device->managementActorScopes,
+                    'management_actor_target_relation' => $device->managementActorTargetRelation,
+                    'management_actor_target_reason_code' => $device->managementActorTargetReasonCode,
                     'management_target_identity' => $device->managementTargetIdentity,
                     'management_target_type' => $device->managementTargetType,
                     'management_target_matches_current_identity' => $device->managementTargetMatchesCurrentIdentity,
@@ -3198,6 +3210,8 @@ final class AuthManagerTest extends TestCase
         self::assertSame('identity_attributes', $managedDevice['management_actor_claims_source'] ?? null);
         self::assertSame('privileged_admin', $managedDevice['management_actor_privilege_level'] ?? null);
         self::assertContains('admin_device_management', $managedDevice['management_actor_scopes'] ?? []);
+        self::assertSame('direct_administrative_target', $managedDevice['management_actor_target_relation'] ?? null);
+        self::assertSame('direct_administrative_target', $managedDevice['management_actor_target_reason_code'] ?? null);
         self::assertSame('201', $managedDevice['management_target_identity'] ?? null);
         self::assertSame('user', $managedDevice['management_target_type'] ?? null);
         self::assertFalse((bool) ($managedDevice['management_target_matches_current_identity'] ?? true));
@@ -3248,6 +3262,105 @@ final class AuthManagerTest extends TestCase
             ],
         ));
         self::assertSame(401, $targetProtected->statusCode());
+    }
+
+    public function test_auth_manager_managed_devices_exposes_delegated_actor_target_relation(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 241,
+                'identifier' => 'delegated-target@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+            ],
+            [
+                'id' => 242,
+                'identifier' => 'delegated-actor@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+                'auth_management_authority' => 'administrative_actor',
+                'auth_management_ownership_proof' => 'delegated_session',
+                'auth_management_scopes' => ['admin_device_management'],
+                'auth_management_claims_source' => 'identity_attributes',
+                'auth_management_privilege_level' => 'delegated_support',
+            ],
+        ]);
+
+        $router = $app->make(Router::class);
+        $router->post('/delegated-target-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'delegated-target@example.com',
+                'password' => 'secret-123',
+                'second_factor' => '654321',
+            ])];
+        });
+        $router->post('/delegated-actor-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'delegated-actor@example.com',
+                'password' => 'secret-123',
+                'second_factor' => '654321',
+            ])];
+        });
+        $router->get('/delegated-actor-devices', function (): array {
+            return [
+                'devices' => array_map(static fn ($device): array => [
+                    'management_actor_authorization_mode' => $device->managementActorAuthorizationMode,
+                    'management_actor_target_relation' => $device->managementActorTargetRelation,
+                    'management_actor_target_reason_code' => $device->managementActorTargetReasonCode,
+                    'management_target_identity' => $device->managementTargetIdentity,
+                    'management_target_type' => $device->managementTargetType,
+                ], auth()->managedDevices('241')),
+            ];
+        });
+
+        $kernel = $app->make(HttpKernel::class);
+        $targetLogin = $kernel->handle(Request::create(
+            '/delegated-target-login',
+            'POST',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (X11; Linux x86_64) Firefox/129.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.160',
+            ],
+        ));
+        self::assertIsString($targetLogin->headers()['X-Auth-Session'] ?? null);
+
+        $actorLogin = $kernel->handle(Request::create(
+            '/delegated-actor-login',
+            'POST',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.161',
+            ],
+        ));
+        $actorSessionId = $actorLogin->headers()['X-Auth-Session'] ?? null;
+        self::assertIsString($actorSessionId);
+
+        $managedDevicesResponse = $kernel->handle(Request::create(
+            '/delegated-actor-devices',
+            'GET',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $actorSessionId],
+            server: [
+                'HTTP_ACCEPT' => 'application/json',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.161',
+            ],
+        ));
+        $payload = json_decode($managedDevicesResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+        $device = $payload['devices'][0] ?? null;
+
+        self::assertSame(200, $managedDevicesResponse->statusCode());
+        self::assertIsArray($device);
+        self::assertSame('delegated_admin', $device['management_actor_authorization_mode'] ?? null);
+        self::assertSame('delegated_administrative_target', $device['management_actor_target_relation'] ?? null);
+        self::assertSame('delegated_administrative_target', $device['management_actor_target_reason_code'] ?? null);
+        self::assertSame('241', $device['management_target_identity'] ?? null);
+        self::assertSame('user', $device['management_target_type'] ?? null);
     }
 
     public function test_auth_manager_can_revoke_only_managed_sessions_for_other_identity(): void

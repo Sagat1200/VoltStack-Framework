@@ -38,6 +38,8 @@ final readonly class DeviceInventorySummary
         public string $managementActorClaimsSource = 'self_service_defaults',
         public string $managementActorPrivilegeLevel = 'self_service',
         public array $managementActorScopes = [],
+        public string $managementActorTargetRelation = 'self',
+        public string $managementActorTargetReasonCode = 'current_identity_target',
         public ?string $managementTargetIdentity = null,
         public ?string $managementTargetType = null,
         public bool $managementTargetMatchesCurrentIdentity = true,

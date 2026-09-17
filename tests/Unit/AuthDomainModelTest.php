@@ -314,6 +314,40 @@ final class AuthDomainModelTest extends TestCase
         self::assertTrue($context->canAdministrativelyManageDevices());
         self::assertSame('delegated_admin', $context->managementAuthorizationMode());
         self::assertNull($context->managementAuthorizationReasonCode());
+        self::assertSame('delegated_administrative_target', $context->managementActorTargetRelation('120', 'user'));
+        self::assertSame('delegated_administrative_target', $context->managementActorTargetReasonCode('120', 'user'));
+    }
+
+    public function test_authentication_context_exposes_direct_admin_and_self_governed_target_relations(): void
+    {
+        $identity = new GenericIdentity(
+            identifier: new IdentityIdentifier('91'),
+            type: 'user',
+            attributes: [
+                'name' => 'Privileged Admin',
+                'auth_management_authority' => 'administrative_actor',
+                'auth_management_ownership_proof' => 'privileged_session',
+                'auth_management_scopes' => [
+                    'security_center_export',
+                    'admin_device_management',
+                ],
+                'auth_management_claims_source' => 'identity_attributes',
+                'auth_management_privilege_level' => 'privileged_admin',
+            ],
+        );
+
+        $context = new AuthenticationContext(
+            identity: $identity,
+            reference: new IdentityReference($identity->identifier(), $identity->type()),
+            requestId: 'req-10b',
+            method: 'password',
+            attributes: [],
+        );
+
+        self::assertSame('self_governed', $context->managementActorTargetRelation('91', 'user'));
+        self::assertSame('governed_current_identity_target', $context->managementActorTargetReasonCode('91', 'user'));
+        self::assertSame('direct_administrative_target', $context->managementActorTargetRelation('120', 'user'));
+        self::assertSame('direct_administrative_target', $context->managementActorTargetReasonCode('120', 'user'));
     }
 
     public function test_authentication_context_exposes_reason_for_governed_actor_rejected_without_device_management_scope(): void

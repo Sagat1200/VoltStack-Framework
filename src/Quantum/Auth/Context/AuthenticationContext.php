@@ -182,6 +182,38 @@ final readonly class AuthenticationContext
         return $this->managementDeviceAuthorizationDecision()['reason_code'];
     }
 
+    public function managementActorTargetRelation(?string $targetIdentity = null, ?string $targetType = null): string
+    {
+        if ($this->managementTargetMatchesCurrentIdentity($targetIdentity, $targetType)) {
+            return $this->hasGovernedManagementClaims()
+                ? 'self_governed'
+                : 'self';
+        }
+
+        return match ($this->managementAuthorizationMode()) {
+            'direct_admin' => 'direct_administrative_target',
+            'delegated_admin' => 'delegated_administrative_target',
+            default => $this->hasGovernedManagementClaims()
+                ? 'governed_target'
+                : 'unmanaged_target',
+        };
+    }
+
+    public function managementActorTargetReasonCode(?string $targetIdentity = null, ?string $targetType = null): string
+    {
+        if ($this->managementTargetMatchesCurrentIdentity($targetIdentity, $targetType)) {
+            return $this->hasGovernedManagementClaims()
+                ? 'governed_current_identity_target'
+                : 'current_identity_target';
+        }
+
+        return match ($this->managementAuthorizationMode()) {
+            'direct_admin' => 'direct_administrative_target',
+            'delegated_admin' => 'delegated_administrative_target',
+            default => $this->managementAuthorizationReasonCode() ?? 'unmanaged_target',
+        };
+    }
+
     /**
      * @return array{authorized: bool, authorization_mode: ?string, reason_code: ?string}
      */
@@ -237,6 +269,16 @@ final readonly class AuthenticationContext
                 ? 'invalid_delegated_management_proof'
                 : 'unsupported_management_privilege_level',
         ];
+    }
+
+    private function managementTargetMatchesCurrentIdentity(?string $targetIdentity, ?string $targetType): bool
+    {
+        return is_string($targetIdentity)
+            && trim($targetIdentity) !== ''
+            && is_string($targetType)
+            && trim($targetType) !== ''
+            && $this->reference->identifier->value === trim($targetIdentity)
+            && $this->reference->type === trim($targetType);
     }
 
     private function managementStringAttribute(string $key): ?string

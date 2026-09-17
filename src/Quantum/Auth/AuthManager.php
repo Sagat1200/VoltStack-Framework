@@ -717,11 +717,13 @@ final class AuthManager implements AuthenticationManagerInterface
             return 0;
         }
 
-        if ($this->bulkDeviceRevocationTouchesRemoteSessions($context, array_keys($deviceReferences))) {
+        $administrativeBypass = $this->canBypassFreshAuthenticationForRemoteDeviceManagement($context);
+
+        if (! $administrativeBypass && $this->bulkDeviceRevocationTouchesRemoteSessions($context, array_keys($deviceReferences))) {
             $this->assertFreshAuthenticationForSensitiveSessionOperation($context, 'device_revocation_bulk');
         }
 
-        if ($this->bulkDeviceRevocationTouchesRemoteTrustedDevices($context, array_keys($deviceReferences))) {
+        if (! $administrativeBypass && $this->bulkDeviceRevocationTouchesRemoteTrustedDevices($context, array_keys($deviceReferences))) {
             $this->assertFreshAuthenticationForSensitiveTrustedDeviceOperation($context, 'device_revocation_bulk');
         }
 
@@ -753,6 +755,7 @@ final class AuthManager implements AuthenticationManagerInterface
         $touchesRemoteSessions = false;
         $touchesRemoteTrustedDevices = ! $targetsCurrentDevice && $trustedDevices !== [];
         $revokeCurrentSession = false;
+        $administrativeBypass = $this->canBypassFreshAuthenticationForRemoteDeviceManagement($context);
 
         foreach ($sessions as $session) {
             if ($this->isCurrentSession($context, $session)) {
@@ -763,11 +766,11 @@ final class AuthManager implements AuthenticationManagerInterface
             $touchesRemoteSessions = true;
         }
 
-        if ($enforceFreshAuthentication && $touchesRemoteSessions) {
+        if ($enforceFreshAuthentication && ! $administrativeBypass && $touchesRemoteSessions) {
             $this->assertFreshAuthenticationForSensitiveSessionOperation($context, 'device_revocation');
         }
 
-        if ($enforceFreshAuthentication && $touchesRemoteTrustedDevices) {
+        if ($enforceFreshAuthentication && ! $administrativeBypass && $touchesRemoteTrustedDevices) {
             $this->assertFreshAuthenticationForSensitiveTrustedDeviceOperation($context, 'device_revocation');
         }
 
@@ -1556,6 +1559,11 @@ final class AuthManager implements AuthenticationManagerInterface
         return $freshAt === null || (time() - $freshAt) > $this->freshAuthenticationWindowSecondsForTrustedDevices();
     }
 
+    private function canBypassFreshAuthenticationForRemoteDeviceManagement(AuthenticationContext $context): bool
+    {
+        return $context->canAdministrativelyManageDevices();
+    }
+
     private function trustedDevicesRequireMultiFactor(): bool
     {
         return (bool) $this->config->get('auth.trusted_devices.require_multi_factor', true);
@@ -1767,7 +1775,16 @@ final class AuthManager implements AuthenticationManagerInterface
             (int) $entry['current_session_count'],
             (bool) $entry['has_trusted_device'],
         );
+        $managementActorGoverned = $context?->hasGovernedManagementClaims() ?? false;
+        $managementActorAuthorized = $context?->canAdministrativelyManageDevices() ?? false;
+        $managementActorAuthorizationMode = $context?->managementAuthorizationMode();
+        $managementActorAuthorizationReasonCode = $context?->managementAuthorizationReasonCode();
         $requiresReauthentication = (bool) $entry['requires_reauthentication'];
+
+        if ($requiresReauthentication && $managementActorAuthorized && $scope !== 'current') {
+            $requiresReauthentication = false;
+        }
+
         $managementAuthority = $scope === 'current'
             ? 'session_owner'
             : 'identity_owner';
@@ -1785,11 +1802,6 @@ final class AuthManager implements AuthenticationManagerInterface
                     ? 'trusted_device_management'
                     : 'current_device_management',
             };
-        $managementActorGoverned = $context?->hasGovernedManagementClaims() ?? false;
-        $managementActorAuthorized = $context?->canAdministrativelyManageDevices() ?? false;
-        $managementActorAuthorizationMode = $context?->managementAuthorizationMode();
-        $managementActorAuthorizationReasonCode = $context?->managementAuthorizationReasonCode();
-
         return new DeviceInventorySummary(
             deviceReference: $entry['device_reference'],
             trustState: $entry['trust_state'],

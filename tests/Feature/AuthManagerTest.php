@@ -2354,6 +2354,169 @@ final class AuthManagerTest extends TestCase
         self::assertSame('device_revocation', $revokeResponse->headers()['X-Auth-Operation'] ?? null);
     }
 
+    public function test_auth_manager_allows_governed_admin_to_revoke_remote_device_even_when_freshness_window_expired(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 150,
+                'identifier' => 'device-revoke-governed@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+                'auth_management_authority' => 'administrative_actor',
+                'auth_management_ownership_proof' => 'privileged_session',
+                'auth_management_scopes' => [
+                    'security_center_export',
+                    'admin_device_management',
+                ],
+                'auth_management_claims_source' => 'identity_attributes',
+                'auth_management_privilege_level' => 'privileged_admin',
+            ],
+        ]);
+        $app->make(ConfigRepository::class)->set('auth.session.management.fresh_auth_window', 300);
+        $app->make(ConfigRepository::class)->set('auth.trusted_devices.management.fresh_auth_window', 300);
+
+        $router = $app->make(Router::class);
+        $router->post('/device-revoke-governed-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'device-revoke-governed@example.com',
+                'password' => 'secret-123',
+                'second_factor' => '654321',
+            ])];
+        });
+        $router->post('/device-revoke-governed-enroll', function (): array {
+            return ['trusted' => auth()->trustCurrentDevice()];
+        });
+        $router->get('/device-revoke-governed-inventory', function (): array {
+            return [
+                'devices' => array_map(static fn ($device): array => [
+                    'device_reference' => $device->deviceReference,
+                    'current' => $device->current,
+                    'requires_reauthentication' => $device->requiresReauthentication,
+                    'management_mode' => $device->managementMode,
+                    'management_reason_code' => $device->managementReasonCode,
+                    'management_actor_governed' => $device->managementActorGoverned,
+                    'management_actor_authorized' => $device->managementActorAuthorized,
+                    'management_actor_authorization_mode' => $device->managementActorAuthorizationMode,
+                    'management_actor_authorization_reason_code' => $device->managementActorAuthorizationReasonCode,
+                ], auth()->devices()),
+            ];
+        });
+        $router->post('/device-revoke-governed-remote', function (): array {
+            $target = null;
+
+            foreach (auth()->devices() as $device) {
+                if (! $device->current) {
+                    $target = $device;
+                    break;
+                }
+            }
+
+            return [
+                'revoked' => $target !== null ? auth()->revokeDevice($target->deviceReference) : false,
+                'remaining_devices' => count(auth()->devices()),
+            ];
+        });
+
+        $kernel = $app->make(HttpKernel::class);
+        $firstLogin = $kernel->handle(Request::create(
+            '/device-revoke-governed-login',
+            'POST',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.120',
+            ],
+        ));
+        $firstSessionId = $firstLogin->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($firstSessionId);
+
+        $firstEnroll = $kernel->handle(Request::create(
+            '/device-revoke-governed-enroll',
+            'POST',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $firstSessionId],
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.120',
+            ],
+        ));
+        self::assertTrue((json_decode($firstEnroll->content(), true, 512, JSON_THROW_ON_ERROR)['trusted'] ?? false));
+
+        $secondLogin = $kernel->handle(Request::create(
+            '/device-revoke-governed-login',
+            'POST',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.121',
+            ],
+        ));
+        $secondSessionId = $secondLogin->headers()['X-Auth-Session'] ?? null;
+
+        self::assertIsString($secondSessionId);
+
+        $repository = $app->make(AuthenticationSessionRepositoryInterface::class);
+        $currentSession = $repository->find($secondSessionId);
+
+        self::assertInstanceOf(AuthenticationSession::class, $currentSession);
+
+        $attributes = $currentSession->attributes;
+        $attributes['authentication_fresh_at'] = time() - 601;
+
+        $repository->touch(new AuthenticationSession(
+            id: $currentSession->id,
+            identity: $currentSession->identity,
+            reference: $currentSession->reference,
+            method: $currentSession->method,
+            issuedAt: $currentSession->issuedAt,
+            expiresAt: $currentSession->expiresAt,
+            attributes: $attributes,
+        ));
+
+        $inventoryResponse = $kernel->handle(Request::create(
+            '/device-revoke-governed-inventory',
+            'GET',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $secondSessionId],
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.121',
+            ],
+        ));
+        $inventoryPayload = json_decode($inventoryResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+        $devices = $inventoryPayload['devices'] ?? [];
+        $remote = array_values(array_filter($devices, static fn (array $device): bool => ! (bool) ($device['current'] ?? false)))[0] ?? null;
+
+        self::assertIsArray($remote);
+        self::assertFalse((bool) ($remote['requires_reauthentication'] ?? true));
+        self::assertSame('direct', $remote['management_mode'] ?? null);
+        self::assertSame('remote_device_management', $remote['management_reason_code'] ?? null);
+        self::assertTrue((bool) ($remote['management_actor_governed'] ?? false));
+        self::assertTrue((bool) ($remote['management_actor_authorized'] ?? false));
+        self::assertSame('direct_admin', $remote['management_actor_authorization_mode'] ?? null);
+        self::assertNull($remote['management_actor_authorization_reason_code'] ?? null);
+
+        $revokeResponse = $kernel->handle(Request::create(
+            '/device-revoke-governed-remote',
+            'POST',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $secondSessionId],
+            server: [
+                'HTTP_ACCEPT' => 'application/json',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.121',
+            ],
+        ));
+        $revokePayload = json_decode($revokeResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(200, $revokeResponse->statusCode());
+        self::assertTrue((bool) ($revokePayload['revoked'] ?? false));
+        self::assertSame(1, $revokePayload['remaining_devices'] ?? null);
+    }
+
     public function test_auth_manager_can_revoke_current_device_even_when_freshness_window_expired(): void
     {
         $app = new Application(sys_get_temp_dir());
@@ -2727,6 +2890,131 @@ final class AuthManagerTest extends TestCase
         self::assertSame('auth.fresh_authentication_required', $revokePayload['reason_code'] ?? null);
         self::assertSame('device_revocation_bulk', $revokePayload['operation'] ?? null);
         self::assertSame('required', $revokeResponse->headers()['X-Auth-Reauthenticate'] ?? null);
+    }
+
+    public function test_auth_manager_allows_governed_admin_to_revoke_other_devices_in_bulk_even_when_freshness_window_expired(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 151,
+                'identifier' => 'device-bulk-governed@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+                'auth_management_authority' => 'administrative_actor',
+                'auth_management_ownership_proof' => 'privileged_session',
+                'auth_management_scopes' => [
+                    'security_center_export',
+                    'admin_device_management',
+                ],
+                'auth_management_claims_source' => 'identity_attributes',
+                'auth_management_privilege_level' => 'privileged_admin',
+            ],
+        ]);
+        $app->make(ConfigRepository::class)->set('auth.session.management.fresh_auth_window', 300);
+        $app->make(ConfigRepository::class)->set('auth.trusted_devices.management.fresh_auth_window', 300);
+
+        $router = $app->make(Router::class);
+        $router->post('/device-bulk-governed-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'device-bulk-governed@example.com',
+                'password' => 'secret-123',
+                'second_factor' => '654321',
+            ])];
+        });
+        $router->post('/device-bulk-governed-enroll', function (): array {
+            return ['trusted' => auth()->trustCurrentDevice()];
+        });
+        $router->post('/device-bulk-governed-revoke-others', function (): array {
+            return [
+                'revoked' => auth()->revokeOtherDevices(),
+                'remaining_devices' => count(auth()->devices()),
+            ];
+        });
+
+        $kernel = $app->make(HttpKernel::class);
+
+        $firstLogin = $kernel->handle(Request::create(
+            '/device-bulk-governed-login',
+            'POST',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.122',
+            ],
+        ));
+        $firstSessionId = $firstLogin->headers()['X-Auth-Session'] ?? null;
+        self::assertIsString($firstSessionId);
+
+        $firstEnroll = $kernel->handle(Request::create(
+            '/device-bulk-governed-enroll',
+            'POST',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $firstSessionId],
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.122',
+            ],
+        ));
+        self::assertTrue((json_decode($firstEnroll->content(), true, 512, JSON_THROW_ON_ERROR)['trusted'] ?? false));
+
+        $secondLogin = $kernel->handle(Request::create(
+            '/device-bulk-governed-login',
+            'POST',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (X11; Linux x86_64) Firefox/129.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.123',
+            ],
+        ));
+        $secondSessionId = $secondLogin->headers()['X-Auth-Session'] ?? null;
+        self::assertIsString($secondSessionId);
+
+        $thirdLogin = $kernel->handle(Request::create(
+            '/device-bulk-governed-login',
+            'POST',
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.124',
+            ],
+        ));
+        $thirdSessionId = $thirdLogin->headers()['X-Auth-Session'] ?? null;
+        self::assertIsString($thirdSessionId);
+
+        $repository = $app->make(AuthenticationSessionRepositoryInterface::class);
+        $currentSession = $repository->find($thirdSessionId);
+        self::assertInstanceOf(AuthenticationSession::class, $currentSession);
+
+        $attributes = $currentSession->attributes;
+        $attributes['authentication_fresh_at'] = time() - 601;
+        $repository->touch(new AuthenticationSession(
+            id: $currentSession->id,
+            identity: $currentSession->identity,
+            reference: $currentSession->reference,
+            method: $currentSession->method,
+            issuedAt: $currentSession->issuedAt,
+            expiresAt: $currentSession->expiresAt,
+            attributes: $attributes,
+        ));
+
+        $revokeResponse = $kernel->handle(Request::create(
+            '/device-bulk-governed-revoke-others',
+            'POST',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $thirdSessionId],
+            server: [
+                'HTTP_ACCEPT' => 'application/json',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.124',
+            ],
+        ));
+        $revokePayload = json_decode($revokeResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(200, $revokeResponse->statusCode());
+        self::assertSame(2, $revokePayload['revoked'] ?? null);
+        self::assertSame(1, $revokePayload['remaining_devices'] ?? null);
     }
 
     public function test_auth_facade_authenticates_and_uses_configured_cookie_name(): void

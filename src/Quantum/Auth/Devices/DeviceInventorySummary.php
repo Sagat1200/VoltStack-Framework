@@ -46,6 +46,8 @@ final readonly class DeviceInventorySummary
         public ?string $managementActorTrustedDeviceAuthorizationReasonCode = null,
         public string $managementActorTargetRelation = 'self',
         public string $managementActorTargetReasonCode = 'current_identity_target',
+        public string $managementActorTargetScopeRelation = 'self_service_current_identity_target',
+        public string $managementActorTargetScopeReasonCode = 'current_identity_target',
         public ?string $managementTargetIdentity = null,
         public ?string $managementTargetType = null,
         public bool $managementTargetMatchesCurrentIdentity = true,

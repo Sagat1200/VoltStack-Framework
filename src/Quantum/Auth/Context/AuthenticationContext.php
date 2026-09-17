@@ -244,6 +244,54 @@ final readonly class AuthenticationContext
         };
     }
 
+    public function managementActorTargetScopeRelation(?string $targetIdentity = null, ?string $targetType = null): string
+    {
+        if ($this->managementTargetMatchesCurrentIdentity($targetIdentity, $targetType)) {
+            if (! $this->hasGovernedManagementClaims()) {
+                return 'self_service_current_identity_target';
+            }
+
+            return match ($this->managementAdministrativeScopeProfile()) {
+                'full' => 'self_governed_full_scope_target',
+                'sessions_only' => 'self_governed_sessions_scope_target',
+                'trusted_devices_only' => 'self_governed_trusted_devices_scope_target',
+                default => 'self_governed_target_without_scope',
+            };
+        }
+
+        return match ($this->managementAuthorizationMode()) {
+            'direct_admin' => $this->managementAdministrativeScopeProfileRelation('direct_admin'),
+            'delegated_admin' => $this->managementAdministrativeScopeProfileRelation('delegated_admin'),
+            default => $this->hasGovernedManagementClaims()
+                ? 'governed_target_without_scope'
+                : 'unmanaged_target',
+        };
+    }
+
+    public function managementActorTargetScopeReasonCode(?string $targetIdentity = null, ?string $targetType = null): string
+    {
+        if ($this->managementTargetMatchesCurrentIdentity($targetIdentity, $targetType)) {
+            if (! $this->hasGovernedManagementClaims()) {
+                return 'current_identity_target';
+            }
+
+            return match ($this->managementAdministrativeScopeProfile()) {
+                'full' => 'governed_current_identity_full_scope_target',
+                'sessions_only' => 'governed_current_identity_sessions_scope_target',
+                'trusted_devices_only' => 'governed_current_identity_trusted_devices_scope_target',
+                default => $this->managementAuthorizationReasonCode() ?? 'governed_current_identity_target_without_scope',
+            };
+        }
+
+        return match ($this->managementAuthorizationMode()) {
+            'direct_admin' => $this->managementAdministrativeScopeProfileReasonCode('direct_admin'),
+            'delegated_admin' => $this->managementAdministrativeScopeProfileReasonCode('delegated_admin'),
+            default => $this->hasGovernedManagementClaims()
+                ? ($this->managementAuthorizationReasonCode() ?? 'governed_target_without_scope')
+                : 'unmanaged_target',
+        };
+    }
+
     /**
      * @return array{authorized: bool, authorization_mode: ?string, reason_code: ?string}
      */
@@ -304,6 +352,39 @@ final readonly class AuthenticationContext
             ['admin_device_management', 'admin_trusted_device_management'],
             'missing_admin_trusted_device_management_scope',
         );
+    }
+
+    private function managementAdministrativeScopeProfile(): string
+    {
+        $canManageSessions = $this->canAdministrativelyManageDeviceSessions();
+        $canManageTrustedDevices = $this->canAdministrativelyManageTrustedDevices();
+
+        return match (true) {
+            $canManageSessions && $canManageTrustedDevices => 'full',
+            $canManageSessions => 'sessions_only',
+            $canManageTrustedDevices => 'trusted_devices_only',
+            default => 'none',
+        };
+    }
+
+    private function managementAdministrativeScopeProfileRelation(string $authorizationMode): string
+    {
+        return match ($this->managementAdministrativeScopeProfile()) {
+            'full' => $authorizationMode . '_full_scope_target',
+            'sessions_only' => $authorizationMode . '_sessions_scope_target',
+            'trusted_devices_only' => $authorizationMode . '_trusted_devices_scope_target',
+            default => 'governed_target_without_scope',
+        };
+    }
+
+    private function managementAdministrativeScopeProfileReasonCode(string $authorizationMode): string
+    {
+        return match ($this->managementAdministrativeScopeProfile()) {
+            'full' => $authorizationMode . '_full_scope_target',
+            'sessions_only' => $authorizationMode . '_sessions_scope_target',
+            'trusted_devices_only' => $authorizationMode . '_trusted_devices_scope_target',
+            default => $this->managementAuthorizationReasonCode() ?? 'governed_target_without_scope',
+        };
     }
 
     /**

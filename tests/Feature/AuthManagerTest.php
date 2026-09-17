@@ -3344,6 +3344,8 @@ final class AuthManagerTest extends TestCase
                     'management_actor_authorization_mode' => $device->managementActorAuthorizationMode,
                     'management_actor_target_relation' => $device->managementActorTargetRelation,
                     'management_actor_target_reason_code' => $device->managementActorTargetReasonCode,
+                    'management_actor_target_scope_relation' => $device->managementActorTargetScopeRelation,
+                    'management_actor_target_scope_reason_code' => $device->managementActorTargetScopeReasonCode,
                     'management_target_identity' => $device->managementTargetIdentity,
                     'management_target_type' => $device->managementTargetType,
                 ], auth()->managedDevices('241')),
@@ -3393,6 +3395,8 @@ final class AuthManagerTest extends TestCase
         self::assertSame('delegated_admin', $device['management_actor_authorization_mode'] ?? null);
         self::assertSame('delegated_administrative_target', $device['management_actor_target_relation'] ?? null);
         self::assertSame('delegated_administrative_target', $device['management_actor_target_reason_code'] ?? null);
+        self::assertSame('delegated_admin_full_scope_target', $device['management_actor_target_scope_relation'] ?? null);
+        self::assertSame('delegated_admin_full_scope_target', $device['management_actor_target_scope_reason_code'] ?? null);
         self::assertSame('241', $device['management_target_identity'] ?? null);
         self::assertSame('user', $device['management_target_type'] ?? null);
     }
@@ -3444,6 +3448,8 @@ final class AuthManagerTest extends TestCase
                     'management_actor_can_manage_trusted_devices' => $device->managementActorCanManageTrustedDevices,
                     'management_actor_trusted_device_authorization_mode' => $device->managementActorTrustedDeviceAuthorizationMode,
                     'management_actor_trusted_device_authorization_reason_code' => $device->managementActorTrustedDeviceAuthorizationReasonCode,
+                    'management_actor_target_scope_relation' => $device->managementActorTargetScopeRelation,
+                    'management_actor_target_scope_reason_code' => $device->managementActorTargetScopeReasonCode,
                 ], auth()->managedDevices('251')),
             ];
         });
@@ -3510,6 +3516,8 @@ final class AuthManagerTest extends TestCase
         self::assertSame('delegated_admin', $device['management_actor_session_authorization_mode'] ?? null);
         self::assertFalse((bool) ($device['management_actor_can_manage_trusted_devices'] ?? true));
         self::assertSame('missing_admin_trusted_device_management_scope', $device['management_actor_trusted_device_authorization_reason_code'] ?? null);
+        self::assertSame('delegated_admin_sessions_scope_target', $device['management_actor_target_scope_relation'] ?? null);
+        self::assertSame('delegated_admin_sessions_scope_target', $device['management_actor_target_scope_reason_code'] ?? null);
 
         $revokeSessions = $kernel->handle(Request::create(
             '/delegated-session-actor-revoke',
@@ -3597,6 +3605,8 @@ final class AuthManagerTest extends TestCase
                     'management_actor_session_authorization_reason_code' => $device->managementActorSessionAuthorizationReasonCode,
                     'management_actor_can_manage_trusted_devices' => $device->managementActorCanManageTrustedDevices,
                     'management_actor_trusted_device_authorization_mode' => $device->managementActorTrustedDeviceAuthorizationMode,
+                    'management_actor_target_scope_relation' => $device->managementActorTargetScopeRelation,
+                    'management_actor_target_scope_reason_code' => $device->managementActorTargetScopeReasonCode,
                 ], auth()->managedDevices('261')),
             ];
         });
@@ -3663,6 +3673,8 @@ final class AuthManagerTest extends TestCase
         self::assertSame('missing_admin_session_management_scope', $device['management_actor_session_authorization_reason_code'] ?? null);
         self::assertTrue((bool) ($device['management_actor_can_manage_trusted_devices'] ?? false));
         self::assertSame('delegated_admin', $device['management_actor_trusted_device_authorization_mode'] ?? null);
+        self::assertSame('delegated_admin_trusted_devices_scope_target', $device['management_actor_target_scope_relation'] ?? null);
+        self::assertSame('delegated_admin_trusted_devices_scope_target', $device['management_actor_target_scope_reason_code'] ?? null);
 
         $revokeSessions = $kernel->handle(Request::create(
             '/delegated-trusted-actor-revoke',

@@ -1793,6 +1793,14 @@ final class AuthManager implements AuthenticationManagerInterface
             $managementTargetIdentity,
             $managementTargetType,
         ) ?? 'current_identity_target';
+        $managementActorTargetScopeRelation = $context?->managementActorTargetScopeRelation(
+            $managementTargetIdentity,
+            $managementTargetType,
+        ) ?? 'self_service_current_identity_target';
+        $managementActorTargetScopeReasonCode = $context?->managementActorTargetScopeReasonCode(
+            $managementTargetIdentity,
+            $managementTargetType,
+        ) ?? 'current_identity_target';
         $requiresReauthentication = (bool) $entry['requires_reauthentication'];
 
         if ($requiresReauthentication && $managementActorAuthorized && $scope !== 'current') {
@@ -1852,6 +1860,8 @@ final class AuthManager implements AuthenticationManagerInterface
             managementActorTrustedDeviceAuthorizationReasonCode: $managementActorTrustedDeviceAuthorizationReasonCode,
             managementActorTargetRelation: $managementActorTargetRelation,
             managementActorTargetReasonCode: $managementActorTargetReasonCode,
+            managementActorTargetScopeRelation: $managementActorTargetScopeRelation,
+            managementActorTargetScopeReasonCode: $managementActorTargetScopeReasonCode,
             managementTargetIdentity: $managementTargetIdentity,
             managementTargetType: $managementTargetType,
             managementTargetMatchesCurrentIdentity: $managementTargetMatchesCurrentIdentity,

@@ -1703,6 +1703,12 @@ final class AuthManagerTest extends TestCase
                     'management_actor_claims_source' => $device->managementActorClaimsSource,
                     'management_actor_privilege_level' => $device->managementActorPrivilegeLevel,
                     'management_actor_scopes' => $device->managementActorScopes,
+                    'management_actor_can_manage_sessions' => $device->managementActorCanManageSessions,
+                    'management_actor_session_authorization_mode' => $device->managementActorSessionAuthorizationMode,
+                    'management_actor_session_authorization_reason_code' => $device->managementActorSessionAuthorizationReasonCode,
+                    'management_actor_can_manage_trusted_devices' => $device->managementActorCanManageTrustedDevices,
+                    'management_actor_trusted_device_authorization_mode' => $device->managementActorTrustedDeviceAuthorizationMode,
+                    'management_actor_trusted_device_authorization_reason_code' => $device->managementActorTrustedDeviceAuthorizationReasonCode,
                     'management_actor_target_relation' => $device->managementActorTargetRelation,
                     'management_actor_target_reason_code' => $device->managementActorTargetReasonCode,
                     'management_target_identity' => $device->managementTargetIdentity,
@@ -1800,6 +1806,10 @@ final class AuthManagerTest extends TestCase
         self::assertSame('self_service_defaults', $current['management_actor_claims_source'] ?? null);
         self::assertSame('self_service', $current['management_actor_privilege_level'] ?? null);
         self::assertContains('current_device_management', $current['management_actor_scopes'] ?? []);
+        self::assertFalse((bool) ($current['management_actor_can_manage_sessions'] ?? true));
+        self::assertFalse((bool) ($current['management_actor_can_manage_trusted_devices'] ?? true));
+        self::assertSame('not_administrative_actor', $current['management_actor_session_authorization_reason_code'] ?? null);
+        self::assertSame('not_administrative_actor', $current['management_actor_trusted_device_authorization_reason_code'] ?? null);
         self::assertSame('self', $current['management_actor_target_relation'] ?? null);
         self::assertSame('current_identity_target', $current['management_actor_target_reason_code'] ?? null);
         self::assertFalse((bool) ($current['management_actor_governed'] ?? true));
@@ -1832,6 +1842,10 @@ final class AuthManagerTest extends TestCase
         self::assertSame('self_service_defaults', $remote['management_actor_claims_source'] ?? null);
         self::assertSame('self_service', $remote['management_actor_privilege_level'] ?? null);
         self::assertContains('identity_device_management', $remote['management_actor_scopes'] ?? []);
+        self::assertFalse((bool) ($remote['management_actor_can_manage_sessions'] ?? true));
+        self::assertFalse((bool) ($remote['management_actor_can_manage_trusted_devices'] ?? true));
+        self::assertSame('not_administrative_actor', $remote['management_actor_session_authorization_reason_code'] ?? null);
+        self::assertSame('not_administrative_actor', $remote['management_actor_trusted_device_authorization_reason_code'] ?? null);
         self::assertSame('self', $remote['management_actor_target_relation'] ?? null);
         self::assertSame('current_identity_target', $remote['management_actor_target_reason_code'] ?? null);
         self::assertFalse((bool) ($remote['management_actor_governed'] ?? true));
@@ -1885,6 +1899,12 @@ final class AuthManagerTest extends TestCase
                     'management_actor_claims_source' => $device->managementActorClaimsSource,
                     'management_actor_privilege_level' => $device->managementActorPrivilegeLevel,
                     'management_actor_scopes' => $device->managementActorScopes,
+                    'management_actor_can_manage_sessions' => $device->managementActorCanManageSessions,
+                    'management_actor_session_authorization_mode' => $device->managementActorSessionAuthorizationMode,
+                    'management_actor_session_authorization_reason_code' => $device->managementActorSessionAuthorizationReasonCode,
+                    'management_actor_can_manage_trusted_devices' => $device->managementActorCanManageTrustedDevices,
+                    'management_actor_trusted_device_authorization_mode' => $device->managementActorTrustedDeviceAuthorizationMode,
+                    'management_actor_trusted_device_authorization_reason_code' => $device->managementActorTrustedDeviceAuthorizationReasonCode,
                     'management_actor_target_relation' => $device->managementActorTargetRelation,
                     'management_actor_target_reason_code' => $device->managementActorTargetReasonCode,
                 ], auth()->devices()),
@@ -1931,6 +1951,10 @@ final class AuthManagerTest extends TestCase
         self::assertSame('identity_attributes', $current['management_actor_claims_source'] ?? null);
         self::assertSame('privileged_admin', $current['management_actor_privilege_level'] ?? null);
         self::assertContains('admin_device_management', $current['management_actor_scopes'] ?? []);
+        self::assertTrue((bool) ($current['management_actor_can_manage_sessions'] ?? false));
+        self::assertTrue((bool) ($current['management_actor_can_manage_trusted_devices'] ?? false));
+        self::assertSame('direct_admin', $current['management_actor_session_authorization_mode'] ?? null);
+        self::assertSame('direct_admin', $current['management_actor_trusted_device_authorization_mode'] ?? null);
         self::assertSame('self_governed', $current['management_actor_target_relation'] ?? null);
         self::assertSame('governed_current_identity_target', $current['management_actor_target_reason_code'] ?? null);
     }
@@ -3127,6 +3151,12 @@ final class AuthManagerTest extends TestCase
                     'management_actor_claims_source' => $device->managementActorClaimsSource,
                     'management_actor_privilege_level' => $device->managementActorPrivilegeLevel,
                     'management_actor_scopes' => $device->managementActorScopes,
+                    'management_actor_can_manage_sessions' => $device->managementActorCanManageSessions,
+                    'management_actor_session_authorization_mode' => $device->managementActorSessionAuthorizationMode,
+                    'management_actor_session_authorization_reason_code' => $device->managementActorSessionAuthorizationReasonCode,
+                    'management_actor_can_manage_trusted_devices' => $device->managementActorCanManageTrustedDevices,
+                    'management_actor_trusted_device_authorization_mode' => $device->managementActorTrustedDeviceAuthorizationMode,
+                    'management_actor_trusted_device_authorization_reason_code' => $device->managementActorTrustedDeviceAuthorizationReasonCode,
                     'management_actor_target_relation' => $device->managementActorTargetRelation,
                     'management_actor_target_reason_code' => $device->managementActorTargetReasonCode,
                     'management_target_identity' => $device->managementTargetIdentity,
@@ -3210,6 +3240,10 @@ final class AuthManagerTest extends TestCase
         self::assertSame('identity_attributes', $managedDevice['management_actor_claims_source'] ?? null);
         self::assertSame('privileged_admin', $managedDevice['management_actor_privilege_level'] ?? null);
         self::assertContains('admin_device_management', $managedDevice['management_actor_scopes'] ?? []);
+        self::assertTrue((bool) ($managedDevice['management_actor_can_manage_sessions'] ?? false));
+        self::assertTrue((bool) ($managedDevice['management_actor_can_manage_trusted_devices'] ?? false));
+        self::assertSame('direct_admin', $managedDevice['management_actor_session_authorization_mode'] ?? null);
+        self::assertSame('direct_admin', $managedDevice['management_actor_trusted_device_authorization_mode'] ?? null);
         self::assertSame('direct_administrative_target', $managedDevice['management_actor_target_relation'] ?? null);
         self::assertSame('direct_administrative_target', $managedDevice['management_actor_target_reason_code'] ?? null);
         self::assertSame('201', $managedDevice['management_target_identity'] ?? null);
@@ -3361,6 +3395,314 @@ final class AuthManagerTest extends TestCase
         self::assertSame('delegated_administrative_target', $device['management_actor_target_reason_code'] ?? null);
         self::assertSame('241', $device['management_target_identity'] ?? null);
         self::assertSame('user', $device['management_target_type'] ?? null);
+    }
+
+    public function test_auth_manager_supports_delegated_session_only_scope_for_managed_devices(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 251,
+                'identifier' => 'delegated-session-target@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+            ],
+            [
+                'id' => 252,
+                'identifier' => 'delegated-session-actor@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+                'auth_management_authority' => 'administrative_actor',
+                'auth_management_ownership_proof' => 'delegated_session',
+                'auth_management_scopes' => ['admin_session_management'],
+                'auth_management_claims_source' => 'identity_attributes',
+                'auth_management_privilege_level' => 'delegated_support',
+            ],
+        ]);
+
+        $router = $app->make(Router::class);
+        $router->post('/delegated-session-target-login', fn (): array => ['ok' => auth()->attempt([
+            'identifier' => 'delegated-session-target@example.com',
+            'password' => 'secret-123',
+            'second_factor' => '654321',
+        ])]);
+        $router->post('/delegated-session-target-enroll', fn (): array => ['trusted' => auth()->trustCurrentDevice()]);
+        $router->post('/delegated-session-actor-login', fn (): array => ['ok' => auth()->attempt([
+            'identifier' => 'delegated-session-actor@example.com',
+            'password' => 'secret-123',
+            'second_factor' => '654321',
+        ])]);
+        $router->get('/delegated-session-actor-devices', function (): array {
+            return [
+                'devices' => array_map(static fn ($device): array => [
+                    'device_reference' => $device->deviceReference,
+                    'management_actor_can_manage_sessions' => $device->managementActorCanManageSessions,
+                    'management_actor_session_authorization_mode' => $device->managementActorSessionAuthorizationMode,
+                    'management_actor_session_authorization_reason_code' => $device->managementActorSessionAuthorizationReasonCode,
+                    'management_actor_can_manage_trusted_devices' => $device->managementActorCanManageTrustedDevices,
+                    'management_actor_trusted_device_authorization_mode' => $device->managementActorTrustedDeviceAuthorizationMode,
+                    'management_actor_trusted_device_authorization_reason_code' => $device->managementActorTrustedDeviceAuthorizationReasonCode,
+                ], auth()->managedDevices('251')),
+            ];
+        });
+        $router->post('/delegated-session-actor-revoke', function (): array {
+            $request = RuntimeContext::current()?->request();
+
+            return [
+                'revoked' => auth()->revokeManagedDevice(
+                    trim((string) $request?->input('identity')),
+                    trim((string) $request?->input('device_reference')),
+                    null,
+                    trim((string) ($request?->input('scope') ?? 'all')),
+                ),
+            ];
+        });
+
+        $kernel = $app->make(HttpKernel::class);
+        $targetLogin = $kernel->handle(Request::create('/delegated-session-target-login', 'POST', server: [
+            'HTTP_USER_AGENT' => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
+            'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+            'REMOTE_ADDR' => '203.0.113.170',
+        ]));
+        $targetSessionId = $targetLogin->headers()['X-Auth-Session'] ?? null;
+        self::assertIsString($targetSessionId);
+
+        $targetEnroll = $kernel->handle(Request::create(
+            '/delegated-session-target-enroll',
+            'POST',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $targetSessionId],
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.170',
+            ],
+        ));
+        self::assertTrue((bool) (json_decode($targetEnroll->content(), true, 512, JSON_THROW_ON_ERROR)['trusted'] ?? false));
+
+        $actorLogin = $kernel->handle(Request::create('/delegated-session-actor-login', 'POST', server: [
+            'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+            'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+            'REMOTE_ADDR' => '203.0.113.171',
+        ]));
+        $actorSessionId = $actorLogin->headers()['X-Auth-Session'] ?? null;
+        self::assertIsString($actorSessionId);
+
+        $managedDevicesResponse = $kernel->handle(Request::create(
+            '/delegated-session-actor-devices',
+            'GET',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $actorSessionId],
+            server: [
+                'HTTP_ACCEPT' => 'application/json',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.171',
+            ],
+        ));
+        $payload = json_decode($managedDevicesResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+        $device = $payload['devices'][0] ?? null;
+        self::assertIsArray($device);
+
+        $deviceReference = $device['device_reference'] ?? null;
+        self::assertIsString($deviceReference);
+        self::assertTrue((bool) ($device['management_actor_can_manage_sessions'] ?? false));
+        self::assertSame('delegated_admin', $device['management_actor_session_authorization_mode'] ?? null);
+        self::assertFalse((bool) ($device['management_actor_can_manage_trusted_devices'] ?? true));
+        self::assertSame('missing_admin_trusted_device_management_scope', $device['management_actor_trusted_device_authorization_reason_code'] ?? null);
+
+        $revokeSessions = $kernel->handle(Request::create(
+            '/delegated-session-actor-revoke',
+            'POST',
+            ['identity' => '251', 'device_reference' => $deviceReference, 'scope' => 'sessions'],
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $actorSessionId],
+            server: [
+                'HTTP_ACCEPT' => 'application/json',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.171',
+            ],
+        ));
+        $revokeSessionsPayload = json_decode($revokeSessions->content(), true, 512, JSON_THROW_ON_ERROR);
+        self::assertTrue((bool) ($revokeSessionsPayload['revoked'] ?? false));
+
+        $revokeTrustedDevices = $kernel->handle(Request::create(
+            '/delegated-session-actor-revoke',
+            'POST',
+            ['identity' => '251', 'device_reference' => $deviceReference, 'scope' => 'trusted-devices'],
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $actorSessionId],
+            server: [
+                'HTTP_ACCEPT' => 'application/json',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.171',
+            ],
+        ));
+        $revokeTrustedDevicesPayload = json_decode($revokeTrustedDevices->content(), true, 512, JSON_THROW_ON_ERROR);
+        self::assertFalse((bool) ($revokeTrustedDevicesPayload['revoked'] ?? true));
+
+        $sessionRepository = $app->make(AuthenticationSessionRepositoryInterface::class);
+        self::assertNull($sessionRepository->find($targetSessionId));
+
+        $trustedDeviceRepository = $app->make(TrustedDeviceRepositoryInterface::class);
+        self::assertCount(1, array_filter(
+            $trustedDeviceRepository->all(),
+            static fn ($trustedDevice): bool => $trustedDevice->reference->identifier->value === '251'
+                && $trustedDevice->deviceReference === $deviceReference,
+        ));
+    }
+
+    public function test_auth_manager_supports_delegated_trusted_device_only_scope_for_managed_devices(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 261,
+                'identifier' => 'delegated-trusted-target@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+            ],
+            [
+                'id' => 262,
+                'identifier' => 'delegated-trusted-actor@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+                'auth_management_authority' => 'administrative_actor',
+                'auth_management_ownership_proof' => 'delegated_session',
+                'auth_management_scopes' => ['admin_trusted_device_management'],
+                'auth_management_claims_source' => 'identity_attributes',
+                'auth_management_privilege_level' => 'delegated_support',
+            ],
+        ]);
+
+        $router = $app->make(Router::class);
+        $router->post('/delegated-trusted-target-login', fn (): array => ['ok' => auth()->attempt([
+            'identifier' => 'delegated-trusted-target@example.com',
+            'password' => 'secret-123',
+            'second_factor' => '654321',
+        ])]);
+        $router->post('/delegated-trusted-target-enroll', fn (): array => ['trusted' => auth()->trustCurrentDevice()]);
+        $router->post('/delegated-trusted-actor-login', fn (): array => ['ok' => auth()->attempt([
+            'identifier' => 'delegated-trusted-actor@example.com',
+            'password' => 'secret-123',
+            'second_factor' => '654321',
+        ])]);
+        $router->get('/delegated-trusted-actor-devices', function (): array {
+            return [
+                'devices' => array_map(static fn ($device): array => [
+                    'device_reference' => $device->deviceReference,
+                    'management_actor_can_manage_sessions' => $device->managementActorCanManageSessions,
+                    'management_actor_session_authorization_reason_code' => $device->managementActorSessionAuthorizationReasonCode,
+                    'management_actor_can_manage_trusted_devices' => $device->managementActorCanManageTrustedDevices,
+                    'management_actor_trusted_device_authorization_mode' => $device->managementActorTrustedDeviceAuthorizationMode,
+                ], auth()->managedDevices('261')),
+            ];
+        });
+        $router->post('/delegated-trusted-actor-revoke', function (): array {
+            $request = RuntimeContext::current()?->request();
+
+            return [
+                'revoked' => auth()->revokeManagedDevice(
+                    trim((string) $request?->input('identity')),
+                    trim((string) $request?->input('device_reference')),
+                    null,
+                    trim((string) ($request?->input('scope') ?? 'all')),
+                ),
+            ];
+        });
+
+        $kernel = $app->make(HttpKernel::class);
+        $targetLogin = $kernel->handle(Request::create('/delegated-trusted-target-login', 'POST', server: [
+            'HTTP_USER_AGENT' => 'Mozilla/5.0 (X11; Linux x86_64) Firefox/129.0',
+            'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+            'REMOTE_ADDR' => '203.0.113.172',
+        ]));
+        $targetSessionId = $targetLogin->headers()['X-Auth-Session'] ?? null;
+        self::assertIsString($targetSessionId);
+
+        $targetEnroll = $kernel->handle(Request::create(
+            '/delegated-trusted-target-enroll',
+            'POST',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $targetSessionId],
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (X11; Linux x86_64) Firefox/129.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.172',
+            ],
+        ));
+        self::assertTrue((bool) (json_decode($targetEnroll->content(), true, 512, JSON_THROW_ON_ERROR)['trusted'] ?? false));
+
+        $actorLogin = $kernel->handle(Request::create('/delegated-trusted-actor-login', 'POST', server: [
+            'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+            'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+            'REMOTE_ADDR' => '203.0.113.173',
+        ]));
+        $actorSessionId = $actorLogin->headers()['X-Auth-Session'] ?? null;
+        self::assertIsString($actorSessionId);
+
+        $managedDevicesResponse = $kernel->handle(Request::create(
+            '/delegated-trusted-actor-devices',
+            'GET',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $actorSessionId],
+            server: [
+                'HTTP_ACCEPT' => 'application/json',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.173',
+            ],
+        ));
+        $payload = json_decode($managedDevicesResponse->content(), true, 512, JSON_THROW_ON_ERROR);
+        $device = $payload['devices'][0] ?? null;
+        self::assertIsArray($device);
+
+        $deviceReference = $device['device_reference'] ?? null;
+        self::assertIsString($deviceReference);
+        self::assertFalse((bool) ($device['management_actor_can_manage_sessions'] ?? true));
+        self::assertSame('missing_admin_session_management_scope', $device['management_actor_session_authorization_reason_code'] ?? null);
+        self::assertTrue((bool) ($device['management_actor_can_manage_trusted_devices'] ?? false));
+        self::assertSame('delegated_admin', $device['management_actor_trusted_device_authorization_mode'] ?? null);
+
+        $revokeSessions = $kernel->handle(Request::create(
+            '/delegated-trusted-actor-revoke',
+            'POST',
+            ['identity' => '261', 'device_reference' => $deviceReference, 'scope' => 'sessions'],
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $actorSessionId],
+            server: [
+                'HTTP_ACCEPT' => 'application/json',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.173',
+            ],
+        ));
+        $revokeSessionsPayload = json_decode($revokeSessions->content(), true, 512, JSON_THROW_ON_ERROR);
+        self::assertFalse((bool) ($revokeSessionsPayload['revoked'] ?? true));
+
+        $revokeTrustedDevices = $kernel->handle(Request::create(
+            '/delegated-trusted-actor-revoke',
+            'POST',
+            ['identity' => '261', 'device_reference' => $deviceReference, 'scope' => 'trusted-devices'],
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $actorSessionId],
+            server: [
+                'HTTP_ACCEPT' => 'application/json',
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.173',
+            ],
+        ));
+        $revokeTrustedDevicesPayload = json_decode($revokeTrustedDevices->content(), true, 512, JSON_THROW_ON_ERROR);
+        self::assertTrue((bool) ($revokeTrustedDevicesPayload['revoked'] ?? false));
+
+        $sessionRepository = $app->make(AuthenticationSessionRepositoryInterface::class);
+        self::assertInstanceOf(AuthenticationSession::class, $sessionRepository->find($targetSessionId));
+
+        $trustedDeviceRepository = $app->make(TrustedDeviceRepositoryInterface::class);
+        self::assertCount(0, array_filter(
+            $trustedDeviceRepository->all(),
+            static fn ($trustedDevice): bool => $trustedDevice->reference->identifier->value === '261'
+                && $trustedDevice->deviceReference === $deviceReference,
+        ));
     }
 
     public function test_auth_manager_can_revoke_only_managed_sessions_for_other_identity(): void

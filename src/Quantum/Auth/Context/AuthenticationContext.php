@@ -182,6 +182,36 @@ final readonly class AuthenticationContext
         return $this->managementDeviceAuthorizationDecision()['reason_code'];
     }
 
+    public function canAdministrativelyManageDeviceSessions(): bool
+    {
+        return $this->managementSessionAuthorizationDecision()['authorized'];
+    }
+
+    public function managementSessionAuthorizationMode(): ?string
+    {
+        return $this->managementSessionAuthorizationDecision()['authorization_mode'];
+    }
+
+    public function managementSessionAuthorizationReasonCode(): ?string
+    {
+        return $this->managementSessionAuthorizationDecision()['reason_code'];
+    }
+
+    public function canAdministrativelyManageTrustedDevices(): bool
+    {
+        return $this->managementTrustedDeviceAuthorizationDecision()['authorized'];
+    }
+
+    public function managementTrustedDeviceAuthorizationMode(): ?string
+    {
+        return $this->managementTrustedDeviceAuthorizationDecision()['authorization_mode'];
+    }
+
+    public function managementTrustedDeviceAuthorizationReasonCode(): ?string
+    {
+        return $this->managementTrustedDeviceAuthorizationDecision()['reason_code'];
+    }
+
     public function managementActorTargetRelation(?string $targetIdentity = null, ?string $targetType = null): string
     {
         if ($this->managementTargetMatchesCurrentIdentity($targetIdentity, $targetType)) {
@@ -219,6 +249,105 @@ final readonly class AuthenticationContext
      */
     private function managementDeviceAuthorizationDecision(): array
     {
+        $preconditionFailure = $this->managementAuthorizationPreconditionFailure();
+
+        if ($preconditionFailure !== null) {
+            return $preconditionFailure;
+        }
+
+        if (! $this->hasAnyManagementScope([
+            'admin_device_management',
+            'admin_session_management',
+            'admin_trusted_device_management',
+        ])) {
+            return [
+                'authorized' => false,
+                'authorization_mode' => null,
+                'reason_code' => 'missing_admin_device_management_scope',
+            ];
+        }
+
+        $authorizationMode = $this->resolvedManagementAuthorizationMode();
+
+        if ($authorizationMode !== null) {
+            return [
+                'authorized' => true,
+                'authorization_mode' => $authorizationMode,
+                'reason_code' => null,
+            ];
+        }
+
+        return [
+            'authorized' => false,
+            'authorization_mode' => null,
+            'reason_code' => $this->unsupportedManagementAuthorizationReasonCode(),
+        ];
+    }
+
+    /**
+     * @return array{authorized: bool, authorization_mode: ?string, reason_code: ?string}
+     */
+    private function managementSessionAuthorizationDecision(): array
+    {
+        return $this->managementScopedAuthorizationDecision(
+            ['admin_device_management', 'admin_session_management'],
+            'missing_admin_session_management_scope',
+        );
+    }
+
+    /**
+     * @return array{authorized: bool, authorization_mode: ?string, reason_code: ?string}
+     */
+    private function managementTrustedDeviceAuthorizationDecision(): array
+    {
+        return $this->managementScopedAuthorizationDecision(
+            ['admin_device_management', 'admin_trusted_device_management'],
+            'missing_admin_trusted_device_management_scope',
+        );
+    }
+
+    /**
+     * @param list<string> $acceptedScopes
+     * @return array{authorized: bool, authorization_mode: ?string, reason_code: ?string}
+     */
+    private function managementScopedAuthorizationDecision(array $acceptedScopes, string $missingScopeReasonCode): array
+    {
+        $preconditionFailure = $this->managementAuthorizationPreconditionFailure();
+
+        if ($preconditionFailure !== null) {
+            return $preconditionFailure;
+        }
+
+        if (! $this->hasAnyManagementScope($acceptedScopes)) {
+            return [
+                'authorized' => false,
+                'authorization_mode' => null,
+                'reason_code' => $missingScopeReasonCode,
+            ];
+        }
+
+        $authorizationMode = $this->resolvedManagementAuthorizationMode();
+
+        if ($authorizationMode !== null) {
+            return [
+                'authorized' => true,
+                'authorization_mode' => $authorizationMode,
+                'reason_code' => null,
+            ];
+        }
+
+        return [
+            'authorized' => false,
+            'authorization_mode' => null,
+            'reason_code' => $this->unsupportedManagementAuthorizationReasonCode(),
+        ];
+    }
+
+    /**
+     * @return array{authorized: bool, authorization_mode: ?string, reason_code: ?string}|null
+     */
+    private function managementAuthorizationPreconditionFailure(): ?array
+    {
         if ($this->managementAuthority() !== 'administrative_actor') {
             return [
                 'authorized' => false,
@@ -235,15 +364,12 @@ final readonly class AuthenticationContext
             ];
         }
 
-        if (! in_array('admin_device_management', $this->managementScopes(), true)) {
-            return [
-                'authorized' => false,
-                'authorization_mode' => null,
-                'reason_code' => 'missing_admin_device_management_scope',
-            ];
-        }
+        return null;
+    }
 
-        $authorizationMode = match ($this->managementPrivilegeLevel()) {
+    private function resolvedManagementAuthorizationMode(): ?string
+    {
+        return match ($this->managementPrivilegeLevel()) {
             'privileged_admin' => 'direct_admin',
             'delegated_support' => in_array($this->managementOwnershipProof(), [
                 'delegated_session',
@@ -253,22 +379,27 @@ final readonly class AuthenticationContext
                 : null,
             default => null,
         };
+    }
 
-        if ($authorizationMode !== null) {
-            return [
-                'authorized' => true,
-                'authorization_mode' => $authorizationMode,
-                'reason_code' => null,
-            ];
+    private function unsupportedManagementAuthorizationReasonCode(): string
+    {
+        return $this->managementPrivilegeLevel() === 'delegated_support'
+            ? 'invalid_delegated_management_proof'
+            : 'unsupported_management_privilege_level';
+    }
+
+    /**
+     * @param list<string> $acceptedScopes
+     */
+    private function hasAnyManagementScope(array $acceptedScopes): bool
+    {
+        foreach ($acceptedScopes as $scope) {
+            if (in_array($scope, $this->managementScopes(), true)) {
+                return true;
+            }
         }
 
-        return [
-            'authorized' => false,
-            'authorization_mode' => null,
-            'reason_code' => $this->managementPrivilegeLevel() === 'delegated_support'
-                ? 'invalid_delegated_management_proof'
-                : 'unsupported_management_privilege_level',
-        ];
+        return false;
     }
 
     private function managementTargetMatchesCurrentIdentity(?string $targetIdentity, ?string $targetType): bool

@@ -166,6 +166,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             $actorType,
             $actorSessionPublicId,
             $now,
+            $scope,
         );
 
         if ($actorAuthorization === null || ! (bool) ($actorAuthorization['authorized'] ?? false)) {
@@ -520,6 +521,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         string $actorType,
         string $actorSessionPublicId,
         ?int $now,
+        string $scope,
     ): ?array {
         foreach ($sessions as $session) {
             if ($session->isExpired($now)) {
@@ -546,11 +548,29 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 attributes: $session->attributes,
             );
 
+            $authorized = match ($scope) {
+                'all' => $context->canAdministrativelyManageDeviceSessions()
+                    && $context->canAdministrativelyManageTrustedDevices(),
+                'sessions' => $context->canAdministrativelyManageDeviceSessions(),
+                'trusted-devices' => $context->canAdministrativelyManageTrustedDevices(),
+                default => false,
+            };
+            $authorizationMode = match ($scope) {
+                'sessions' => $context->managementSessionAuthorizationMode(),
+                'trusted-devices' => $context->managementTrustedDeviceAuthorizationMode(),
+                default => $context->managementAuthorizationMode(),
+            };
+            $authorizationReasonCode = match ($scope) {
+                'sessions' => $context->managementSessionAuthorizationReasonCode(),
+                'trusted-devices' => $context->managementTrustedDeviceAuthorizationReasonCode(),
+                default => $context->managementAuthorizationReasonCode(),
+            };
+
             return [
                 'context' => $context,
-                'authorized' => $context->canAdministrativelyManageDevices(),
-                'authorization_mode' => $context->managementAuthorizationMode(),
-                'authorization_reason_code' => $context->managementAuthorizationReasonCode(),
+                'authorized' => $authorized,
+                'authorization_mode' => $authorizationMode,
+                'authorization_reason_code' => $authorizationReasonCode,
             ];
         }
 

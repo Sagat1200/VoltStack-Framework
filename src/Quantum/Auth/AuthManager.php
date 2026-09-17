@@ -649,7 +649,7 @@ final class AuthManager implements AuthenticationManagerInterface
             return false;
         }
 
-        if (! $context->canAdministrativelyManageDevices()) {
+        if (! $this->canAdministrativelyManageManagedDeviceScope($context, $scope)) {
             return false;
         }
 
@@ -686,6 +686,17 @@ final class AuthManager implements AuthenticationManagerInterface
         }
 
         return true;
+    }
+
+    private function canAdministrativelyManageManagedDeviceScope(AuthenticationContext $context, string $scope): bool
+    {
+        return match ($scope) {
+            'all' => $context->canAdministrativelyManageDeviceSessions()
+                && $context->canAdministrativelyManageTrustedDevices(),
+            'sessions' => $context->canAdministrativelyManageDeviceSessions(),
+            'trusted-devices' => $context->canAdministrativelyManageTrustedDevices(),
+            default => false,
+        };
     }
 
     private function revokeDeviceInternal(string $deviceReference, bool $enforceFreshAuthentication): bool
@@ -1757,6 +1768,12 @@ final class AuthManager implements AuthenticationManagerInterface
             'identity_session_management',
             'identity_device_management',
         ];
+        $managementActorCanManageSessions = $context?->canAdministrativelyManageDeviceSessions() ?? false;
+        $managementActorSessionAuthorizationMode = $context?->managementSessionAuthorizationMode();
+        $managementActorSessionAuthorizationReasonCode = $context?->managementSessionAuthorizationReasonCode();
+        $managementActorCanManageTrustedDevices = $context?->canAdministrativelyManageTrustedDevices() ?? false;
+        $managementActorTrustedDeviceAuthorizationMode = $context?->managementTrustedDeviceAuthorizationMode();
+        $managementActorTrustedDeviceAuthorizationReasonCode = $context?->managementTrustedDeviceAuthorizationReasonCode();
         $managementTargetIdentity = isset($entry['target_identity']) && is_string($entry['target_identity']) && trim($entry['target_identity']) !== ''
             ? trim($entry['target_identity'])
             : null;
@@ -1827,6 +1844,12 @@ final class AuthManager implements AuthenticationManagerInterface
             managementActorClaimsSource: $managementActorClaimsSource,
             managementActorPrivilegeLevel: $managementActorPrivilegeLevel,
             managementActorScopes: $managementActorScopes,
+            managementActorCanManageSessions: $managementActorCanManageSessions,
+            managementActorSessionAuthorizationMode: $managementActorSessionAuthorizationMode,
+            managementActorSessionAuthorizationReasonCode: $managementActorSessionAuthorizationReasonCode,
+            managementActorCanManageTrustedDevices: $managementActorCanManageTrustedDevices,
+            managementActorTrustedDeviceAuthorizationMode: $managementActorTrustedDeviceAuthorizationMode,
+            managementActorTrustedDeviceAuthorizationReasonCode: $managementActorTrustedDeviceAuthorizationReasonCode,
             managementActorTargetRelation: $managementActorTargetRelation,
             managementActorTargetReasonCode: $managementActorTargetReasonCode,
             managementTargetIdentity: $managementTargetIdentity,

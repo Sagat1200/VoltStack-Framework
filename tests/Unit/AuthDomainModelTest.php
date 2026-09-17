@@ -312,10 +312,84 @@ final class AuthDomainModelTest extends TestCase
 
         self::assertTrue($context->hasGovernedManagementClaims());
         self::assertTrue($context->canAdministrativelyManageDevices());
+        self::assertTrue($context->canAdministrativelyManageDeviceSessions());
+        self::assertTrue($context->canAdministrativelyManageTrustedDevices());
         self::assertSame('delegated_admin', $context->managementAuthorizationMode());
+        self::assertSame('delegated_admin', $context->managementSessionAuthorizationMode());
+        self::assertSame('delegated_admin', $context->managementTrustedDeviceAuthorizationMode());
         self::assertNull($context->managementAuthorizationReasonCode());
         self::assertSame('delegated_administrative_target', $context->managementActorTargetRelation('120', 'user'));
         self::assertSame('delegated_administrative_target', $context->managementActorTargetReasonCode('120', 'user'));
+    }
+
+    public function test_authentication_context_supports_delegated_session_only_management_scope(): void
+    {
+        $identity = new GenericIdentity(
+            identifier: new IdentityIdentifier('94'),
+            type: 'user',
+            attributes: [
+                'name' => 'Delegated Sessions',
+                'auth_management_authority' => 'administrative_actor',
+                'auth_management_ownership_proof' => 'delegated_session',
+                'auth_management_scopes' => [
+                    'admin_session_management',
+                ],
+                'auth_management_claims_source' => 'identity_attributes',
+                'auth_management_privilege_level' => 'delegated_support',
+            ],
+        );
+
+        $context = new AuthenticationContext(
+            identity: $identity,
+            reference: new IdentityReference($identity->identifier(), $identity->type()),
+            requestId: 'req-10c',
+            method: 'password',
+            attributes: [],
+        );
+
+        self::assertTrue($context->canAdministrativelyManageDevices());
+        self::assertTrue($context->canAdministrativelyManageDeviceSessions());
+        self::assertFalse($context->canAdministrativelyManageTrustedDevices());
+        self::assertSame('delegated_admin', $context->managementAuthorizationMode());
+        self::assertSame('delegated_admin', $context->managementSessionAuthorizationMode());
+        self::assertNull($context->managementSessionAuthorizationReasonCode());
+        self::assertNull($context->managementTrustedDeviceAuthorizationMode());
+        self::assertSame('missing_admin_trusted_device_management_scope', $context->managementTrustedDeviceAuthorizationReasonCode());
+    }
+
+    public function test_authentication_context_supports_delegated_trusted_device_only_management_scope(): void
+    {
+        $identity = new GenericIdentity(
+            identifier: new IdentityIdentifier('95'),
+            type: 'user',
+            attributes: [
+                'name' => 'Delegated Trusted Devices',
+                'auth_management_authority' => 'administrative_actor',
+                'auth_management_ownership_proof' => 'delegated_session',
+                'auth_management_scopes' => [
+                    'admin_trusted_device_management',
+                ],
+                'auth_management_claims_source' => 'identity_attributes',
+                'auth_management_privilege_level' => 'delegated_support',
+            ],
+        );
+
+        $context = new AuthenticationContext(
+            identity: $identity,
+            reference: new IdentityReference($identity->identifier(), $identity->type()),
+            requestId: 'req-10d',
+            method: 'password',
+            attributes: [],
+        );
+
+        self::assertTrue($context->canAdministrativelyManageDevices());
+        self::assertFalse($context->canAdministrativelyManageDeviceSessions());
+        self::assertTrue($context->canAdministrativelyManageTrustedDevices());
+        self::assertSame('delegated_admin', $context->managementAuthorizationMode());
+        self::assertNull($context->managementSessionAuthorizationMode());
+        self::assertSame('missing_admin_session_management_scope', $context->managementSessionAuthorizationReasonCode());
+        self::assertSame('delegated_admin', $context->managementTrustedDeviceAuthorizationMode());
+        self::assertNull($context->managementTrustedDeviceAuthorizationReasonCode());
     }
 
     public function test_authentication_context_exposes_direct_admin_and_self_governed_target_relations(): void

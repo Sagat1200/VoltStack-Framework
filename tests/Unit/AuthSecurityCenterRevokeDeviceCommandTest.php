@@ -260,6 +260,42 @@ PHP
         self::assertNull($trustedDevices->find('tdv_admin_beta'));
     }
 
+    public function test_it_rejects_scope_when_delegated_actor_lacks_trusted_device_management_permission(): void
+    {
+        $seedNow = time();
+        $app = $this->bootstrappedApplication();
+        $this->seedFixtures($app, $seedNow);
+
+        $command = new AuthSecurityCenterRevokeDeviceCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'auth:security-center:revoke-device',
+                '--identity=801',
+                '--type=user',
+                '--device-reference=devref_admin_beta',
+                '--actor-identity=903',
+                '--actor-type=user',
+                '--actor-session-public-id=sess_pub_support_sessions',
+                '--scope=trusted-devices',
+                '--json',
+            ]),
+            $output,
+        );
+
+        /** @var array<string, mixed> $payload */
+        $payload = json_decode($output->stdout(), true, 512, JSON_THROW_ON_ERROR);
+        $sessions = $app->make(AuthenticationSessionRepositoryInterface::class);
+        $trustedDevices = $app->make(TrustedDeviceRepositoryInterface::class);
+
+        self::assertSame(1, $exitCode);
+        self::assertSame('unauthorized_management_actor', $payload['reason_code'] ?? null);
+        self::assertInstanceOf(AuthenticationSession::class, $sessions->find('session-admin-beta'));
+        self::assertInstanceOf(TrustedDevice::class, $trustedDevices->find('tdv_admin_beta'));
+    }
+
     public function test_it_rejects_revocation_when_actor_session_is_not_governed_for_admin_device_management(): void
     {
         $seedNow = time();
@@ -364,6 +400,25 @@ PHP
             $delegatedSupportIdentity->type(),
         );
 
+        $delegatedSessionsIdentity = new GenericIdentity(
+            identifier: new IdentityIdentifier('903'),
+            type: 'user',
+            attributes: [
+                'name' => 'Delegated Sessions Support',
+                'auth_management_authority' => 'administrative_actor',
+                'auth_management_ownership_proof' => 'delegated_session',
+                'auth_management_scopes' => [
+                    'admin_session_management',
+                ],
+                'auth_management_claims_source' => 'identity_attributes',
+                'auth_management_privilege_level' => 'delegated_support',
+            ],
+        );
+        $delegatedSessionsReference = new IdentityReference(
+            $delegatedSessionsIdentity->identifier(),
+            $delegatedSessionsIdentity->type(),
+        );
+
         $sessions->save(new AuthenticationSession(
             id: new AuthenticationSessionId('session-admin-alpha'),
             identity: $primaryIdentity,
@@ -434,6 +489,18 @@ PHP
             attributes: [
                 'session_public_id' => 'sess_pub_support_admin',
                 'session_device_reference' => 'devref_support_admin',
+            ],
+        ));
+        $sessions->save(new AuthenticationSession(
+            id: new AuthenticationSessionId('session-support-sessions'),
+            identity: $delegatedSessionsIdentity,
+            reference: $delegatedSessionsReference,
+            method: 'password',
+            issuedAt: $seedNow - 34,
+            expiresAt: $seedNow + 600,
+            attributes: [
+                'session_public_id' => 'sess_pub_support_sessions',
+                'session_device_reference' => 'devref_support_sessions',
             ],
         ));
 

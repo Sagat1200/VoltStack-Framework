@@ -102,6 +102,11 @@ PHP
         self::assertStringContainsString('Sesiones revocadas: 2', $output->stdout());
         self::assertStringContainsString('Trusted devices revocados: 1', $output->stdout());
         self::assertStringContainsString('Actor autorizado: user:901 | authority=administrative_actor | privilege=privileged_admin | mode=direct_admin | scopes=security_center_export,admin_device_management', $output->stdout());
+        self::assertStringContainsString('Topology: shared_file_store_candidate | fingerprint=', $output->stdout());
+        self::assertStringContainsString(
+            'framework/auth/sessions',
+            str_replace('\\', '/', $output->stdout()),
+        );
         self::assertStringContainsString('session_public_ids=sess_pub_admin_alpha,sess_pub_admin_alpha_peer', $output->stdout());
         self::assertStringContainsString('trusted_device_public_ids=tdv_admin_alpha', $output->stdout());
 
@@ -112,6 +117,9 @@ PHP
         self::assertTrue((bool) ($events[0]['actor']['management_authorized'] ?? false));
         self::assertSame('direct_admin', $events[0]['actor']['management_authorization_mode'] ?? null);
         self::assertNull($events[0]['actor']['management_authorization_reason_code'] ?? null);
+        self::assertSame('shared_file_store_candidate', $events[0]['operational_context']['store_topology'] ?? null);
+        self::assertSame('file', $events[0]['operational_context']['session_driver'] ?? null);
+        self::assertSame('file', $events[0]['operational_context']['trusted_device_driver'] ?? null);
         self::assertSame('801', $events[0]['target']['identity'] ?? null);
         self::assertSame(2, $events[0]['summary']['revoked_sessions'] ?? null);
         self::assertSame(1, $events[0]['summary']['revoked_trusted_devices'] ?? null);
@@ -208,6 +216,9 @@ PHP
         self::assertTrue((bool) ($payload['actor']['management_authorized'] ?? false));
         self::assertSame('direct_admin', $payload['actor']['management_authorization_mode'] ?? null);
         self::assertNull($payload['actor']['management_authorization_reason_code'] ?? null);
+        self::assertSame('shared_file_store_candidate', $payload['operational_context']['store_topology'] ?? null);
+        self::assertSame('file', $payload['operational_context']['session_driver'] ?? null);
+        self::assertSame('file', $payload['operational_context']['trusted_device_driver'] ?? null);
         self::assertSame(2, $payload['summary']['matched_sessions'] ?? null);
         self::assertSame(1, $payload['summary']['matched_trusted_devices'] ?? null);
         self::assertSame(0, $payload['summary']['revoked_sessions'] ?? null);

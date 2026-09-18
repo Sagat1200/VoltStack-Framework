@@ -126,6 +126,20 @@ PHP
         self::assertSame('701', $payload['filters']['identity'] ?? null);
         self::assertSame('user', $payload['filters']['type'] ?? null);
         self::assertTrue((bool) ($payload['filters']['include_public_ids'] ?? false));
+        self::assertSame('VoltStack', $payload['operational_context']['app_name'] ?? null);
+        self::assertSame('local', $payload['operational_context']['app_env'] ?? null);
+        self::assertSame('file', $payload['operational_context']['session_driver'] ?? null);
+        self::assertSame('file', $payload['operational_context']['trusted_device_driver'] ?? null);
+        self::assertSame('shared_file_store_candidate', $payload['operational_context']['store_topology'] ?? null);
+        self::assertIsString($payload['operational_context']['store_fingerprint'] ?? null);
+        self::assertStringEndsWith(
+            DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'auth' . DIRECTORY_SEPARATOR . 'sessions',
+            str_replace(['/', '\\'], DIRECTORY_SEPARATOR, (string) ($payload['operational_context']['session_store_path'] ?? '')),
+        );
+        self::assertStringEndsWith(
+            DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'auth' . DIRECTORY_SEPARATOR . 'trusted-devices',
+            str_replace(['/', '\\'], DIRECTORY_SEPARATOR, (string) ($payload['operational_context']['trusted_device_store_path'] ?? '')),
+        );
         self::assertCount(2, $devices);
 
         $standard = array_values(array_filter($devices, static fn (array $device): bool => ($device['management_sensitivity'] ?? null) === 'standard'))[0] ?? null;
@@ -280,6 +294,9 @@ PHP
         self::assertCount(1, $events);
         self::assertSame('security_center_report_exported', $events[0]['event'] ?? null);
         self::assertSame('exported', $events[0]['result'] ?? null);
+        self::assertSame('shared_file_store_candidate', $events[0]['report']['operational_context']['store_topology'] ?? null);
+        self::assertSame('file', $events[0]['report']['operational_context']['session_driver'] ?? null);
+        self::assertSame('file', $events[0]['report']['operational_context']['trusted_device_driver'] ?? null);
         self::assertSame(4, $events[0]['report']['summary']['active_sessions'] ?? null);
         self::assertSame(4, $events[0]['report']['summary']['aggregated_devices'] ?? null);
         self::assertArrayNotHasKey('devices', $events[0]['report']);

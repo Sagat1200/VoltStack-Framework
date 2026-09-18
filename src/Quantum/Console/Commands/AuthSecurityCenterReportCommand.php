@@ -11,6 +11,7 @@ use Quantum\Auth\Sessions\AuthenticationSession;
 use Quantum\Console\Command;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
+use VoltStack\Framework\Application;
 
 final class AuthSecurityCenterReportCommand extends Command
 {
@@ -61,6 +62,7 @@ final class AuthSecurityCenterReportCommand extends Command
         $exportLogPath = $this->resolveOptionalStringOption($input, 'export-log');
         $json = $input->hasOption('json');
         $generatedAt = $now ?? time();
+        $operationalContext = $this->operationalContext($app);
 
         $activeSessions = array_values(array_filter(
             $sessions->all(),
@@ -160,6 +162,7 @@ final class AuthSecurityCenterReportCommand extends Command
 
         $payload = [
             'generated_at' => $generatedAt,
+            'operational_context' => $operationalContext,
             'filters' => array_filter([
                 'identity' => $identity,
                 'type' => $identity !== null ? $type : null,
@@ -242,6 +245,31 @@ final class AuthSecurityCenterReportCommand extends Command
         $output->writeln(sprintf('  Identidades con management gobernado: %d', $payload['summary']['governed_management_identities']));
         $output->writeln(sprintf('  Sesiones direct_admin: %d', $payload['summary']['direct_admin_sessions']));
         $output->writeln(sprintf('  Sesiones delegated_admin: %d', $payload['summary']['delegated_admin_sessions']));
+
+        if ($input->hasOption('verbose')) {
+            $output->writeln();
+            $output->writeln('Contexto operativo:');
+            $output->writeln(sprintf(
+                '  app=%s env=%s topology=%s fingerprint=%s',
+                $operationalContext['app_name'],
+                $operationalContext['app_env'],
+                $operationalContext['store_topology'],
+                $operationalContext['store_fingerprint'],
+            ));
+            $output->writeln(sprintf(
+                '  session_driver=%s trusted_device_driver=%s',
+                $operationalContext['session_driver'],
+                $operationalContext['trusted_device_driver'],
+            ));
+
+            if ($operationalContext['session_store_path'] !== null || $operationalContext['trusted_device_store_path'] !== null) {
+                $output->writeln(sprintf(
+                    '  session_store=%s trusted_device_store=%s',
+                    $operationalContext['session_store_path'] ?? 'n/a',
+                    $operationalContext['trusted_device_store_path'] ?? 'n/a',
+                ));
+            }
+        }
 
         if ($identity !== null) {
             $output->writeln();
@@ -596,5 +624,65 @@ final class AuthSecurityCenterReportCommand extends Command
             (string) json_encode($event, JSON_THROW_ON_ERROR) . PHP_EOL,
             FILE_APPEND,
         );
+    }
+
+    /**
+     * @return array{
+     *   app_name: string,
+     *   app_env: string,
+     *   session_driver: string,
+     *   trusted_device_driver: string,
+     *   session_store_path: ?string,
+     *   trusted_device_store_path: ?string,
+     *   store_topology: string,
+     *   store_fingerprint: string
+     * }
+     */
+    private function operationalContext(Application $app): array
+    {
+        $sessionDriver = $this->normalizedDriver($app->config('auth.session.driver', 'memory'), 'memory');
+        $trustedDeviceDriver = $this->normalizedDriver(
+            $app->config('auth.trusted_devices.driver', $sessionDriver),
+            $sessionDriver,
+        );
+        $sessionStorePath = $sessionDriver === 'file'
+            ? $app->storagePath('framework/auth/sessions')
+            : null;
+        $trustedDeviceStorePath = $trustedDeviceDriver === 'file'
+            ? $app->storagePath('framework/auth/trusted-devices')
+            : null;
+        $topology = match (true) {
+            $sessionDriver === 'file' && $trustedDeviceDriver === 'file' => 'shared_file_store_candidate',
+            $sessionDriver === 'file' || $trustedDeviceDriver === 'file' => 'mixed_driver_topology',
+            default => 'in_memory_local_topology',
+        };
+
+        return [
+            'app_name' => $this->normalizedString($app->config('app.name', 'VoltStack'), 'VoltStack'),
+            'app_env' => $this->normalizedString($app->config('app.env', 'local'), 'local'),
+            'session_driver' => $sessionDriver,
+            'trusted_device_driver' => $trustedDeviceDriver,
+            'session_store_path' => $sessionStorePath,
+            'trusted_device_store_path' => $trustedDeviceStorePath,
+            'store_topology' => $topology,
+            'store_fingerprint' => sha1((string) json_encode([
+                'session_driver' => $sessionDriver,
+                'trusted_device_driver' => $trustedDeviceDriver,
+                'session_store_path' => $sessionStorePath,
+                'trusted_device_store_path' => $trustedDeviceStorePath,
+            ], JSON_THROW_ON_ERROR)),
+        ];
+    }
+
+    private function normalizedDriver(mixed $value, string $default): string
+    {
+        return $this->normalizedString($value, $default);
+    }
+
+    private function normalizedString(mixed $value, string $default): string
+    {
+        return is_string($value) && trim($value) !== ''
+            ? trim($value)
+            : $default;
     }
 }

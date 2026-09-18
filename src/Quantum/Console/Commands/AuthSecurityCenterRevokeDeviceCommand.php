@@ -13,6 +13,7 @@ use Quantum\Auth\Devices\TrustedDevice;
 use Quantum\Console\Command;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
+use VoltStack\Framework\Application;
 
 final class AuthSecurityCenterRevokeDeviceCommand extends Command
 {
@@ -160,6 +161,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         $app = $this->bootstrapApplication();
         $sessions = $app->make(AuthenticationSessionRepositoryInterface::class);
         $trustedDevices = $app->make(TrustedDeviceRepositoryInterface::class);
+        $operationalContext = $this->operationalContext($app);
         $actorAuthorization = $this->authorizedActorContext(
             $sessions->all(),
             $actorIdentity,
@@ -187,6 +189,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                     'session_public_id' => $actorSessionPublicId,
                     'management_authorization_reason_code' => $actorAuthorization['authorization_reason_code'] ?? null,
                 ],
+                'operational_context' => $operationalContext,
             ]);
 
             return $this->renderAuthorizationFailure(
@@ -208,6 +211,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
 
         $payload = [
             'generated_at' => $eventTimestamp,
+            'operational_context' => $operationalContext,
             'filters' => [
                 'identity' => $identity,
                 'type' => $type,
@@ -293,6 +297,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 'management_authorization_reason_code' => $actorContext->managementAuthorizationReasonCode(),
                 'management_scopes' => $actorContext->managementScopes(),
             ],
+            'operational_context' => $operationalContext,
             'summary' => $payload['summary'],
             'detail' => $payload['detail'] ?? null,
         ]);
@@ -318,6 +323,16 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             $output->writeln(sprintf('Device reference: %s', $deviceReference));
             $output->writeln(sprintf('Scope: %s', $scope));
             $output->writeln(sprintf('Dry run: %s', $dryRun ? 'si' : 'no'));
+            $output->writeln(sprintf(
+                'Topology: %s | fingerprint=%s',
+                $operationalContext['store_topology'],
+                $operationalContext['store_fingerprint'],
+            ));
+            $output->writeln(sprintf(
+                'Session store: %s | Trusted device store: %s',
+                $operationalContext['session_store_path'] ?? 'n/a',
+                $operationalContext['trusted_device_store_path'] ?? 'n/a',
+            ));
             $output->writeln();
         }
 
@@ -464,6 +479,61 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             (string) json_encode($event, JSON_THROW_ON_ERROR) . PHP_EOL,
             FILE_APPEND,
         );
+    }
+
+    /**
+     * @return array{
+     *   app_name: string,
+     *   app_env: string,
+     *   session_driver: string,
+     *   trusted_device_driver: string,
+     *   session_store_path: ?string,
+     *   trusted_device_store_path: ?string,
+     *   store_topology: string,
+     *   store_fingerprint: string
+     * }
+     */
+    private function operationalContext(Application $app): array
+    {
+        $sessionDriver = $this->normalizedString($app->config('auth.session.driver', 'memory'), 'memory');
+        $trustedDeviceDriver = $this->normalizedString(
+            $app->config('auth.trusted_devices.driver', $sessionDriver),
+            $sessionDriver,
+        );
+        $sessionStorePath = $sessionDriver === 'file'
+            ? $app->storagePath('framework/auth/sessions')
+            : null;
+        $trustedDeviceStorePath = $trustedDeviceDriver === 'file'
+            ? $app->storagePath('framework/auth/trusted-devices')
+            : null;
+        $topology = match (true) {
+            $sessionDriver === 'file' && $trustedDeviceDriver === 'file' => 'shared_file_store_candidate',
+            $sessionDriver === 'file' || $trustedDeviceDriver === 'file' => 'mixed_driver_topology',
+            default => 'in_memory_local_topology',
+        };
+
+        return [
+            'app_name' => $this->normalizedString($app->config('app.name', 'VoltStack'), 'VoltStack'),
+            'app_env' => $this->normalizedString($app->config('app.env', 'local'), 'local'),
+            'session_driver' => $sessionDriver,
+            'trusted_device_driver' => $trustedDeviceDriver,
+            'session_store_path' => $sessionStorePath,
+            'trusted_device_store_path' => $trustedDeviceStorePath,
+            'store_topology' => $topology,
+            'store_fingerprint' => sha1((string) json_encode([
+                'session_driver' => $sessionDriver,
+                'trusted_device_driver' => $trustedDeviceDriver,
+                'session_store_path' => $sessionStorePath,
+                'trusted_device_store_path' => $trustedDeviceStorePath,
+            ], JSON_THROW_ON_ERROR)),
+        ];
+    }
+
+    private function normalizedString(mixed $value, string $default): string
+    {
+        return is_string($value) && trim($value) !== ''
+            ? trim($value)
+            : $default;
     }
 
     /**

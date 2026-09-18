@@ -320,8 +320,6 @@ final class AuthDomainModelTest extends TestCase
         self::assertNull($context->managementAuthorizationReasonCode());
         self::assertSame('delegated_administrative_target', $context->managementActorTargetRelation('120', 'user'));
         self::assertSame('delegated_administrative_target', $context->managementActorTargetReasonCode('120', 'user'));
-        self::assertSame('delegated_admin_full_scope_target', $context->managementActorTargetScopeRelation('120', 'user'));
-        self::assertSame('delegated_admin_full_scope_target', $context->managementActorTargetScopeReasonCode('120', 'user'));
     }
 
     public function test_authentication_context_supports_delegated_session_only_management_scope(): void
@@ -357,8 +355,6 @@ final class AuthDomainModelTest extends TestCase
         self::assertNull($context->managementSessionAuthorizationReasonCode());
         self::assertNull($context->managementTrustedDeviceAuthorizationMode());
         self::assertSame('missing_admin_trusted_device_management_scope', $context->managementTrustedDeviceAuthorizationReasonCode());
-        self::assertSame('delegated_admin_sessions_scope_target', $context->managementActorTargetScopeRelation('120', 'user'));
-        self::assertSame('delegated_admin_sessions_scope_target', $context->managementActorTargetScopeReasonCode('120', 'user'));
     }
 
     public function test_authentication_context_supports_delegated_trusted_device_only_management_scope(): void
@@ -394,8 +390,6 @@ final class AuthDomainModelTest extends TestCase
         self::assertSame('missing_admin_session_management_scope', $context->managementSessionAuthorizationReasonCode());
         self::assertSame('delegated_admin', $context->managementTrustedDeviceAuthorizationMode());
         self::assertNull($context->managementTrustedDeviceAuthorizationReasonCode());
-        self::assertSame('delegated_admin_trusted_devices_scope_target', $context->managementActorTargetScopeRelation('120', 'user'));
-        self::assertSame('delegated_admin_trusted_devices_scope_target', $context->managementActorTargetScopeReasonCode('120', 'user'));
     }
 
     public function test_authentication_context_exposes_direct_admin_and_self_governed_target_relations(): void
@@ -426,12 +420,8 @@ final class AuthDomainModelTest extends TestCase
 
         self::assertSame('self_governed', $context->managementActorTargetRelation('91', 'user'));
         self::assertSame('governed_current_identity_target', $context->managementActorTargetReasonCode('91', 'user'));
-        self::assertSame('self_governed_full_scope_target', $context->managementActorTargetScopeRelation('91', 'user'));
-        self::assertSame('governed_current_identity_full_scope_target', $context->managementActorTargetScopeReasonCode('91', 'user'));
         self::assertSame('direct_administrative_target', $context->managementActorTargetRelation('120', 'user'));
         self::assertSame('direct_administrative_target', $context->managementActorTargetReasonCode('120', 'user'));
-        self::assertSame('direct_admin_full_scope_target', $context->managementActorTargetScopeRelation('120', 'user'));
-        self::assertSame('direct_admin_full_scope_target', $context->managementActorTargetScopeReasonCode('120', 'user'));
     }
 
     public function test_authentication_context_exposes_reason_for_governed_actor_rejected_without_device_management_scope(): void

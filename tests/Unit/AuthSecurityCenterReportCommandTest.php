@@ -110,6 +110,7 @@ PHP
                 'volt',
                 'auth:security-center:report',
                 '--now=' . $seedNow,
+                '--correlation-id=report-detail-corr',
                 '--identity=701',
                 '--type=user',
                 '--include-public-ids',
@@ -123,6 +124,9 @@ PHP
         $devices = $payload['devices'] ?? [];
 
         self::assertSame(0, $exitCode);
+        self::assertSame('report-detail-corr', $payload['correlation_id'] ?? null);
+        self::assertIsString($payload['operation_id'] ?? null);
+        self::assertStringStartsWith('security-center-report-', (string) ($payload['operation_id'] ?? ''));
         self::assertSame('701', $payload['filters']['identity'] ?? null);
         self::assertSame('user', $payload['filters']['type'] ?? null);
         self::assertTrue((bool) ($payload['filters']['include_public_ids'] ?? false));
@@ -282,6 +286,7 @@ PHP
                 'volt',
                 'auth:security-center:report',
                 '--now=' . $seedNow,
+                '--correlation-id=report-export-corr',
                 '--export-log=' . $exportLogPath,
             ]),
             $output,
@@ -293,7 +298,12 @@ PHP
         self::assertStringContainsString('Snapshot exportado en: ' . $exportLogPath, $output->stdout());
         self::assertCount(1, $events);
         self::assertSame('security_center_report_exported', $events[0]['event'] ?? null);
+        self::assertSame('report-export-corr', $events[0]['correlation_id'] ?? null);
+        self::assertIsString($events[0]['operation_id'] ?? null);
+        self::assertStringStartsWith('security-center-report-', (string) ($events[0]['operation_id'] ?? ''));
         self::assertSame('exported', $events[0]['result'] ?? null);
+        self::assertSame('report-export-corr', $events[0]['report']['correlation_id'] ?? null);
+        self::assertSame($events[0]['operation_id'] ?? null, $events[0]['report']['operation_id'] ?? null);
         self::assertSame('shared_file_store_candidate', $events[0]['report']['operational_context']['store_topology'] ?? null);
         self::assertSame('file', $events[0]['report']['operational_context']['session_driver'] ?? null);
         self::assertSame('file', $events[0]['report']['operational_context']['trusted_device_driver'] ?? null);

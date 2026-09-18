@@ -81,6 +81,7 @@ PHP
                 '--actor-identity=901',
                 '--actor-type=user',
                 '--actor-session-public-id=sess_pub_ops_admin',
+                '--correlation-id=revoke-dry-run-corr',
                 '--include-public-ids',
                 '--audit-log=' . $auditLogPath,
                 '--dry-run',
@@ -102,6 +103,8 @@ PHP
         self::assertStringContainsString('Sesiones revocadas: 2', $output->stdout());
         self::assertStringContainsString('Trusted devices revocados: 1', $output->stdout());
         self::assertStringContainsString('Actor autorizado: user:901 | authority=administrative_actor | privilege=privileged_admin | mode=direct_admin | scopes=security_center_export,admin_device_management', $output->stdout());
+        self::assertStringContainsString('Correlation id: revoke-dry-run-corr', $output->stdout());
+        self::assertStringContainsString('Operation id: security-center-revoke-device-', $output->stdout());
         self::assertStringContainsString('Topology: shared_file_store_candidate | fingerprint=', $output->stdout());
         self::assertStringContainsString(
             'framework/auth/sessions',
@@ -113,6 +116,9 @@ PHP
         $events = $this->readAuditEvents($auditLogPath);
         self::assertCount(1, $events);
         self::assertSame('security_center_device_revocation_planned', $events[0]['event'] ?? null);
+        self::assertSame('revoke-dry-run-corr', $events[0]['correlation_id'] ?? null);
+        self::assertIsString($events[0]['operation_id'] ?? null);
+        self::assertStringStartsWith('security-center-revoke-device-', (string) ($events[0]['operation_id'] ?? ''));
         self::assertSame('dry_run', $events[0]['result'] ?? null);
         self::assertTrue((bool) ($events[0]['actor']['management_authorized'] ?? false));
         self::assertSame('direct_admin', $events[0]['actor']['management_authorization_mode'] ?? null);
@@ -197,6 +203,7 @@ PHP
                 '--actor-identity=901',
                 '--actor-type=user',
                 '--actor-session-public-id=sess_pub_ops_admin',
+                '--correlation-id=revoke-json-corr',
                 '--scope=trusted-devices',
                 '--json',
             ]),
@@ -209,6 +216,9 @@ PHP
         $trustedDevices = $app->make(TrustedDeviceRepositoryInterface::class);
 
         self::assertSame(0, $exitCode);
+        self::assertSame('revoke-json-corr', $payload['correlation_id'] ?? null);
+        self::assertIsString($payload['operation_id'] ?? null);
+        self::assertStringStartsWith('security-center-revoke-device-', (string) ($payload['operation_id'] ?? ''));
         self::assertSame('trusted-devices', $payload['filters']['scope'] ?? null);
         self::assertSame('901', $payload['actor']['identity'] ?? null);
         self::assertSame('administrative_actor', $payload['actor']['management_authority'] ?? null);

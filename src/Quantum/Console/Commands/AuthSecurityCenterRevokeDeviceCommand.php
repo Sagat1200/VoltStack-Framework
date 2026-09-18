@@ -29,7 +29,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
 
     public function usage(): string
     {
-        return 'auth:security-center:revoke-device --identity=value --device-reference=value --actor-identity=value --actor-session-public-id=value [--type=value] [--actor-type=value] [--scope=all|sessions|trusted-devices] [--include-public-ids] [--audit-log=path] [--dry-run] [--json] [--verbose]';
+        return 'auth:security-center:revoke-device --identity=value --device-reference=value --actor-identity=value --actor-session-public-id=value [--type=value] [--actor-type=value] [--scope=all|sessions|trusted-devices] [--include-public-ids] [--correlation-id=value] [--audit-log=path] [--dry-run] [--json] [--verbose]';
     }
 
     public function category(): string
@@ -48,6 +48,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             '--actor-type=' => 'Tipo de identidad del actor. Default: user.',
             '--scope=' => 'Alcance de la revocacion: all, sessions o trusted-devices. Default: all.',
             '--include-public-ids' => 'Incluye session_public_ids y trusted_device_public_ids en el resultado.',
+            '--correlation-id=' => 'Usa un correlation id explicito para enlazar auditorias y mutaciones relacionadas.',
             '--audit-log=' => 'Anexa un evento JSONL durable con actor, target y resultado operativo.',
             '--dry-run' => 'Calcula la revocacion sin persistir cambios.',
             '--json' => 'Emite el resultado en JSON.',
@@ -70,11 +71,15 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         $json = $input->hasOption('json');
         $now = $this->resolveNow($input);
         $eventTimestamp = $now ?? time();
+        $correlationId = $this->resolveCorrelationId($input, 'security-center-revoke-device');
+        $operationId = $this->createOperationId('security-center-revoke-device');
 
         if ($identity === null) {
             $this->writeAuditEvent($auditLogPath, [
                 'event' => 'security_center_device_revocation_rejected',
                 'occurred_at' => $eventTimestamp,
+                'correlation_id' => $correlationId,
+                'operation_id' => $operationId,
                 'result' => 'validation_failed',
                 'reason_code' => 'missing_identity',
             ]);
@@ -86,6 +91,8 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             $this->writeAuditEvent($auditLogPath, [
                 'event' => 'security_center_device_revocation_rejected',
                 'occurred_at' => $eventTimestamp,
+                'correlation_id' => $correlationId,
+                'operation_id' => $operationId,
                 'result' => 'validation_failed',
                 'reason_code' => 'missing_device_reference',
                 'target' => [
@@ -101,6 +108,8 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             $this->writeAuditEvent($auditLogPath, [
                 'event' => 'security_center_device_revocation_rejected',
                 'occurred_at' => $eventTimestamp,
+                'correlation_id' => $correlationId,
+                'operation_id' => $operationId,
                 'result' => 'validation_failed',
                 'reason_code' => 'missing_actor_identity',
                 'target' => [
@@ -117,6 +126,8 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             $this->writeAuditEvent($auditLogPath, [
                 'event' => 'security_center_device_revocation_rejected',
                 'occurred_at' => $eventTimestamp,
+                'correlation_id' => $correlationId,
+                'operation_id' => $operationId,
                 'result' => 'validation_failed',
                 'reason_code' => 'missing_actor_session_public_id',
                 'target' => [
@@ -175,6 +186,8 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             $this->writeAuditEvent($auditLogPath, [
                 'event' => 'security_center_device_revocation_rejected',
                 'occurred_at' => $eventTimestamp,
+                'correlation_id' => $correlationId,
+                'operation_id' => $operationId,
                 'result' => 'authorization_failed',
                 'reason_code' => 'unauthorized_management_actor',
                 'target' => [
@@ -211,6 +224,8 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
 
         $payload = [
             'generated_at' => $eventTimestamp,
+            'correlation_id' => $correlationId,
+            'operation_id' => $operationId,
             'operational_context' => $operationalContext,
             'filters' => [
                 'identity' => $identity,
@@ -277,6 +292,8 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         $this->writeAuditEvent($auditLogPath, [
             'event' => 'security_center_device_revocation_' . ($dryRun ? 'planned' : 'executed'),
             'occurred_at' => $eventTimestamp,
+            'correlation_id' => $correlationId,
+            'operation_id' => $operationId,
             'result' => $dryRun ? 'dry_run' : 'executed',
             'target' => [
                 'identity' => $identity,
@@ -323,6 +340,8 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             $output->writeln(sprintf('Device reference: %s', $deviceReference));
             $output->writeln(sprintf('Scope: %s', $scope));
             $output->writeln(sprintf('Dry run: %s', $dryRun ? 'si' : 'no'));
+            $output->writeln(sprintf('Correlation id: %s', $correlationId));
+            $output->writeln(sprintf('Operation id: %s', $operationId));
             $output->writeln(sprintf(
                 'Topology: %s | fingerprint=%s',
                 $operationalContext['store_topology'],
@@ -393,6 +412,22 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
     private function resolveOptionalStringOption(Input $input, string $key): ?string
     {
         return $this->resolveRequiredStringOption($input, $key);
+    }
+
+    private function resolveCorrelationId(Input $input, string $prefix): string
+    {
+        $provided = $this->resolveOptionalStringOption($input, 'correlation-id');
+
+        if ($provided !== null) {
+            return $provided;
+        }
+
+        return $prefix . '-' . bin2hex(random_bytes(8));
+    }
+
+    private function createOperationId(string $prefix): string
+    {
+        return $prefix . '-' . bin2hex(random_bytes(8));
     }
 
     private function resolveType(Input $input): string

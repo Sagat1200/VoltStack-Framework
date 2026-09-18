@@ -27,7 +27,7 @@ final class AuthSecurityCenterReportCommand extends Command
 
     public function usage(): string
     {
-        return 'auth:security-center:report [--now=timestamp] [--identity=value] [--type=value] [--include-public-ids] [--management-actors] [--export-log=path] [--json] [--verbose]';
+        return 'auth:security-center:report [--now=timestamp] [--identity=value] [--type=value] [--include-public-ids] [--management-actors] [--correlation-id=value] [--export-log=path] [--json] [--verbose]';
     }
 
     public function category(): string
@@ -43,6 +43,7 @@ final class AuthSecurityCenterReportCommand extends Command
             '--type=' => 'Filtra por tipo de identidad. Default: user.',
             '--include-public-ids' => 'Incluye session_public_ids y trusted_device_public_id en el detalle.',
             '--management-actors' => 'Incluye export operativo de actores con claims administrativas gobernadas.',
+            '--correlation-id=' => 'Usa un correlation id explicito para enlazar reporte, export y mutaciones posteriores.',
             '--export-log=' => 'Anexa un snapshot JSONL durable del reporte operativo generado.',
             '--json' => 'Emite el reporte en JSON.',
             '--verbose' => 'Muestra distribuciones adicionales y metadatos del reporte.',
@@ -62,6 +63,8 @@ final class AuthSecurityCenterReportCommand extends Command
         $exportLogPath = $this->resolveOptionalStringOption($input, 'export-log');
         $json = $input->hasOption('json');
         $generatedAt = $now ?? time();
+        $correlationId = $this->resolveCorrelationId($input, 'security-center-report');
+        $operationId = $this->createOperationId('security-center-report');
         $operationalContext = $this->operationalContext($app);
 
         $activeSessions = array_values(array_filter(
@@ -162,6 +165,8 @@ final class AuthSecurityCenterReportCommand extends Command
 
         $payload = [
             'generated_at' => $generatedAt,
+            'correlation_id' => $correlationId,
+            'operation_id' => $operationId,
             'operational_context' => $operationalContext,
             'filters' => array_filter([
                 'identity' => $identity,
@@ -224,6 +229,8 @@ final class AuthSecurityCenterReportCommand extends Command
         $this->writeExportEvent($exportLogPath, [
             'event' => 'security_center_report_exported',
             'occurred_at' => $generatedAt,
+            'correlation_id' => $correlationId,
+            'operation_id' => $operationId,
             'result' => 'exported',
             'report' => $payload,
         ]);
@@ -245,6 +252,8 @@ final class AuthSecurityCenterReportCommand extends Command
         $output->writeln(sprintf('  Identidades con management gobernado: %d', $payload['summary']['governed_management_identities']));
         $output->writeln(sprintf('  Sesiones direct_admin: %d', $payload['summary']['direct_admin_sessions']));
         $output->writeln(sprintf('  Sesiones delegated_admin: %d', $payload['summary']['delegated_admin_sessions']));
+        $output->writeln(sprintf('  Correlation id: %s', $correlationId));
+        $output->writeln(sprintf('  Operation id: %s', $operationId));
 
         if ($input->hasOption('verbose')) {
             $output->writeln();
@@ -376,6 +385,22 @@ final class AuthSecurityCenterReportCommand extends Command
         return is_string($option) && trim($option) !== ''
             ? trim($option)
             : null;
+    }
+
+    private function resolveCorrelationId(Input $input, string $prefix): string
+    {
+        $provided = $this->resolveOptionalStringOption($input, 'correlation-id');
+
+        if ($provided !== null) {
+            return $provided;
+        }
+
+        return $prefix . '-' . bin2hex(random_bytes(8));
+    }
+
+    private function createOperationId(string $prefix): string
+    {
+        return $prefix . '-' . bin2hex(random_bytes(8));
     }
 
     /**

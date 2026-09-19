@@ -125,6 +125,7 @@ PHP
         self::assertStringContainsString('Ventanas distribuidas: 5m=1 15m=2 60m=3', $output->stdout());
         self::assertStringContainsString('Consolidacion temporal por store: stores=2 top_recent_store=fingerprint-a 15m=1 60m=2', $output->stdout());
         self::assertStringContainsString('Resumen multi-store: profile=distributed active_15m=2/2 spread=795s', $output->stdout());
+        self::assertStringContainsString('Activity drift: detected=yes profile=recent_lag lagging=1 inactive_15m=0 gap=795s', $output->stdout());
         self::assertStringContainsString('Cohortes distribuidas por store:', $output->stdout());
         self::assertStringContainsString('- fingerprint=fingerprint-a | topology=shared_file_store_candidate | events=2 | executed=1 | dry_run=1 | rejected=0', $output->stdout());
         self::assertStringContainsString('- fingerprint=fingerprint-b | topology=mixed_driver_topology | events=1 | executed=0 | dry_run=0 | rejected=1', $output->stdout());
@@ -137,6 +138,8 @@ PHP
         self::assertStringContainsString('- fingerprint=fingerprint-b | topology=mixed_driver_topology | 5m=1 | 15m=1 | 60m=1 | latest=', $output->stdout());
         self::assertStringContainsString('Resumen multi-store:', $output->stdout());
         self::assertStringContainsString('- profile=distributed | stores=2 | active_5m=1 | active_15m=2 | active_60m=2 | top_store=fingerprint-a | spread=795s', $output->stdout());
+        self::assertStringContainsString('Activity drift:', $output->stdout());
+        self::assertStringContainsString('- detected=yes | profile=recent_lag | severity=low | lagging=1 | inactive_15m=0 | inactive_60m=0 | gap=795s', $output->stdout());
     }
 
     public function test_it_emits_filtered_json_detail_with_public_ids_only_for_a_specific_identity(): void
@@ -429,6 +432,15 @@ PHP
         self::assertSame(2, $payload['longitudinal_metrics']['multi_store_summary']['top_recent_store_60m_events'] ?? null);
         self::assertSame(795, $payload['longitudinal_metrics']['multi_store_summary']['latest_event_spread_seconds'] ?? null);
         self::assertSame('distributed', $payload['longitudinal_metrics']['multi_store_summary']['coordination_profile'] ?? null);
+        self::assertTrue($payload['longitudinal_metrics']['activity_drift']['drift_detected'] ?? false);
+        self::assertSame('recent_lag', $payload['longitudinal_metrics']['activity_drift']['drift_profile'] ?? null);
+        self::assertSame('low', $payload['longitudinal_metrics']['activity_drift']['severity'] ?? null);
+        self::assertSame('last_15m', $payload['longitudinal_metrics']['activity_drift']['reference_window'] ?? null);
+        self::assertSame(795, $payload['longitudinal_metrics']['activity_drift']['max_event_gap_seconds'] ?? null);
+        self::assertSame(0, $payload['longitudinal_metrics']['activity_drift']['inactive_stores_last_15m'] ?? null);
+        self::assertSame(0, $payload['longitudinal_metrics']['activity_drift']['inactive_stores_last_60m'] ?? null);
+        self::assertSame(['fingerprint-a'], $payload['longitudinal_metrics']['activity_drift']['lagging_store_fingerprints'] ?? null);
+        self::assertSame([], $payload['longitudinal_metrics']['activity_drift']['stale_store_fingerprints'] ?? null);
         self::assertSame('last_5m', $payload['longitudinal_metrics']['time_windows'][0]['label'] ?? null);
         self::assertSame(1, $payload['longitudinal_metrics']['time_windows'][0]['event_count'] ?? null);
         self::assertSame(1, $payload['longitudinal_metrics']['time_windows'][0]['observed_store_fingerprints'] ?? null);
@@ -485,6 +497,7 @@ PHP
         self::assertCount(3, $events[0]['report']['longitudinal_metrics']['time_windows'] ?? []);
         self::assertCount(2, $events[0]['report']['longitudinal_metrics']['store_time_windows'] ?? []);
         self::assertSame('distributed', $events[0]['report']['longitudinal_metrics']['multi_store_summary']['coordination_profile'] ?? null);
+        self::assertSame('recent_lag', $events[0]['report']['longitudinal_metrics']['activity_drift']['drift_profile'] ?? null);
     }
 
     public function test_it_persists_detailed_snapshot_only_when_identity_and_management_flags_are_requested(): void

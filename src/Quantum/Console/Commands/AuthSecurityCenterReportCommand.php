@@ -279,9 +279,11 @@ final class AuthSecurityCenterReportCommand extends Command
             ));
             $topStoreCohort = $longitudinalMetrics['store_cohorts'][0] ?? null;
             $timeWindows = $longitudinalMetrics['time_windows'] ?? [];
+            $storeTimeWindows = $longitudinalMetrics['store_time_windows'] ?? [];
             $last5m = $timeWindows[0] ?? null;
             $last15m = $timeWindows[1] ?? null;
             $last60m = $timeWindows[2] ?? null;
+            $topRecentStore = $storeTimeWindows[0] ?? null;
 
             if (is_array($topStoreCohort)) {
                 $output->writeln(sprintf(
@@ -299,6 +301,18 @@ final class AuthSecurityCenterReportCommand extends Command
                     $last5m['event_count'],
                     $last15m['event_count'],
                     $last60m['event_count'],
+                ));
+            }
+
+            if (is_array($topRecentStore)) {
+                $recent15m = $topRecentStore['windows'][1]['event_count'] ?? 0;
+                $recent60m = $topRecentStore['windows'][2]['event_count'] ?? 0;
+                $output->writeln(sprintf(
+                    '  Consolidacion temporal por store: stores=%d top_recent_store=%s 15m=%d 60m=%d',
+                    count($storeTimeWindows),
+                    $topRecentStore['store_fingerprint'],
+                    $recent15m,
+                    $recent60m,
                 ));
             }
         }
@@ -358,6 +372,27 @@ final class AuthSecurityCenterReportCommand extends Command
                         $window['outcomes']['executed'] ?? 0,
                         $window['outcomes']['dry_run'] ?? 0,
                         $window['outcomes']['authorization_failed'] ?? 0,
+                    ));
+                }
+            }
+
+            if ($auditLogSource !== null && ($longitudinalMetrics['store_time_windows'] ?? []) !== []) {
+                $output->writeln();
+                $output->writeln('Consolidacion temporal por store:');
+
+                foreach ($longitudinalMetrics['store_time_windows'] as $storeWindow) {
+                    $window5m = $storeWindow['windows'][0]['event_count'] ?? 0;
+                    $window15m = $storeWindow['windows'][1]['event_count'] ?? 0;
+                    $window60m = $storeWindow['windows'][2]['event_count'] ?? 0;
+
+                    $output->writeln(sprintf(
+                        '  - fingerprint=%s | topology=%s | 5m=%d | 15m=%d | 60m=%d | latest=%s',
+                        $storeWindow['store_fingerprint'],
+                        $storeWindow['store_topology'],
+                        $window5m,
+                        $window15m,
+                        $window60m,
+                        $storeWindow['latest_event_at'] ?? 'null',
                     ));
                 }
             }
@@ -794,7 +829,8 @@ final class AuthSecurityCenterReportCommand extends Command
      *   observed_topologies: array<string, int>,
      *   latest_event_at: ?int,
      *   store_cohorts: list<array<string, mixed>>,
-     *   time_windows: list<array<string, mixed>>
+     *   time_windows: list<array<string, mixed>>,
+     *   store_time_windows: list<array<string, mixed>>
      * }
      */
     private function longitudinalMetrics(array $events): array
@@ -835,6 +871,7 @@ final class AuthSecurityCenterReportCommand extends Command
             'latest_event_at' => null,
             'store_cohorts' => [],
             'time_windows' => [],
+            'store_time_windows' => [],
         ];
 
         $correlationIds = [];
@@ -974,6 +1011,10 @@ final class AuthSecurityCenterReportCommand extends Command
             $normalizedEvents,
             is_int($metrics['latest_event_at']) ? $metrics['latest_event_at'] : null,
         );
+        $metrics['store_time_windows'] = $this->buildStoreTimeWindows(
+            $normalizedEvents,
+            is_int($metrics['latest_event_at']) ? $metrics['latest_event_at'] : null,
+        );
 
         return $metrics;
     }
@@ -1052,6 +1093,111 @@ final class AuthSecurityCenterReportCommand extends Command
                 'affected_resources' => $affectedResources,
             ];
         }
+
+        return $normalized;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $events
+     * @return list<array<string, mixed>>
+     */
+    private function buildStoreTimeWindows(array $events, ?int $anchorTimestamp): array
+    {
+        if ($anchorTimestamp === null) {
+            return [];
+        }
+
+        $windows = [
+            ['label' => 'last_5m', 'duration_seconds' => 300],
+            ['label' => 'last_15m', 'duration_seconds' => 900],
+            ['label' => 'last_60m', 'duration_seconds' => 3600],
+        ];
+
+        $stores = [];
+
+        foreach ($events as $event) {
+            $fingerprint = is_string($event['store_fingerprint'] ?? null)
+                ? $event['store_fingerprint']
+                : 'unknown-store';
+            $topology = $this->normalizedMetricKey($event['store_topology'] ?? null, 'unknown');
+            $key = $topology . '|' . $fingerprint;
+
+            if (! isset($stores[$key])) {
+                $stores[$key] = [
+                    'store_fingerprint' => $fingerprint,
+                    'store_topology' => $topology,
+                    'latest_event_at' => null,
+                    'windows' => [],
+                ];
+            }
+
+            if (is_int($event['occurred_at'] ?? null)) {
+                $stores[$key]['latest_event_at'] = max(
+                    (int) ($stores[$key]['latest_event_at'] ?? 0),
+                    (int) $event['occurred_at'],
+                );
+            }
+        }
+
+        foreach ($stores as $key => $store) {
+            foreach ($windows as $window) {
+                $windowStart = $anchorTimestamp - $window['duration_seconds'];
+                $matchingEvents = array_values(array_filter(
+                    $events,
+                    static fn (array $event): bool => ($event['store_fingerprint'] ?? 'unknown-store') === $store['store_fingerprint']
+                        && ($event['store_topology'] ?? 'unknown') === $store['store_topology']
+                        && is_int($event['occurred_at'] ?? null)
+                        && $event['occurred_at'] > $windowStart
+                        && $event['occurred_at'] <= $anchorTimestamp,
+                ));
+                $outcomes = [];
+                $affectedResources = [
+                    'sessions' => 0,
+                    'trusted-devices' => 0,
+                    'total' => 0,
+                ];
+
+                foreach ($matchingEvents as $event) {
+                    $outcome = $this->normalizedMetricKey($event['outcome'] ?? null, 'unknown');
+                    $outcomes[$outcome] = ($outcomes[$outcome] ?? 0) + 1;
+                    $affectedResources['sessions'] += (int) ($event['affected_sessions'] ?? 0);
+                    $affectedResources['trusted-devices'] += (int) ($event['affected_trusted_devices'] ?? 0);
+                    $affectedResources['total'] += (int) ($event['affected_total_resources'] ?? 0);
+                }
+
+                ksort($outcomes);
+
+                $stores[$key]['windows'][] = [
+                    'label' => $window['label'],
+                    'duration_seconds' => $window['duration_seconds'],
+                    'event_count' => count($matchingEvents),
+                    'outcomes' => $outcomes,
+                    'affected_resources' => $affectedResources,
+                ];
+            }
+        }
+
+        $normalized = array_values($stores);
+
+        usort($normalized, static function (array $left, array $right): int {
+            $leftRecent = (int) ($left['windows'][1]['event_count'] ?? 0);
+            $rightRecent = (int) ($right['windows'][1]['event_count'] ?? 0);
+            $recentComparison = $rightRecent <=> $leftRecent;
+
+            if ($recentComparison !== 0) {
+                return $recentComparison;
+            }
+
+            $leftTotal = (int) ($left['windows'][2]['event_count'] ?? 0);
+            $rightTotal = (int) ($right['windows'][2]['event_count'] ?? 0);
+            $totalComparison = $rightTotal <=> $leftTotal;
+
+            if ($totalComparison !== 0) {
+                return $totalComparison;
+            }
+
+            return strcmp((string) ($left['store_fingerprint'] ?? ''), (string) ($right['store_fingerprint'] ?? ''));
+        });
 
         return $normalized;
     }

@@ -280,6 +280,9 @@ final class AuthSecurityCenterReportCommand extends Command
             $topStoreCohort = $longitudinalMetrics['store_cohorts'][0] ?? null;
             $timeWindows = $longitudinalMetrics['time_windows'] ?? [];
             $storeTimeWindows = $longitudinalMetrics['store_time_windows'] ?? [];
+            $multiStoreSummary = is_array($longitudinalMetrics['multi_store_summary'] ?? null)
+                ? $longitudinalMetrics['multi_store_summary']
+                : [];
             $last5m = $timeWindows[0] ?? null;
             $last15m = $timeWindows[1] ?? null;
             $last60m = $timeWindows[2] ?? null;
@@ -313,6 +316,16 @@ final class AuthSecurityCenterReportCommand extends Command
                     $topRecentStore['store_fingerprint'],
                     $recent15m,
                     $recent60m,
+                ));
+            }
+
+            if ($multiStoreSummary !== []) {
+                $output->writeln(sprintf(
+                    '  Resumen multi-store: profile=%s active_15m=%d/%d spread=%ss',
+                    $multiStoreSummary['coordination_profile'] ?? 'idle',
+                    $multiStoreSummary['active_stores_last_15m'] ?? 0,
+                    $multiStoreSummary['observed_stores'] ?? 0,
+                    $multiStoreSummary['latest_event_spread_seconds'] ?? 0,
                 ));
             }
         }
@@ -395,6 +408,22 @@ final class AuthSecurityCenterReportCommand extends Command
                         $storeWindow['latest_event_at'] ?? 'null',
                     ));
                 }
+            }
+
+            if ($auditLogSource !== null && ($longitudinalMetrics['multi_store_summary'] ?? []) !== []) {
+                $multiStoreSummary = $longitudinalMetrics['multi_store_summary'];
+                $output->writeln();
+                $output->writeln('Resumen multi-store:');
+                $output->writeln(sprintf(
+                    '  - profile=%s | stores=%d | active_5m=%d | active_15m=%d | active_60m=%d | top_store=%s | spread=%ss',
+                    $multiStoreSummary['coordination_profile'] ?? 'idle',
+                    $multiStoreSummary['observed_stores'] ?? 0,
+                    $multiStoreSummary['active_stores_last_5m'] ?? 0,
+                    $multiStoreSummary['active_stores_last_15m'] ?? 0,
+                    $multiStoreSummary['active_stores_last_60m'] ?? 0,
+                    $multiStoreSummary['top_recent_store_fingerprint'] ?? 'none',
+                    $multiStoreSummary['latest_event_spread_seconds'] ?? 0,
+                ));
             }
         }
 
@@ -830,7 +859,8 @@ final class AuthSecurityCenterReportCommand extends Command
      *   latest_event_at: ?int,
      *   store_cohorts: list<array<string, mixed>>,
      *   time_windows: list<array<string, mixed>>,
-     *   store_time_windows: list<array<string, mixed>>
+     *   store_time_windows: list<array<string, mixed>>,
+     *   multi_store_summary: array<string, mixed>
      * }
      */
     private function longitudinalMetrics(array $events): array
@@ -872,6 +902,7 @@ final class AuthSecurityCenterReportCommand extends Command
             'store_cohorts' => [],
             'time_windows' => [],
             'store_time_windows' => [],
+            'multi_store_summary' => [],
         ];
 
         $correlationIds = [];
@@ -1013,6 +1044,10 @@ final class AuthSecurityCenterReportCommand extends Command
         );
         $metrics['store_time_windows'] = $this->buildStoreTimeWindows(
             $normalizedEvents,
+            is_int($metrics['latest_event_at']) ? $metrics['latest_event_at'] : null,
+        );
+        $metrics['multi_store_summary'] = $this->buildMultiStoreSummary(
+            $metrics['store_time_windows'],
             is_int($metrics['latest_event_at']) ? $metrics['latest_event_at'] : null,
         );
 
@@ -1200,6 +1235,93 @@ final class AuthSecurityCenterReportCommand extends Command
         });
 
         return $normalized;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $storeTimeWindows
+     * @return array<string, mixed>
+     */
+    private function buildMultiStoreSummary(array $storeTimeWindows, ?int $anchorTimestamp): array
+    {
+        $summary = [
+            'observed_stores' => count($storeTimeWindows),
+            'active_stores_last_5m' => 0,
+            'active_stores_last_15m' => 0,
+            'active_stores_last_60m' => 0,
+            'top_recent_store_fingerprint' => null,
+            'top_recent_store_topology' => null,
+            'top_recent_store_15m_events' => 0,
+            'top_recent_store_60m_events' => 0,
+            'latest_event_spread_seconds' => null,
+            'coordination_profile' => 'idle',
+        ];
+
+        if ($storeTimeWindows === []) {
+            return $summary;
+        }
+
+        $latestEventAts = [];
+
+        foreach ($storeTimeWindows as $storeWindow) {
+            $window5m = (int) ($storeWindow['windows'][0]['event_count'] ?? 0);
+            $window15m = (int) ($storeWindow['windows'][1]['event_count'] ?? 0);
+            $window60m = (int) ($storeWindow['windows'][2]['event_count'] ?? 0);
+
+            if ($window5m > 0) {
+                $summary['active_stores_last_5m']++;
+            }
+            if ($window15m > 0) {
+                $summary['active_stores_last_15m']++;
+            }
+            if ($window60m > 0) {
+                $summary['active_stores_last_60m']++;
+            }
+
+            if (
+                $summary['top_recent_store_fingerprint'] === null
+                || $window15m > $summary['top_recent_store_15m_events']
+                || (
+                    $window15m === $summary['top_recent_store_15m_events']
+                    && $window60m > $summary['top_recent_store_60m_events']
+                )
+            ) {
+                $summary['top_recent_store_fingerprint'] = $storeWindow['store_fingerprint'] ?? null;
+                $summary['top_recent_store_topology'] = $storeWindow['store_topology'] ?? null;
+                $summary['top_recent_store_15m_events'] = $window15m;
+                $summary['top_recent_store_60m_events'] = $window60m;
+            }
+
+            if (is_int($storeWindow['latest_event_at'] ?? null) && $window60m > 0) {
+                $latestEventAts[] = (int) $storeWindow['latest_event_at'];
+            }
+        }
+
+        if ($latestEventAts !== []) {
+            sort($latestEventAts);
+            $summary['latest_event_spread_seconds'] = max($latestEventAts) - min($latestEventAts);
+        }
+
+        $total15mEvents = array_sum(array_map(
+            static fn (array $storeWindow): int => (int) ($storeWindow['windows'][1]['event_count'] ?? 0),
+            $storeTimeWindows,
+        ));
+        $topShare = $total15mEvents > 0
+            ? ((int) $summary['top_recent_store_15m_events']) / $total15mEvents
+            : 0.0;
+
+        $summary['coordination_profile'] = match (true) {
+            $summary['observed_stores'] <= 1 => 'single_store',
+            $summary['active_stores_last_15m'] === 0 => 'idle',
+            $summary['active_stores_last_15m'] === 1 => 'concentrated',
+            $topShare >= 0.75 => 'concentrated',
+            default => 'distributed',
+        };
+
+        if ($anchorTimestamp !== null && $summary['latest_event_spread_seconds'] === null) {
+            $summary['latest_event_spread_seconds'] = 0;
+        }
+
+        return $summary;
     }
 
     /**

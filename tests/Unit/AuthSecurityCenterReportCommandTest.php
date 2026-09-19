@@ -122,9 +122,14 @@ PHP
         self::assertSame(0, $exitCode);
         self::assertStringContainsString('Metricas longitudinales: events=3 executed=1 dry_run=1 rejected=1', $output->stdout());
         self::assertStringContainsString('Cohortes distribuidas: stores=2 top_store=fingerprint-a events=2 topology=shared_file_store_candidate', $output->stdout());
+        self::assertStringContainsString('Ventanas distribuidas: 5m=1 15m=2 60m=3', $output->stdout());
         self::assertStringContainsString('Cohortes distribuidas por store:', $output->stdout());
         self::assertStringContainsString('- fingerprint=fingerprint-a | topology=shared_file_store_candidate | events=2 | executed=1 | dry_run=1 | rejected=0', $output->stdout());
         self::assertStringContainsString('- fingerprint=fingerprint-b | topology=mixed_driver_topology | events=1 | executed=0 | dry_run=0 | rejected=1', $output->stdout());
+        self::assertStringContainsString('Ventanas temporales distribuidas:', $output->stdout());
+        self::assertStringContainsString('- last_5m | events=1 | stores=1 | top_store=fingerprint-b | executed=0 | dry_run=0 | rejected=1', $output->stdout());
+        self::assertStringContainsString('- last_15m | events=2 | stores=2 | top_store=fingerprint-a | executed=1 | dry_run=0 | rejected=1', $output->stdout());
+        self::assertStringContainsString('- last_60m | events=3 | stores=2 | top_store=fingerprint-a | executed=1 | dry_run=1 | rejected=1', $output->stdout());
     }
 
     public function test_it_emits_filtered_json_detail_with_public_ids_only_for_a_specific_identity(): void
@@ -405,6 +410,23 @@ PHP
         self::assertSame(2, $payload['longitudinal_metrics']['observed_topologies']['shared_file_store_candidate'] ?? null);
         self::assertSame(1, $payload['longitudinal_metrics']['observed_topologies']['mixed_driver_topology'] ?? null);
         self::assertSame($seedNow - 5, $payload['longitudinal_metrics']['latest_event_at'] ?? null);
+        self::assertCount(3, $payload['longitudinal_metrics']['time_windows'] ?? []);
+        self::assertSame('last_5m', $payload['longitudinal_metrics']['time_windows'][0]['label'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['time_windows'][0]['event_count'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['time_windows'][0]['observed_store_fingerprints'] ?? null);
+        self::assertSame('fingerprint-b', $payload['longitudinal_metrics']['time_windows'][0]['top_store_fingerprint'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['time_windows'][0]['outcomes']['authorization_failed'] ?? null);
+        self::assertSame('last_15m', $payload['longitudinal_metrics']['time_windows'][1]['label'] ?? null);
+        self::assertSame(2, $payload['longitudinal_metrics']['time_windows'][1]['event_count'] ?? null);
+        self::assertSame(2, $payload['longitudinal_metrics']['time_windows'][1]['observed_store_fingerprints'] ?? null);
+        self::assertSame('fingerprint-a', $payload['longitudinal_metrics']['time_windows'][1]['top_store_fingerprint'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['time_windows'][1]['outcomes']['executed'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['time_windows'][1]['outcomes']['authorization_failed'] ?? null);
+        self::assertSame('last_60m', $payload['longitudinal_metrics']['time_windows'][2]['label'] ?? null);
+        self::assertSame(3, $payload['longitudinal_metrics']['time_windows'][2]['event_count'] ?? null);
+        self::assertSame(2, $payload['longitudinal_metrics']['time_windows'][2]['observed_store_fingerprints'] ?? null);
+        self::assertSame('fingerprint-a', $payload['longitudinal_metrics']['time_windows'][2]['top_store_fingerprint'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['time_windows'][2]['outcomes']['dry_run'] ?? null);
         self::assertCount(2, $payload['longitudinal_metrics']['store_cohorts'] ?? []);
         self::assertSame('fingerprint-a', $payload['longitudinal_metrics']['store_cohorts'][0]['store_fingerprint'] ?? null);
         self::assertSame('shared_file_store_candidate', $payload['longitudinal_metrics']['store_cohorts'][0]['store_topology'] ?? null);
@@ -420,7 +442,7 @@ PHP
         self::assertSame(2, $payload['longitudinal_metrics']['store_cohorts'][0]['affected_resources']['sessions'] ?? null);
         self::assertSame(1, $payload['longitudinal_metrics']['store_cohorts'][0]['affected_resources']['trusted-devices'] ?? null);
         self::assertSame(3, $payload['longitudinal_metrics']['store_cohorts'][0]['affected_resources']['total'] ?? null);
-        self::assertSame($seedNow - 10, $payload['longitudinal_metrics']['store_cohorts'][0]['latest_event_at'] ?? null);
+        self::assertSame($seedNow - 800, $payload['longitudinal_metrics']['store_cohorts'][0]['latest_event_at'] ?? null);
         self::assertSame('fingerprint-b', $payload['longitudinal_metrics']['store_cohorts'][1]['store_fingerprint'] ?? null);
         self::assertSame(1, $payload['longitudinal_metrics']['store_cohorts'][1]['event_count'] ?? null);
         self::assertSame(1, $payload['longitudinal_metrics']['store_cohorts'][1]['authorization_modes']['none'] ?? null);
@@ -429,6 +451,7 @@ PHP
         self::assertSame(3, $events[0]['report']['longitudinal_metrics']['audit_event_count'] ?? null);
         self::assertSame(3, $events[0]['report']['longitudinal_metrics']['affected_resources']['total'] ?? null);
         self::assertCount(2, $events[0]['report']['longitudinal_metrics']['store_cohorts'] ?? []);
+        self::assertCount(3, $events[0]['report']['longitudinal_metrics']['time_windows'] ?? []);
     }
 
     public function test_it_persists_detailed_snapshot_only_when_identity_and_management_flags_are_requested(): void
@@ -655,7 +678,7 @@ PHP
         $events = [
             [
                 'event' => 'security_center_device_revocation_planned',
-                'occurred_at' => $seedNow - 20,
+                'occurred_at' => $seedNow - 3200,
                 'correlation_id' => 'audit-corr-1',
                 'operation_id' => 'audit-op-1',
                 'result' => 'dry_run',
@@ -676,7 +699,7 @@ PHP
             ],
             [
                 'event' => 'security_center_device_revocation_executed',
-                'occurred_at' => $seedNow - 10,
+                'occurred_at' => $seedNow - 800,
                 'correlation_id' => 'audit-corr-2',
                 'operation_id' => 'audit-op-2',
                 'result' => 'executed',

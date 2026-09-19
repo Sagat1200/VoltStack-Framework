@@ -278,6 +278,10 @@ final class AuthSecurityCenterReportCommand extends Command
                 $longitudinalMetrics['outcomes']['authorization_failed'] ?? 0,
             ));
             $topStoreCohort = $longitudinalMetrics['store_cohorts'][0] ?? null;
+            $timeWindows = $longitudinalMetrics['time_windows'] ?? [];
+            $last5m = $timeWindows[0] ?? null;
+            $last15m = $timeWindows[1] ?? null;
+            $last60m = $timeWindows[2] ?? null;
 
             if (is_array($topStoreCohort)) {
                 $output->writeln(sprintf(
@@ -286,6 +290,15 @@ final class AuthSecurityCenterReportCommand extends Command
                     $topStoreCohort['store_fingerprint'],
                     $topStoreCohort['event_count'],
                     $topStoreCohort['store_topology'],
+                ));
+            }
+
+            if (is_array($last5m) && is_array($last15m) && is_array($last60m)) {
+                $output->writeln(sprintf(
+                    '  Ventanas distribuidas: 5m=%d 15m=%d 60m=%d',
+                    $last5m['event_count'],
+                    $last15m['event_count'],
+                    $last60m['event_count'],
                 ));
             }
         }
@@ -327,6 +340,24 @@ final class AuthSecurityCenterReportCommand extends Command
                         $cohort['outcomes']['executed'] ?? 0,
                         $cohort['outcomes']['dry_run'] ?? 0,
                         $cohort['outcomes']['authorization_failed'] ?? 0,
+                    ));
+                }
+            }
+
+            if ($auditLogSource !== null && ($longitudinalMetrics['time_windows'] ?? []) !== []) {
+                $output->writeln();
+                $output->writeln('Ventanas temporales distribuidas:');
+
+                foreach ($longitudinalMetrics['time_windows'] as $window) {
+                    $output->writeln(sprintf(
+                        '  - %s | events=%d | stores=%d | top_store=%s | executed=%d | dry_run=%d | rejected=%d',
+                        $window['label'],
+                        $window['event_count'],
+                        $window['observed_store_fingerprints'],
+                        $window['top_store_fingerprint'] ?? 'none',
+                        $window['outcomes']['executed'] ?? 0,
+                        $window['outcomes']['dry_run'] ?? 0,
+                        $window['outcomes']['authorization_failed'] ?? 0,
                     ));
                 }
             }
@@ -762,7 +793,8 @@ final class AuthSecurityCenterReportCommand extends Command
      *   observed_store_fingerprints: int,
      *   observed_topologies: array<string, int>,
      *   latest_event_at: ?int,
-     *   store_cohorts: list<array<string, mixed>>
+     *   store_cohorts: list<array<string, mixed>>,
+     *   time_windows: list<array<string, mixed>>
      * }
      */
     private function longitudinalMetrics(array $events): array
@@ -802,12 +834,14 @@ final class AuthSecurityCenterReportCommand extends Command
             'observed_topologies' => [],
             'latest_event_at' => null,
             'store_cohorts' => [],
+            'time_windows' => [],
         ];
 
         $correlationIds = [];
         $operationIds = [];
         $storeFingerprints = [];
         $storeCohorts = [];
+        $normalizedEvents = [];
 
         foreach ($events as $event) {
             $metrics['audit_event_count']++;
@@ -911,6 +945,24 @@ final class AuthSecurityCenterReportCommand extends Command
                     (int) $occurredAt,
                 );
             }
+
+            $normalizedEvents[] = [
+                'occurred_at' => is_numeric($occurredAt ?? null) ? (int) $occurredAt : null,
+                'store_fingerprint' => $normalizedFingerprint,
+                'store_topology' => $topology,
+                'outcome' => $outcome,
+                'scope' => $requestedScope,
+                'authorization_mode' => $authorizationMode,
+                'affected_sessions' => is_numeric($eventSummary['revoked_sessions'] ?? null)
+                    ? (int) $eventSummary['revoked_sessions']
+                    : 0,
+                'affected_trusted_devices' => is_numeric($eventSummary['revoked_trusted_devices'] ?? null)
+                    ? (int) $eventSummary['revoked_trusted_devices']
+                    : 0,
+                'affected_total_resources' => is_numeric($affectedTotalResources)
+                    ? (int) $affectedTotalResources
+                    : 0,
+            ];
         }
 
         $metrics['unique_correlation_ids'] = count($correlationIds);
@@ -918,8 +970,90 @@ final class AuthSecurityCenterReportCommand extends Command
         $metrics['observed_store_fingerprints'] = count($storeFingerprints);
         ksort($metrics['observed_topologies']);
         $metrics['store_cohorts'] = $this->normalizeStoreCohorts($storeCohorts);
+        $metrics['time_windows'] = $this->buildTimeWindows(
+            $normalizedEvents,
+            is_int($metrics['latest_event_at']) ? $metrics['latest_event_at'] : null,
+        );
 
         return $metrics;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $events
+     * @return list<array<string, mixed>>
+     */
+    private function buildTimeWindows(array $events, ?int $anchorTimestamp): array
+    {
+        if ($anchorTimestamp === null) {
+            return [];
+        }
+
+        $windows = [
+            ['label' => 'last_5m', 'duration_seconds' => 300],
+            ['label' => 'last_15m', 'duration_seconds' => 900],
+            ['label' => 'last_60m', 'duration_seconds' => 3600],
+        ];
+
+        $normalized = [];
+
+        foreach ($windows as $window) {
+            $windowStart = $anchorTimestamp - $window['duration_seconds'];
+            $matchingEvents = array_values(array_filter(
+                $events,
+                static fn (array $event): bool => is_int($event['occurred_at'] ?? null)
+                    && $event['occurred_at'] > $windowStart
+                    && $event['occurred_at'] <= $anchorTimestamp,
+            ));
+            $storeFingerprints = [];
+            $outcomes = [];
+            $scopes = [];
+            $authorizationModes = [];
+            $storeCounts = [];
+            $affectedResources = [
+                'sessions' => 0,
+                'trusted-devices' => 0,
+                'total' => 0,
+            ];
+
+            foreach ($matchingEvents as $event) {
+                $fingerprint = is_string($event['store_fingerprint'] ?? null)
+                    ? $event['store_fingerprint']
+                    : 'unknown-store';
+                $outcome = $this->normalizedMetricKey($event['outcome'] ?? null, 'unknown');
+                $scope = $this->normalizedMetricKey($event['scope'] ?? null, 'all');
+                $authorizationMode = $this->normalizedMetricKey($event['authorization_mode'] ?? null, 'none');
+
+                $storeFingerprints[$fingerprint] = true;
+                $storeCounts[$fingerprint] = ($storeCounts[$fingerprint] ?? 0) + 1;
+                $outcomes[$outcome] = ($outcomes[$outcome] ?? 0) + 1;
+                $scopes[$scope] = ($scopes[$scope] ?? 0) + 1;
+                $authorizationModes[$authorizationMode] = ($authorizationModes[$authorizationMode] ?? 0) + 1;
+                $affectedResources['sessions'] += (int) ($event['affected_sessions'] ?? 0);
+                $affectedResources['trusted-devices'] += (int) ($event['affected_trusted_devices'] ?? 0);
+                $affectedResources['total'] += (int) ($event['affected_total_resources'] ?? 0);
+            }
+
+            arsort($storeCounts);
+            ksort($outcomes);
+            ksort($scopes);
+            ksort($authorizationModes);
+
+            $normalized[] = [
+                'label' => $window['label'],
+                'duration_seconds' => $window['duration_seconds'],
+                'window_start_at' => $windowStart + 1,
+                'window_end_at' => $anchorTimestamp,
+                'event_count' => count($matchingEvents),
+                'observed_store_fingerprints' => count($storeFingerprints),
+                'top_store_fingerprint' => array_key_first($storeCounts),
+                'outcomes' => $outcomes,
+                'scopes' => $scopes,
+                'authorization_modes' => $authorizationModes,
+                'affected_resources' => $affectedResources,
+            ];
+        }
+
+        return $normalized;
     }
 
     /**

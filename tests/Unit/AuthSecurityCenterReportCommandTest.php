@@ -114,12 +114,17 @@ PHP
                 'auth:security-center:report',
                 '--now=' . $seedNow,
                 '--audit-log-source=' . $auditLogPath,
+                '--verbose',
             ]),
             $output,
         );
 
         self::assertSame(0, $exitCode);
         self::assertStringContainsString('Metricas longitudinales: events=3 executed=1 dry_run=1 rejected=1', $output->stdout());
+        self::assertStringContainsString('Cohortes distribuidas: stores=2 top_store=fingerprint-a events=2 topology=shared_file_store_candidate', $output->stdout());
+        self::assertStringContainsString('Cohortes distribuidas por store:', $output->stdout());
+        self::assertStringContainsString('- fingerprint=fingerprint-a | topology=shared_file_store_candidate | events=2 | executed=1 | dry_run=1 | rejected=0', $output->stdout());
+        self::assertStringContainsString('- fingerprint=fingerprint-b | topology=mixed_driver_topology | events=1 | executed=0 | dry_run=0 | rejected=1', $output->stdout());
     }
 
     public function test_it_emits_filtered_json_detail_with_public_ids_only_for_a_specific_identity(): void
@@ -400,10 +405,30 @@ PHP
         self::assertSame(2, $payload['longitudinal_metrics']['observed_topologies']['shared_file_store_candidate'] ?? null);
         self::assertSame(1, $payload['longitudinal_metrics']['observed_topologies']['mixed_driver_topology'] ?? null);
         self::assertSame($seedNow - 5, $payload['longitudinal_metrics']['latest_event_at'] ?? null);
+        self::assertCount(2, $payload['longitudinal_metrics']['store_cohorts'] ?? []);
+        self::assertSame('fingerprint-a', $payload['longitudinal_metrics']['store_cohorts'][0]['store_fingerprint'] ?? null);
+        self::assertSame('shared_file_store_candidate', $payload['longitudinal_metrics']['store_cohorts'][0]['store_topology'] ?? null);
+        self::assertSame(2, $payload['longitudinal_metrics']['store_cohorts'][0]['event_count'] ?? null);
+        self::assertSame(2, $payload['longitudinal_metrics']['store_cohorts'][0]['unique_correlation_ids'] ?? null);
+        self::assertSame(2, $payload['longitudinal_metrics']['store_cohorts'][0]['unique_operation_ids'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['store_cohorts'][0]['outcomes']['executed'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['store_cohorts'][0]['outcomes']['dry_run'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['store_cohorts'][0]['scopes']['all'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['store_cohorts'][0]['scopes']['sessions'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['store_cohorts'][0]['authorization_modes']['direct_admin'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['store_cohorts'][0]['authorization_modes']['delegated_admin'] ?? null);
+        self::assertSame(2, $payload['longitudinal_metrics']['store_cohorts'][0]['affected_resources']['sessions'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['store_cohorts'][0]['affected_resources']['trusted-devices'] ?? null);
+        self::assertSame(3, $payload['longitudinal_metrics']['store_cohorts'][0]['affected_resources']['total'] ?? null);
+        self::assertSame($seedNow - 10, $payload['longitudinal_metrics']['store_cohorts'][0]['latest_event_at'] ?? null);
+        self::assertSame('fingerprint-b', $payload['longitudinal_metrics']['store_cohorts'][1]['store_fingerprint'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['store_cohorts'][1]['event_count'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['store_cohorts'][1]['authorization_modes']['none'] ?? null);
 
         self::assertCount(1, $events);
         self::assertSame(3, $events[0]['report']['longitudinal_metrics']['audit_event_count'] ?? null);
         self::assertSame(3, $events[0]['report']['longitudinal_metrics']['affected_resources']['total'] ?? null);
+        self::assertCount(2, $events[0]['report']['longitudinal_metrics']['store_cohorts'] ?? []);
     }
 
     public function test_it_persists_detailed_snapshot_only_when_identity_and_management_flags_are_requested(): void

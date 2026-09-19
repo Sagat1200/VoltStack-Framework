@@ -277,6 +277,17 @@ final class AuthSecurityCenterReportCommand extends Command
                 $longitudinalMetrics['outcomes']['dry_run'] ?? 0,
                 $longitudinalMetrics['outcomes']['authorization_failed'] ?? 0,
             ));
+            $topStoreCohort = $longitudinalMetrics['store_cohorts'][0] ?? null;
+
+            if (is_array($topStoreCohort)) {
+                $output->writeln(sprintf(
+                    '  Cohortes distribuidas: stores=%d top_store=%s events=%d topology=%s',
+                    $longitudinalMetrics['observed_store_fingerprints'],
+                    $topStoreCohort['store_fingerprint'],
+                    $topStoreCohort['event_count'],
+                    $topStoreCohort['store_topology'],
+                ));
+            }
         }
 
         if ($input->hasOption('verbose')) {
@@ -301,6 +312,23 @@ final class AuthSecurityCenterReportCommand extends Command
                     $operationalContext['session_store_path'] ?? 'n/a',
                     $operationalContext['trusted_device_store_path'] ?? 'n/a',
                 ));
+            }
+
+            if ($auditLogSource !== null && $longitudinalMetrics['store_cohorts'] !== []) {
+                $output->writeln();
+                $output->writeln('Cohortes distribuidas por store:');
+
+                foreach ($longitudinalMetrics['store_cohorts'] as $cohort) {
+                    $output->writeln(sprintf(
+                        '  - fingerprint=%s | topology=%s | events=%d | executed=%d | dry_run=%d | rejected=%d',
+                        $cohort['store_fingerprint'],
+                        $cohort['store_topology'],
+                        $cohort['event_count'],
+                        $cohort['outcomes']['executed'] ?? 0,
+                        $cohort['outcomes']['dry_run'] ?? 0,
+                        $cohort['outcomes']['authorization_failed'] ?? 0,
+                    ));
+                }
             }
         }
 
@@ -733,7 +761,8 @@ final class AuthSecurityCenterReportCommand extends Command
      *   affected_resources: array<string, int>,
      *   observed_store_fingerprints: int,
      *   observed_topologies: array<string, int>,
-     *   latest_event_at: ?int
+     *   latest_event_at: ?int,
+     *   store_cohorts: list<array<string, mixed>>
      * }
      */
     private function longitudinalMetrics(array $events): array
@@ -772,11 +801,13 @@ final class AuthSecurityCenterReportCommand extends Command
             'observed_store_fingerprints' => 0,
             'observed_topologies' => [],
             'latest_event_at' => null,
+            'store_cohorts' => [],
         ];
 
         $correlationIds = [];
         $operationIds = [];
         $storeFingerprints = [];
+        $storeCohorts = [];
 
         foreach ($events as $event) {
             $metrics['audit_event_count']++;
@@ -827,19 +858,98 @@ final class AuthSecurityCenterReportCommand extends Command
                 : [];
             $fingerprint = $operationalContext['store_fingerprint'] ?? null;
             if (is_string($fingerprint) && trim($fingerprint) !== '') {
-                $storeFingerprints[trim($fingerprint)] = true;
+                $normalizedFingerprint = trim($fingerprint);
+                $storeFingerprints[$normalizedFingerprint] = true;
+            } else {
+                $normalizedFingerprint = 'unknown-store';
             }
 
             $topology = $this->normalizedMetricKey($operationalContext['store_topology'] ?? null, 'unknown');
             $metrics['observed_topologies'][$topology] = ($metrics['observed_topologies'][$topology] ?? 0) + 1;
+            $cohortKey = $topology . '|' . $normalizedFingerprint;
+
+            if (! isset($storeCohorts[$cohortKey])) {
+                $storeCohorts[$cohortKey] = [
+                    'store_fingerprint' => $normalizedFingerprint,
+                    'store_topology' => $topology,
+                    'event_count' => 0,
+                    'unique_correlation_ids' => [],
+                    'unique_operation_ids' => [],
+                    'outcomes' => [],
+                    'scopes' => [],
+                    'authorization_modes' => [],
+                    'affected_resources' => [
+                        'sessions' => 0,
+                        'trusted-devices' => 0,
+                        'total' => 0,
+                    ],
+                    'latest_event_at' => null,
+                ];
+            }
+
+            $storeCohorts[$cohortKey]['event_count']++;
+            if (is_string($correlationId) && trim($correlationId) !== '') {
+                $storeCohorts[$cohortKey]['unique_correlation_ids'][trim($correlationId)] = true;
+            }
+            if (is_string($operationId) && trim($operationId) !== '') {
+                $storeCohorts[$cohortKey]['unique_operation_ids'][trim($operationId)] = true;
+            }
+            $storeCohorts[$cohortKey]['outcomes'][$outcome] = ($storeCohorts[$cohortKey]['outcomes'][$outcome] ?? 0) + 1;
+            $storeCohorts[$cohortKey]['scopes'][$requestedScope] = ($storeCohorts[$cohortKey]['scopes'][$requestedScope] ?? 0) + 1;
+            $storeCohorts[$cohortKey]['authorization_modes'][$authorizationMode] = ($storeCohorts[$cohortKey]['authorization_modes'][$authorizationMode] ?? 0) + 1;
+            $storeCohorts[$cohortKey]['affected_resources']['total'] += is_numeric($affectedTotalResources) ? (int) $affectedTotalResources : 0;
+            $storeCohorts[$cohortKey]['affected_resources']['sessions'] += is_numeric($eventSummary['revoked_sessions'] ?? null)
+                ? (int) $eventSummary['revoked_sessions']
+                : 0;
+            $storeCohorts[$cohortKey]['affected_resources']['trusted-devices'] += is_numeric($eventSummary['revoked_trusted_devices'] ?? null)
+                ? (int) $eventSummary['revoked_trusted_devices']
+                : 0;
+
+            if (is_numeric($occurredAt ?? null)) {
+                $storeCohorts[$cohortKey]['latest_event_at'] = max(
+                    (int) ($storeCohorts[$cohortKey]['latest_event_at'] ?? 0),
+                    (int) $occurredAt,
+                );
+            }
         }
 
         $metrics['unique_correlation_ids'] = count($correlationIds);
         $metrics['unique_operation_ids'] = count($operationIds);
         $metrics['observed_store_fingerprints'] = count($storeFingerprints);
         ksort($metrics['observed_topologies']);
+        $metrics['store_cohorts'] = $this->normalizeStoreCohorts($storeCohorts);
 
         return $metrics;
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $storeCohorts
+     * @return list<array<string, mixed>>
+     */
+    private function normalizeStoreCohorts(array $storeCohorts): array
+    {
+        $normalized = [];
+
+        foreach ($storeCohorts as $cohort) {
+            $cohort['unique_correlation_ids'] = count((array) ($cohort['unique_correlation_ids'] ?? []));
+            $cohort['unique_operation_ids'] = count((array) ($cohort['unique_operation_ids'] ?? []));
+            ksort($cohort['outcomes']);
+            ksort($cohort['scopes']);
+            ksort($cohort['authorization_modes']);
+            $normalized[] = $cohort;
+        }
+
+        usort($normalized, static function (array $left, array $right): int {
+            $eventComparison = ((int) ($right['event_count'] ?? 0)) <=> ((int) ($left['event_count'] ?? 0));
+
+            if ($eventComparison !== 0) {
+                return $eventComparison;
+            }
+
+            return strcmp((string) ($left['store_fingerprint'] ?? ''), (string) ($right['store_fingerprint'] ?? ''));
+        });
+
+        return $normalized;
     }
 
     /**

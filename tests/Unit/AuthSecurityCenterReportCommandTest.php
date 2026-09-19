@@ -97,6 +97,31 @@ PHP
         self::assertStringNotContainsString('Actores administrativos gobernados:', $output->stdout());
     }
 
+    public function test_it_summarizes_longitudinal_administrative_metrics_when_audit_log_source_is_provided(): void
+    {
+        $seedNow = time();
+        $app = $this->bootstrappedApplication();
+        $this->seedSecurityCenterFixtures($app, $seedNow);
+        $auditLogPath = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'audit' . DIRECTORY_SEPARATOR . 'security-center-revoke.jsonl';
+        $this->seedLongitudinalAuditTrail($auditLogPath, $seedNow);
+
+        $command = new AuthSecurityCenterReportCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'auth:security-center:report',
+                '--now=' . $seedNow,
+                '--audit-log-source=' . $auditLogPath,
+            ]),
+            $output,
+        );
+
+        self::assertSame(0, $exitCode);
+        self::assertStringContainsString('Metricas longitudinales: events=3 executed=1 dry_run=1 rejected=1', $output->stdout());
+    }
+
     public function test_it_emits_filtered_json_detail_with_public_ids_only_for_a_specific_identity(): void
     {
         $seedNow = time();
@@ -323,6 +348,64 @@ PHP
         self::assertArrayNotHasKey('management_actors', $events[0]['report']);
     }
 
+    public function test_it_emits_longitudinal_metrics_from_audit_log_source_in_json_and_export(): void
+    {
+        $seedNow = time();
+        $app = $this->bootstrappedApplication();
+        $this->seedSecurityCenterFixtures($app, $seedNow);
+        $auditLogPath = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'audit' . DIRECTORY_SEPARATOR . 'security-center-revoke.jsonl';
+        $exportLogPath = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'exports' . DIRECTORY_SEPARATOR . 'security-center-report.jsonl';
+        $this->seedLongitudinalAuditTrail($auditLogPath, $seedNow);
+
+        $command = new AuthSecurityCenterReportCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'auth:security-center:report',
+                '--now=' . $seedNow,
+                '--audit-log-source=' . $auditLogPath,
+                '--export-log=' . $exportLogPath,
+                '--json',
+            ]),
+            $output,
+        );
+
+        /** @var array<string, mixed> $payload */
+        $payload = json_decode($output->stdout(), true, 512, JSON_THROW_ON_ERROR);
+        $events = $this->readExportEvents($exportLogPath);
+
+        self::assertSame(0, $exitCode);
+        self::assertSame($auditLogPath, $payload['filters']['audit_log_source'] ?? null);
+        self::assertSame(3, $payload['longitudinal_metrics']['audit_event_count'] ?? null);
+        self::assertSame(3, $payload['longitudinal_metrics']['unique_correlation_ids'] ?? null);
+        self::assertSame(3, $payload['longitudinal_metrics']['unique_operation_ids'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['outcomes']['executed'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['outcomes']['dry_run'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['outcomes']['authorization_failed'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['scopes']['all'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['scopes']['sessions'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['scopes']['trusted-devices'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['actor_scope_profiles']['full'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['actor_scope_profiles']['sessions_only'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['actor_scope_profiles']['none'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['authorization_modes']['direct_admin'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['authorization_modes']['delegated_admin'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['authorization_modes']['none'] ?? null);
+        self::assertSame(3, $payload['longitudinal_metrics']['affected_resources']['total'] ?? null);
+        self::assertSame(2, $payload['longitudinal_metrics']['affected_resources']['sessions'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['affected_resources']['trusted-devices'] ?? null);
+        self::assertSame(2, $payload['longitudinal_metrics']['observed_store_fingerprints'] ?? null);
+        self::assertSame(2, $payload['longitudinal_metrics']['observed_topologies']['shared_file_store_candidate'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['observed_topologies']['mixed_driver_topology'] ?? null);
+        self::assertSame($seedNow - 5, $payload['longitudinal_metrics']['latest_event_at'] ?? null);
+
+        self::assertCount(1, $events);
+        self::assertSame(3, $events[0]['report']['longitudinal_metrics']['audit_event_count'] ?? null);
+        self::assertSame(3, $events[0]['report']['longitudinal_metrics']['affected_resources']['total'] ?? null);
+    }
+
     public function test_it_persists_detailed_snapshot_only_when_identity_and_management_flags_are_requested(): void
     {
         $seedNow = time();
@@ -534,6 +617,85 @@ PHP
                 'session_last_activity_at' => $seedNow - 3,
             ],
         ));
+    }
+
+    private function seedLongitudinalAuditTrail(string $path, int $seedNow): void
+    {
+        $directory = dirname($path);
+
+        if (! is_dir($directory)) {
+            mkdir($directory, 0777, true);
+        }
+
+        $events = [
+            [
+                'event' => 'security_center_device_revocation_planned',
+                'occurred_at' => $seedNow - 20,
+                'correlation_id' => 'audit-corr-1',
+                'operation_id' => 'audit-op-1',
+                'result' => 'dry_run',
+                'operational_context' => [
+                    'store_topology' => 'shared_file_store_candidate',
+                    'store_fingerprint' => 'fingerprint-a',
+                ],
+                'administrative_metrics' => [
+                    'requested_scope' => 'all',
+                    'actor_scope_profile' => 'full',
+                    'actor_authorization_mode' => 'direct_admin',
+                    'affected_total_resources' => 2,
+                ],
+                'summary' => [
+                    'revoked_sessions' => 1,
+                    'revoked_trusted_devices' => 1,
+                ],
+            ],
+            [
+                'event' => 'security_center_device_revocation_executed',
+                'occurred_at' => $seedNow - 10,
+                'correlation_id' => 'audit-corr-2',
+                'operation_id' => 'audit-op-2',
+                'result' => 'executed',
+                'operational_context' => [
+                    'store_topology' => 'shared_file_store_candidate',
+                    'store_fingerprint' => 'fingerprint-a',
+                ],
+                'administrative_metrics' => [
+                    'requested_scope' => 'sessions',
+                    'actor_scope_profile' => 'sessions_only',
+                    'actor_authorization_mode' => 'delegated_admin',
+                    'affected_total_resources' => 1,
+                ],
+                'summary' => [
+                    'revoked_sessions' => 1,
+                    'revoked_trusted_devices' => 0,
+                ],
+            ],
+            [
+                'event' => 'security_center_device_revocation_rejected',
+                'occurred_at' => $seedNow - 5,
+                'correlation_id' => 'audit-corr-3',
+                'operation_id' => 'audit-op-3',
+                'result' => 'authorization_failed',
+                'operational_context' => [
+                    'store_topology' => 'mixed_driver_topology',
+                    'store_fingerprint' => 'fingerprint-b',
+                ],
+                'administrative_metrics' => [
+                    'requested_scope' => 'trusted-devices',
+                    'actor_scope_profile' => 'none',
+                    'actor_authorization_mode' => null,
+                    'affected_total_resources' => 0,
+                ],
+            ],
+        ];
+
+        file_put_contents(
+            $path,
+            implode(PHP_EOL, array_map(
+                static fn (array $event): string => (string) json_encode($event, JSON_THROW_ON_ERROR),
+                $events,
+            )) . PHP_EOL,
+        );
     }
 
     private function bootstrappedApplication(): Application

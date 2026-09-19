@@ -27,7 +27,7 @@ final class AuthSecurityCenterReportCommand extends Command
 
     public function usage(): string
     {
-        return 'auth:security-center:report [--now=timestamp] [--identity=value] [--type=value] [--include-public-ids] [--management-actors] [--correlation-id=value] [--export-log=path] [--json] [--verbose]';
+        return 'auth:security-center:report [--now=timestamp] [--identity=value] [--type=value] [--include-public-ids] [--management-actors] [--correlation-id=value] [--audit-log-source=path] [--export-log=path] [--json] [--verbose]';
     }
 
     public function category(): string
@@ -44,6 +44,7 @@ final class AuthSecurityCenterReportCommand extends Command
             '--include-public-ids' => 'Incluye session_public_ids y trusted_device_public_id en el detalle.',
             '--management-actors' => 'Incluye export operativo de actores con claims administrativas gobernadas.',
             '--correlation-id=' => 'Usa un correlation id explicito para enlazar reporte, export y mutaciones posteriores.',
+            '--audit-log-source=' => 'Lee un audit log JSONL de revocaciones para agregar metricas longitudinales.',
             '--export-log=' => 'Anexa un snapshot JSONL durable del reporte operativo generado.',
             '--json' => 'Emite el reporte en JSON.',
             '--verbose' => 'Muestra distribuciones adicionales y metadatos del reporte.',
@@ -60,6 +61,7 @@ final class AuthSecurityCenterReportCommand extends Command
         $type = $this->resolveTypeFilter($input);
         $includePublicIds = $input->hasOption('include-public-ids');
         $includeManagementActors = $input->hasOption('management-actors');
+        $auditLogSource = $this->resolveOptionalStringOption($input, 'audit-log-source');
         $exportLogPath = $this->resolveOptionalStringOption($input, 'export-log');
         $json = $input->hasOption('json');
         $generatedAt = $now ?? time();
@@ -164,6 +166,7 @@ final class AuthSecurityCenterReportCommand extends Command
         }
 
         $administrativeMetrics = $this->administrativeMetrics(array_values($managementActors));
+        $longitudinalMetrics = $this->longitudinalMetrics($this->readAuditEvents($auditLogSource));
 
         $payload = [
             'generated_at' => $generatedAt,
@@ -175,6 +178,7 @@ final class AuthSecurityCenterReportCommand extends Command
                 'type' => $identity !== null ? $type : null,
                 'include_public_ids' => $includePublicIds,
                 'management_actors' => $includeManagementActors ? true : null,
+                'audit_log_source' => $auditLogSource,
             ], static fn (mixed $value): bool => $value !== null),
             'summary' => [
                 'active_sessions' => count($activeSessions),
@@ -210,6 +214,7 @@ final class AuthSecurityCenterReportCommand extends Command
                 )),
             ],
             'administrative_metrics' => $administrativeMetrics,
+            'longitudinal_metrics' => $longitudinalMetrics,
         ];
 
         if ($input->hasOption('verbose')) {
@@ -264,6 +269,15 @@ final class AuthSecurityCenterReportCommand extends Command
             $administrativeMetrics['authorization_modes']['direct_admin'] ?? 0,
             $administrativeMetrics['authorization_modes']['delegated_admin'] ?? 0,
         ));
+        if ($auditLogSource !== null) {
+            $output->writeln(sprintf(
+                '  Metricas longitudinales: events=%d executed=%d dry_run=%d rejected=%d',
+                $longitudinalMetrics['audit_event_count'],
+                $longitudinalMetrics['outcomes']['executed'] ?? 0,
+                $longitudinalMetrics['outcomes']['dry_run'] ?? 0,
+                $longitudinalMetrics['outcomes']['authorization_failed'] ?? 0,
+            ));
+        }
 
         if ($input->hasOption('verbose')) {
             $output->writeln();
@@ -704,6 +718,174 @@ final class AuthSecurityCenterReportCommand extends Command
         ksort($metrics['scope_coverage']);
 
         return $metrics;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $events
+     * @return array{
+     *   audit_event_count: int,
+     *   unique_correlation_ids: int,
+     *   unique_operation_ids: int,
+     *   outcomes: array<string, int>,
+     *   scopes: array<string, int>,
+     *   actor_scope_profiles: array<string, int>,
+     *   authorization_modes: array<string, int>,
+     *   affected_resources: array<string, int>,
+     *   observed_store_fingerprints: int,
+     *   observed_topologies: array<string, int>,
+     *   latest_event_at: ?int
+     * }
+     */
+    private function longitudinalMetrics(array $events): array
+    {
+        $metrics = [
+            'audit_event_count' => 0,
+            'unique_correlation_ids' => 0,
+            'unique_operation_ids' => 0,
+            'outcomes' => [
+                'executed' => 0,
+                'dry_run' => 0,
+                'authorization_failed' => 0,
+                'validation_failed' => 0,
+            ],
+            'scopes' => [
+                'all' => 0,
+                'sessions' => 0,
+                'trusted-devices' => 0,
+            ],
+            'actor_scope_profiles' => [
+                'full' => 0,
+                'sessions_only' => 0,
+                'trusted_devices_only' => 0,
+                'none' => 0,
+            ],
+            'authorization_modes' => [
+                'direct_admin' => 0,
+                'delegated_admin' => 0,
+                'none' => 0,
+            ],
+            'affected_resources' => [
+                'sessions' => 0,
+                'trusted-devices' => 0,
+                'total' => 0,
+            ],
+            'observed_store_fingerprints' => 0,
+            'observed_topologies' => [],
+            'latest_event_at' => null,
+        ];
+
+        $correlationIds = [];
+        $operationIds = [];
+        $storeFingerprints = [];
+
+        foreach ($events as $event) {
+            $metrics['audit_event_count']++;
+
+            $correlationId = $event['correlation_id'] ?? null;
+            if (is_string($correlationId) && trim($correlationId) !== '') {
+                $correlationIds[trim($correlationId)] = true;
+            }
+
+            $operationId = $event['operation_id'] ?? null;
+            if (is_string($operationId) && trim($operationId) !== '') {
+                $operationIds[trim($operationId)] = true;
+            }
+
+            $occurredAt = $event['occurred_at'] ?? null;
+            if (is_numeric($occurredAt)) {
+                $occurredAt = (int) $occurredAt;
+                $metrics['latest_event_at'] = max((int) ($metrics['latest_event_at'] ?? 0), $occurredAt);
+            }
+
+            $outcome = $this->normalizedMetricKey($event['result'] ?? null, 'unknown');
+            $metrics['outcomes'][$outcome] = ($metrics['outcomes'][$outcome] ?? 0) + 1;
+
+            $administrativeMetrics = is_array($event['administrative_metrics'] ?? null)
+                ? $event['administrative_metrics']
+                : [];
+            $requestedScope = $this->normalizedMetricKey($administrativeMetrics['requested_scope'] ?? null, 'all');
+            $actorScopeProfile = $this->normalizedMetricKey($administrativeMetrics['actor_scope_profile'] ?? null, 'none');
+            $authorizationMode = $this->normalizedMetricKey($administrativeMetrics['actor_authorization_mode'] ?? null, 'none');
+            $affectedTotalResources = $administrativeMetrics['affected_total_resources'] ?? 0;
+            $eventSummary = is_array($event['summary'] ?? null)
+                ? $event['summary']
+                : [];
+
+            $metrics['scopes'][$requestedScope] = ($metrics['scopes'][$requestedScope] ?? 0) + 1;
+            $metrics['actor_scope_profiles'][$actorScopeProfile] = ($metrics['actor_scope_profiles'][$actorScopeProfile] ?? 0) + 1;
+            $metrics['authorization_modes'][$authorizationMode] = ($metrics['authorization_modes'][$authorizationMode] ?? 0) + 1;
+            $metrics['affected_resources']['total'] += is_numeric($affectedTotalResources) ? (int) $affectedTotalResources : 0;
+            $metrics['affected_resources']['sessions'] += is_numeric($eventSummary['revoked_sessions'] ?? null)
+                ? (int) $eventSummary['revoked_sessions']
+                : 0;
+            $metrics['affected_resources']['trusted-devices'] += is_numeric($eventSummary['revoked_trusted_devices'] ?? null)
+                ? (int) $eventSummary['revoked_trusted_devices']
+                : 0;
+
+            $operationalContext = is_array($event['operational_context'] ?? null)
+                ? $event['operational_context']
+                : [];
+            $fingerprint = $operationalContext['store_fingerprint'] ?? null;
+            if (is_string($fingerprint) && trim($fingerprint) !== '') {
+                $storeFingerprints[trim($fingerprint)] = true;
+            }
+
+            $topology = $this->normalizedMetricKey($operationalContext['store_topology'] ?? null, 'unknown');
+            $metrics['observed_topologies'][$topology] = ($metrics['observed_topologies'][$topology] ?? 0) + 1;
+        }
+
+        $metrics['unique_correlation_ids'] = count($correlationIds);
+        $metrics['unique_operation_ids'] = count($operationIds);
+        $metrics['observed_store_fingerprints'] = count($storeFingerprints);
+        ksort($metrics['observed_topologies']);
+
+        return $metrics;
+    }
+
+    /**
+     * @return list<array<string, mixed>>
+     */
+    private function readAuditEvents(?string $path): array
+    {
+        if ($path === null || ! is_file($path)) {
+            return [];
+        }
+
+        $lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+
+        if (! is_array($lines)) {
+            return [];
+        }
+
+        $events = [];
+
+        foreach ($lines as $line) {
+            if (! is_string($line) || trim($line) === '') {
+                continue;
+            }
+
+            $decoded = json_decode($line, true);
+
+            if (! is_array($decoded)) {
+                continue;
+            }
+
+            $eventName = $decoded['event'] ?? null;
+            if (! is_string($eventName) || ! str_starts_with($eventName, 'security_center_device_revocation_')) {
+                continue;
+            }
+
+            $events[] = $decoded;
+        }
+
+        return $events;
+    }
+
+    private function normalizedMetricKey(mixed $value, string $default): string
+    {
+        return is_string($value) && trim($value) !== ''
+            ? trim($value)
+            : $default;
     }
 
     /**

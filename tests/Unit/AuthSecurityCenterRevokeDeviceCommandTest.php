@@ -105,6 +105,7 @@ PHP
         self::assertStringContainsString('Actor autorizado: user:901 | authority=administrative_actor | privilege=privileged_admin | mode=direct_admin | scopes=security_center_export,admin_device_management', $output->stdout());
         self::assertStringContainsString('Correlation id: revoke-dry-run-corr', $output->stdout());
         self::assertStringContainsString('Operation id: security-center-revoke-device-', $output->stdout());
+        self::assertStringContainsString('Metricas administrativas: outcome=authorized profile=full matched=3 affected=3', $output->stdout());
         self::assertStringContainsString('Topology: shared_file_store_candidate | fingerprint=', $output->stdout());
         self::assertStringContainsString(
             'framework/auth/sessions',
@@ -120,6 +121,10 @@ PHP
         self::assertIsString($events[0]['operation_id'] ?? null);
         self::assertStringStartsWith('security-center-revoke-device-', (string) ($events[0]['operation_id'] ?? ''));
         self::assertSame('dry_run', $events[0]['result'] ?? null);
+        self::assertSame('authorized', $events[0]['administrative_metrics']['authorization_outcome'] ?? null);
+        self::assertSame('full', $events[0]['administrative_metrics']['actor_scope_profile'] ?? null);
+        self::assertSame(3, $events[0]['administrative_metrics']['matched_total_resources'] ?? null);
+        self::assertSame(3, $events[0]['administrative_metrics']['affected_total_resources'] ?? null);
         self::assertTrue((bool) ($events[0]['actor']['management_authorized'] ?? false));
         self::assertSame('direct_admin', $events[0]['actor']['management_authorization_mode'] ?? null);
         self::assertNull($events[0]['actor']['management_authorization_reason_code'] ?? null);
@@ -219,6 +224,11 @@ PHP
         self::assertSame('revoke-json-corr', $payload['correlation_id'] ?? null);
         self::assertIsString($payload['operation_id'] ?? null);
         self::assertStringStartsWith('security-center-revoke-device-', (string) ($payload['operation_id'] ?? ''));
+        self::assertSame('authorized', $payload['administrative_metrics']['authorization_outcome'] ?? null);
+        self::assertSame('full', $payload['administrative_metrics']['actor_scope_profile'] ?? null);
+        self::assertSame(3, $payload['administrative_metrics']['matched_total_resources'] ?? null);
+        self::assertSame(1, $payload['administrative_metrics']['affected_total_resources'] ?? null);
+        self::assertSame(['trusted-devices'], $payload['administrative_metrics']['affected_resource_kinds'] ?? null);
         self::assertSame('trusted-devices', $payload['filters']['scope'] ?? null);
         self::assertSame('901', $payload['actor']['identity'] ?? null);
         self::assertSame('administrative_actor', $payload['actor']['management_authority'] ?? null);
@@ -362,6 +372,9 @@ PHP
         self::assertSame('security_center_device_revocation_rejected', $events[0]['event'] ?? null);
         self::assertSame('authorization_failed', $events[0]['result'] ?? null);
         self::assertSame('unauthorized_management_actor', $events[0]['reason_code'] ?? null);
+        self::assertSame('authorization_failed', $events[0]['administrative_metrics']['authorization_outcome'] ?? null);
+        self::assertSame('none', $events[0]['administrative_metrics']['actor_scope_profile'] ?? null);
+        self::assertSame(0, $events[0]['administrative_metrics']['matched_total_resources'] ?? null);
         self::assertSame('802', $events[0]['actor']['identity'] ?? null);
         self::assertSame('not_administrative_actor', $events[0]['actor']['management_authorization_reason_code'] ?? null);
     }

@@ -90,6 +90,7 @@ PHP
         self::assertStringContainsString('Identidades con management gobernado: 2', $output->stdout());
         self::assertStringContainsString('Sesiones direct_admin: 1', $output->stdout());
         self::assertStringContainsString('Sesiones delegated_admin: 1', $output->stdout());
+        self::assertStringContainsString('Metricas administrativas: authorized=2 unauthorized=0 direct=1 delegated=1', $output->stdout());
         self::assertStringNotContainsString('Detalle para', $output->stdout());
         self::assertStringNotContainsString('session_public_ids=', $output->stdout());
         self::assertStringNotContainsString('trusted_device_public_id=', $output->stdout());
@@ -127,6 +128,12 @@ PHP
         self::assertSame('report-detail-corr', $payload['correlation_id'] ?? null);
         self::assertIsString($payload['operation_id'] ?? null);
         self::assertStringStartsWith('security-center-report-', (string) ($payload['operation_id'] ?? ''));
+        self::assertSame(2, $payload['administrative_metrics']['governed_actor_identities_authorized'] ?? null);
+        self::assertSame(0, $payload['administrative_metrics']['governed_actor_identities_unauthorized'] ?? null);
+        self::assertSame(1, $payload['administrative_metrics']['authorization_modes']['direct_admin'] ?? null);
+        self::assertSame(1, $payload['administrative_metrics']['authorization_modes']['delegated_admin'] ?? null);
+        self::assertSame(1, $payload['administrative_metrics']['scope_coverage']['security_center_export'] ?? null);
+        self::assertSame(2, $payload['administrative_metrics']['scope_coverage']['admin_device_management'] ?? null);
         self::assertSame('701', $payload['filters']['identity'] ?? null);
         self::assertSame('user', $payload['filters']['type'] ?? null);
         self::assertTrue((bool) ($payload['filters']['include_public_ids'] ?? false));
@@ -304,6 +311,9 @@ PHP
         self::assertSame('exported', $events[0]['result'] ?? null);
         self::assertSame('report-export-corr', $events[0]['report']['correlation_id'] ?? null);
         self::assertSame($events[0]['operation_id'] ?? null, $events[0]['report']['operation_id'] ?? null);
+        self::assertSame(2, $events[0]['report']['administrative_metrics']['governed_actor_identities_authorized'] ?? null);
+        self::assertSame(1, $events[0]['report']['administrative_metrics']['authorization_modes']['direct_admin'] ?? null);
+        self::assertSame(1, $events[0]['report']['administrative_metrics']['authorization_modes']['delegated_admin'] ?? null);
         self::assertSame('shared_file_store_candidate', $events[0]['report']['operational_context']['store_topology'] ?? null);
         self::assertSame('file', $events[0]['report']['operational_context']['session_driver'] ?? null);
         self::assertSame('file', $events[0]['report']['operational_context']['trusted_device_driver'] ?? null);

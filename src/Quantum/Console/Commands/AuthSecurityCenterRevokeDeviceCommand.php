@@ -183,6 +183,21 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         );
 
         if ($actorAuthorization === null || ! (bool) ($actorAuthorization['authorized'] ?? false)) {
+            $administrativeMetrics = $this->administrativeMetrics(
+                scope: $scope,
+                dryRun: $dryRun,
+                authorizationOutcome: 'authorization_failed',
+                authorizationMode: is_string($actorAuthorization['authorization_mode'] ?? null)
+                    ? $actorAuthorization['authorization_mode']
+                    : null,
+                actorPrivilegeLevel: null,
+                actorScopes: [],
+                matchedSessions: 0,
+                matchedTrustedDevices: 0,
+                affectedSessions: 0,
+                affectedTrustedDevices: 0,
+            );
+
             $this->writeAuditEvent($auditLogPath, [
                 'event' => 'security_center_device_revocation_rejected',
                 'occurred_at' => $eventTimestamp,
@@ -203,6 +218,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                     'management_authorization_reason_code' => $actorAuthorization['authorization_reason_code'] ?? null,
                 ],
                 'operational_context' => $operationalContext,
+                'administrative_metrics' => $administrativeMetrics,
             ]);
 
             return $this->renderAuthorizationFailure(
@@ -221,6 +237,18 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
 
         $sessionsToRevoke = $scope === 'trusted-devices' ? [] : $matchedSessions;
         $trustedDevicesToRevoke = $scope === 'sessions' ? [] : $matchedTrustedDevices;
+        $administrativeMetrics = $this->administrativeMetrics(
+            scope: $scope,
+            dryRun: $dryRun,
+            authorizationOutcome: 'authorized',
+            authorizationMode: $actorAuthorizationMode,
+            actorPrivilegeLevel: $actorContext->managementPrivilegeLevel(),
+            actorScopes: $actorContext->managementScopes(),
+            matchedSessions: count($matchedSessions),
+            matchedTrustedDevices: count($matchedTrustedDevices),
+            affectedSessions: count($sessionsToRevoke),
+            affectedTrustedDevices: count($trustedDevicesToRevoke),
+        );
 
         $payload = [
             'generated_at' => $eventTimestamp,
@@ -258,6 +286,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 'management_scopes' => $actorContext->managementScopes(),
                 'authorized' => true,
             ],
+            'administrative_metrics' => $administrativeMetrics,
         ];
 
         if ($includePublicIds) {
@@ -315,6 +344,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 'management_scopes' => $actorContext->managementScopes(),
             ],
             'operational_context' => $operationalContext,
+            'administrative_metrics' => $administrativeMetrics,
             'summary' => $payload['summary'],
             'detail' => $payload['detail'] ?? null,
         ]);
@@ -342,6 +372,13 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             $output->writeln(sprintf('Dry run: %s', $dryRun ? 'si' : 'no'));
             $output->writeln(sprintf('Correlation id: %s', $correlationId));
             $output->writeln(sprintf('Operation id: %s', $operationId));
+            $output->writeln(sprintf(
+                'Metricas administrativas: outcome=%s profile=%s matched=%d affected=%d',
+                $administrativeMetrics['authorization_outcome'],
+                $administrativeMetrics['actor_scope_profile'],
+                $administrativeMetrics['matched_total_resources'],
+                $administrativeMetrics['affected_total_resources'],
+            ));
             $output->writeln(sprintf(
                 'Topology: %s | fingerprint=%s',
                 $operationalContext['store_topology'],
@@ -569,6 +606,77 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         return is_string($value) && trim($value) !== ''
             ? trim($value)
             : $default;
+    }
+
+    /**
+     * @param list<string> $actorScopes
+     * @return array{
+     *   authorization_outcome: string,
+     *   requested_scope: string,
+     *   actor_scope_profile: string,
+     *   actor_scope_count: int,
+     *   actor_authorization_mode: ?string,
+     *   actor_privilege_level: ?string,
+     *   matched_total_resources: int,
+     *   affected_total_resources: int,
+     *   affected_resource_kinds: list<string>,
+     *   dry_run: bool
+     * }
+     */
+    private function administrativeMetrics(
+        string $scope,
+        bool $dryRun,
+        string $authorizationOutcome,
+        ?string $authorizationMode,
+        ?string $actorPrivilegeLevel,
+        array $actorScopes,
+        int $matchedSessions,
+        int $matchedTrustedDevices,
+        int $affectedSessions,
+        int $affectedTrustedDevices,
+    ): array {
+        $normalizedScopes = array_values(array_unique(array_map('strval', $actorScopes)));
+        sort($normalizedScopes);
+
+        $affectedResourceKinds = [];
+
+        if ($affectedSessions > 0) {
+            $affectedResourceKinds[] = 'sessions';
+        }
+
+        if ($affectedTrustedDevices > 0) {
+            $affectedResourceKinds[] = 'trusted-devices';
+        }
+
+        return [
+            'authorization_outcome' => $authorizationOutcome,
+            'requested_scope' => $scope,
+            'actor_scope_profile' => $this->actorScopeProfile($normalizedScopes),
+            'actor_scope_count' => count($normalizedScopes),
+            'actor_authorization_mode' => $authorizationMode,
+            'actor_privilege_level' => $actorPrivilegeLevel,
+            'matched_total_resources' => $matchedSessions + $matchedTrustedDevices,
+            'affected_total_resources' => $affectedSessions + $affectedTrustedDevices,
+            'affected_resource_kinds' => $affectedResourceKinds,
+            'dry_run' => $dryRun,
+        ];
+    }
+
+    /**
+     * @param list<string> $scopes
+     */
+    private function actorScopeProfile(array $scopes): string
+    {
+        $hasDevice = in_array('admin_device_management', $scopes, true);
+        $hasSessions = $hasDevice || in_array('admin_session_management', $scopes, true);
+        $hasTrustedDevices = $hasDevice || in_array('admin_trusted_device_management', $scopes, true);
+
+        return match (true) {
+            $hasSessions && $hasTrustedDevices => 'full',
+            $hasSessions => 'sessions_only',
+            $hasTrustedDevices => 'trusted_devices_only',
+            default => 'none',
+        };
     }
 
     /**

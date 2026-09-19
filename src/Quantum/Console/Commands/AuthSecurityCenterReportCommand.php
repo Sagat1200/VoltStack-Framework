@@ -163,6 +163,8 @@ final class AuthSecurityCenterReportCommand extends Command
             }
         }
 
+        $administrativeMetrics = $this->administrativeMetrics(array_values($managementActors));
+
         $payload = [
             'generated_at' => $generatedAt,
             'correlation_id' => $correlationId,
@@ -207,6 +209,7 @@ final class AuthSecurityCenterReportCommand extends Command
                     static fn (array $actor): bool => ($actor['management_authorization_mode'] ?? null) === 'delegated_admin',
                 )),
             ],
+            'administrative_metrics' => $administrativeMetrics,
         ];
 
         if ($input->hasOption('verbose')) {
@@ -254,6 +257,13 @@ final class AuthSecurityCenterReportCommand extends Command
         $output->writeln(sprintf('  Sesiones delegated_admin: %d', $payload['summary']['delegated_admin_sessions']));
         $output->writeln(sprintf('  Correlation id: %s', $correlationId));
         $output->writeln(sprintf('  Operation id: %s', $operationId));
+        $output->writeln(sprintf(
+            '  Metricas administrativas: authorized=%d unauthorized=%d direct=%d delegated=%d',
+            $administrativeMetrics['governed_actor_identities_authorized'],
+            $administrativeMetrics['governed_actor_identities_unauthorized'],
+            $administrativeMetrics['authorization_modes']['direct_admin'] ?? 0,
+            $administrativeMetrics['authorization_modes']['delegated_admin'] ?? 0,
+        ));
 
         if ($input->hasOption('verbose')) {
             $output->writeln();
@@ -627,6 +637,73 @@ final class AuthSecurityCenterReportCommand extends Command
             array_map('strval', (array) ($actors[$key]['session_public_ids'] ?? [])),
             array_map('strval', (array) ($row['session_public_ids'] ?? [])),
         )));
+    }
+
+    /**
+     * @param list<array<string, mixed>> $actors
+     * @return array{
+     *   governed_actor_sessions_authorized: int,
+     *   governed_actor_sessions_unauthorized: int,
+     *   governed_actor_identities_authorized: int,
+     *   governed_actor_identities_unauthorized: int,
+     *   authorization_modes: array<string, int>,
+     *   privilege_levels: array<string, int>,
+     *   scope_coverage: array<string, int>
+     * }
+     */
+    private function administrativeMetrics(array $actors): array
+    {
+        $metrics = [
+            'governed_actor_sessions_authorized' => 0,
+            'governed_actor_sessions_unauthorized' => 0,
+            'governed_actor_identities_authorized' => 0,
+            'governed_actor_identities_unauthorized' => 0,
+            'authorization_modes' => [
+                'direct_admin' => 0,
+                'delegated_admin' => 0,
+                'unauthorized' => 0,
+            ],
+            'privilege_levels' => [],
+            'scope_coverage' => [
+                'admin_device_management' => 0,
+                'admin_session_management' => 0,
+                'admin_trusted_device_management' => 0,
+                'security_center_export' => 0,
+            ],
+        ];
+
+        foreach ($actors as $actor) {
+            $sessionCount = (int) ($actor['session_count'] ?? 0);
+            $authorized = (bool) ($actor['management_authorized'] ?? false);
+            $authorizationMode = $authorized
+                ? (string) ($actor['management_authorization_mode'] ?? 'unauthorized')
+                : 'unauthorized';
+            $privilegeLevel = (string) ($actor['management_privilege_level'] ?? 'unknown');
+            $scopes = array_values(array_unique(array_map(
+                'strval',
+                (array) ($actor['management_scopes'] ?? []),
+            )));
+
+            if ($authorized) {
+                $metrics['governed_actor_identities_authorized']++;
+                $metrics['governed_actor_sessions_authorized'] += $sessionCount;
+            } else {
+                $metrics['governed_actor_identities_unauthorized']++;
+                $metrics['governed_actor_sessions_unauthorized'] += $sessionCount;
+            }
+
+            $metrics['authorization_modes'][$authorizationMode] = ($metrics['authorization_modes'][$authorizationMode] ?? 0) + 1;
+            $metrics['privilege_levels'][$privilegeLevel] = ($metrics['privilege_levels'][$privilegeLevel] ?? 0) + 1;
+
+            foreach ($scopes as $scope) {
+                $metrics['scope_coverage'][$scope] = ($metrics['scope_coverage'][$scope] ?? 0) + 1;
+            }
+        }
+
+        ksort($metrics['privilege_levels']);
+        ksort($metrics['scope_coverage']);
+
+        return $metrics;
     }
 
     /**

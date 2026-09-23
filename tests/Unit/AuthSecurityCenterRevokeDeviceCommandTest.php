@@ -291,6 +291,51 @@ PHP
         self::assertNull($trustedDevices->find('tdv_admin_beta'));
     }
 
+    public function test_it_allows_remote_revocation_when_distributed_guard_only_requires_monitoring(): void
+    {
+        $seedNow = time();
+        $app = $this->bootstrappedApplication();
+        $this->seedFixtures($app, $seedNow);
+        $auditLogSource = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'audit' . DIRECTORY_SEPARATOR . 'security-center-longitudinal.jsonl';
+        $this->seedLongitudinalAuditTrail($auditLogSource, $seedNow);
+
+        $command = new AuthSecurityCenterRevokeDeviceCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'auth:security-center:revoke-device',
+                '--identity=801',
+                '--type=user',
+                '--device-reference=devref_admin_alpha',
+                '--actor-identity=901',
+                '--actor-type=user',
+                '--actor-session-public-id=sess_pub_ops_admin',
+                '--audit-log-source=' . $auditLogSource,
+                '--json',
+            ]),
+            $output,
+        );
+
+        /** @var array<string, mixed> $payload */
+        $payload = json_decode($output->stdout(), true, 512, JSON_THROW_ON_ERROR);
+        $sessions = $app->make(AuthenticationSessionRepositoryInterface::class);
+        $trustedDevices = $app->make(TrustedDeviceRepositoryInterface::class);
+
+        self::assertSame(0, $exitCode);
+        self::assertTrue((bool) ($payload['distributed_guard']['evaluated'] ?? false));
+        self::assertSame($auditLogSource, $payload['distributed_guard']['audit_log_source'] ?? null);
+        self::assertSame('recent_lag', $payload['distributed_guard']['activity_drift']['drift_profile'] ?? null);
+        self::assertSame('monitor_recent_lag', $payload['distributed_guard']['activity_drift']['recommended_action'] ?? null);
+        self::assertSame('observe_recent_lag', $payload['distributed_guard']['operational_response']['response_mode'] ?? null);
+        self::assertFalse($payload['distributed_guard']['operational_response']['should_deny_remote_mutations'] ?? true);
+        self::assertSame('distributed_recent_lag_monitor', $payload['distributed_guard']['operational_response']['remote_mutation_denial_reason_code'] ?? null);
+        self::assertNull($sessions->find('session-admin-alpha'));
+        self::assertNull($sessions->find('session-admin-alpha-peer'));
+        self::assertNull($trustedDevices->find('tdv_admin_alpha'));
+    }
+
     public function test_it_rejects_scope_when_delegated_actor_lacks_trusted_device_management_permission(): void
     {
         $seedNow = time();
@@ -377,6 +422,66 @@ PHP
         self::assertSame(0, $events[0]['administrative_metrics']['matched_total_resources'] ?? null);
         self::assertSame('802', $events[0]['actor']['identity'] ?? null);
         self::assertSame('not_administrative_actor', $events[0]['actor']['management_authorization_reason_code'] ?? null);
+    }
+
+    public function test_it_rejects_remote_revocation_when_distributed_guard_detects_store_dropout(): void
+    {
+        $seedNow = time();
+        $app = $this->bootstrappedApplication();
+        $this->seedFixtures($app, $seedNow);
+        $auditLogPath = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'audit' . DIRECTORY_SEPARATOR . 'security-center-guard.jsonl';
+        $auditLogSource = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'audit' . DIRECTORY_SEPARATOR . 'security-center-dropout.jsonl';
+        $this->seedLongitudinalStoreDropoutAuditTrail($auditLogSource, $seedNow);
+
+        $command = new AuthSecurityCenterRevokeDeviceCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'auth:security-center:revoke-device',
+                '--identity=801',
+                '--type=user',
+                '--device-reference=devref_admin_alpha',
+                '--actor-identity=901',
+                '--actor-type=user',
+                '--actor-session-public-id=sess_pub_ops_admin',
+                '--audit-log=' . $auditLogPath,
+                '--audit-log-source=' . $auditLogSource,
+                '--json',
+            ]),
+            $output,
+        );
+
+        /** @var array<string, mixed> $payload */
+        $payload = json_decode($output->stdout(), true, 512, JSON_THROW_ON_ERROR);
+        $sessions = $app->make(AuthenticationSessionRepositoryInterface::class);
+        $trustedDevices = $app->make(TrustedDeviceRepositoryInterface::class);
+
+        self::assertSame(1, $exitCode);
+        self::assertSame('distributed_store_dropout_guard', $payload['reason_code'] ?? null);
+        self::assertSame(
+            'La mutacion remota fue bloqueada por la guardia distribuida del security center.',
+            $payload['error'] ?? null,
+        );
+        self::assertTrue((bool) ($payload['distributed_guard']['evaluated'] ?? false));
+        self::assertSame('store_dropout', $payload['distributed_guard']['activity_drift']['drift_profile'] ?? null);
+        self::assertSame('investigate_store_dropout', $payload['distributed_guard']['activity_drift']['recommended_action'] ?? null);
+        self::assertSame('contain_store_dropout', $payload['distributed_guard']['operational_response']['response_mode'] ?? null);
+        self::assertTrue($payload['distributed_guard']['operational_response']['should_deny_remote_mutations'] ?? false);
+        self::assertSame('distributed_store_dropout_guard', $payload['distributed_guard']['operational_response']['remote_mutation_denial_reason_code'] ?? null);
+        self::assertInstanceOf(AuthenticationSession::class, $sessions->find('session-admin-alpha'));
+        self::assertInstanceOf(AuthenticationSession::class, $sessions->find('session-admin-alpha-peer'));
+        self::assertInstanceOf(TrustedDevice::class, $trustedDevices->find('tdv_admin_alpha'));
+
+        $events = $this->readAuditEvents($auditLogPath);
+        self::assertCount(1, $events);
+        self::assertSame('security_center_device_revocation_rejected', $events[0]['event'] ?? null);
+        self::assertSame('distributed_guard_denied', $events[0]['result'] ?? null);
+        self::assertSame('distributed_store_dropout_guard', $events[0]['reason_code'] ?? null);
+        self::assertSame('distributed_guard_denied', $events[0]['administrative_metrics']['authorization_outcome'] ?? null);
+        self::assertSame('full', $events[0]['administrative_metrics']['actor_scope_profile'] ?? null);
+        self::assertSame('contain_store_dropout', $events[0]['distributed_guard']['operational_response']['response_mode'] ?? null);
     }
 
     private function seedFixtures(Application $app, int $seedNow): void
@@ -587,6 +692,151 @@ PHP
             static fn (string $line): array => json_decode($line, true, 512, JSON_THROW_ON_ERROR),
             $lines,
         ));
+    }
+
+    private function seedLongitudinalAuditTrail(string $path, int $seedNow): void
+    {
+        $directory = dirname($path);
+
+        if (! is_dir($directory)) {
+            mkdir($directory, 0777, true);
+        }
+
+        $events = [
+            [
+                'event' => 'security_center_device_revocation_executed',
+                'occurred_at' => $seedNow - 795,
+                'correlation_id' => 'corr-1',
+                'operation_id' => 'op-1',
+                'result' => 'executed',
+                'operational_context' => [
+                    'store_topology' => 'shared_file_store_candidate',
+                    'store_fingerprint' => 'fingerprint-a',
+                ],
+                'administrative_metrics' => [
+                    'requested_scope' => 'all',
+                    'actor_scope_profile' => 'full',
+                    'actor_authorization_mode' => 'direct_admin',
+                    'affected_total_resources' => 2,
+                ],
+                'summary' => [
+                    'revoked_sessions' => 1,
+                    'revoked_trusted_devices' => 1,
+                ],
+            ],
+            [
+                'event' => 'security_center_device_revocation_executed',
+                'occurred_at' => $seedNow - 700,
+                'correlation_id' => 'corr-2',
+                'operation_id' => 'op-2',
+                'result' => 'executed',
+                'operational_context' => [
+                    'store_topology' => 'shared_file_store_candidate',
+                    'store_fingerprint' => 'fingerprint-a',
+                ],
+                'administrative_metrics' => [
+                    'requested_scope' => 'sessions',
+                    'actor_scope_profile' => 'sessions_only',
+                    'actor_authorization_mode' => 'delegated_admin',
+                    'affected_total_resources' => 1,
+                ],
+                'summary' => [
+                    'revoked_sessions' => 1,
+                    'revoked_trusted_devices' => 0,
+                ],
+            ],
+            [
+                'event' => 'security_center_device_revocation_executed',
+                'occurred_at' => $seedNow,
+                'correlation_id' => 'corr-3',
+                'operation_id' => 'op-3',
+                'result' => 'executed',
+                'operational_context' => [
+                    'store_topology' => 'mixed_driver_topology',
+                    'store_fingerprint' => 'fingerprint-b',
+                ],
+                'administrative_metrics' => [
+                    'requested_scope' => 'trusted-devices',
+                    'actor_scope_profile' => 'trusted_devices_only',
+                    'actor_authorization_mode' => 'delegated_admin',
+                    'affected_total_resources' => 1,
+                ],
+                'summary' => [
+                    'revoked_sessions' => 0,
+                    'revoked_trusted_devices' => 1,
+                ],
+            ],
+        ];
+
+        file_put_contents(
+            $path,
+            implode(PHP_EOL, array_map(
+                static fn (array $event): string => (string) json_encode($event, JSON_THROW_ON_ERROR),
+                $events,
+            )) . PHP_EOL,
+        );
+    }
+
+    private function seedLongitudinalStoreDropoutAuditTrail(string $path, int $seedNow): void
+    {
+        $directory = dirname($path);
+
+        if (! is_dir($directory)) {
+            mkdir($directory, 0777, true);
+        }
+
+        $events = [
+            [
+                'event' => 'security_center_device_revocation_executed',
+                'occurred_at' => $seedNow - 5000,
+                'correlation_id' => 'dropout-corr-1',
+                'operation_id' => 'dropout-op-1',
+                'result' => 'executed',
+                'operational_context' => [
+                    'store_topology' => 'shared_file_store_candidate',
+                    'store_fingerprint' => 'fingerprint-a',
+                ],
+                'administrative_metrics' => [
+                    'requested_scope' => 'all',
+                    'actor_scope_profile' => 'full',
+                    'actor_authorization_mode' => 'direct_admin',
+                    'affected_total_resources' => 2,
+                ],
+                'summary' => [
+                    'revoked_sessions' => 2,
+                    'revoked_trusted_devices' => 0,
+                ],
+            ],
+            [
+                'event' => 'security_center_device_revocation_executed',
+                'occurred_at' => $seedNow - 60,
+                'correlation_id' => 'dropout-corr-2',
+                'operation_id' => 'dropout-op-2',
+                'result' => 'executed',
+                'operational_context' => [
+                    'store_topology' => 'mixed_driver_topology',
+                    'store_fingerprint' => 'fingerprint-b',
+                ],
+                'administrative_metrics' => [
+                    'requested_scope' => 'sessions',
+                    'actor_scope_profile' => 'sessions_only',
+                    'actor_authorization_mode' => 'delegated_admin',
+                    'affected_total_resources' => 1,
+                ],
+                'summary' => [
+                    'revoked_sessions' => 1,
+                    'revoked_trusted_devices' => 0,
+                ],
+            ],
+        ];
+
+        file_put_contents(
+            $path,
+            implode(PHP_EOL, array_map(
+                static fn (array $event): string => (string) json_encode($event, JSON_THROW_ON_ERROR),
+                $events,
+            )) . PHP_EOL,
+        );
     }
 
     private function deleteDirectory(string $path): void

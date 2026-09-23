@@ -29,7 +29,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
 
     public function usage(): string
     {
-        return 'auth:security-center:revoke-device --identity=value --device-reference=value --actor-identity=value --actor-session-public-id=value [--type=value] [--actor-type=value] [--scope=all|sessions|trusted-devices] [--include-public-ids] [--correlation-id=value] [--audit-log=path] [--dry-run] [--json] [--verbose]';
+        return 'auth:security-center:revoke-device --identity=value --device-reference=value --actor-identity=value --actor-session-public-id=value [--type=value] [--actor-type=value] [--scope=all|sessions|trusted-devices] [--include-public-ids] [--correlation-id=value] [--audit-log=path] [--audit-log-source=path] [--dry-run] [--json] [--verbose]';
     }
 
     public function category(): string
@@ -50,6 +50,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             '--include-public-ids' => 'Incluye session_public_ids y trusted_device_public_ids en el resultado.',
             '--correlation-id=' => 'Usa un correlation id explicito para enlazar auditorias y mutaciones relacionadas.',
             '--audit-log=' => 'Anexa un evento JSONL durable con actor, target y resultado operativo.',
+            '--audit-log-source=' => 'Lee un audit log JSONL durable para evaluar la guardia distribuida previa a la mutacion remota.',
             '--dry-run' => 'Calcula la revocacion sin persistir cambios.',
             '--json' => 'Emite el resultado en JSON.',
             '--verbose' => 'Muestra detalle adicional del driver, filtro y conteos.',
@@ -67,6 +68,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         $scope = $this->resolveScope($input);
         $includePublicIds = $input->hasOption('include-public-ids');
         $auditLogPath = $this->resolveOptionalStringOption($input, 'audit-log');
+        $auditLogSource = $this->resolveOptionalStringOption($input, 'audit-log-source');
         $dryRun = $input->hasOption('dry-run');
         $json = $input->hasOption('json');
         $now = $this->resolveNow($input);
@@ -237,6 +239,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
 
         $sessionsToRevoke = $scope === 'trusted-devices' ? [] : $matchedSessions;
         $trustedDevicesToRevoke = $scope === 'sessions' ? [] : $matchedTrustedDevices;
+        $distributedGuard = $this->distributedGuard($auditLogSource);
         $administrativeMetrics = $this->administrativeMetrics(
             scope: $scope,
             dryRun: $dryRun,
@@ -250,11 +253,73 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             affectedTrustedDevices: count($trustedDevicesToRevoke),
         );
 
+        if (
+            ! $dryRun
+            && (bool) ($distributedGuard['operational_response']['should_deny_remote_mutations'] ?? false)
+        ) {
+            $guardedAdministrativeMetrics = $this->administrativeMetrics(
+                scope: $scope,
+                dryRun: $dryRun,
+                authorizationOutcome: 'distributed_guard_denied',
+                authorizationMode: $actorAuthorizationMode,
+                actorPrivilegeLevel: $actorContext->managementPrivilegeLevel(),
+                actorScopes: $actorContext->managementScopes(),
+                matchedSessions: count($matchedSessions),
+                matchedTrustedDevices: count($matchedTrustedDevices),
+                affectedSessions: count($sessionsToRevoke),
+                affectedTrustedDevices: count($trustedDevicesToRevoke),
+            );
+
+            $denialReasonCode = is_string($distributedGuard['operational_response']['remote_mutation_denial_reason_code'] ?? null)
+                ? $distributedGuard['operational_response']['remote_mutation_denial_reason_code']
+                : 'distributed_remote_mutation_guard';
+
+            $this->writeAuditEvent($auditLogPath, [
+                'event' => 'security_center_device_revocation_rejected',
+                'occurred_at' => $eventTimestamp,
+                'correlation_id' => $correlationId,
+                'operation_id' => $operationId,
+                'result' => 'distributed_guard_denied',
+                'reason_code' => $denialReasonCode,
+                'target' => [
+                    'identity' => $identity,
+                    'type' => $type,
+                    'device_reference' => $deviceReference,
+                    'scope' => $scope,
+                ],
+                'actor' => [
+                    'identity' => $actorIdentity,
+                    'type' => $actorType,
+                    'session_public_id' => $actorSessionPublicId,
+                    'management_authority' => $actorContext->managementAuthority(),
+                    'management_ownership_proof' => $actorContext->managementOwnershipProof(),
+                    'management_claims_source' => $actorContext->managementClaimsSource(),
+                    'management_privilege_level' => $actorContext->managementPrivilegeLevel(),
+                    'management_authorized' => true,
+                    'management_authorization_mode' => $actorAuthorizationMode,
+                    'management_authorization_reason_code' => $actorContext->managementAuthorizationReasonCode(),
+                    'management_scopes' => $actorContext->managementScopes(),
+                ],
+                'operational_context' => $operationalContext,
+                'administrative_metrics' => $guardedAdministrativeMetrics,
+                'distributed_guard' => $distributedGuard,
+            ]);
+
+            return $this->renderDistributedGuardFailure(
+                $output,
+                $json,
+                'La mutacion remota fue bloqueada por la guardia distribuida del security center.',
+                $denialReasonCode,
+                $distributedGuard,
+            );
+        }
+
         $payload = [
             'generated_at' => $eventTimestamp,
             'correlation_id' => $correlationId,
             'operation_id' => $operationId,
             'operational_context' => $operationalContext,
+            'distributed_guard' => $distributedGuard,
             'filters' => [
                 'identity' => $identity,
                 'type' => $type,
@@ -265,6 +330,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 'scope' => $scope,
                 'include_public_ids' => $includePublicIds,
                 'dry_run' => $dryRun,
+                'audit_log_source' => $auditLogSource,
             ],
             'summary' => [
                 'matched_sessions' => count($matchedSessions),
@@ -345,6 +411,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             ],
             'operational_context' => $operationalContext,
             'administrative_metrics' => $administrativeMetrics,
+            'distributed_guard' => $distributedGuard,
             'summary' => $payload['summary'],
             'detail' => $payload['detail'] ?? null,
         ]);
@@ -389,6 +456,18 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 $operationalContext['session_store_path'] ?? 'n/a',
                 $operationalContext['trusted_device_store_path'] ?? 'n/a',
             ));
+            if ((bool) ($distributedGuard['evaluated'] ?? false)) {
+                $operationalResponse = is_array($distributedGuard['operational_response'] ?? null)
+                    ? $distributedGuard['operational_response']
+                    : [];
+                $output->writeln(sprintf(
+                    'Guardia distribuida: response=%s | deny_remote=%s | reason=%s | next_step=%s',
+                    $operationalResponse['response_mode'] ?? 'normal_operations',
+                    ($operationalResponse['should_deny_remote_mutations'] ?? false) ? 'si' : 'no',
+                    $operationalResponse['remote_mutation_denial_reason_code'] ?? 'none',
+                    $operationalResponse['next_step'] ?? 'continue_normal_operations',
+                ));
+            }
             $output->writeln();
         }
 
@@ -532,6 +611,32 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
     }
 
     /**
+     * @param array<string, mixed> $distributedGuard
+     */
+    private function renderDistributedGuardFailure(
+        Output $output,
+        bool $json,
+        string $message,
+        string $reasonCode,
+        array $distributedGuard,
+    ): int {
+        if ($json) {
+            $output->writeln((string) json_encode([
+                'error' => $message,
+                'reason_code' => $reasonCode,
+                'distributed_guard' => $distributedGuard,
+            ], JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
+
+            return 1;
+        }
+
+        $output->error($message);
+        $output->writeln(sprintf('Reason code: %s', $reasonCode));
+
+        return 1;
+    }
+
+    /**
      * @param array<string, mixed> $event
      */
     private function writeAuditEvent(?string $path, array $event): void
@@ -599,6 +704,21 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 'trusted_device_store_path' => $trustedDeviceStorePath,
             ], JSON_THROW_ON_ERROR)),
         ];
+    }
+
+    /**
+     * @return array{
+     *   evaluated: bool,
+     *   audit_log_source: ?string,
+     *   activity_drift: array<string, mixed>,
+     *   operational_response: array<string, mixed>
+     * }
+     */
+    private function distributedGuard(?string $auditLogSource): array
+    {
+        $report = new AuthSecurityCenterReportCommand($this->basePath);
+
+        return $report->distributedGuardFromAuditLog($auditLogSource);
     }
 
     private function normalizedString(mixed $value, string $default): string

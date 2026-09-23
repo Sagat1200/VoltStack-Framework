@@ -15,6 +15,31 @@ use VoltStack\Framework\Application;
 
 final class AuthSecurityCenterReportCommand extends Command
 {
+    /**
+     * @return array{
+     *   evaluated: bool,
+     *   audit_log_source: ?string,
+     *   activity_drift: array<string, mixed>,
+     *   operational_response: array<string, mixed>
+     * }
+     */
+    public function distributedGuardFromAuditLog(?string $auditLogSource): array
+    {
+        $metrics = $this->longitudinalMetrics($this->readAuditEvents($auditLogSource));
+        $activityDrift = is_array($metrics['activity_drift'] ?? null)
+            ? $metrics['activity_drift']
+            : [];
+
+        return [
+            'evaluated' => $auditLogSource !== null,
+            'audit_log_source' => $auditLogSource,
+            'activity_drift' => $activityDrift,
+            'operational_response' => is_array($activityDrift['operational_response'] ?? null)
+                ? $activityDrift['operational_response']
+                : [],
+        ];
+    }
+
     public function name(): string
     {
         return 'auth:security-center:report';

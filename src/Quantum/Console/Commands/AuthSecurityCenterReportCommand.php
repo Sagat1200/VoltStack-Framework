@@ -334,12 +334,13 @@ final class AuthSecurityCenterReportCommand extends Command
 
             if ($activityDrift !== []) {
                 $output->writeln(sprintf(
-                    '  Activity drift: detected=%s profile=%s lagging=%d inactive_15m=%d gap=%ss',
+                    '  Activity drift: detected=%s profile=%s lagging=%d inactive_15m=%d gap=%ss action=%s',
                     ($activityDrift['drift_detected'] ?? false) ? 'yes' : 'no',
                     $activityDrift['drift_profile'] ?? 'none',
                     count((array) ($activityDrift['lagging_store_fingerprints'] ?? [])),
                     $activityDrift['inactive_stores_last_15m'] ?? 0,
                     $activityDrift['max_event_gap_seconds'] ?? 0,
+                    $activityDrift['recommended_action'] ?? 'none',
                 ));
             }
         }
@@ -445,7 +446,7 @@ final class AuthSecurityCenterReportCommand extends Command
                 $output->writeln();
                 $output->writeln('Activity drift:');
                 $output->writeln(sprintf(
-                    '  - detected=%s | profile=%s | severity=%s | lagging=%d | inactive_15m=%d | inactive_60m=%d | gap=%ss',
+                    '  - detected=%s | profile=%s | severity=%s | lagging=%d | inactive_15m=%d | inactive_60m=%d | gap=%ss | action=%s | reference_store=%s',
                     ($activityDrift['drift_detected'] ?? false) ? 'yes' : 'no',
                     $activityDrift['drift_profile'] ?? 'none',
                     $activityDrift['severity'] ?? 'none',
@@ -453,7 +454,40 @@ final class AuthSecurityCenterReportCommand extends Command
                     $activityDrift['inactive_stores_last_15m'] ?? 0,
                     $activityDrift['inactive_stores_last_60m'] ?? 0,
                     $activityDrift['max_event_gap_seconds'] ?? 0,
+                    $activityDrift['recommended_action'] ?? 'none',
+                    $activityDrift['reference_store_fingerprint'] ?? 'none',
                 ));
+
+                if (($activityDrift['window_coverage'] ?? []) !== []) {
+                    $output->writeln('  Cobertura por ventana:');
+
+                    foreach ((array) $activityDrift['window_coverage'] as $windowCoverage) {
+                        $output->writeln(sprintf(
+                            '    - %s | active=%d/%d | inactive=%d',
+                            $windowCoverage['label'] ?? 'unknown',
+                            $windowCoverage['active_stores'] ?? 0,
+                            $windowCoverage['observed_stores'] ?? 0,
+                            $windowCoverage['inactive_stores'] ?? 0,
+                        ));
+                    }
+                }
+
+                if (($activityDrift['store_assessments'] ?? []) !== []) {
+                    $output->writeln('  Drift por store:');
+
+                    foreach ((array) $activityDrift['store_assessments'] as $storeAssessment) {
+                        $output->writeln(sprintf(
+                            '    - fingerprint=%s | topology=%s | status=%s | gap=%ss | 5m=%d | 15m=%d | 60m=%d',
+                            $storeAssessment['store_fingerprint'] ?? 'unknown-store',
+                            $storeAssessment['store_topology'] ?? 'unknown',
+                            $storeAssessment['status'] ?? 'unknown',
+                            $storeAssessment['event_gap_seconds'] ?? 0,
+                            $storeAssessment['events_last_5m'] ?? 0,
+                            $storeAssessment['events_last_15m'] ?? 0,
+                            $storeAssessment['events_last_60m'] ?? 0,
+                        ));
+                    }
+                }
             }
         }
 
@@ -1373,11 +1407,16 @@ final class AuthSecurityCenterReportCommand extends Command
             'drift_profile' => 'none',
             'severity' => 'none',
             'reference_window' => 'last_15m',
+            'recommended_action' => 'none',
+            'reference_store_fingerprint' => null,
+            'reference_store_topology' => null,
             'max_event_gap_seconds' => null,
             'inactive_stores_last_15m' => 0,
             'inactive_stores_last_60m' => 0,
             'lagging_store_fingerprints' => [],
             'stale_store_fingerprints' => [],
+            'window_coverage' => [],
+            'store_assessments' => [],
         ];
 
         if ($storeTimeWindows === [] || $anchorTimestamp === null) {
@@ -1391,9 +1430,12 @@ final class AuthSecurityCenterReportCommand extends Command
         $maxGap = 0;
         $lagThresholdSeconds = 600;
         $staleThresholdSeconds = 3600;
+        $storeAssessments = [];
 
         foreach ($storeTimeWindows as $storeWindow) {
             $fingerprint = (string) ($storeWindow['store_fingerprint'] ?? 'unknown-store');
+            $topology = (string) ($storeWindow['store_topology'] ?? 'unknown');
+            $window5m = (int) ($storeWindow['windows'][0]['event_count'] ?? 0);
             $window15m = (int) ($storeWindow['windows'][1]['event_count'] ?? 0);
             $window60m = (int) ($storeWindow['windows'][2]['event_count'] ?? 0);
             $latestEventAt = is_int($storeWindow['latest_event_at'] ?? null)
@@ -1422,16 +1464,66 @@ final class AuthSecurityCenterReportCommand extends Command
             if ($gap >= $staleThresholdSeconds || $window60m === 0) {
                 $staleStores[] = $fingerprint;
             }
+
+            $storeAssessments[] = [
+                'store_fingerprint' => $fingerprint,
+                'store_topology' => $topology,
+                'latest_event_at' => $latestEventAt,
+                'event_gap_seconds' => $gap,
+                'events_last_5m' => $window5m,
+                'events_last_15m' => $window15m,
+                'events_last_60m' => $window60m,
+                'status' => match (true) {
+                    $gap >= $staleThresholdSeconds || $window60m === 0 => 'stale',
+                    $window15m === 0 => 'inactive_15m',
+                    $gap >= $lagThresholdSeconds => 'lagging',
+                    default => 'healthy',
+                },
+            ];
         }
 
         sort($laggingStores);
         sort($staleStores);
+        usort($storeAssessments, static function (array $left, array $right): int {
+            $leftGap = (int) ($left['event_gap_seconds'] ?? 0);
+            $rightGap = (int) ($right['event_gap_seconds'] ?? 0);
+            $gapComparison = $rightGap <=> $leftGap;
+
+            if ($gapComparison !== 0) {
+                return $gapComparison;
+            }
+
+            return strcmp((string) ($left['store_fingerprint'] ?? ''), (string) ($right['store_fingerprint'] ?? ''));
+        });
 
         $drift['max_event_gap_seconds'] = $maxGap;
         $drift['inactive_stores_last_15m'] = $inactive15m;
         $drift['inactive_stores_last_60m'] = $inactive60m;
         $drift['lagging_store_fingerprints'] = $laggingStores;
         $drift['stale_store_fingerprints'] = $staleStores;
+        $drift['reference_store_fingerprint'] = $multiStoreSummary['top_recent_store_fingerprint'] ?? null;
+        $drift['reference_store_topology'] = $multiStoreSummary['top_recent_store_topology'] ?? null;
+        $drift['window_coverage'] = [
+            [
+                'label' => 'last_5m',
+                'active_stores' => (int) ($multiStoreSummary['active_stores_last_5m'] ?? 0),
+                'inactive_stores' => max(0, count($storeTimeWindows) - (int) ($multiStoreSummary['active_stores_last_5m'] ?? 0)),
+                'observed_stores' => count($storeTimeWindows),
+            ],
+            [
+                'label' => 'last_15m',
+                'active_stores' => (int) ($multiStoreSummary['active_stores_last_15m'] ?? 0),
+                'inactive_stores' => max(0, count($storeTimeWindows) - (int) ($multiStoreSummary['active_stores_last_15m'] ?? 0)),
+                'observed_stores' => count($storeTimeWindows),
+            ],
+            [
+                'label' => 'last_60m',
+                'active_stores' => (int) ($multiStoreSummary['active_stores_last_60m'] ?? 0),
+                'inactive_stores' => max(0, count($storeTimeWindows) - (int) ($multiStoreSummary['active_stores_last_60m'] ?? 0)),
+                'observed_stores' => count($storeTimeWindows),
+            ],
+        ];
+        $drift['store_assessments'] = $storeAssessments;
         $drift['drift_detected'] = $inactive15m > 0 || $inactive60m > 0 || $laggingStores !== [];
 
         $drift['drift_profile'] = match (true) {
@@ -1446,6 +1538,15 @@ final class AuthSecurityCenterReportCommand extends Command
             $inactive60m > 0 || $maxGap >= 3600 => 'high',
             $inactive15m > 0 || $maxGap >= 1800 => 'medium',
             default => 'low',
+        };
+
+        $drift['recommended_action'] = match (true) {
+            $drift['drift_detected'] === false && ($multiStoreSummary['coordination_profile'] ?? null) === 'single_store' => 'single_store_baseline',
+            $drift['drift_detected'] === false => 'none',
+            $inactive60m > 0 => 'investigate_store_dropout',
+            $inactive15m > 0 => 'rebalance_partial_visibility',
+            $laggingStores !== [] => 'monitor_recent_lag',
+            default => 'none',
         };
 
         if (($multiStoreSummary['coordination_profile'] ?? null) === 'single_store' && $drift['drift_detected'] === false) {

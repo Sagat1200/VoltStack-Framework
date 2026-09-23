@@ -125,7 +125,7 @@ PHP
         self::assertStringContainsString('Ventanas distribuidas: 5m=1 15m=2 60m=3', $output->stdout());
         self::assertStringContainsString('Consolidacion temporal por store: stores=2 top_recent_store=fingerprint-a 15m=1 60m=2', $output->stdout());
         self::assertStringContainsString('Resumen multi-store: profile=distributed active_15m=2/2 spread=795s', $output->stdout());
-        self::assertStringContainsString('Activity drift: detected=yes profile=recent_lag lagging=1 inactive_15m=0 gap=795s action=monitor_recent_lag', $output->stdout());
+        self::assertStringContainsString('Activity drift: detected=yes profile=recent_lag lagging=1 inactive_15m=0 gap=795s action=monitor_recent_lag response=observe_recent_lag deny_remote=no', $output->stdout());
         self::assertStringContainsString('Cohortes distribuidas por store:', $output->stdout());
         self::assertStringContainsString('- fingerprint=fingerprint-a | topology=shared_file_store_candidate | events=2 | executed=1 | dry_run=1 | rejected=0', $output->stdout());
         self::assertStringContainsString('- fingerprint=fingerprint-b | topology=mixed_driver_topology | events=1 | executed=0 | dry_run=0 | rejected=1', $output->stdout());
@@ -139,7 +139,9 @@ PHP
         self::assertStringContainsString('Resumen multi-store:', $output->stdout());
         self::assertStringContainsString('- profile=distributed | stores=2 | active_5m=1 | active_15m=2 | active_60m=2 | top_store=fingerprint-a | spread=795s', $output->stdout());
         self::assertStringContainsString('Activity drift:', $output->stdout());
-        self::assertStringContainsString('- detected=yes | profile=recent_lag | severity=low | lagging=1 | inactive_15m=0 | inactive_60m=0 | gap=795s | action=monitor_recent_lag | reference_store=fingerprint-a', $output->stdout());
+        self::assertStringContainsString('- detected=yes | profile=recent_lag | severity=low | lagging=1 | inactive_15m=0 | inactive_60m=0 | gap=795s | action=monitor_recent_lag | reference_store=fingerprint-a | response=observe_recent_lag', $output->stdout());
+        self::assertStringContainsString('Respuesta operativa:', $output->stdout());
+        self::assertStringContainsString('- escalation=low | deny_remote=no | denial_reason=distributed_recent_lag_monitor | next_step=review_lagging_store_health | targets=1', $output->stdout());
         self::assertStringContainsString('Cobertura por ventana:', $output->stdout());
         self::assertStringContainsString('- last_5m | active=1/2 | inactive=1', $output->stdout());
         self::assertStringContainsString('- last_15m | active=2/2 | inactive=0', $output->stdout());
@@ -446,6 +448,12 @@ PHP
         self::assertSame('monitor_recent_lag', $payload['longitudinal_metrics']['activity_drift']['recommended_action'] ?? null);
         self::assertSame('fingerprint-a', $payload['longitudinal_metrics']['activity_drift']['reference_store_fingerprint'] ?? null);
         self::assertSame('shared_file_store_candidate', $payload['longitudinal_metrics']['activity_drift']['reference_store_topology'] ?? null);
+        self::assertSame('observe_recent_lag', $payload['longitudinal_metrics']['activity_drift']['operational_response']['response_mode'] ?? null);
+        self::assertSame('low', $payload['longitudinal_metrics']['activity_drift']['operational_response']['escalation_level'] ?? null);
+        self::assertFalse($payload['longitudinal_metrics']['activity_drift']['operational_response']['should_deny_remote_mutations'] ?? true);
+        self::assertSame('distributed_recent_lag_monitor', $payload['longitudinal_metrics']['activity_drift']['operational_response']['remote_mutation_denial_reason_code'] ?? null);
+        self::assertSame('review_lagging_store_health', $payload['longitudinal_metrics']['activity_drift']['operational_response']['next_step'] ?? null);
+        self::assertSame(['fingerprint-a'], $payload['longitudinal_metrics']['activity_drift']['operational_response']['target_store_fingerprints'] ?? null);
         self::assertSame(795, $payload['longitudinal_metrics']['activity_drift']['max_event_gap_seconds'] ?? null);
         self::assertSame(0, $payload['longitudinal_metrics']['activity_drift']['inactive_stores_last_15m'] ?? null);
         self::assertSame(0, $payload['longitudinal_metrics']['activity_drift']['inactive_stores_last_60m'] ?? null);
@@ -524,6 +532,46 @@ PHP
         self::assertSame('distributed', $events[0]['report']['longitudinal_metrics']['multi_store_summary']['coordination_profile'] ?? null);
         self::assertSame('recent_lag', $events[0]['report']['longitudinal_metrics']['activity_drift']['drift_profile'] ?? null);
         self::assertSame('monitor_recent_lag', $events[0]['report']['longitudinal_metrics']['activity_drift']['recommended_action'] ?? null);
+        self::assertSame('observe_recent_lag', $events[0]['report']['longitudinal_metrics']['activity_drift']['operational_response']['response_mode'] ?? null);
+    }
+
+    public function test_it_derives_a_guarding_operational_response_for_store_dropout(): void
+    {
+        $seedNow = time();
+        $app = $this->bootstrappedApplication();
+        $this->seedSecurityCenterFixtures($app, $seedNow);
+        $auditLogPath = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'audit' . DIRECTORY_SEPARATOR . 'security-center-revoke-dropout.jsonl';
+        $this->seedLongitudinalStoreDropoutAuditTrail($auditLogPath, $seedNow);
+
+        $command = new AuthSecurityCenterReportCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'auth:security-center:report',
+                '--now=' . $seedNow,
+                '--audit-log-source=' . $auditLogPath,
+                '--json',
+            ]),
+            $output,
+        );
+
+        /** @var array<string, mixed> $payload */
+        $payload = json_decode($output->stdout(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(0, $exitCode);
+        self::assertTrue($payload['longitudinal_metrics']['activity_drift']['drift_detected'] ?? false);
+        self::assertSame('store_dropout', $payload['longitudinal_metrics']['activity_drift']['drift_profile'] ?? null);
+        self::assertSame('high', $payload['longitudinal_metrics']['activity_drift']['severity'] ?? null);
+        self::assertSame('investigate_store_dropout', $payload['longitudinal_metrics']['activity_drift']['recommended_action'] ?? null);
+        self::assertSame(['fingerprint-a'], $payload['longitudinal_metrics']['activity_drift']['stale_store_fingerprints'] ?? null);
+        self::assertSame('contain_store_dropout', $payload['longitudinal_metrics']['activity_drift']['operational_response']['response_mode'] ?? null);
+        self::assertSame('high', $payload['longitudinal_metrics']['activity_drift']['operational_response']['escalation_level'] ?? null);
+        self::assertTrue($payload['longitudinal_metrics']['activity_drift']['operational_response']['should_deny_remote_mutations'] ?? false);
+        self::assertSame('distributed_store_dropout_guard', $payload['longitudinal_metrics']['activity_drift']['operational_response']['remote_mutation_denial_reason_code'] ?? null);
+        self::assertSame('block_remote_mutations_until_store_recovers', $payload['longitudinal_metrics']['activity_drift']['operational_response']['next_step'] ?? null);
+        self::assertSame(['fingerprint-a'], $payload['longitudinal_metrics']['activity_drift']['operational_response']['target_store_fingerprints'] ?? null);
     }
 
     public function test_it_persists_detailed_snapshot_only_when_identity_and_management_flags_are_requested(): void
@@ -805,6 +853,68 @@ PHP
                     'actor_scope_profile' => 'none',
                     'actor_authorization_mode' => null,
                     'affected_total_resources' => 0,
+                ],
+            ],
+        ];
+
+        file_put_contents(
+            $path,
+            implode(PHP_EOL, array_map(
+                static fn (array $event): string => (string) json_encode($event, JSON_THROW_ON_ERROR),
+                $events,
+            )) . PHP_EOL,
+        );
+    }
+
+    private function seedLongitudinalStoreDropoutAuditTrail(string $path, int $seedNow): void
+    {
+        $directory = dirname($path);
+
+        if (! is_dir($directory)) {
+            mkdir($directory, 0777, true);
+        }
+
+        $events = [
+            [
+                'event' => 'security_center_device_revocation_executed',
+                'occurred_at' => $seedNow - 5000,
+                'correlation_id' => 'dropout-corr-1',
+                'operation_id' => 'dropout-op-1',
+                'result' => 'executed',
+                'operational_context' => [
+                    'store_topology' => 'shared_file_store_candidate',
+                    'store_fingerprint' => 'fingerprint-a',
+                ],
+                'administrative_metrics' => [
+                    'requested_scope' => 'all',
+                    'actor_scope_profile' => 'full',
+                    'actor_authorization_mode' => 'direct_admin',
+                    'affected_total_resources' => 2,
+                ],
+                'summary' => [
+                    'revoked_sessions' => 2,
+                    'revoked_trusted_devices' => 0,
+                ],
+            ],
+            [
+                'event' => 'security_center_device_revocation_executed',
+                'occurred_at' => $seedNow - 60,
+                'correlation_id' => 'dropout-corr-2',
+                'operation_id' => 'dropout-op-2',
+                'result' => 'executed',
+                'operational_context' => [
+                    'store_topology' => 'mixed_driver_topology',
+                    'store_fingerprint' => 'fingerprint-b',
+                ],
+                'administrative_metrics' => [
+                    'requested_scope' => 'sessions',
+                    'actor_scope_profile' => 'sessions_only',
+                    'actor_authorization_mode' => 'delegated_admin',
+                    'affected_total_resources' => 1,
+                ],
+                'summary' => [
+                    'revoked_sessions' => 1,
+                    'revoked_trusted_devices' => 0,
                 ],
             ],
         ];

@@ -333,14 +333,19 @@ final class AuthSecurityCenterReportCommand extends Command
             }
 
             if ($activityDrift !== []) {
+                $operationalResponse = is_array($activityDrift['operational_response'] ?? null)
+                    ? $activityDrift['operational_response']
+                    : [];
                 $output->writeln(sprintf(
-                    '  Activity drift: detected=%s profile=%s lagging=%d inactive_15m=%d gap=%ss action=%s',
+                    '  Activity drift: detected=%s profile=%s lagging=%d inactive_15m=%d gap=%ss action=%s response=%s deny_remote=%s',
                     ($activityDrift['drift_detected'] ?? false) ? 'yes' : 'no',
                     $activityDrift['drift_profile'] ?? 'none',
                     count((array) ($activityDrift['lagging_store_fingerprints'] ?? [])),
                     $activityDrift['inactive_stores_last_15m'] ?? 0,
                     $activityDrift['max_event_gap_seconds'] ?? 0,
                     $activityDrift['recommended_action'] ?? 'none',
+                    $operationalResponse['response_mode'] ?? 'normal_operations',
+                    ($operationalResponse['should_deny_remote_mutations'] ?? false) ? 'yes' : 'no',
                 ));
             }
         }
@@ -443,10 +448,13 @@ final class AuthSecurityCenterReportCommand extends Command
 
             if ($auditLogSource !== null && ($longitudinalMetrics['activity_drift'] ?? []) !== []) {
                 $activityDrift = $longitudinalMetrics['activity_drift'];
+                $operationalResponse = is_array($activityDrift['operational_response'] ?? null)
+                    ? $activityDrift['operational_response']
+                    : [];
                 $output->writeln();
                 $output->writeln('Activity drift:');
                 $output->writeln(sprintf(
-                    '  - detected=%s | profile=%s | severity=%s | lagging=%d | inactive_15m=%d | inactive_60m=%d | gap=%ss | action=%s | reference_store=%s',
+                    '  - detected=%s | profile=%s | severity=%s | lagging=%d | inactive_15m=%d | inactive_60m=%d | gap=%ss | action=%s | reference_store=%s | response=%s',
                     ($activityDrift['drift_detected'] ?? false) ? 'yes' : 'no',
                     $activityDrift['drift_profile'] ?? 'none',
                     $activityDrift['severity'] ?? 'none',
@@ -456,7 +464,20 @@ final class AuthSecurityCenterReportCommand extends Command
                     $activityDrift['max_event_gap_seconds'] ?? 0,
                     $activityDrift['recommended_action'] ?? 'none',
                     $activityDrift['reference_store_fingerprint'] ?? 'none',
+                    $operationalResponse['response_mode'] ?? 'normal_operations',
                 ));
+
+                if ($operationalResponse !== []) {
+                    $output->writeln('  Respuesta operativa:');
+                    $output->writeln(sprintf(
+                        '    - escalation=%s | deny_remote=%s | denial_reason=%s | next_step=%s | targets=%d',
+                        $operationalResponse['escalation_level'] ?? 'none',
+                        ($operationalResponse['should_deny_remote_mutations'] ?? false) ? 'yes' : 'no',
+                        $operationalResponse['remote_mutation_denial_reason_code'] ?? 'none',
+                        $operationalResponse['next_step'] ?? 'continue_normal_operations',
+                        count((array) ($operationalResponse['target_store_fingerprints'] ?? [])),
+                    ));
+                }
 
                 if (($activityDrift['window_coverage'] ?? []) !== []) {
                     $output->writeln('  Cobertura por ventana:');
@@ -1417,6 +1438,14 @@ final class AuthSecurityCenterReportCommand extends Command
             'stale_store_fingerprints' => [],
             'window_coverage' => [],
             'store_assessments' => [],
+            'operational_response' => [
+                'response_mode' => 'normal_operations',
+                'escalation_level' => 'none',
+                'should_deny_remote_mutations' => false,
+                'remote_mutation_denial_reason_code' => 'none',
+                'next_step' => 'continue_normal_operations',
+                'target_store_fingerprints' => [],
+            ],
         ];
 
         if ($storeTimeWindows === [] || $anchorTimestamp === null) {
@@ -1553,7 +1582,74 @@ final class AuthSecurityCenterReportCommand extends Command
             $drift['drift_profile'] = 'single_store';
         }
 
+        $drift['operational_response'] = $this->buildDriftOperationalResponse($drift);
+
         return $drift;
+    }
+
+    /**
+     * @param array<string, mixed> $drift
+     * @return array<string, mixed>
+     */
+    private function buildDriftOperationalResponse(array $drift): array
+    {
+        $recommendedAction = (string) ($drift['recommended_action'] ?? 'none');
+        $severity = (string) ($drift['severity'] ?? 'none');
+        $targetStores = array_values(array_filter(array_unique(array_merge(
+            array_map(
+                static fn (mixed $value): string => (string) $value,
+                (array) ($drift['stale_store_fingerprints'] ?? []),
+            ),
+            array_map(
+                static fn (mixed $value): string => (string) $value,
+                (array) ($drift['lagging_store_fingerprints'] ?? []),
+            ),
+        ))));
+
+        sort($targetStores);
+
+        return match ($recommendedAction) {
+            'investigate_store_dropout' => [
+                'response_mode' => 'contain_store_dropout',
+                'escalation_level' => 'high',
+                'should_deny_remote_mutations' => true,
+                'remote_mutation_denial_reason_code' => 'distributed_store_dropout_guard',
+                'next_step' => 'block_remote_mutations_until_store_recovers',
+                'target_store_fingerprints' => $targetStores,
+            ],
+            'rebalance_partial_visibility' => [
+                'response_mode' => 'guard_remote_mutations',
+                'escalation_level' => 'medium',
+                'should_deny_remote_mutations' => true,
+                'remote_mutation_denial_reason_code' => 'distributed_partial_visibility_guard',
+                'next_step' => 'restore_recent_store_visibility',
+                'target_store_fingerprints' => $targetStores,
+            ],
+            'monitor_recent_lag' => [
+                'response_mode' => 'observe_recent_lag',
+                'escalation_level' => $severity === 'none' ? 'low' : $severity,
+                'should_deny_remote_mutations' => false,
+                'remote_mutation_denial_reason_code' => 'distributed_recent_lag_monitor',
+                'next_step' => 'review_lagging_store_health',
+                'target_store_fingerprints' => $targetStores,
+            ],
+            'single_store_baseline' => [
+                'response_mode' => 'single_store_baseline',
+                'escalation_level' => 'none',
+                'should_deny_remote_mutations' => false,
+                'remote_mutation_denial_reason_code' => 'single_store_baseline',
+                'next_step' => 'confirm_single_store_topology',
+                'target_store_fingerprints' => [],
+            ],
+            default => [
+                'response_mode' => 'normal_operations',
+                'escalation_level' => 'none',
+                'should_deny_remote_mutations' => false,
+                'remote_mutation_denial_reason_code' => 'none',
+                'next_step' => 'continue_normal_operations',
+                'target_store_fingerprints' => [],
+            ],
+        };
     }
 
     /**

@@ -459,6 +459,7 @@ PHP
         );
         self::assertSame([], $payload['longitudinal_metrics']['activity_drift']['operational_response']['denied_remote_mutation_scopes'] ?? null);
         self::assertSame([], $payload['longitudinal_metrics']['activity_drift']['operational_response']['scope_denial_reason_codes'] ?? null);
+        self::assertSame([], $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies'] ?? null);
         self::assertSame('review_lagging_store_health', $payload['longitudinal_metrics']['activity_drift']['operational_response']['next_step'] ?? null);
         self::assertSame(['fingerprint-a'], $payload['longitudinal_metrics']['activity_drift']['operational_response']['target_store_fingerprints'] ?? null);
         self::assertSame(795, $payload['longitudinal_metrics']['activity_drift']['max_event_gap_seconds'] ?? null);
@@ -634,6 +635,66 @@ PHP
         self::assertSame(
             'distributed_partial_visibility_guard_trusted_devices_scope',
             $payload['longitudinal_metrics']['activity_drift']['operational_response']['scope_denial_reason_codes']['trusted-devices'] ?? null,
+        );
+        self::assertSame(
+            'sessions_only',
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['direct_admin']['remote_mutation_scope_policy'] ?? null,
+        );
+        self::assertSame(
+            ['sessions'],
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['direct_admin']['allowed_remote_mutation_scopes'] ?? null,
+        );
+        self::assertSame(
+            'distributed_partial_visibility_guard_direct_admin_policy',
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['direct_admin']['policy_reason_code'] ?? null,
+        );
+        self::assertSame(
+            'sessions_only',
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['direct_admin']['privilege_scope_policies']['privileged_admin']['remote_mutation_scope_policy'] ?? null,
+        );
+        self::assertSame(
+            'allow_all',
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['direct_admin']['privilege_scope_policies']['privileged_admin']['target_relation_scope_policies']['self_governed']['remote_mutation_scope_policy'] ?? null,
+        );
+        self::assertSame(
+            ['all', 'sessions', 'trusted-devices'],
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['direct_admin']['privilege_scope_policies']['privileged_admin']['target_relation_scope_policies']['self_governed']['allowed_remote_mutation_scopes'] ?? null,
+        );
+        self::assertSame(
+            'distributed_partial_visibility_guard_privileged_admin_self_governed_policy',
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['direct_admin']['privilege_scope_policies']['privileged_admin']['target_relation_scope_policies']['self_governed']['policy_reason_code'] ?? null,
+        );
+        self::assertSame(
+            'deny_all',
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['delegated_admin']['remote_mutation_scope_policy'] ?? null,
+        );
+        self::assertSame(
+            ['all', 'sessions', 'trusted-devices'],
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['delegated_admin']['denied_remote_mutation_scopes'] ?? null,
+        );
+        self::assertSame(
+            'distributed_partial_visibility_guard_delegated_admin_sessions_scope',
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['delegated_admin']['scope_denial_reason_codes']['sessions'] ?? null,
+        );
+        self::assertSame(
+            'distributed_partial_visibility_guard_delegated_admin_policy',
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['delegated_admin']['policy_reason_code'] ?? null,
+        );
+        self::assertSame(
+            'deny_all',
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['delegated_admin']['privilege_scope_policies']['delegated_support']['remote_mutation_scope_policy'] ?? null,
+        );
+        self::assertSame(
+            'sessions_only',
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['delegated_admin']['privilege_scope_policies']['delegated_support']['target_relation_scope_policies']['self_governed']['remote_mutation_scope_policy'] ?? null,
+        );
+        self::assertSame(
+            ['sessions'],
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['delegated_admin']['privilege_scope_policies']['delegated_support']['target_relation_scope_policies']['self_governed']['allowed_remote_mutation_scopes'] ?? null,
+        );
+        self::assertSame(
+            'distributed_partial_visibility_guard_delegated_support_self_governed_policy',
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['delegated_admin']['privilege_scope_policies']['delegated_support']['target_relation_scope_policies']['self_governed']['policy_reason_code'] ?? null,
         );
         self::assertSame('restore_recent_store_visibility', $payload['longitudinal_metrics']['activity_drift']['operational_response']['next_step'] ?? null);
         self::assertSame(['fingerprint-a'], $payload['longitudinal_metrics']['activity_drift']['operational_response']['target_store_fingerprints'] ?? null);

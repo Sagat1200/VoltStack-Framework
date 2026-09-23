@@ -240,7 +240,16 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         $sessionsToRevoke = $scope === 'trusted-devices' ? [] : $matchedSessions;
         $trustedDevicesToRevoke = $scope === 'sessions' ? [] : $matchedTrustedDevices;
         $distributedGuard = $this->distributedGuard($auditLogSource);
-        $distributedGuardScopeDecision = $this->distributedGuardScopeDecision($scope, $distributedGuard);
+        $actorTargetRelation = $actorContext->managementActorTargetRelation($identity, $type);
+        $actorTargetReasonCode = $actorContext->managementActorTargetReasonCode($identity, $type);
+        $distributedGuardScopeDecision = $this->distributedGuardScopeDecision(
+            $scope,
+            $distributedGuard,
+            $actorAuthorizationMode,
+            $actorContext->managementPrivilegeLevel(),
+            $actorTargetRelation,
+            $actorTargetReasonCode,
+        );
         $administrativeMetrics = $this->administrativeMetrics(
             scope: $scope,
             dryRun: $dryRun,
@@ -299,6 +308,8 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                     'management_authorized' => true,
                     'management_authorization_mode' => $actorAuthorizationMode,
                     'management_authorization_reason_code' => $actorContext->managementAuthorizationReasonCode(),
+                    'management_actor_target_relation' => $actorTargetRelation,
+                    'management_actor_target_reason_code' => $actorTargetReasonCode,
                     'management_scopes' => $actorContext->managementScopes(),
                 ],
                 'operational_context' => $operationalContext,
@@ -353,6 +364,8 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 'management_authorized' => true,
                 'management_authorization_mode' => $actorAuthorizationMode,
                 'management_authorization_reason_code' => $actorContext->managementAuthorizationReasonCode(),
+                'management_actor_target_relation' => $actorTargetRelation,
+                'management_actor_target_reason_code' => $actorTargetReasonCode,
                 'management_scopes' => $actorContext->managementScopes(),
                 'authorized' => true,
             ],
@@ -411,6 +424,8 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 'management_authorized' => true,
                 'management_authorization_mode' => $actorAuthorizationMode,
                 'management_authorization_reason_code' => $actorContext->managementAuthorizationReasonCode(),
+                'management_actor_target_relation' => $actorTargetRelation,
+                'management_actor_target_reason_code' => $actorTargetReasonCode,
                 'management_scopes' => $actorContext->managementScopes(),
             ],
             'operational_context' => $operationalContext,
@@ -466,12 +481,16 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                     ? $distributedGuard['operational_response']
                     : [];
                 $output->writeln(sprintf(
-                    'Guardia distribuida: response=%s | deny_remote=%s | reason=%s | next_step=%s | scope_policy=%s | scope_decision=%s',
+                'Guardia distribuida: response=%s | deny_remote=%s | reason=%s | next_step=%s | scope_policy=%s | actor_mode=%s | privilege=%s | relation=%s | mutation=%s | scope_decision=%s',
                     $operationalResponse['response_mode'] ?? 'normal_operations',
                     ($operationalResponse['should_deny_remote_mutations'] ?? false) ? 'si' : 'no',
                     $operationalResponse['remote_mutation_denial_reason_code'] ?? 'none',
                     $operationalResponse['next_step'] ?? 'continue_normal_operations',
                     $operationalResponse['remote_mutation_scope_policy'] ?? 'allow_all',
+                    $distributedGuardScopeDecision['authorization_mode'] ?? 'none',
+                $distributedGuardScopeDecision['actor_privilege_level'] ?? 'self_service',
+                $distributedGuardScopeDecision['actor_target_relation'] ?? 'self',
+                    $distributedGuardScopeDecision['mutation_kind'] ?? 'aggregated_device_revocation',
                     ($distributedGuardScopeDecision['should_deny'] ?? false)
                         ? 'denied:' . ($distributedGuardScopeDecision['reason_code'] ?? 'distributed_remote_mutation_guard')
                         : 'allowed',
@@ -736,50 +755,138 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
      * @param array<string, mixed> $distributedGuard
      * @return array{
      *   scope: string,
+     *   mutation_kind: string,
      *   evaluated: bool,
+     *   authorization_mode: ?string,
+     *   actor_privilege_level: ?string,
+     *   actor_target_relation: ?string,
+     *   actor_target_reason_code: ?string,
      *   should_deny: bool,
      *   reason_code: ?string,
+     *   policy_reason_code: ?string,
      *   scope_policy: string,
+     *   policy_source: string,
      *   allowed_scopes: list<string>,
      *   denied_scopes: list<string>
      * }
      */
-    private function distributedGuardScopeDecision(string $scope, array $distributedGuard): array
+    private function distributedGuardScopeDecision(
+        string $scope,
+        array $distributedGuard,
+        ?string $authorizationMode,
+        ?string $actorPrivilegeLevel,
+        ?string $actorTargetRelation,
+        ?string $actorTargetReasonCode,
+    ): array
     {
         $operationalResponse = is_array($distributedGuard['operational_response'] ?? null)
             ? $distributedGuard['operational_response']
             : [];
+        $policySource = 'global_scope_policy';
+        $selectedPolicy = $operationalResponse;
+        $selectedPolicy = $this->distributedGuardScopedPolicy(
+            $selectedPolicy,
+            'authorization_mode_scope_policies',
+            $authorizationMode,
+            'none',
+            'authorization_mode_scope_policy',
+            $policySource,
+        );
+        $selectedPolicy = $this->distributedGuardScopedPolicy(
+            $selectedPolicy,
+            'privilege_scope_policies',
+            $actorPrivilegeLevel,
+            null,
+            'privilege_scope_policy',
+            $policySource,
+        );
+        $selectedPolicy = $this->distributedGuardScopedPolicy(
+            $selectedPolicy,
+            'target_relation_scope_policies',
+            $actorTargetRelation,
+            null,
+            'actor_target_relation_scope_policy',
+            $policySource,
+        );
+
         $allowedScopes = array_values(array_map(
             static fn (mixed $value): string => (string) $value,
-            (array) ($operationalResponse['allowed_remote_mutation_scopes'] ?? []),
+            (array) ($selectedPolicy['allowed_remote_mutation_scopes'] ?? []),
         ));
         $deniedScopes = array_values(array_map(
             static fn (mixed $value): string => (string) $value,
-            (array) ($operationalResponse['denied_remote_mutation_scopes'] ?? []),
+            (array) ($selectedPolicy['denied_remote_mutation_scopes'] ?? []),
         ));
         /** @var array<string, string> $scopeReasonCodes */
         $scopeReasonCodes = array_filter(
-            (array) ($operationalResponse['scope_denial_reason_codes'] ?? []),
+            (array) ($selectedPolicy['scope_denial_reason_codes'] ?? []),
             static fn (mixed $value, mixed $key): bool => is_string($key) && is_string($value),
             ARRAY_FILTER_USE_BOTH,
         );
 
         $shouldDeny = (bool) ($distributedGuard['evaluated'] ?? false) && in_array($scope, $deniedScopes, true);
         $reasonCode = $shouldDeny
-            ? ($scopeReasonCodes[$scope] ?? $operationalResponse['remote_mutation_denial_reason_code'] ?? 'distributed_remote_mutation_guard')
+            ? ($scopeReasonCodes[$scope] ?? $selectedPolicy['remote_mutation_denial_reason_code'] ?? 'distributed_remote_mutation_guard')
             : null;
+        $mutationKind = match ($scope) {
+            'sessions' => 'session_revocation',
+            'trusted-devices' => 'trusted_device_revocation',
+            default => 'aggregated_device_revocation',
+        };
+        $policyReasonCode = $selectedPolicy['policy_reason_code'] ?? null;
 
         return [
             'scope' => $scope,
+            'mutation_kind' => $mutationKind,
             'evaluated' => (bool) ($distributedGuard['evaluated'] ?? false),
+            'authorization_mode' => $authorizationMode,
+            'actor_privilege_level' => $actorPrivilegeLevel,
+            'actor_target_relation' => $actorTargetRelation,
+            'actor_target_reason_code' => $actorTargetReasonCode,
             'should_deny' => $shouldDeny,
             'reason_code' => is_string($reasonCode) ? $reasonCode : null,
-            'scope_policy' => is_string($operationalResponse['remote_mutation_scope_policy'] ?? null)
-                ? $operationalResponse['remote_mutation_scope_policy']
+            'policy_reason_code' => is_string($policyReasonCode) ? $policyReasonCode : null,
+            'scope_policy' => is_string($selectedPolicy['remote_mutation_scope_policy'] ?? null)
+                ? $selectedPolicy['remote_mutation_scope_policy']
                 : 'allow_all',
+            'policy_source' => $policySource,
             'allowed_scopes' => $allowedScopes,
             'denied_scopes' => $deniedScopes,
         ];
+    }
+
+    /**
+     * @param array<string, mixed> $policy
+     * @return array<string, mixed>
+     */
+    private function distributedGuardScopedPolicy(
+        array $policy,
+        string $policyKey,
+        ?string $selector,
+        ?string $fallbackSelector,
+        string $source,
+        string &$policySource,
+    ): array {
+        /** @var array<string, array<string, mixed>> $policies */
+        $policies = array_filter(
+            (array) ($policy[$policyKey] ?? []),
+            static fn (mixed $value, mixed $key): bool => is_string($key) && is_array($value),
+            ARRAY_FILTER_USE_BOTH,
+        );
+
+        if (is_string($selector) && isset($policies[$selector])) {
+            $policySource = $source;
+
+            return $policies[$selector];
+        }
+
+        if (is_string($fallbackSelector) && isset($policies[$fallbackSelector])) {
+            $policySource = $source;
+
+            return $policies[$fallbackSelector];
+        }
+
+        return $policy;
     }
 
     private function normalizedString(mixed $value, string $default): string

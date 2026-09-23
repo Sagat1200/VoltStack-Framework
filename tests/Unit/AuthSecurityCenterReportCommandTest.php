@@ -141,7 +141,7 @@ PHP
         self::assertStringContainsString('Activity drift:', $output->stdout());
         self::assertStringContainsString('- detected=yes | profile=recent_lag | severity=low | lagging=1 | inactive_15m=0 | inactive_60m=0 | gap=795s | action=monitor_recent_lag | reference_store=fingerprint-a | response=observe_recent_lag', $output->stdout());
         self::assertStringContainsString('Respuesta operativa:', $output->stdout());
-        self::assertStringContainsString('- escalation=low | deny_remote=no | denial_reason=distributed_recent_lag_monitor | next_step=review_lagging_store_health | targets=1', $output->stdout());
+        self::assertStringContainsString('- escalation=low | deny_remote=no | denial_reason=distributed_recent_lag_monitor | next_step=review_lagging_store_health | scope_policy=allow_all | allow=all,sessions,trusted-devices | deny= | targets=1', $output->stdout());
         self::assertStringContainsString('Cobertura por ventana:', $output->stdout());
         self::assertStringContainsString('- last_5m | active=1/2 | inactive=1', $output->stdout());
         self::assertStringContainsString('- last_15m | active=2/2 | inactive=0', $output->stdout());
@@ -452,6 +452,13 @@ PHP
         self::assertSame('low', $payload['longitudinal_metrics']['activity_drift']['operational_response']['escalation_level'] ?? null);
         self::assertFalse($payload['longitudinal_metrics']['activity_drift']['operational_response']['should_deny_remote_mutations'] ?? true);
         self::assertSame('distributed_recent_lag_monitor', $payload['longitudinal_metrics']['activity_drift']['operational_response']['remote_mutation_denial_reason_code'] ?? null);
+        self::assertSame('allow_all', $payload['longitudinal_metrics']['activity_drift']['operational_response']['remote_mutation_scope_policy'] ?? null);
+        self::assertSame(
+            ['all', 'sessions', 'trusted-devices'],
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['allowed_remote_mutation_scopes'] ?? null,
+        );
+        self::assertSame([], $payload['longitudinal_metrics']['activity_drift']['operational_response']['denied_remote_mutation_scopes'] ?? null);
+        self::assertSame([], $payload['longitudinal_metrics']['activity_drift']['operational_response']['scope_denial_reason_codes'] ?? null);
         self::assertSame('review_lagging_store_health', $payload['longitudinal_metrics']['activity_drift']['operational_response']['next_step'] ?? null);
         self::assertSame(['fingerprint-a'], $payload['longitudinal_metrics']['activity_drift']['operational_response']['target_store_fingerprints'] ?? null);
         self::assertSame(795, $payload['longitudinal_metrics']['activity_drift']['max_event_gap_seconds'] ?? null);
@@ -570,7 +577,65 @@ PHP
         self::assertSame('high', $payload['longitudinal_metrics']['activity_drift']['operational_response']['escalation_level'] ?? null);
         self::assertTrue($payload['longitudinal_metrics']['activity_drift']['operational_response']['should_deny_remote_mutations'] ?? false);
         self::assertSame('distributed_store_dropout_guard', $payload['longitudinal_metrics']['activity_drift']['operational_response']['remote_mutation_denial_reason_code'] ?? null);
+        self::assertSame('deny_all', $payload['longitudinal_metrics']['activity_drift']['operational_response']['remote_mutation_scope_policy'] ?? null);
+        self::assertSame([], $payload['longitudinal_metrics']['activity_drift']['operational_response']['allowed_remote_mutation_scopes'] ?? null);
+        self::assertSame(
+            ['all', 'sessions', 'trusted-devices'],
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['denied_remote_mutation_scopes'] ?? null,
+        );
+        self::assertSame(
+            'distributed_store_dropout_guard_sessions_scope',
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['scope_denial_reason_codes']['sessions'] ?? null,
+        );
         self::assertSame('block_remote_mutations_until_store_recovers', $payload['longitudinal_metrics']['activity_drift']['operational_response']['next_step'] ?? null);
+        self::assertSame(['fingerprint-a'], $payload['longitudinal_metrics']['activity_drift']['operational_response']['target_store_fingerprints'] ?? null);
+    }
+
+    public function test_it_derives_a_scope_guarded_operational_response_for_partial_visibility(): void
+    {
+        $seedNow = time();
+        $app = $this->bootstrappedApplication();
+        $this->seedSecurityCenterFixtures($app, $seedNow);
+        $auditLogPath = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'audit' . DIRECTORY_SEPARATOR . 'security-center-revoke-partial-visibility.jsonl';
+        $this->seedLongitudinalPartialVisibilityAuditTrail($auditLogPath, $seedNow);
+
+        $command = new AuthSecurityCenterReportCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'auth:security-center:report',
+                '--now=' . $seedNow,
+                '--audit-log-source=' . $auditLogPath,
+                '--json',
+            ]),
+            $output,
+        );
+
+        /** @var array<string, mixed> $payload */
+        $payload = json_decode($output->stdout(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(0, $exitCode);
+        self::assertTrue($payload['longitudinal_metrics']['activity_drift']['drift_detected'] ?? false);
+        self::assertSame('partial_visibility', $payload['longitudinal_metrics']['activity_drift']['drift_profile'] ?? null);
+        self::assertSame('medium', $payload['longitudinal_metrics']['activity_drift']['severity'] ?? null);
+        self::assertSame('rebalance_partial_visibility', $payload['longitudinal_metrics']['activity_drift']['recommended_action'] ?? null);
+        self::assertSame('guard_remote_mutations', $payload['longitudinal_metrics']['activity_drift']['operational_response']['response_mode'] ?? null);
+        self::assertSame('medium', $payload['longitudinal_metrics']['activity_drift']['operational_response']['escalation_level'] ?? null);
+        self::assertTrue($payload['longitudinal_metrics']['activity_drift']['operational_response']['should_deny_remote_mutations'] ?? false);
+        self::assertSame('distributed_partial_visibility_guard', $payload['longitudinal_metrics']['activity_drift']['operational_response']['remote_mutation_denial_reason_code'] ?? null);
+        self::assertSame('sessions_only', $payload['longitudinal_metrics']['activity_drift']['operational_response']['remote_mutation_scope_policy'] ?? null);
+        self::assertSame(['sessions'], $payload['longitudinal_metrics']['activity_drift']['operational_response']['allowed_remote_mutation_scopes'] ?? null);
+        self::assertSame(
+            ['all', 'trusted-devices'],
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['denied_remote_mutation_scopes'] ?? null,
+        );
+        self::assertSame(
+            'distributed_partial_visibility_guard_trusted_devices_scope',
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['scope_denial_reason_codes']['trusted-devices'] ?? null,
+        );
+        self::assertSame('restore_recent_store_visibility', $payload['longitudinal_metrics']['activity_drift']['operational_response']['next_step'] ?? null);
         self::assertSame(['fingerprint-a'], $payload['longitudinal_metrics']['activity_drift']['operational_response']['target_store_fingerprints'] ?? null);
     }
 
@@ -901,6 +966,68 @@ PHP
                 'occurred_at' => $seedNow - 60,
                 'correlation_id' => 'dropout-corr-2',
                 'operation_id' => 'dropout-op-2',
+                'result' => 'executed',
+                'operational_context' => [
+                    'store_topology' => 'mixed_driver_topology',
+                    'store_fingerprint' => 'fingerprint-b',
+                ],
+                'administrative_metrics' => [
+                    'requested_scope' => 'sessions',
+                    'actor_scope_profile' => 'sessions_only',
+                    'actor_authorization_mode' => 'delegated_admin',
+                    'affected_total_resources' => 1,
+                ],
+                'summary' => [
+                    'revoked_sessions' => 1,
+                    'revoked_trusted_devices' => 0,
+                ],
+            ],
+        ];
+
+        file_put_contents(
+            $path,
+            implode(PHP_EOL, array_map(
+                static fn (array $event): string => (string) json_encode($event, JSON_THROW_ON_ERROR),
+                $events,
+            )) . PHP_EOL,
+        );
+    }
+
+    private function seedLongitudinalPartialVisibilityAuditTrail(string $path, int $seedNow): void
+    {
+        $directory = dirname($path);
+
+        if (! is_dir($directory)) {
+            mkdir($directory, 0777, true);
+        }
+
+        $events = [
+            [
+                'event' => 'security_center_device_revocation_executed',
+                'occurred_at' => $seedNow - 1200,
+                'correlation_id' => 'partial-corr-1',
+                'operation_id' => 'partial-op-1',
+                'result' => 'executed',
+                'operational_context' => [
+                    'store_topology' => 'shared_file_store_candidate',
+                    'store_fingerprint' => 'fingerprint-a',
+                ],
+                'administrative_metrics' => [
+                    'requested_scope' => 'all',
+                    'actor_scope_profile' => 'full',
+                    'actor_authorization_mode' => 'direct_admin',
+                    'affected_total_resources' => 2,
+                ],
+                'summary' => [
+                    'revoked_sessions' => 2,
+                    'revoked_trusted_devices' => 0,
+                ],
+            ],
+            [
+                'event' => 'security_center_device_revocation_executed',
+                'occurred_at' => $seedNow - 60,
+                'correlation_id' => 'partial-corr-2',
+                'operation_id' => 'partial-op-2',
                 'result' => 'executed',
                 'operational_context' => [
                     'store_topology' => 'mixed_driver_topology',

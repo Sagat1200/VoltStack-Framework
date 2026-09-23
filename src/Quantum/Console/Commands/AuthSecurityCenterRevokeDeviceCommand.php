@@ -240,6 +240,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         $sessionsToRevoke = $scope === 'trusted-devices' ? [] : $matchedSessions;
         $trustedDevicesToRevoke = $scope === 'sessions' ? [] : $matchedTrustedDevices;
         $distributedGuard = $this->distributedGuard($auditLogSource);
+        $distributedGuardScopeDecision = $this->distributedGuardScopeDecision($scope, $distributedGuard);
         $administrativeMetrics = $this->administrativeMetrics(
             scope: $scope,
             dryRun: $dryRun,
@@ -255,7 +256,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
 
         if (
             ! $dryRun
-            && (bool) ($distributedGuard['operational_response']['should_deny_remote_mutations'] ?? false)
+            && (bool) ($distributedGuardScopeDecision['should_deny'] ?? false)
         ) {
             $guardedAdministrativeMetrics = $this->administrativeMetrics(
                 scope: $scope,
@@ -270,8 +271,8 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 affectedTrustedDevices: count($trustedDevicesToRevoke),
             );
 
-            $denialReasonCode = is_string($distributedGuard['operational_response']['remote_mutation_denial_reason_code'] ?? null)
-                ? $distributedGuard['operational_response']['remote_mutation_denial_reason_code']
+            $denialReasonCode = is_string($distributedGuardScopeDecision['reason_code'] ?? null)
+                ? $distributedGuardScopeDecision['reason_code']
                 : 'distributed_remote_mutation_guard';
 
             $this->writeAuditEvent($auditLogPath, [
@@ -303,6 +304,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 'operational_context' => $operationalContext,
                 'administrative_metrics' => $guardedAdministrativeMetrics,
                 'distributed_guard' => $distributedGuard,
+                'distributed_guard_scope_decision' => $distributedGuardScopeDecision,
             ]);
 
             return $this->renderDistributedGuardFailure(
@@ -311,6 +313,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 'La mutacion remota fue bloqueada por la guardia distribuida del security center.',
                 $denialReasonCode,
                 $distributedGuard,
+                $distributedGuardScopeDecision,
             );
         }
 
@@ -320,6 +323,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             'operation_id' => $operationId,
             'operational_context' => $operationalContext,
             'distributed_guard' => $distributedGuard,
+            'distributed_guard_scope_decision' => $distributedGuardScopeDecision,
             'filters' => [
                 'identity' => $identity,
                 'type' => $type,
@@ -412,6 +416,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             'operational_context' => $operationalContext,
             'administrative_metrics' => $administrativeMetrics,
             'distributed_guard' => $distributedGuard,
+            'distributed_guard_scope_decision' => $distributedGuardScopeDecision,
             'summary' => $payload['summary'],
             'detail' => $payload['detail'] ?? null,
         ]);
@@ -461,11 +466,15 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                     ? $distributedGuard['operational_response']
                     : [];
                 $output->writeln(sprintf(
-                    'Guardia distribuida: response=%s | deny_remote=%s | reason=%s | next_step=%s',
+                    'Guardia distribuida: response=%s | deny_remote=%s | reason=%s | next_step=%s | scope_policy=%s | scope_decision=%s',
                     $operationalResponse['response_mode'] ?? 'normal_operations',
                     ($operationalResponse['should_deny_remote_mutations'] ?? false) ? 'si' : 'no',
                     $operationalResponse['remote_mutation_denial_reason_code'] ?? 'none',
                     $operationalResponse['next_step'] ?? 'continue_normal_operations',
+                    $operationalResponse['remote_mutation_scope_policy'] ?? 'allow_all',
+                    ($distributedGuardScopeDecision['should_deny'] ?? false)
+                        ? 'denied:' . ($distributedGuardScopeDecision['reason_code'] ?? 'distributed_remote_mutation_guard')
+                        : 'allowed',
                 ));
             }
             $output->writeln();
@@ -619,12 +628,14 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         string $message,
         string $reasonCode,
         array $distributedGuard,
+        array $distributedGuardScopeDecision,
     ): int {
         if ($json) {
             $output->writeln((string) json_encode([
                 'error' => $message,
                 'reason_code' => $reasonCode,
                 'distributed_guard' => $distributedGuard,
+                'distributed_guard_scope_decision' => $distributedGuardScopeDecision,
             ], JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
 
             return 1;
@@ -719,6 +730,56 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         $report = new AuthSecurityCenterReportCommand($this->basePath);
 
         return $report->distributedGuardFromAuditLog($auditLogSource);
+    }
+
+    /**
+     * @param array<string, mixed> $distributedGuard
+     * @return array{
+     *   scope: string,
+     *   evaluated: bool,
+     *   should_deny: bool,
+     *   reason_code: ?string,
+     *   scope_policy: string,
+     *   allowed_scopes: list<string>,
+     *   denied_scopes: list<string>
+     * }
+     */
+    private function distributedGuardScopeDecision(string $scope, array $distributedGuard): array
+    {
+        $operationalResponse = is_array($distributedGuard['operational_response'] ?? null)
+            ? $distributedGuard['operational_response']
+            : [];
+        $allowedScopes = array_values(array_map(
+            static fn (mixed $value): string => (string) $value,
+            (array) ($operationalResponse['allowed_remote_mutation_scopes'] ?? []),
+        ));
+        $deniedScopes = array_values(array_map(
+            static fn (mixed $value): string => (string) $value,
+            (array) ($operationalResponse['denied_remote_mutation_scopes'] ?? []),
+        ));
+        /** @var array<string, string> $scopeReasonCodes */
+        $scopeReasonCodes = array_filter(
+            (array) ($operationalResponse['scope_denial_reason_codes'] ?? []),
+            static fn (mixed $value, mixed $key): bool => is_string($key) && is_string($value),
+            ARRAY_FILTER_USE_BOTH,
+        );
+
+        $shouldDeny = (bool) ($distributedGuard['evaluated'] ?? false) && in_array($scope, $deniedScopes, true);
+        $reasonCode = $shouldDeny
+            ? ($scopeReasonCodes[$scope] ?? $operationalResponse['remote_mutation_denial_reason_code'] ?? 'distributed_remote_mutation_guard')
+            : null;
+
+        return [
+            'scope' => $scope,
+            'evaluated' => (bool) ($distributedGuard['evaluated'] ?? false),
+            'should_deny' => $shouldDeny,
+            'reason_code' => is_string($reasonCode) ? $reasonCode : null,
+            'scope_policy' => is_string($operationalResponse['remote_mutation_scope_policy'] ?? null)
+                ? $operationalResponse['remote_mutation_scope_policy']
+                : 'allow_all',
+            'allowed_scopes' => $allowedScopes,
+            'denied_scopes' => $deniedScopes,
+        ];
     }
 
     private function normalizedString(mixed $value, string $default): string

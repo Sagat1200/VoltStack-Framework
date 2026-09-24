@@ -48,6 +48,8 @@ final class MetadataAuthorizationContextEnricherTest extends TestCase
         $enriched = $enricher->enrich($request);
 
         self::assertTrue($enriched->context()->attribute('authorization.metadata.public'));
+        self::assertNotNull($enriched->context()->attribute('authorization.metadata.payload'));
+        self::assertNotSame('', (string) $enriched->context()->attribute('authorization.metadata.fingerprint'));
         self::assertCount(3, $enriched->context()->attribute('authorization.metadata.requirements', []));
         self::assertSame([
             ['ability' => 'documents.method-view', 'subject' => 'document', 'source' => 'method'],

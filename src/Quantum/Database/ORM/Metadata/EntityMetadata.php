@@ -67,7 +67,7 @@ final class EntityMetadata
 
     public function canonicalizeIdentifier(mixed $value): int|string
     {
-        $canonical = $this->identifier->castValue($value);
+        $canonical = $this->identifier->databaseValueFrom($this->identifier->castValue($value));
 
         if (is_int($canonical) || is_string($canonical)) {
             return $canonical;
@@ -127,7 +127,7 @@ final class EntityMetadata
                 continue;
             }
 
-            $values[$field->column] = $field->getValue($entity);
+            $values[$field->column] = $field->databaseValue($entity);
         }
 
         return $values;

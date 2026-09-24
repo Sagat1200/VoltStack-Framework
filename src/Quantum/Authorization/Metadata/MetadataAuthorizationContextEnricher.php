@@ -29,16 +29,22 @@ final readonly class MetadataAuthorizationContextEnricher implements Authorizati
         $definition = $definition instanceof ControllerDefinition ? $definition : null;
 
         $metadata = $this->metadata->resolve($match, $definition);
-        $matched = array_values(array_filter(
-            $metadata->requirements(),
-            fn (array $requirement): bool => ($requirement['ability'] ?? null) === $request->ability()->name(),
-        ));
+        $payload = $metadata->payload();
+        $matched = $payload->matchAbility($request->ability()->name());
 
         return $request->withContext($context->mergeAttributes([
             'authorization.metadata' => $metadata,
-            'authorization.metadata.public' => $metadata->public(),
-            'authorization.metadata.requirements' => $metadata->requirements(),
-            'authorization.metadata.matched_requirements' => $matched,
+            'authorization.metadata.payload' => $payload,
+            'authorization.metadata.public' => $payload->public(),
+            'authorization.metadata.requirements' => array_map(
+                static fn (AuthorizationRequirement $requirement): array => $requirement->toArray(),
+                $payload->requirements(),
+            ),
+            'authorization.metadata.matched_requirements' => array_map(
+                static fn (AuthorizationRequirement $requirement): array => $requirement->toArray(),
+                $matched,
+            ),
+            'authorization.metadata.fingerprint' => $payload->fingerprint(),
         ]));
     }
 }

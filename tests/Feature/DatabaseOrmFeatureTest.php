@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace VoltStack\Test\Feature;
 
+use DateTimeImmutable;
 use PHPUnit\Framework\TestCase;
 use Quantum\Config\ConfigRepository;
 use Quantum\Database\Contracts\ConnectionManagerInterface;
@@ -71,6 +72,8 @@ final class DatabaseOrmFeatureTest extends TestCase
             self::assertSame('orm_users', $userMetadata->table);
             self::assertSame('id', $userMetadata->identifier->column);
             self::assertSame(OrmUserRepository::class, $userMetadata->repositoryClass);
+            self::assertSame('string', $userMetadata->field('name')->type);
+            self::assertSame('bool', $userMetadata->field('active')->type);
 
             $postMetadata = $metadata->for(OrmPost::class);
             self::assertSame('orm_posts', $postMetadata->table);
@@ -185,6 +188,74 @@ final class DatabaseOrmFeatureTest extends TestCase
         }
     }
 
+    public function test_orm_types_round_trip_datetime_enum_and_json_values(): void
+    {
+        $app = $this->makeApp();
+        $scope = $app->make(ScopeManager::class);
+        $scope->begin(Request::create('/database/orm/types', 'GET'));
+
+        try {
+            $database = $app->make(DatabaseInterface::class);
+            $database->schema()->create('orm_events', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+                $table->string('status');
+                $table->string('occurred_at');
+                $table->string('payload');
+            }, true);
+
+            $metadata = $app->make(EntityMetadataRegistry::class)->for(OrmEvent::class);
+            self::assertSame('enum', $metadata->field('status')->type);
+            self::assertSame(OrmEventStatus::class, $metadata->field('status')->enumClass);
+            self::assertSame('datetime_immutable', $metadata->field('occurredAt')->type);
+            self::assertSame('json', $metadata->field('payload')->type);
+
+            $createdAt = new DateTimeImmutable('2026-09-24T10:30:15+00:00');
+            $event = OrmEvent::create([
+                'name' => 'build.finished',
+                'status' => OrmEventStatus::Published,
+                'occurredAt' => $createdAt,
+                'payload' => ['ok' => true, 'version' => 8],
+            ]);
+
+            self::assertIsInt($event->id);
+            self::assertSame(OrmEventStatus::Published, $event->status);
+            self::assertSame($createdAt->format(DATE_ATOM), $event->occurredAt->format(DATE_ATOM));
+            self::assertSame(['ok' => true, 'version' => 8], $event->payload);
+
+            $rawRow = $database->table('orm_events')->where('id', $event->id)->first();
+            self::assertSame('published', $rawRow['status'] ?? null);
+            self::assertSame($createdAt->format(DATE_ATOM), $rawRow['occurred_at'] ?? null);
+            self::assertSame('{"ok":true,"version":8}', $rawRow['payload'] ?? null);
+
+            $manager = $database->entityManager();
+            $manager->clear();
+
+            $reloaded = OrmEvent::query()
+                ->where('status', OrmEventStatus::Published)
+                ->first();
+
+            self::assertInstanceOf(OrmEvent::class, $reloaded);
+            self::assertSame(OrmEventStatus::Published, $reloaded->status);
+            self::assertInstanceOf(DateTimeImmutable::class, $reloaded->occurredAt);
+            self::assertSame($createdAt->format(DATE_ATOM), $reloaded->occurredAt->format(DATE_ATOM));
+            self::assertSame(['ok' => true, 'version' => 8], $reloaded->payload);
+
+            $reloaded->status = OrmEventStatus::Draft;
+            $reloaded->payload = ['ok' => false, 'version' => 9];
+            self::assertTrue($reloaded->save());
+
+            $manager->clear();
+
+            $updated = OrmEvent::find($event->id);
+            self::assertInstanceOf(OrmEvent::class, $updated);
+            self::assertSame(OrmEventStatus::Draft, $updated->status);
+            self::assertSame(['ok' => false, 'version' => 9], $updated->payload);
+        } finally {
+            $scope->end();
+        }
+    }
+
     private function makeApp(): Application
     {
         $app = new Application($this->basePath);
@@ -268,4 +339,30 @@ final class OrmPost extends Model
 
     #[Column]
     public bool $published = false;
+}
+
+enum OrmEventStatus: string
+{
+    case Draft = 'draft';
+    case Published = 'published';
+}
+
+final class OrmEvent extends Model
+{
+    protected static string $table = 'orm_events';
+
+    #[Id]
+    public ?int $id = null;
+
+    #[Column]
+    public string $name;
+
+    #[Column(type: 'enum', enumType: OrmEventStatus::class)]
+    public OrmEventStatus $status;
+
+    #[Column(name: 'occurred_at', type: 'datetime_immutable')]
+    public DateTimeImmutable $occurredAt;
+
+    #[Column(type: 'json')]
+    public array $payload = [];
 }

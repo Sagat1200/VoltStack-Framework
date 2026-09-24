@@ -251,7 +251,7 @@ final class EntityManager implements EntityManagerInterface
 
         foreach ($current as $field => $value) {
             if (! array_key_exists($field, $original) || $original[$field] !== $value) {
-                $changes[$metadata->field($field)->column] = $value;
+                $changes[$metadata->field($field)->column] = $metadata->field($field)->databaseValueFrom($value);
             }
         }
 

@@ -439,10 +439,17 @@ PHP
         self::assertSame('aggregated_device_revocation', $payload['longitudinal_metrics']['mutation_actor_profiles'][0]['mutation_kind'] ?? null);
         self::assertSame('direct_admin', $payload['longitudinal_metrics']['mutation_actor_profiles'][0]['authorization_mode'] ?? null);
         self::assertSame('authorization_mode_scope_policy', $payload['longitudinal_metrics']['mutation_actor_profiles'][0]['policy_source'] ?? null);
+        self::assertSame(2, $payload['longitudinal_metrics']['mutation_actor_profiles'][0]['affected_resources']['total'] ?? null);
+        self::assertSame(
+            ['sessions', 'trusted-devices'],
+            $payload['longitudinal_metrics']['mutation_actor_profiles'][0]['affected_resource_kinds'] ?? null,
+        );
         self::assertSame(['fingerprint-a'], $payload['longitudinal_metrics']['mutation_actor_profiles'][0]['store_fingerprints'] ?? null);
         self::assertSame('session_revocation', $payload['longitudinal_metrics']['mutation_actor_profiles'][1]['mutation_kind'] ?? null);
         self::assertSame('delegated_support', $payload['longitudinal_metrics']['mutation_actor_profiles'][1]['actor_privilege_level'] ?? null);
         self::assertSame('delegated_admin_sessions_scope_target', $payload['longitudinal_metrics']['mutation_actor_profiles'][1]['actor_target_scope_relation'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['mutation_actor_profiles'][1]['affected_resources']['sessions'] ?? null);
+        self::assertSame(['sessions'], $payload['longitudinal_metrics']['mutation_actor_profiles'][1]['affected_resource_kinds'] ?? null);
         self::assertSame(
             'distributed_recent_lag_guard_delegated_support_delegated_sessions_target_policy',
             $payload['longitudinal_metrics']['mutation_actor_profiles'][1]['policy_reason_code'] ?? null,
@@ -534,6 +541,28 @@ PHP
         self::assertSame('global_scope_policy', $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['policy_source'] ?? null);
         self::assertFalse($payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['should_deny'] ?? true);
         self::assertSame(['fingerprint-a'], $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['target_store_fingerprints'] ?? null);
+        self::assertSame(
+            ['sessions', 'trusted-devices'],
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['targeted_resource_kinds'] ?? null,
+        );
+        self::assertSame(
+            ['sessions', 'trusted-devices'],
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['observed_affected_resource_kinds'] ?? null,
+        );
+        self::assertSame(
+            2,
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['observed_affected_resources']['total'] ?? null,
+        );
+        self::assertFalse(
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['has_partial_observed_resource_coverage'] ?? true,
+        );
+        self::assertSame(
+            ['fingerprint-a'],
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['degraded_target_store_fingerprints'] ?? null,
+        );
+        self::assertTrue(
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['has_degraded_target_stores'] ?? false,
+        );
         $recentLagAllActorAwareProfiles = array_values(array_filter(
             (array) ($payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['actor_aware_profiles'] ?? []),
             static fn (array $profile): bool => ($profile['actor_target_scope_relation'] ?? null) === 'direct_admin_full_scope_target',
@@ -545,6 +574,10 @@ PHP
         );
         self::assertCount(1, $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['observed_actor_profiles'] ?? []);
         self::assertSame('direct_admin', $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['observed_actor_profiles'][0]['authorization_mode'] ?? null);
+        self::assertSame(
+            ['sessions', 'trusted-devices'],
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['observed_actor_profiles'][0]['affected_resource_kinds'] ?? null,
+        );
         self::assertSame(['fingerprint-a'], $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['observed_actor_profiles'][0]['store_fingerprints'] ?? null);
         self::assertSame(795, $payload['longitudinal_metrics']['activity_drift']['max_event_gap_seconds'] ?? null);
         self::assertSame(0, $payload['longitudinal_metrics']['activity_drift']['inactive_stores_last_15m'] ?? null);
@@ -613,6 +646,10 @@ PHP
         self::assertSame($seedNow - 800, $payload['longitudinal_metrics']['store_cohorts'][0]['latest_event_at'] ?? null);
         self::assertCount(2, $payload['longitudinal_metrics']['store_cohorts'][0]['mutation_actor_profiles'] ?? []);
         self::assertSame('aggregated_device_revocation', $payload['longitudinal_metrics']['store_cohorts'][0]['mutation_actor_profiles'][0]['mutation_kind'] ?? null);
+        self::assertSame(
+            ['sessions', 'trusted-devices'],
+            $payload['longitudinal_metrics']['store_cohorts'][0]['mutation_actor_profiles'][0]['affected_resource_kinds'] ?? null,
+        );
         self::assertSame('session_revocation', $payload['longitudinal_metrics']['store_cohorts'][0]['mutation_actor_profiles'][1]['mutation_kind'] ?? null);
         self::assertSame('fingerprint-b', $payload['longitudinal_metrics']['store_cohorts'][1]['store_fingerprint'] ?? null);
         self::assertSame(1, $payload['longitudinal_metrics']['store_cohorts'][1]['event_count'] ?? null);
@@ -873,6 +910,29 @@ PHP
         self::assertSame('trusted_device_revocation', $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][2]['mutation_kind'] ?? null);
         self::assertSame('global_scope_policy', $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][2]['policy_source'] ?? null);
         self::assertTrue($payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][2]['should_deny'] ?? false);
+        self::assertSame(
+            ['sessions', 'trusted-devices'],
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['targeted_resource_kinds'] ?? null,
+        );
+        self::assertSame(
+            ['sessions'],
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['observed_affected_resource_kinds'] ?? null,
+        );
+        self::assertSame(
+            ['trusted-devices'],
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['missing_targeted_resource_kinds'] ?? null,
+        );
+        self::assertTrue(
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['has_partial_observed_resource_coverage'] ?? false,
+        );
+        self::assertSame(
+            ['fingerprint-a'],
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['degraded_target_store_fingerprints'] ?? null,
+        );
+        self::assertSame(
+            1,
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['target_store_statuses']['inactive_15m'] ?? null,
+        );
         $partialTrustedActorAwareProfiles = array_values(array_filter(
             (array) ($payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][2]['actor_aware_profiles'] ?? []),
             static fn (array $profile): bool => ($profile['actor_target_scope_relation'] ?? null) === 'direct_admin_trusted_devices_scope_target',

@@ -9,6 +9,9 @@ use Quantum\Database\ORM\Attributes\Entity;
 use Quantum\Database\ORM\Attributes\Id;
 use Quantum\Database\ORM\Attributes\Table;
 use Quantum\Database\ORM\Model;
+use Quantum\Database\ORM\Types\TypeRegistry;
+use BackedEnum;
+use DateTimeImmutable;
 use ReflectionAttribute;
 use ReflectionClass;
 use ReflectionProperty;
@@ -20,6 +23,11 @@ final class EntityMetadataRegistry
      * @var array<class-string, EntityMetadata>
      */
     private array $metadata = [];
+
+    public function __construct(
+        private readonly ?TypeRegistry $types = null,
+    ) {
+    }
 
     public function has(string $entityClass): bool
     {
@@ -106,6 +114,8 @@ final class EntityMetadataRegistry
         $column = $columnAttributes !== []
             ? $columnAttributes[0]->newInstance()
             : null;
+        $type = $this->resolveType($property, $column);
+        $enumClass = $this->resolveEnumClass($property, $column, $type);
 
         return new EntityFieldMetadata(
             name: $property->getName(),
@@ -113,8 +123,78 @@ final class EntityMetadataRegistry
                 ? trim($column->name)
                 : $this->toSnakeCase($property->getName()),
             property: $property,
+            type: $type,
+            enumClass: $enumClass,
+            typeHandler: $type !== null ? $this->typeRegistry()->for($type) : null,
             identifier: $hasId,
         );
+    }
+
+    private function resolveType(ReflectionProperty $property, ?Column $column): ?string
+    {
+        $explicit = $column?->type !== null && trim($column->type) !== ''
+            ? trim($column->type)
+            : null;
+
+        if ($explicit !== null) {
+            return $explicit;
+        }
+
+        $phpType = $this->propertyType($property);
+
+        if ($phpType === null) {
+            return null;
+        }
+
+        if (enum_exists($phpType) && is_subclass_of($phpType, BackedEnum::class)) {
+            return 'enum';
+        }
+
+        return match ($phpType) {
+            'int', 'float', 'bool', 'string' => $phpType,
+            'array' => 'json',
+            DateTimeImmutable::class => 'datetime_immutable',
+            default => null,
+        };
+    }
+
+    /**
+     * @param class-string<BackedEnum>|null $enumClass
+     * @return class-string<BackedEnum>|null
+     */
+    private function resolveEnumClass(ReflectionProperty $property, ?Column $column, ?string $type): ?string
+    {
+        $enumClass = $column?->enumType;
+
+        if ($enumClass === null && $type === 'enum') {
+            $phpType = $this->propertyType($property);
+            $enumClass = is_string($phpType) && enum_exists($phpType) ? $phpType : null;
+        }
+
+        if ($enumClass === null) {
+            return null;
+        }
+
+        if (! enum_exists($enumClass) || ! is_subclass_of($enumClass, BackedEnum::class)) {
+            throw new RuntimeException(sprintf(
+                'Field [%s::%s] must declare a valid backed enum class.',
+                $property->getDeclaringClass()->getName(),
+                $property->getName(),
+            ));
+        }
+
+        return $enumClass;
+    }
+
+    private function propertyType(ReflectionProperty $property): ?string
+    {
+        $type = $property->getType();
+
+        if (! $type instanceof \ReflectionNamedType) {
+            return null;
+        }
+
+        return $type->getName();
     }
 
     private function resolveTable(ReflectionClass $reflection): string
@@ -171,5 +251,10 @@ final class EntityMetadataRegistry
         $normalized = preg_replace('/(?<!^)[A-Z]/', '_$0', $value);
 
         return strtolower($normalized ?? $value);
+    }
+
+    private function typeRegistry(): TypeRegistry
+    {
+        return $this->types ?? new TypeRegistry();
     }
 }

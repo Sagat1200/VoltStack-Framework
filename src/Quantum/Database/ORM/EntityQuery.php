@@ -22,15 +22,16 @@ final class EntityQuery
 
     public function where(string $field, mixed $operatorOrValue, mixed $value = null): self
     {
-        $column = $this->metadata->field($field)->column;
+        $metadata = $this->metadata->field($field);
+        $column = $metadata->column;
 
         if (func_num_args() === 2) {
-            $this->query->where($column, $operatorOrValue);
+            $this->query->where($column, $metadata->databaseValueFrom($operatorOrValue));
 
             return $this;
         }
 
-        $this->query->where($column, $operatorOrValue, $value);
+        $this->query->where($column, $operatorOrValue, $metadata->databaseValueFrom($value));
 
         return $this;
     }

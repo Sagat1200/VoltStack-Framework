@@ -35,11 +35,12 @@ final class AuthorizationMetadataResolverTest extends TestCase
         );
 
         self::assertTrue($metadata->public());
+        self::assertNotSame('', $metadata->payload()->fingerprint());
         self::assertSame([
             ['ability' => 'documents.class-view', 'subject' => null, 'source' => 'class'],
             ['ability' => 'documents.method-view', 'subject' => 'document', 'source' => 'method'],
             ['ability' => 'documents.route-view', 'subject' => 'document', 'source' => 'route'],
-        ], $metadata->requirements());
+        ], $metadata->requirementsAsArray());
     }
 
     public function test_it_resolves_route_only_authorization_metadata_without_controller_definition(): void
@@ -57,7 +58,7 @@ final class AuthorizationMetadataResolverTest extends TestCase
         self::assertTrue($metadata->public());
         self::assertSame([
             ['ability' => 'documents.route-view', 'subject' => 'document', 'source' => 'route'],
-        ], $metadata->requirements());
+        ], $metadata->requirementsAsArray());
     }
 }
 

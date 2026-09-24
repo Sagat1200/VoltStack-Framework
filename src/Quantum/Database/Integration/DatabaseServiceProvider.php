@@ -31,6 +31,7 @@ use Quantum\Database\ORM\Contracts\EntityManagerInterface;
 use Quantum\Database\ORM\EntityManager;
 use Quantum\Database\ORM\IdentityMap;
 use Quantum\Database\ORM\Metadata\EntityMetadataRegistry;
+use Quantum\Database\ORM\Types\TypeRegistry;
 use Quantum\Database\ORM\UnitOfWork;
 use Quantum\Database\Platform\PlatformResolver;
 use Quantum\Database\Query\Ast\QueryAstFactory;
@@ -95,7 +96,10 @@ final class DatabaseServiceProvider extends ServiceProvider
         $this->app->singleton(QueryAstFactory::class);
         $this->app->singleton(MigrationDiscovery::class);
         $this->app->singleton(DatabaseScopeLifecycleManager::class);
-        $this->app->singleton(EntityMetadataRegistry::class);
+        $this->app->singleton(TypeRegistry::class);
+        $this->app->singleton(EntityMetadataRegistry::class, fn(Application $app): EntityMetadataRegistry => new EntityMetadataRegistry(
+            $app->make(TypeRegistry::class),
+        ));
         $this->app->singleton(DatabaseTelemetryEmitter::class, fn(Application $app): DatabaseTelemetryEmitter => new DatabaseTelemetryEmitter(
             $app->make(\Quantum\Telemetry\Contracts\TelemetryManagerInterface::class),
             $app->make(DatabaseConfiguration::class),

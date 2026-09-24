@@ -452,7 +452,7 @@ final class ControllerEngine
 
                 return [
                     'public' => $resolved->public(),
-                    'requirements' => $resolved->requirements(),
+                    'requirements' => $resolved->requirementsAsArray(),
                 ];
             }
         } catch (Throwable) {

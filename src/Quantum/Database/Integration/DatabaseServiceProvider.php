@@ -11,9 +11,13 @@ use Quantum\Database\Connection\ConnectionFactory;
 use Quantum\Database\Connection\ConnectionManager;
 use Quantum\Database\Contracts\ConnectionManagerInterface;
 use Quantum\Database\Contracts\DatabaseConfigurationProviderInterface;
+use Quantum\Database\Contracts\QueryExecutorInterface;
+use Quantum\Database\Contracts\StatementExecutorInterface;
 use Quantum\Database\Dialect\DialectResolver;
 use Quantum\Database\Driver\DriverRegistry;
 use Quantum\Database\Driver\PdoDriver;
+use Quantum\Database\Execution\QueryExecutor;
+use Quantum\Database\Execution\StatementExecutor;
 use Quantum\Database\Platform\PlatformResolver;
 use Quantum\Database\Runtime\DatabaseContext;
 use Quantum\Database\Runtime\DatabaseExecutionScope;
@@ -89,6 +93,14 @@ final class DatabaseServiceProvider extends ServiceProvider
             $app->make(ConnectionFactory::class),
         ));
         $this->app->scoped(ConnectionManagerInterface::class, fn(Application $app): ConnectionManagerInterface => $app->make(ConnectionManager::class));
+        $this->app->scoped(StatementExecutor::class, fn(Application $app): StatementExecutor => new StatementExecutor(
+            $app->make(ConnectionManagerInterface::class),
+        ));
+        $this->app->scoped(StatementExecutorInterface::class, fn(Application $app): StatementExecutorInterface => $app->make(StatementExecutor::class));
+        $this->app->scoped(QueryExecutor::class, fn(Application $app): QueryExecutor => new QueryExecutor(
+            $app->make(StatementExecutorInterface::class),
+        ));
+        $this->app->scoped(QueryExecutorInterface::class, fn(Application $app): QueryExecutorInterface => $app->make(QueryExecutor::class));
 
         $this->app->onScopeStart(function (Application $app, RuntimeContext $context): void {
             $app->make(DatabaseScopeLifecycleManager::class)->start($context);

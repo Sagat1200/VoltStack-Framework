@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace VoltStack\Test\Feature;
 
 use PHPUnit\Framework\TestCase;
+use Quantum\Authorization\Attributes\Authorize;
+use Quantum\Authorization\Policy\Attributes\PolicyFor;
+use Quantum\Config\ConfigRepository;
 use Quantum\Http\Request;
 use Quantum\HttpKernel\HttpKernel;
 use Quantum\Routing\Router;
@@ -142,6 +145,40 @@ final class ExceptionHandlingTest extends TestCase
         self::assertSame('controller.method_not_found', $response->headers()['X-Volt-Error-Code'] ?? null);
     }
 
+    public function test_it_maps_declarative_authorization_denials_to_a_403_json_response(): void
+    {
+        $this->app->make(ConfigRepository::class)->set('authorization', [
+            'policies' => [
+                ExceptionHandlingProtectedControllerPolicy::class,
+            ],
+        ]);
+
+        $router = $this->app->make(Router::class);
+        $router->get('/authorization-protected', ExceptionHandlingProtectedController::class);
+
+        $response = $this->app->make(HttpKernel::class)->handle(Request::create(
+            '/authorization-protected',
+            'GET',
+            [],
+            [],
+            [],
+            [],
+            [],
+            [
+                'HTTP_ACCEPT' => 'application/json',
+            ],
+        ));
+
+        self::assertSame(403, $response->statusCode());
+        self::assertSame('explicit_deny', $response->headers()['X-Volt-Error-Code'] ?? null);
+
+        /** @var array<string, mixed> $payload */
+        $payload = json_decode($response->content(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame('explicit_deny', $payload['reason_code'] ?? null);
+        self::assertSame(ExceptionHandlingProtectedControllerPolicy::class, $payload['source'] ?? null);
+    }
+
     private function removeDirectory(string $directory): void
     {
         if (! is_dir($directory)) {
@@ -175,4 +212,22 @@ final class ExceptionHandlingTest extends TestCase
 
 final class TestBrokenController
 {
+}
+
+#[Authorize('view')]
+final class ExceptionHandlingProtectedController
+{
+    public function __invoke(): string
+    {
+        return 'hidden';
+    }
+}
+
+#[PolicyFor(ExceptionHandlingProtectedController::class)]
+final class ExceptionHandlingProtectedControllerPolicy
+{
+    public function view(): bool
+    {
+        return false;
+    }
 }

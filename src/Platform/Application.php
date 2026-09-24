@@ -7,6 +7,7 @@ namespace VoltStack\Framework;
 use Quantum\Config\ConfigRepository;
 use Quantum\Auth\AuthenticationServiceProvider;
 use Quantum\Authorization\AuthorizationServiceProvider;
+use Quantum\Authorization\Exceptions\AuthorizationExceptionMapper;
 use Quantum\Database\Integration\DatabaseServiceProvider;
 use Quantum\Auth\Exceptions\AuthExceptionMapper;
 use Quantum\Cache\CacheManager;
@@ -712,6 +713,7 @@ class Application extends Container
                     $securityMapper = new \Quantum\Controllers\Security\Exceptions\ControllerSecurityExceptionMapper($errorResponsesConfig);
                     $handler->addMapper($securityMapper);
                     $handler->addMapper(new AuthExceptionMapper());
+                    $handler->addMapper(new AuthorizationExceptionMapper());
                 } catch (\Throwable) {
                 }
 

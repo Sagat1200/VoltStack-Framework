@@ -293,6 +293,43 @@ final class Route extends CompiledRoute
         return $this->meta('auth', $value);
     }
 
+    public function authorize(string $ability, string|array|null $subject = null): static
+    {
+        $authorization = $this->definition()->metadata()['authorization'] ?? [];
+
+        if (! is_array($authorization)) {
+            $authorization = [];
+        }
+
+        $requirements = $authorization['requirements'] ?? [];
+
+        if (! is_array($requirements)) {
+            $requirements = [];
+        }
+
+        $requirements[] = [
+            'ability' => trim($ability),
+            'subject' => $subject,
+        ];
+
+        $authorization['requirements'] = $requirements;
+
+        return $this->meta('authorization', $authorization);
+    }
+
+    public function publicAccess(bool $enabled = true): static
+    {
+        $authorization = $this->definition()->metadata()['authorization'] ?? [];
+
+        if (! is_array($authorization)) {
+            $authorization = [];
+        }
+
+        $authorization['public'] = $enabled;
+
+        return $this->meta('authorization', $authorization);
+    }
+
     public function guest(mixed $value = true): static
     {
         return $this->meta('guest', $value);

@@ -68,9 +68,7 @@ final class AuthorizationManager implements AuthorizationManagerInterface
                 );
             }
 
-            $policy = $this->policies->resolve($request->subject()->className());
-
-            if ($policy !== null) {
+            foreach ($this->policies->resolveAll($request->subject()->className()) as $policy) {
                 $results[] = $this->policyDispatcher->dispatch($policy, $request);
             }
 

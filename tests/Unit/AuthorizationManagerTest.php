@@ -9,6 +9,7 @@ use Quantum\Authorization\Contracts\AuthorizationManagerInterface;
 use Quantum\Authorization\Contracts\PrincipalInterface;
 use Quantum\Authorization\Exceptions\AuthorizationDeniedException;
 use Quantum\Authorization\Gate\GateRegistry;
+use Quantum\Authorization\Policy\Attributes\PolicyFor;
 use Quantum\Authorization\Policy\PolicyRegistry;
 use Quantum\Authorization\Principal\Principal;
 use VoltStack\Framework\Application;
@@ -70,6 +71,27 @@ final class AuthorizationManagerTest extends TestCase
 
         $app->make(AuthorizationManagerInterface::class)->authorize('reports.export');
     }
+
+    public function test_policy_registry_registers_attribute_declared_policies_from_config_lists(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(PolicyRegistry::class)->registerFromConfig([
+            AttributeConfiguredArticlePolicy::class,
+        ]);
+
+        $manager = $app->make(AuthorizationManagerInterface::class);
+
+        self::assertTrue($manager->check(
+            'publish',
+            new AuthorizationArticle(7),
+            principal: new Principal('7'),
+        ));
+        self::assertFalse($manager->check(
+            'publish',
+            new AuthorizationArticle(7),
+            principal: new Principal('9'),
+        ));
+    }
 }
 
 final readonly class AuthorizationArticle
@@ -82,6 +104,15 @@ final readonly class AuthorizationArticle
 final class AuthorizationArticlePolicy
 {
     public function update(PrincipalInterface $principal, AuthorizationArticle $article): bool
+    {
+        return $principal->id() === (string) $article->ownerId;
+    }
+}
+
+#[PolicyFor(AuthorizationArticle::class)]
+final class AttributeConfiguredArticlePolicy
+{
+    public function publish(PrincipalInterface $principal, AuthorizationArticle $article): bool
     {
         return $principal->id() === (string) $article->ownerId;
     }

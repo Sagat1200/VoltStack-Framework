@@ -6,6 +6,9 @@ namespace Quantum\Controllers;
 
 use Quantum\Compilation\CompiledControllerFactory;
 use Quantum\Compilation\Contracts\CompiledControllerFactoryInterface;
+use Quantum\Authorization\Attributes\Authorize;
+use Quantum\Authorization\Attributes\PublicAccess;
+use Quantum\Authorization\Contracts\AuthorizationManagerInterface;
 use Quantum\Controllers\ControllerContext;
 use Quantum\Controllers\ControllerDefinition;
 use Quantum\Controllers\ControllerExecutionContext;
@@ -61,6 +64,7 @@ final class ControllerEngine
         private readonly ResponseNormalizer $normalizer,
         private readonly ?CompiledControllerFactoryInterface $compiledFactory = null,
         private readonly ?ControllerSecurityManagerInterface $securityManager = null,
+        private readonly ?AuthorizationManagerInterface $authorizationManager = null,
     ) {
         $enabled = $this->app->config('controller_compilation.enabled', false);
         $this->compilationGloballyEnabled = is_bool($enabled) ? $enabled : (bool) $enabled;
@@ -252,6 +256,18 @@ final class ControllerEngine
                 }
             }
 
+            $authorizationMetadata = $this->extractAuthorizationMetadata($match, $definition);
+
+            if (($authorizationMetadata['public'] ?? false) !== true && $this->authorizationManager !== null) {
+                $this->assertAuthorizationMetadata(
+                    $authorizationMetadata,
+                    $definition,
+                    $resolved->method(),
+                    $resolved->instance()::class,
+                    $arguments,
+                );
+            }
+
             $execution->setState(ControllerExecutionState::Running);
             $this->observability->emit('controllers.execution.started', $execution);
 
@@ -421,6 +437,82 @@ final class ControllerEngine
     }
 
     /**
+     * @return array{public?: bool, requirements?: list<array{ability:string,subject:mixed,source:string}>}
+     */
+    private function extractAuthorizationMetadata(RouteMatch $match, ?ControllerDefinition $definition = null): array
+    {
+        $meta = [
+            'requirements' => [],
+        ];
+
+        try {
+            $routeMeta = $match->route()->metadata();
+            $raw = method_exists($routeMeta, 'raw')
+                ? $routeMeta->raw()
+                : (method_exists($routeMeta, 'all') ? $routeMeta->all() : []);
+
+            if (is_array($raw)) {
+                $authorization = $raw['authorization'] ?? null;
+
+                if (is_array($authorization)) {
+                    if (array_key_exists('public', $authorization)) {
+                        $meta['public'] = (bool) $authorization['public'];
+                    }
+
+                    if (isset($authorization['requirements']) && is_array($authorization['requirements'])) {
+                        foreach ($authorization['requirements'] as $requirement) {
+                            if (! is_array($requirement) || ! isset($requirement['ability']) || ! is_string($requirement['ability'])) {
+                                continue;
+                            }
+
+                            $meta['requirements'][] = [
+                                'ability' => trim($requirement['ability']),
+                                'subject' => $requirement['subject'] ?? null,
+                                'source' => 'route',
+                            ];
+                        }
+                    }
+                }
+            }
+        } catch (Throwable) {
+        }
+
+        if ($definition === null) {
+            return $meta;
+        }
+
+        try {
+            [$controllerClass, $method] = $this->controllerParts($definition);
+
+            if ($controllerClass === null || ! class_exists($controllerClass)) {
+                return $meta;
+            }
+
+            $classReflection = new ReflectionClass($controllerClass);
+            $classAttrs = $this->collectAuthorizationAttributes($classReflection, 'class');
+            $methodAttrs = [];
+
+            if ($method !== null && method_exists($controllerClass, $method)) {
+                $methodReflection = new ReflectionMethod($controllerClass, $method);
+                $methodAttrs = $this->collectAuthorizationAttributes($methodReflection, 'method');
+            }
+
+            $merged = $this->mergeAuthorizationLayers($classAttrs, $methodAttrs);
+
+            if (($merged['public'] ?? false) === true) {
+                $meta['public'] = true;
+            }
+
+            foreach ($merged['requirements'] ?? [] as $requirement) {
+                $meta['requirements'][] = $requirement;
+            }
+        } catch (Throwable) {
+        }
+
+        return $meta;
+    }
+
+    /**
      * @param ReflectionClass|ReflectionMethod $reflection
      * @return array<string, mixed>
      */
@@ -474,6 +566,39 @@ final class ControllerEngine
     }
 
     /**
+     * @param ReflectionClass|ReflectionMethod $reflection
+     * @return array{public?: bool, requirements:list<array{ability:string,subject:mixed,source:string}>}
+     */
+    private function collectAuthorizationAttributes(ReflectionClass|ReflectionMethod $reflection, string $source): array
+    {
+        $collected = [
+            'requirements' => [],
+        ];
+
+        $public = $reflection->getAttributes(PublicAccess::class, ReflectionAttribute::IS_INSTANCEOF);
+        if ($public !== []) {
+            $collected['public'] = true;
+        }
+
+        foreach ($reflection->getAttributes(Authorize::class, ReflectionAttribute::IS_INSTANCEOF) as $attribute) {
+            $instance = $attribute->newInstance();
+            $ability = trim($instance->ability);
+
+            if ($ability === '') {
+                continue;
+            }
+
+            $collected['requirements'][] = [
+                'ability' => $ability,
+                'subject' => $instance->subject,
+                'source' => $source,
+            ];
+        }
+
+        return $collected;
+    }
+
+    /**
      * @param array<string, mixed> $classAttrs
      * @param array<string, mixed> $methodAttrs
      * @return array<string, mixed>
@@ -501,6 +626,151 @@ final class ControllerEngine
         }
 
         return $merged;
+    }
+
+    /**
+     * @param array{public?: bool, requirements?: list<array{ability:string,subject:mixed,source:string}>} $classAttrs
+     * @param array{public?: bool, requirements?: list<array{ability:string,subject:mixed,source:string}>} $methodAttrs
+     * @return array{public?: bool, requirements:list<array{ability:string,subject:mixed,source:string}>}
+     */
+    private function mergeAuthorizationLayers(array $classAttrs, array $methodAttrs): array
+    {
+        $merged = [
+            'requirements' => [],
+        ];
+
+        if (($classAttrs['public'] ?? false) === true || ($methodAttrs['public'] ?? false) === true) {
+            $merged['public'] = true;
+        }
+
+        foreach ($classAttrs['requirements'] ?? [] as $requirement) {
+            $merged['requirements'][] = $requirement;
+        }
+
+        foreach ($methodAttrs['requirements'] ?? [] as $requirement) {
+            $merged['requirements'][] = $requirement;
+        }
+
+        return $merged;
+    }
+
+    /**
+     * @param array{public?: bool, requirements?: list<array{ability:string,subject:mixed,source:string}>} $metadata
+     * @param array<int, mixed> $arguments
+     */
+    private function assertAuthorizationMetadata(
+        array $metadata,
+        ControllerDefinition $definition,
+        string $method,
+        string $controllerClass,
+        array $arguments,
+    ): void {
+        $argumentMap = $this->resolvedArgumentMap($controllerClass, $method, $arguments);
+
+        foreach ($metadata['requirements'] ?? [] as $requirement) {
+            $subject = $this->resolveAuthorizationSubject(
+                $requirement['subject'] ?? null,
+                $requirement['source'] ?? 'method',
+                $controllerClass,
+                $argumentMap,
+            );
+
+            $this->authorizationManager?->authorize(
+                $requirement['ability'],
+                $subject,
+            );
+        }
+    }
+
+    /**
+     * @param array<int, mixed> $arguments
+     * @return array<string, mixed>
+     */
+    private function resolvedArgumentMap(string $controllerClass, string $method, array $arguments): array
+    {
+        $reflection = new ReflectionMethod($controllerClass, $method);
+        $map = [];
+
+        foreach ($reflection->getParameters() as $index => $parameter) {
+            if (array_key_exists($index, $arguments)) {
+                $map[$parameter->getName()] = $arguments[$index];
+            }
+        }
+
+        return $map;
+    }
+
+    /**
+     * @param array<string, mixed> $arguments
+     */
+    private function resolveAuthorizationSubject(
+        mixed $subject,
+        string $source,
+        string $controllerClass,
+        array $arguments,
+    ): mixed {
+        if ($subject === null) {
+            return $source === 'class'
+                ? $controllerClass
+                : null;
+        }
+
+        if (is_array($subject)) {
+            return array_map(
+                fn (mixed $entry): mixed => $this->resolveAuthorizationSubject($entry, $source, $controllerClass, $arguments),
+                $subject,
+            );
+        }
+
+        if (! is_string($subject)) {
+            return $subject;
+        }
+
+        $normalized = trim($subject);
+
+        if ($normalized === '') {
+            return null;
+        }
+
+        if (array_key_exists($normalized, $arguments)) {
+            return $arguments[$normalized];
+        }
+
+        if (class_exists($normalized)) {
+            return $normalized;
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * @return array{0:?string,1:?string}
+     */
+    private function controllerParts(ControllerDefinition $definition): array
+    {
+        $action = $definition->action();
+
+        if (is_string($action) && str_contains($action, '@')) {
+            [$controllerClass, $method] = explode('@', $action, 2);
+
+            return [$controllerClass, $method];
+        }
+
+        if (is_string($action)) {
+            return [$action, '__invoke'];
+        }
+
+        if (is_array($action) && isset($action[0], $action[1])) {
+            $controllerClass = is_object($action[0]) ? get_class($action[0]) : (string) $action[0];
+
+            return [$controllerClass, (string) $action[1]];
+        }
+
+        if (is_object($action) && ! $action instanceof \Closure) {
+            return [get_class($action), method_exists($action, '__invoke') ? '__invoke' : null];
+        }
+
+        return [null, null];
     }
 
     private function evaluateTimeout(ControllerExecution $execution): void

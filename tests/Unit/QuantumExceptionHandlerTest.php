@@ -12,6 +12,10 @@ use Quantum\Auth\Exceptions\GuestOnlyException;
 use Quantum\Auth\Exceptions\RevokedAuthenticationSessionException;
 use Quantum\Auth\Exceptions\StaleAuthenticationSessionException;
 use Quantum\Auth\Exceptions\StepUpRequiredException;
+use Quantum\Authorization\Decision\DecisionResult;
+use Quantum\Authorization\Exceptions\AuthorizationChallengeException as FrameworkAuthorizationChallengeException;
+use Quantum\Authorization\Exceptions\AuthorizationDeniedException as FrameworkAuthorizationDeniedException;
+use Quantum\Authorization\Exceptions\AuthorizationExceptionMapper;
 use Quantum\Controllers\Security\Exceptions\AuthenticationRequiredException;
 use Quantum\Controllers\Security\Exceptions\AuthorizationDeniedException;
 use Quantum\Controllers\Security\Exceptions\ControllerExposureViolationException;
@@ -218,6 +222,89 @@ final class QuantumExceptionHandlerTest extends TestCase
         self::assertSame(403, $result->response->statusCode());
         self::assertIsArray($payload['safe_context'] ?? null);
         self::assertSame(['documents:read'], $payload['safe_context']['missing_permissions'] ?? null);
+    }
+
+    public function test_authorization_mapper_denied_returns_403_with_reason_code(): void
+    {
+        $handler = new ExceptionHandler();
+        $handler->addMapper(new AuthorizationExceptionMapper());
+
+        $ex = FrameworkAuthorizationDeniedException::fromDecision(
+            DecisionResult::deny('policy:test', 'missing_policy'),
+        );
+
+        $request = Request::create(
+            '/t',
+            'GET',
+            [],
+            [],
+            [],
+            [],
+            [],
+            [
+                'HTTP_ACCEPT' => 'application/json',
+            ],
+        );
+        $context = new ExceptionHandlingContext(
+            throwable: $ex,
+            origin: ExceptionOrigin::Routing,
+            runtime: new RuntimeContext(environment: 'local'),
+            request: $request,
+            controllerExecution: null,
+            transportExecution: new TransportExecution(response: new TransportResponse(), context: new TransportContext()),
+            metadata: new MetadataBag([]),
+            state: new ExceptionHandlingState(),
+            debug: false,
+        );
+
+        $result = $handler->handle($ex, $context);
+        $payload = json_decode($result->response->content(), true);
+
+        self::assertSame(403, $result->response->statusCode());
+        self::assertSame('missing_policy', $payload['reason_code'] ?? null);
+        self::assertSame('policy:test', $payload['source'] ?? null);
+        self::assertSame('missing_policy', $result->response->headers()['X-Volt-Error-Code'] ?? null);
+    }
+
+    public function test_authorization_mapper_challenge_returns_401_with_www_authenticate(): void
+    {
+        $handler = new ExceptionHandler();
+        $handler->addMapper(new AuthorizationExceptionMapper());
+
+        $ex = FrameworkAuthorizationChallengeException::fromDecision(
+            DecisionResult::challenge('policy:test', 'step_up_required'),
+        );
+
+        $request = Request::create(
+            '/t',
+            'GET',
+            [],
+            [],
+            [],
+            [],
+            [],
+            [
+                'HTTP_ACCEPT' => 'application/json',
+            ],
+        );
+        $context = new ExceptionHandlingContext(
+            throwable: $ex,
+            origin: ExceptionOrigin::Routing,
+            runtime: new RuntimeContext(environment: 'local'),
+            request: $request,
+            controllerExecution: null,
+            transportExecution: new TransportExecution(response: new TransportResponse(), context: new TransportContext()),
+            metadata: new MetadataBag([]),
+            state: new ExceptionHandlingState(),
+            debug: false,
+        );
+
+        $result = $handler->handle($ex, $context);
+        $payload = json_decode($result->response->content(), true);
+
+        self::assertSame(401, $result->response->statusCode());
+        self::assertSame('step_up_required', $payload['reason_code'] ?? null);
+        self::assertSame('Session realm="VoltStack", error="authorization_required"', $result->response->headers()['WWW-Authenticate'] ?? null);
     }
 
     public function test_security_mapper_tenant_violation_returns_404_to_avoid_leaking_tenant_info(): void

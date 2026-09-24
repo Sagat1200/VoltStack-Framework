@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
+use Quantum\Authorization\Attributes\Authorize;
+use Quantum\Authorization\Attributes\PublicAccess;
+use Quantum\Authorization\Policy\PolicyRegistry;
 use Quantum\Config\ConfigRepository;
 use Quantum\Controllers\Contracts\ControllerExecutionContextAwareInterface;
 use Quantum\Controllers\ControllerExecutionContext;
@@ -536,6 +539,53 @@ final class ControllerEngineTest extends TestCase
 
         self::assertSame(1, TestDoubleProceedController::$invocationCount);
     }
+
+    public function test_it_authorizes_route_metadata_against_resolved_controller_arguments(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $config = $app->make(ConfigRepository::class);
+        $config->set('controller_security', ['enabled' => false]);
+        $config->set('controller_compilation', ['enabled' => false]);
+        $app->make(PolicyRegistry::class)->register('string', new TestRouteSubjectAuthorizationPolicy());
+
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $route = new Route(RouteDefinition::make(
+            ['GET'],
+            '/documents/{document}',
+            TestRouteAuthorizationController::class . '@show',
+        ));
+        $route->authorize('view', 'document');
+        $match = new RouteMatch($route, ['document' => 'allowed'], 'GET');
+
+        $response = $dispatcher->dispatch($match, Request::create('/documents/allowed', 'GET'));
+
+        self::assertSame(200, $response->statusCode());
+        self::assertSame('document:allowed', $response->content());
+    }
+
+    public function test_public_access_attribute_bypasses_controller_authorization_requirements(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $config = $app->make(ConfigRepository::class);
+        $config->set('controller_security', ['enabled' => false]);
+        $config->set('controller_compilation', ['enabled' => false]);
+
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $match = new RouteMatch(
+            new Route(RouteDefinition::make(
+                ['GET'],
+                '/authorization/public',
+                TestPublicAccessOverrideController::class . '@index',
+            )),
+            [],
+            'GET',
+        );
+
+        $response = $dispatcher->dispatch($match, Request::create('/authorization/public', 'GET'));
+
+        self::assertSame(200, $response->statusCode());
+        self::assertSame('public-ok', $response->content());
+    }
 }
 
 final class TestInvokableController
@@ -683,6 +733,32 @@ final class TestTimeoutController
         usleep(5000);
 
         return 'timeout';
+    }
+}
+
+final class TestRouteAuthorizationController
+{
+    public function show(string $document): string
+    {
+        return 'document:' . $document;
+    }
+}
+
+#[Authorize('view')]
+final class TestPublicAccessOverrideController
+{
+    #[PublicAccess]
+    public function index(): string
+    {
+        return 'public-ok';
+    }
+}
+
+final class TestRouteSubjectAuthorizationPolicy
+{
+    public function view(mixed $principal, string $document): bool
+    {
+        return $document === 'allowed';
     }
 }
 

@@ -33,7 +33,16 @@ final class AuthorizationServiceProvider extends ServiceProvider
 
         $this->app->singleton(AbilityRegistry::class);
         $this->app->singleton(GateRegistry::class);
-        $this->app->singleton(PolicyRegistry::class);
+        $this->app->singleton(PolicyRegistry::class, function (Application $app): PolicyRegistry {
+            $registry = new PolicyRegistry($app);
+            $policies = $app->config('authorization.policies', []);
+
+            if (is_array($policies)) {
+                $registry->registerFromConfig($policies);
+            }
+
+            return $registry;
+        });
         $this->app->singleton(PolicyDispatcher::class);
         $this->app->singleton(DecisionManager::class);
 
@@ -92,6 +101,7 @@ final class AuthorizationServiceProvider extends ServiceProvider
             'default_strategy' => 'deny',
             'fail_closed' => true,
             'abilities' => [],
+            'policies' => [],
         ];
     }
 }

@@ -244,6 +244,65 @@ final readonly class AuthenticationContext
         };
     }
 
+    public function managementActorTargetScopeRelation(
+        ?string $targetIdentity = null,
+        ?string $targetType = null,
+        string $scope = 'all',
+    ): string {
+        $normalizedScope = $this->normalizedManagementScope($scope);
+
+        if ($this->managementTargetMatchesCurrentIdentity($targetIdentity, $targetType)) {
+            if (! $this->hasGovernedManagementClaims()) {
+                return 'self_service_current_identity_target';
+            }
+
+            return match ($normalizedScope) {
+                'sessions' => 'self_governed_sessions_scope_target',
+                'trusted-devices' => 'self_governed_trusted_devices_scope_target',
+                default => 'self_governed_full_scope_target',
+            };
+        }
+
+        return match ($this->managementAuthorizationModeForScope($normalizedScope)) {
+            'direct_admin' => match ($normalizedScope) {
+                'sessions' => 'direct_admin_sessions_scope_target',
+                'trusted-devices' => 'direct_admin_trusted_devices_scope_target',
+                default => 'direct_admin_full_scope_target',
+            },
+            'delegated_admin' => match ($normalizedScope) {
+                'sessions' => 'delegated_admin_sessions_scope_target',
+                'trusted-devices' => 'delegated_admin_trusted_devices_scope_target',
+                default => 'delegated_admin_full_scope_target',
+            },
+            default => $this->hasGovernedManagementClaims()
+                ? 'governed_unscoped_target'
+                : 'unmanaged_target',
+        };
+    }
+
+    public function managementActorTargetScopeReasonCode(
+        ?string $targetIdentity = null,
+        ?string $targetType = null,
+        string $scope = 'all',
+    ): string {
+        $normalizedScope = $this->normalizedManagementScope($scope);
+
+        if ($this->managementTargetMatchesCurrentIdentity($targetIdentity, $targetType)) {
+            return $this->hasGovernedManagementClaims()
+                ? $this->managementActorTargetScopeRelation($targetIdentity, $targetType, $normalizedScope)
+                : 'current_identity_target';
+        }
+
+        return match ($this->managementAuthorizationModeForScope($normalizedScope)) {
+            'direct_admin', 'delegated_admin' => $this->managementActorTargetScopeRelation(
+                $targetIdentity,
+                $targetType,
+                $normalizedScope,
+            ),
+            default => $this->managementAuthorizationReasonCodeForScope($normalizedScope) ?? 'unmanaged_target',
+        };
+    }
+
     /**
      * @return array{authorized: bool, authorization_mode: ?string, reason_code: ?string}
      */
@@ -400,6 +459,31 @@ final readonly class AuthenticationContext
         }
 
         return false;
+    }
+
+    private function managementAuthorizationModeForScope(string $scope): ?string
+    {
+        return match ($this->normalizedManagementScope($scope)) {
+            'sessions' => $this->managementSessionAuthorizationMode(),
+            'trusted-devices' => $this->managementTrustedDeviceAuthorizationMode(),
+            default => $this->managementAuthorizationMode(),
+        };
+    }
+
+    private function managementAuthorizationReasonCodeForScope(string $scope): ?string
+    {
+        return match ($this->normalizedManagementScope($scope)) {
+            'sessions' => $this->managementSessionAuthorizationReasonCode(),
+            'trusted-devices' => $this->managementTrustedDeviceAuthorizationReasonCode(),
+            default => $this->managementAuthorizationReasonCode(),
+        };
+    }
+
+    private function normalizedManagementScope(string $scope): string
+    {
+        return in_array($scope, ['all', 'sessions', 'trusted-devices'], true)
+            ? $scope
+            : 'all';
     }
 
     private function managementTargetMatchesCurrentIdentity(?string $targetIdentity, ?string $targetType): bool

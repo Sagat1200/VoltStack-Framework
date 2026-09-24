@@ -1475,7 +1475,6 @@ final class AuthSecurityCenterReportCommand extends Command
                 'allowed_remote_mutation_scopes' => ['all', 'sessions', 'trusted-devices'],
                 'denied_remote_mutation_scopes' => [],
                 'scope_denial_reason_codes' => [],
-                'authorization_mode_scope_policies' => [],
                 'next_step' => 'continue_normal_operations',
                 'target_store_fingerprints' => [],
             ],
@@ -1755,6 +1754,18 @@ final class AuthSecurityCenterReportCommand extends Command
                                             'trusted-devices' => 'distributed_partial_visibility_guard_delegated_support_delegated_target_trusted_devices_scope',
                                         ],
                                         'policy_reason_code' => 'distributed_partial_visibility_guard_delegated_support_delegated_target_policy',
+                                        'target_scope_relation_policies' => [
+                                            'delegated_admin_sessions_scope_target' => [
+                                                'remote_mutation_scope_policy' => 'sessions_only',
+                                                'allowed_remote_mutation_scopes' => ['sessions'],
+                                                'denied_remote_mutation_scopes' => ['all', 'trusted-devices'],
+                                                'scope_denial_reason_codes' => [
+                                                    'all' => 'distributed_partial_visibility_guard_delegated_support_delegated_sessions_target_all_scope',
+                                                    'trusted-devices' => 'distributed_partial_visibility_guard_delegated_support_delegated_sessions_target_trusted_devices_scope',
+                                                ],
+                                                'policy_reason_code' => 'distributed_partial_visibility_guard_delegated_support_delegated_sessions_target_policy',
+                                            ],
+                                        ],
                                     ],
                                 ],
                             ],

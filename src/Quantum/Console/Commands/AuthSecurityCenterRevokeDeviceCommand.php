@@ -242,6 +242,8 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         $distributedGuard = $this->distributedGuard($auditLogSource);
         $actorTargetRelation = $actorContext->managementActorTargetRelation($identity, $type);
         $actorTargetReasonCode = $actorContext->managementActorTargetReasonCode($identity, $type);
+        $actorTargetScopeRelation = $actorContext->managementActorTargetScopeRelation($identity, $type, $scope);
+        $actorTargetScopeReasonCode = $actorContext->managementActorTargetScopeReasonCode($identity, $type, $scope);
         $distributedGuardScopeDecision = $this->distributedGuardScopeDecision(
             $scope,
             $distributedGuard,
@@ -249,6 +251,8 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             $actorContext->managementPrivilegeLevel(),
             $actorTargetRelation,
             $actorTargetReasonCode,
+            $actorTargetScopeRelation,
+            $actorTargetScopeReasonCode,
         );
         $administrativeMetrics = $this->administrativeMetrics(
             scope: $scope,
@@ -310,6 +314,8 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                     'management_authorization_reason_code' => $actorContext->managementAuthorizationReasonCode(),
                     'management_actor_target_relation' => $actorTargetRelation,
                     'management_actor_target_reason_code' => $actorTargetReasonCode,
+                    'management_actor_target_scope_relation' => $actorTargetScopeRelation,
+                    'management_actor_target_scope_reason_code' => $actorTargetScopeReasonCode,
                     'management_scopes' => $actorContext->managementScopes(),
                 ],
                 'operational_context' => $operationalContext,
@@ -366,6 +372,8 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 'management_authorization_reason_code' => $actorContext->managementAuthorizationReasonCode(),
                 'management_actor_target_relation' => $actorTargetRelation,
                 'management_actor_target_reason_code' => $actorTargetReasonCode,
+                'management_actor_target_scope_relation' => $actorTargetScopeRelation,
+                'management_actor_target_scope_reason_code' => $actorTargetScopeReasonCode,
                 'management_scopes' => $actorContext->managementScopes(),
                 'authorized' => true,
             ],
@@ -426,6 +434,8 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 'management_authorization_reason_code' => $actorContext->managementAuthorizationReasonCode(),
                 'management_actor_target_relation' => $actorTargetRelation,
                 'management_actor_target_reason_code' => $actorTargetReasonCode,
+                'management_actor_target_scope_relation' => $actorTargetScopeRelation,
+                'management_actor_target_scope_reason_code' => $actorTargetScopeReasonCode,
                 'management_scopes' => $actorContext->managementScopes(),
             ],
             'operational_context' => $operationalContext,
@@ -481,7 +491,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                     ? $distributedGuard['operational_response']
                     : [];
                 $output->writeln(sprintf(
-                'Guardia distribuida: response=%s | deny_remote=%s | reason=%s | next_step=%s | scope_policy=%s | actor_mode=%s | privilege=%s | relation=%s | mutation=%s | scope_decision=%s',
+                'Guardia distribuida: response=%s | deny_remote=%s | reason=%s | next_step=%s | scope_policy=%s | actor_mode=%s | privilege=%s | relation=%s | scope_relation=%s | mutation=%s | scope_decision=%s',
                     $operationalResponse['response_mode'] ?? 'normal_operations',
                     ($operationalResponse['should_deny_remote_mutations'] ?? false) ? 'si' : 'no',
                     $operationalResponse['remote_mutation_denial_reason_code'] ?? 'none',
@@ -490,6 +500,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                     $distributedGuardScopeDecision['authorization_mode'] ?? 'none',
                 $distributedGuardScopeDecision['actor_privilege_level'] ?? 'self_service',
                 $distributedGuardScopeDecision['actor_target_relation'] ?? 'self',
+                $distributedGuardScopeDecision['actor_target_scope_relation'] ?? 'self_service_current_identity_target',
                     $distributedGuardScopeDecision['mutation_kind'] ?? 'aggregated_device_revocation',
                     ($distributedGuardScopeDecision['should_deny'] ?? false)
                         ? 'denied:' . ($distributedGuardScopeDecision['reason_code'] ?? 'distributed_remote_mutation_guard')
@@ -761,6 +772,8 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
      *   actor_privilege_level: ?string,
      *   actor_target_relation: ?string,
      *   actor_target_reason_code: ?string,
+     *   actor_target_scope_relation: ?string,
+     *   actor_target_scope_reason_code: ?string,
      *   should_deny: bool,
      *   reason_code: ?string,
      *   policy_reason_code: ?string,
@@ -777,6 +790,8 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         ?string $actorPrivilegeLevel,
         ?string $actorTargetRelation,
         ?string $actorTargetReasonCode,
+        ?string $actorTargetScopeRelation,
+        ?string $actorTargetScopeReasonCode,
     ): array
     {
         $operationalResponse = is_array($distributedGuard['operational_response'] ?? null)
@@ -806,6 +821,14 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             $actorTargetRelation,
             null,
             'actor_target_relation_scope_policy',
+            $policySource,
+        );
+        $selectedPolicy = $this->distributedGuardScopedPolicy(
+            $selectedPolicy,
+            'target_scope_relation_policies',
+            $actorTargetScopeRelation,
+            null,
+            'actor_target_scope_relation_scope_policy',
             $policySource,
         );
 
@@ -843,6 +866,8 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             'actor_privilege_level' => $actorPrivilegeLevel,
             'actor_target_relation' => $actorTargetRelation,
             'actor_target_reason_code' => $actorTargetReasonCode,
+            'actor_target_scope_relation' => $actorTargetScopeRelation,
+            'actor_target_scope_reason_code' => $actorTargetScopeReasonCode,
             'should_deny' => $shouldDeny,
             'reason_code' => is_string($reasonCode) ? $reasonCode : null,
             'policy_reason_code' => is_string($policyReasonCode) ? $policyReasonCode : null,

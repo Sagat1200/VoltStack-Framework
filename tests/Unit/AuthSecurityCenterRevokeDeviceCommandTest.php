@@ -386,6 +386,7 @@ PHP
         self::assertSame('direct_admin', $payload['distributed_guard_scope_decision']['authorization_mode'] ?? null);
         self::assertSame('privileged_admin', $payload['distributed_guard_scope_decision']['actor_privilege_level'] ?? null);
         self::assertSame('direct_administrative_target', $payload['distributed_guard_scope_decision']['actor_target_relation'] ?? null);
+        self::assertSame('direct_admin_sessions_scope_target', $payload['distributed_guard_scope_decision']['actor_target_scope_relation'] ?? null);
         self::assertSame('sessions_only', $payload['distributed_guard_scope_decision']['scope_policy'] ?? null);
         self::assertSame('actor_target_relation_scope_policy', $payload['distributed_guard_scope_decision']['policy_source'] ?? null);
         self::assertSame('distributed_partial_visibility_guard_privileged_admin_direct_target_policy', $payload['distributed_guard_scope_decision']['policy_reason_code'] ?? null);
@@ -396,7 +397,7 @@ PHP
         self::assertInstanceOf(TrustedDevice::class, $trustedDevices->find('tdv_admin_alpha'));
     }
 
-    public function test_it_rejects_session_scope_when_distributed_guard_is_partial_visibility_for_delegated_actor(): void
+    public function test_it_rejects_full_scope_when_distributed_guard_is_partial_visibility_for_delegated_actor(): void
     {
         $seedNow = time();
         $app = $this->bootstrappedApplication();
@@ -418,7 +419,7 @@ PHP
                 '--actor-identity=902',
                 '--actor-type=user',
                 '--actor-session-public-id=sess_pub_support_admin',
-                '--scope=sessions',
+                '--scope=all',
                 '--audit-log=' . $auditLogPath,
                 '--audit-log-source=' . $auditLogSource,
                 '--json',
@@ -432,22 +433,22 @@ PHP
         $trustedDevices = $app->make(TrustedDeviceRepositoryInterface::class);
 
         self::assertSame(1, $exitCode);
-        self::assertSame('distributed_partial_visibility_guard_delegated_support_delegated_target_sessions_scope', $payload['reason_code'] ?? null);
+        self::assertSame('distributed_partial_visibility_guard_delegated_support_delegated_target_all_scope', $payload['reason_code'] ?? null);
         self::assertSame('partial_visibility', $payload['distributed_guard']['activity_drift']['drift_profile'] ?? null);
         self::assertSame('sessions_only', $payload['distributed_guard']['operational_response']['remote_mutation_scope_policy'] ?? null);
         self::assertTrue($payload['distributed_guard_scope_decision']['should_deny'] ?? false);
-        self::assertSame('sessions', $payload['distributed_guard_scope_decision']['scope'] ?? null);
-        self::assertSame('session_revocation', $payload['distributed_guard_scope_decision']['mutation_kind'] ?? null);
+        self::assertSame('all', $payload['distributed_guard_scope_decision']['scope'] ?? null);
         self::assertSame('delegated_admin', $payload['distributed_guard_scope_decision']['authorization_mode'] ?? null);
         self::assertSame('delegated_support', $payload['distributed_guard_scope_decision']['actor_privilege_level'] ?? null);
         self::assertSame('delegated_administrative_target', $payload['distributed_guard_scope_decision']['actor_target_relation'] ?? null);
+        self::assertSame('delegated_admin_full_scope_target', $payload['distributed_guard_scope_decision']['actor_target_scope_relation'] ?? null);
         self::assertSame('deny_all', $payload['distributed_guard_scope_decision']['scope_policy'] ?? null);
         self::assertSame('actor_target_relation_scope_policy', $payload['distributed_guard_scope_decision']['policy_source'] ?? null);
         self::assertSame('distributed_partial_visibility_guard_delegated_support_delegated_target_policy', $payload['distributed_guard_scope_decision']['policy_reason_code'] ?? null);
         self::assertSame([], $payload['distributed_guard_scope_decision']['allowed_scopes'] ?? null);
         self::assertSame(['all', 'sessions', 'trusted-devices'], $payload['distributed_guard_scope_decision']['denied_scopes'] ?? null);
         self::assertSame(
-            'distributed_partial_visibility_guard_delegated_support_delegated_target_sessions_scope',
+            'distributed_partial_visibility_guard_delegated_support_delegated_target_all_scope',
             $payload['distributed_guard_scope_decision']['reason_code'] ?? null,
         );
         self::assertInstanceOf(AuthenticationSession::class, $sessions->find('session-admin-alpha'));
@@ -458,9 +459,62 @@ PHP
         self::assertCount(1, $events);
         self::assertSame('security_center_device_revocation_rejected', $events[0]['event'] ?? null);
         self::assertSame('distributed_guard_denied', $events[0]['result'] ?? null);
-        self::assertSame('distributed_partial_visibility_guard_delegated_support_delegated_target_sessions_scope', $events[0]['reason_code'] ?? null);
+        self::assertSame('distributed_partial_visibility_guard_delegated_support_delegated_target_all_scope', $events[0]['reason_code'] ?? null);
         self::assertSame('distributed_partial_visibility_guard_delegated_support_delegated_target_policy', $events[0]['distributed_guard_scope_decision']['policy_reason_code'] ?? null);
         self::assertSame('delegated_admin', $events[0]['distributed_guard_scope_decision']['authorization_mode'] ?? null);
+    }
+
+    public function test_it_allows_session_scope_when_distributed_guard_is_partial_visibility_for_delegated_session_target(): void
+    {
+        $seedNow = time();
+        $app = $this->bootstrappedApplication();
+        $this->seedFixtures($app, $seedNow);
+        $auditLogSource = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'audit' . DIRECTORY_SEPARATOR . 'security-center-partial-visibility.jsonl';
+        $this->seedLongitudinalPartialVisibilityAuditTrail($auditLogSource, $seedNow);
+
+        $command = new AuthSecurityCenterRevokeDeviceCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'auth:security-center:revoke-device',
+                '--identity=801',
+                '--type=user',
+                '--device-reference=devref_admin_alpha',
+                '--actor-identity=903',
+                '--actor-type=user',
+                '--actor-session-public-id=sess_pub_support_sessions',
+                '--scope=sessions',
+                '--audit-log-source=' . $auditLogSource,
+                '--json',
+            ]),
+            $output,
+        );
+
+        /** @var array<string, mixed> $payload */
+        $payload = json_decode($output->stdout(), true, 512, JSON_THROW_ON_ERROR);
+        $sessions = $app->make(AuthenticationSessionRepositoryInterface::class);
+        $trustedDevices = $app->make(TrustedDeviceRepositoryInterface::class);
+
+        self::assertSame(0, $exitCode);
+        self::assertSame('partial_visibility', $payload['distributed_guard']['activity_drift']['drift_profile'] ?? null);
+        self::assertFalse($payload['distributed_guard_scope_decision']['should_deny'] ?? true);
+        self::assertSame('delegated_admin', $payload['distributed_guard_scope_decision']['authorization_mode'] ?? null);
+        self::assertSame('delegated_support', $payload['distributed_guard_scope_decision']['actor_privilege_level'] ?? null);
+        self::assertSame('delegated_administrative_target', $payload['distributed_guard_scope_decision']['actor_target_relation'] ?? null);
+        self::assertSame('delegated_admin_sessions_scope_target', $payload['distributed_guard_scope_decision']['actor_target_scope_relation'] ?? null);
+        self::assertSame('sessions_only', $payload['distributed_guard_scope_decision']['scope_policy'] ?? null);
+        self::assertSame('actor_target_scope_relation_scope_policy', $payload['distributed_guard_scope_decision']['policy_source'] ?? null);
+        self::assertSame(
+            'distributed_partial_visibility_guard_delegated_support_delegated_sessions_target_policy',
+            $payload['distributed_guard_scope_decision']['policy_reason_code'] ?? null,
+        );
+        self::assertSame(['sessions'], $payload['distributed_guard_scope_decision']['allowed_scopes'] ?? null);
+        self::assertSame(['all', 'trusted-devices'], $payload['distributed_guard_scope_decision']['denied_scopes'] ?? null);
+        self::assertNull($sessions->find('session-admin-alpha'));
+        self::assertNull($sessions->find('session-admin-alpha-peer'));
+        self::assertInstanceOf(TrustedDevice::class, $trustedDevices->find('tdv_admin_alpha'));
     }
 
     public function test_it_allows_trusted_device_scope_for_self_governed_privileged_admin_under_partial_visibility(): void
@@ -503,6 +557,7 @@ PHP
         self::assertSame('direct_admin', $payload['distributed_guard_scope_decision']['authorization_mode'] ?? null);
         self::assertSame('privileged_admin', $payload['distributed_guard_scope_decision']['actor_privilege_level'] ?? null);
         self::assertSame('self_governed', $payload['distributed_guard_scope_decision']['actor_target_relation'] ?? null);
+        self::assertSame('self_governed_trusted_devices_scope_target', $payload['distributed_guard_scope_decision']['actor_target_scope_relation'] ?? null);
         self::assertSame('allow_all', $payload['distributed_guard_scope_decision']['scope_policy'] ?? null);
         self::assertSame('actor_target_relation_scope_policy', $payload['distributed_guard_scope_decision']['policy_source'] ?? null);
         self::assertSame(
@@ -559,6 +614,7 @@ PHP
         self::assertSame('delegated_admin', $payload['distributed_guard_scope_decision']['authorization_mode'] ?? null);
         self::assertSame('delegated_support', $payload['distributed_guard_scope_decision']['actor_privilege_level'] ?? null);
         self::assertSame('self_governed', $payload['distributed_guard_scope_decision']['actor_target_relation'] ?? null);
+        self::assertSame('self_governed_trusted_devices_scope_target', $payload['distributed_guard_scope_decision']['actor_target_scope_relation'] ?? null);
         self::assertSame('sessions_only', $payload['distributed_guard_scope_decision']['scope_policy'] ?? null);
         self::assertSame('actor_target_relation_scope_policy', $payload['distributed_guard_scope_decision']['policy_source'] ?? null);
         self::assertSame(
@@ -781,6 +837,7 @@ PHP
         self::assertSame('trusted_device_revocation', $payload['distributed_guard_scope_decision']['mutation_kind'] ?? null);
         self::assertSame('direct_admin', $payload['distributed_guard_scope_decision']['authorization_mode'] ?? null);
         self::assertSame('direct_administrative_target', $payload['distributed_guard_scope_decision']['actor_target_relation'] ?? null);
+        self::assertSame('direct_admin_trusted_devices_scope_target', $payload['distributed_guard_scope_decision']['actor_target_scope_relation'] ?? null);
         self::assertSame('actor_target_relation_scope_policy', $payload['distributed_guard_scope_decision']['policy_source'] ?? null);
         self::assertSame('distributed_partial_visibility_guard_privileged_admin_direct_target_policy', $payload['distributed_guard_scope_decision']['policy_reason_code'] ?? null);
         self::assertSame('distributed_partial_visibility_guard_privileged_admin_direct_target_trusted_devices_scope', $payload['distributed_guard_scope_decision']['reason_code'] ?? null);

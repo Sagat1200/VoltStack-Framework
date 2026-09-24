@@ -1793,6 +1793,22 @@ final class AuthManager implements AuthenticationManagerInterface
             $managementTargetIdentity,
             $managementTargetType,
         ) ?? 'current_identity_target';
+        $managementActorTargetScope = match (true) {
+            $managementActorCanManageSessions && $managementActorCanManageTrustedDevices => 'all',
+            $managementActorCanManageSessions => 'sessions',
+            $managementActorCanManageTrustedDevices => 'trusted-devices',
+            default => 'all',
+        };
+        $managementActorTargetScopeRelation = $context?->managementActorTargetScopeRelation(
+            $managementTargetIdentity,
+            $managementTargetType,
+            $managementActorTargetScope,
+        ) ?? 'self_service_current_identity_target';
+        $managementActorTargetScopeReasonCode = $context?->managementActorTargetScopeReasonCode(
+            $managementTargetIdentity,
+            $managementTargetType,
+            $managementActorTargetScope,
+        ) ?? 'current_identity_target';
         $requiresReauthentication = (bool) $entry['requires_reauthentication'];
 
         if ($requiresReauthentication && $managementActorAuthorized && $scope !== 'current') {
@@ -1852,6 +1868,8 @@ final class AuthManager implements AuthenticationManagerInterface
             managementActorTrustedDeviceAuthorizationReasonCode: $managementActorTrustedDeviceAuthorizationReasonCode,
             managementActorTargetRelation: $managementActorTargetRelation,
             managementActorTargetReasonCode: $managementActorTargetReasonCode,
+            managementActorTargetScopeRelation: $managementActorTargetScopeRelation,
+            managementActorTargetScopeReasonCode: $managementActorTargetScopeReasonCode,
             managementTargetIdentity: $managementTargetIdentity,
             managementTargetType: $managementTargetType,
             managementTargetMatchesCurrentIdentity: $managementTargetMatchesCurrentIdentity,

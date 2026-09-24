@@ -7,6 +7,7 @@ namespace VoltStack\Test\Unit;
 use PHPUnit\Framework\TestCase;
 use Quantum\Authorization\Contracts\AuthorizationManagerInterface;
 use Quantum\Authorization\Contracts\PrincipalInterface;
+use Quantum\Authorization\Context\AuthorizationContext;
 use Quantum\Authorization\Exceptions\AuthorizationDeniedException;
 use Quantum\Authorization\Exceptions\AuthorizationEvaluationException;
 use Quantum\Authorization\Gate\GateRegistry;
@@ -14,6 +15,10 @@ use Quantum\Authorization\Policy\Attributes\PolicyFor;
 use Quantum\Authorization\Policy\PolicyRegistry;
 use Quantum\Authorization\Principal\Principal;
 use Quantum\Config\ConfigRepository;
+use Quantum\Controllers\ControllerDefinition;
+use Quantum\Routing\Route;
+use Quantum\Routing\RouteDefinition;
+use Quantum\Routing\RouteMatch;
 use VoltStack\Framework\Application;
 
 final class AuthorizationManagerTest extends TestCase
@@ -154,6 +159,45 @@ final class AuthorizationManagerTest extends TestCase
         $this->expectException(AuthorizationEvaluationException::class);
         $manager->authorize('reports.preview');
     }
+
+    public function test_authorization_manager_exposes_route_controller_metadata_to_gate_context(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(GateRegistry::class)->define('documents.method-view', static function (
+            PrincipalInterface $principal,
+            string $subject,
+            AuthorizationContext $context,
+        ): bool {
+            $matched = $context->attribute('authorization.metadata.matched_requirements', []);
+
+            return $principal->id() === '42'
+                && $subject === 'doc-1'
+                && is_array($matched)
+                && count($matched) > 0;
+        });
+        $manager = $app->make(AuthorizationManagerInterface::class);
+
+        $route = new Route(RouteDefinition::make(
+            ['GET'],
+            '/policies/metadata/{document}',
+            MetadataAwareAuthorizationController::class,
+        ));
+        $route->authorize('documents.method-view', 'document');
+        $context = new AuthorizationContext('req-metadata', attributes: [
+            'route_match' => new RouteMatch($route, ['document' => 'doc-1'], 'GET'),
+            'controller_definition' => new ControllerDefinition(MetadataAwareAuthorizationController::class),
+        ]);
+
+        $decision = $manager->decide(
+            'documents.method-view',
+            'doc-1',
+            $context,
+            new Principal('42'),
+        );
+
+        self::assertTrue($decision->isAllowed());
+        self::assertSame('explicit_allow', $decision->reasonCode());
+    }
 }
 
 final readonly class AuthorizationArticle
@@ -177,5 +221,15 @@ final class AttributeConfiguredArticlePolicy
     public function publish(PrincipalInterface $principal, AuthorizationArticle $article): bool
     {
         return $principal->id() === (string) $article->ownerId;
+    }
+}
+
+final class MetadataAwareAuthorizationController
+{
+    #[\Quantum\Authorization\Attributes\PublicAccess]
+    #[\Quantum\Authorization\Attributes\Authorize('documents.method-view', 'document')]
+    public function __invoke(string $document): string
+    {
+        return $document;
     }
 }

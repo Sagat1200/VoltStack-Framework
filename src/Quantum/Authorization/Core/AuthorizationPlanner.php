@@ -6,15 +6,18 @@ namespace Quantum\Authorization\Core;
 
 use Quantum\Authorization\Contracts\AuthorizationEvaluationStageInterface;
 use Quantum\Authorization\Contracts\AuthorizationPlannerInterface;
+use Quantum\Authorization\Contracts\AuthorizationRequestEnricherInterface;
 use Quantum\Authorization\Decision\DecisionManager;
 use Quantum\Authorization\Decision\DecisionResult;
 
 final class AuthorizationPlanner implements AuthorizationPlannerInterface
 {
     /**
+     * @param list<AuthorizationRequestEnricherInterface> $enrichers
      * @param list<AuthorizationEvaluationStageInterface> $stages
      */
     public function __construct(
+        private readonly array $enrichers,
         private readonly array $stages,
         private readonly DecisionManager $decisions,
         private readonly bool $failClosed = true,
@@ -23,6 +26,7 @@ final class AuthorizationPlanner implements AuthorizationPlannerInterface
     public function plan(AuthorizationRequest $request): array
     {
         $results = [];
+        $request = $this->enrich($request);
 
         foreach ($this->stages as $stage) {
             try {
@@ -40,6 +44,15 @@ final class AuthorizationPlanner implements AuthorizationPlannerInterface
     public function evaluate(AuthorizationRequest $request): DecisionResult
     {
         return $this->decisions->finalize($this->plan($request));
+    }
+
+    private function enrich(AuthorizationRequest $request): AuthorizationRequest
+    {
+        foreach ($this->enrichers as $enricher) {
+            $request = $enricher->enrich($request);
+        }
+
+        return $request;
     }
 
     private function stageFailure(string $stage, \Throwable $exception): DecisionResult

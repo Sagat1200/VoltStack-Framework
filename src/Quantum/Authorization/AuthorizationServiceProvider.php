@@ -12,6 +12,7 @@ use Quantum\Authorization\Contracts\AuthorizationContextFactoryInterface;
 use Quantum\Authorization\Contracts\AuthorizationManagerInterface;
 use Quantum\Authorization\Contracts\AuthorizationMetadataResolverInterface;
 use Quantum\Authorization\Contracts\AuthorizationPlannerInterface;
+use Quantum\Authorization\Contracts\AuthorizationRequestEnricherInterface;
 use Quantum\Authorization\Contracts\PrincipalResolverInterface;
 use Quantum\Authorization\Contracts\SubjectResolverInterface;
 use Quantum\Authorization\Context\AuthorizationContextFactory;
@@ -23,6 +24,7 @@ use Quantum\Authorization\Core\Stages\PolicyAuthorizationStage;
 use Quantum\Authorization\Decision\DecisionManager;
 use Quantum\Authorization\Gate\GateRegistry;
 use Quantum\Authorization\Metadata\AuthorizationMetadataResolver;
+use Quantum\Authorization\Metadata\MetadataAuthorizationContextEnricher;
 use Quantum\Authorization\Policy\PolicyDispatcher;
 use Quantum\Authorization\Policy\PolicyRegistry;
 use Quantum\Authorization\Principal\PrincipalResolver;
@@ -75,6 +77,12 @@ final class AuthorizationServiceProvider extends ServiceProvider
                 $app->make(\Quantum\Metadata\Contracts\MetadataEngineInterface::class),
             ),
         );
+        $this->app->scoped(
+            AuthorizationRequestEnricherInterface::class,
+            fn(Application $app): AuthorizationRequestEnricherInterface => new MetadataAuthorizationContextEnricher(
+                $app->make(AuthorizationMetadataResolverInterface::class),
+            ),
+        );
         $this->app->scoped(AuthorizationContextFactoryInterface::class, function (Application $app): AuthorizationContextFactoryInterface {
             return new AuthorizationContextFactory($app->make(AuthenticationManagerInterface::class));
         });
@@ -100,6 +108,9 @@ final class AuthorizationServiceProvider extends ServiceProvider
             $failClosed = $app->config('authorization.fail_closed', true);
 
             return new AuthorizationPlanner(
+                [
+                    $app->make(AuthorizationRequestEnricherInterface::class),
+                ],
                 [
                     $app->make(GateAuthorizationStage::class),
                     $app->make(PolicyAuthorizationStage::class),

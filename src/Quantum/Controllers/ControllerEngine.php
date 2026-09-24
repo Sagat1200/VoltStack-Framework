@@ -8,6 +8,7 @@ use Quantum\Compilation\CompiledControllerFactory;
 use Quantum\Compilation\Contracts\CompiledControllerFactoryInterface;
 use Quantum\Authorization\Attributes\Authorize;
 use Quantum\Authorization\Attributes\PublicAccess;
+use Quantum\Authorization\Contracts\AuthorizationContextFactoryInterface;
 use Quantum\Authorization\Contracts\AuthorizationManagerInterface;
 use Quantum\Authorization\Contracts\AuthorizationMetadataResolverInterface;
 use Quantum\Controllers\ControllerContext;
@@ -65,6 +66,7 @@ final class ControllerEngine
         private readonly ResponseNormalizer $normalizer,
         private readonly ?CompiledControllerFactoryInterface $compiledFactory = null,
         private readonly ?ControllerSecurityManagerInterface $securityManager = null,
+        private readonly ?AuthorizationContextFactoryInterface $authorizationContextFactory = null,
         private readonly ?AuthorizationManagerInterface $authorizationManager = null,
         private readonly ?AuthorizationMetadataResolverInterface $authorizationMetadataResolver = null,
     ) {
@@ -262,6 +264,7 @@ final class ControllerEngine
 
             if (($authorizationMetadata['public'] ?? false) !== true && $this->authorizationManager !== null) {
                 $this->assertAuthorizationMetadata(
+                    $match,
                     $authorizationMetadata,
                     $definition,
                     $resolved->method(),
@@ -647,6 +650,7 @@ final class ControllerEngine
      * @param array<int, mixed> $arguments
      */
     private function assertAuthorizationMetadata(
+        RouteMatch $match,
         array $metadata,
         ControllerDefinition $definition,
         string $method,
@@ -662,10 +666,17 @@ final class ControllerEngine
                 $controllerClass,
                 $argumentMap,
             );
+            $context = $this->authorizationContextFactory?->create()?->mergeAttributes([
+                'route_match' => $match,
+                'controller_definition' => $definition,
+                'resolved_arguments' => $argumentMap,
+                'authorization.requirement' => $requirement,
+            ]);
 
             $this->authorizationManager?->authorize(
                 $requirement['ability'],
                 $subject,
+                $context,
             );
         }
     }

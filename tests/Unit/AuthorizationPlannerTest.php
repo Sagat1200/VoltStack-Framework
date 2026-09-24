@@ -20,7 +20,7 @@ final class AuthorizationPlannerTest extends TestCase
 {
     public function test_planner_aggregates_results_from_all_stages_in_order(): void
     {
-        $planner = new AuthorizationPlanner([
+        $planner = new AuthorizationPlanner([], [
             new StaticAuthorizationStage('first', [
                 DecisionResult::abstain('stage:first', 'first_abstain'),
             ]),
@@ -39,7 +39,7 @@ final class AuthorizationPlannerTest extends TestCase
 
     public function test_planner_fails_closed_when_a_stage_throws(): void
     {
-        $planner = new AuthorizationPlanner([
+        $planner = new AuthorizationPlanner([], [
             new ThrowingAuthorizationStage('broken'),
         ], new DecisionManager('deny'), true);
 
@@ -52,7 +52,7 @@ final class AuthorizationPlannerTest extends TestCase
 
     public function test_planner_can_fail_open_when_a_stage_throws(): void
     {
-        $planner = new AuthorizationPlanner([
+        $planner = new AuthorizationPlanner([], [
             new ThrowingAuthorizationStage('broken'),
         ], new DecisionManager('allow'), false);
 
@@ -60,6 +60,20 @@ final class AuthorizationPlannerTest extends TestCase
 
         self::assertTrue($decision->isAllowed());
         self::assertSame('all_evaluators_abstained_allow_by_default', $decision->reasonCode());
+    }
+
+    public function test_planner_enriches_request_before_running_stages(): void
+    {
+        $planner = new AuthorizationPlanner([
+            new AppendContextAttributeEnricher(),
+        ], [
+            new ContextAwareAuthorizationStage(),
+        ], new DecisionManager('deny'));
+
+        $decision = $planner->evaluate($this->request());
+
+        self::assertTrue($decision->isAllowed());
+        self::assertSame('context_enriched', $decision->reasonCode());
     }
 
     private function request(): AuthorizationRequest
@@ -108,5 +122,32 @@ final readonly class ThrowingAuthorizationStage implements AuthorizationEvaluati
     public function evaluate(AuthorizationRequest $request): array
     {
         throw new \RuntimeException('stage exploded');
+    }
+}
+
+final class AppendContextAttributeEnricher implements \Quantum\Authorization\Contracts\AuthorizationRequestEnricherInterface
+{
+    public function enrich(AuthorizationRequest $request): AuthorizationRequest
+    {
+        return $request->withContext($request->context()->mergeAttributes([
+            'planner.enriched' => true,
+        ]));
+    }
+}
+
+final class ContextAwareAuthorizationStage implements AuthorizationEvaluationStageInterface
+{
+    public function name(): string
+    {
+        return 'context-aware';
+    }
+
+    public function evaluate(AuthorizationRequest $request): array
+    {
+        return [
+            $request->context()->attribute('planner.enriched') === true
+                ? DecisionResult::allow('stage:context-aware', 'context_enriched')
+                : DecisionResult::deny('stage:context-aware', 'context_missing'),
+        ];
     }
 }

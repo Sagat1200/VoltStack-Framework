@@ -53,4 +53,25 @@ final readonly class AuthorizationContext
     {
         return $this->attributes[$key] ?? $default;
     }
+
+    /**
+     * @param array<string, mixed> $attributes
+     */
+    public function withAttributes(array $attributes): self
+    {
+        return new self(
+            requestId: $this->requestId,
+            tenantId: $this->tenantId,
+            channel: $this->channel,
+            attributes: $attributes,
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $attributes
+     */
+    public function mergeAttributes(array $attributes): self
+    {
+        return $this->withAttributes(array_replace($this->attributes, $attributes));
+    }
 }

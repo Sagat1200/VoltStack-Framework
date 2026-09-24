@@ -1012,6 +1012,7 @@ final class AuthSecurityCenterReportCommand extends Command
      *   distributed_guard_policy_sources: array<string, int>,
      *   distributed_guard_policy_reason_codes: array<string, int>,
      *   distributed_guard_reason_codes: array<string, int>,
+     *   mutation_actor_profiles: list<array<string, mixed>>,
      *   observed_store_fingerprints: int,
      *   observed_topologies: array<string, int>,
      *   latest_event_at: ?int,
@@ -1059,6 +1060,7 @@ final class AuthSecurityCenterReportCommand extends Command
             'distributed_guard_policy_sources' => [],
             'distributed_guard_policy_reason_codes' => [],
             'distributed_guard_reason_codes' => [],
+            'mutation_actor_profiles' => [],
             'observed_store_fingerprints' => 0,
             'observed_topologies' => [],
             'latest_event_at' => null,
@@ -1073,6 +1075,7 @@ final class AuthSecurityCenterReportCommand extends Command
         $operationIds = [];
         $storeFingerprints = [];
         $storeCohorts = [];
+        $mutationActorProfiles = [];
         $normalizedEvents = [];
 
         foreach ($events as $event) {
@@ -1150,6 +1153,23 @@ final class AuthSecurityCenterReportCommand extends Command
                 $metrics['distributed_guard_reason_codes'][$normalizedReasonCode] = ($metrics['distributed_guard_reason_codes'][$normalizedReasonCode] ?? 0) + 1;
             }
 
+            $authorizationModeValue = is_string($distributedGuardScopeDecision['authorization_mode'] ?? null)
+                && trim((string) $distributedGuardScopeDecision['authorization_mode']) !== ''
+                    ? trim((string) $distributedGuardScopeDecision['authorization_mode'])
+                    : null;
+            $actorPrivilegeLevelValue = is_string($distributedGuardScopeDecision['actor_privilege_level'] ?? null)
+                && trim((string) $distributedGuardScopeDecision['actor_privilege_level']) !== ''
+                    ? trim((string) $distributedGuardScopeDecision['actor_privilege_level'])
+                    : null;
+            $actorTargetRelationValue = is_string($distributedGuardScopeDecision['actor_target_relation'] ?? null)
+                && trim((string) $distributedGuardScopeDecision['actor_target_relation']) !== ''
+                    ? trim((string) $distributedGuardScopeDecision['actor_target_relation'])
+                    : null;
+            $actorTargetScopeRelationValue = is_string($distributedGuardScopeDecision['actor_target_scope_relation'] ?? null)
+                && trim((string) $distributedGuardScopeDecision['actor_target_scope_relation']) !== ''
+                    ? trim((string) $distributedGuardScopeDecision['actor_target_scope_relation'])
+                    : null;
+
             $operationalContext = is_array($event['operational_context'] ?? null)
                 ? $event['operational_context']
                 : [];
@@ -1179,6 +1199,7 @@ final class AuthSecurityCenterReportCommand extends Command
                     'distributed_guard_policy_sources' => [],
                     'distributed_guard_policy_reason_codes' => [],
                     'distributed_guard_reason_codes' => [],
+                    'mutation_actor_profiles' => [],
                     'affected_resources' => [
                         'sessions' => 0,
                         'trusted-devices' => 0,
@@ -1216,6 +1237,53 @@ final class AuthSecurityCenterReportCommand extends Command
                 $storeCohorts[$cohortKey]['distributed_guard_reason_codes'][$normalizedReasonCode] = ($storeCohorts[$cohortKey]['distributed_guard_reason_codes'][$normalizedReasonCode] ?? 0) + 1;
             }
 
+            $mutationActorProfileKey = implode('|', [
+                $mutationKind,
+                $requestedScope,
+                $authorizationModeValue ?? '',
+                $actorPrivilegeLevelValue ?? '',
+                $actorTargetRelationValue ?? '',
+                $actorTargetScopeRelationValue ?? '',
+                is_string($policySource ?? null) ? $policySource : '',
+                is_string($policyReasonCode ?? null) ? $policyReasonCode : '',
+                is_string($reasonCode ?? null) ? $reasonCode : '',
+            ]);
+
+            $this->accumulateMutationActorProfile(
+                $mutationActorProfiles,
+                $mutationActorProfileKey,
+                $mutationKind,
+                $requestedScope,
+                $authorizationModeValue,
+                $actorPrivilegeLevelValue,
+                $actorTargetRelationValue,
+                $actorTargetScopeRelationValue,
+                is_string($policySource ?? null) ? $policySource : null,
+                is_string($policyReasonCode ?? null) ? $policyReasonCode : null,
+                is_string($reasonCode ?? null) ? $reasonCode : null,
+                $outcome,
+                $normalizedFingerprint,
+                $topology,
+                is_numeric($occurredAt ?? null) ? (int) $occurredAt : null,
+            );
+            $this->accumulateMutationActorProfile(
+                $storeCohorts[$cohortKey]['mutation_actor_profiles'],
+                $mutationActorProfileKey,
+                $mutationKind,
+                $requestedScope,
+                $authorizationModeValue,
+                $actorPrivilegeLevelValue,
+                $actorTargetRelationValue,
+                $actorTargetScopeRelationValue,
+                is_string($policySource ?? null) ? $policySource : null,
+                is_string($policyReasonCode ?? null) ? $policyReasonCode : null,
+                is_string($reasonCode ?? null) ? $reasonCode : null,
+                $outcome,
+                $normalizedFingerprint,
+                $topology,
+                is_numeric($occurredAt ?? null) ? (int) $occurredAt : null,
+            );
+
             if (is_numeric($occurredAt ?? null)) {
                 $storeCohorts[$cohortKey]['latest_event_at'] = max(
                     (int) ($storeCohorts[$cohortKey]['latest_event_at'] ?? 0),
@@ -1246,6 +1314,7 @@ final class AuthSecurityCenterReportCommand extends Command
         $metrics['unique_operation_ids'] = count($operationIds);
         $metrics['observed_store_fingerprints'] = count($storeFingerprints);
         ksort($metrics['observed_topologies']);
+        $metrics['mutation_actor_profiles'] = $this->normalizeMutationActorProfiles($mutationActorProfiles);
         $metrics['store_cohorts'] = $this->normalizeStoreCohorts($storeCohorts);
         $metrics['time_windows'] = $this->buildTimeWindows(
             $normalizedEvents,
@@ -1263,6 +1332,7 @@ final class AuthSecurityCenterReportCommand extends Command
             $metrics['store_time_windows'],
             $metrics['multi_store_summary'],
             is_int($metrics['latest_event_at']) ? $metrics['latest_event_at'] : null,
+            $metrics['mutation_actor_profiles'],
         );
 
         return $metrics;
@@ -1545,7 +1615,12 @@ final class AuthSecurityCenterReportCommand extends Command
      * @param array<string, mixed> $multiStoreSummary
      * @return array<string, mixed>
      */
-    private function buildActivityDrift(array $storeTimeWindows, array $multiStoreSummary, ?int $anchorTimestamp): array
+    private function buildActivityDrift(
+        array $storeTimeWindows,
+        array $multiStoreSummary,
+        ?int $anchorTimestamp,
+        array $observedMutationActorProfiles = [],
+    ): array
     {
         $drift = [
             'drift_detected' => false,
@@ -1719,7 +1794,7 @@ final class AuthSecurityCenterReportCommand extends Command
             $drift['drift_profile'] = 'single_store';
         }
 
-        $drift['operational_response'] = $this->buildDriftOperationalResponse($drift);
+        $drift['operational_response'] = $this->buildDriftOperationalResponse($drift, $observedMutationActorProfiles);
 
         return $drift;
     }
@@ -1728,7 +1803,7 @@ final class AuthSecurityCenterReportCommand extends Command
      * @param array<string, mixed> $drift
      * @return array<string, mixed>
      */
-    private function buildDriftOperationalResponse(array $drift): array
+    private function buildDriftOperationalResponse(array $drift, array $observedMutationActorProfiles = []): array
     {
         $recommendedAction = (string) ($drift['recommended_action'] ?? 'none');
         $severity = (string) ($drift['severity'] ?? 'none');
@@ -2298,6 +2373,7 @@ final class AuthSecurityCenterReportCommand extends Command
             $response,
             (array) ($response['target_store_fingerprints'] ?? []),
             (array) ($response['target_store_assessments'] ?? []),
+            $observedMutationActorProfiles,
         );
 
         return $response;
@@ -2330,12 +2406,14 @@ final class AuthSecurityCenterReportCommand extends Command
      * @param array<string, mixed> $operationalResponse
      * @param list<mixed> $targetStores
      * @param list<mixed> $targetStoreAssessments
+     * @param list<array<string, mixed>> $observedMutationActorProfiles
      * @return list<array<string, mixed>>
      */
     private function mutationScopeProfiles(
         array $operationalResponse,
         array $targetStores,
         array $targetStoreAssessments,
+        array $observedMutationActorProfiles = [],
     ): array {
         $allowedScopes = array_values(array_map(
             static fn (mixed $value): string => (string) $value,
@@ -2352,16 +2430,41 @@ final class AuthSecurityCenterReportCommand extends Command
             ARRAY_FILTER_USE_BOTH,
         );
 
+        $actorAwareProfiles = $this->actorAwareMutationProfiles($operationalResponse);
         $profiles = [];
 
         foreach (['all', 'sessions', 'trusted-devices'] as $scope) {
+            $mutationKind = match ($scope) {
+                'sessions' => 'session_revocation',
+                'trusted-devices' => 'trusted_device_revocation',
+                default => 'aggregated_device_revocation',
+            };
+            $matchingObservedProfiles = array_values(array_filter(
+                $observedMutationActorProfiles,
+                static fn (mixed $value): bool => is_array($value)
+                    && ($value['mutation_kind'] ?? null) === $mutationKind,
+            ));
+            $matchingTargetedObservedProfiles = $targetStores === []
+                ? $matchingObservedProfiles
+                : array_values(array_filter(
+                    $matchingObservedProfiles,
+                    static function (array $profile) use ($targetStores): bool {
+                        $profileStores = array_values(array_filter(array_map(
+                            static fn (mixed $value): string => is_string($value) ? trim($value) : '',
+                            (array) ($profile['store_fingerprints'] ?? []),
+                        ), static fn (string $value): bool => $value !== ''));
+
+                        return $profileStores !== []
+                            && array_intersect(array_values(array_map('strval', $targetStores)), $profileStores) !== [];
+                    },
+                ));
+            $observedActorProfiles = $matchingTargetedObservedProfiles !== []
+                ? $matchingTargetedObservedProfiles
+                : $matchingObservedProfiles;
+
             $profiles[] = [
                 'scope' => $scope,
-                'mutation_kind' => match ($scope) {
-                    'sessions' => 'session_revocation',
-                    'trusted-devices' => 'trusted_device_revocation',
-                    default => 'aggregated_device_revocation',
-                },
+                'mutation_kind' => $mutationKind,
                 'response_mode' => (string) ($operationalResponse['response_mode'] ?? 'normal_operations'),
                 'escalation_level' => (string) ($operationalResponse['escalation_level'] ?? 'none'),
                 'scope_policy' => (string) ($operationalResponse['remote_mutation_scope_policy'] ?? 'allow_all'),
@@ -2374,10 +2477,319 @@ final class AuthSecurityCenterReportCommand extends Command
                 'denied_scopes' => $deniedScopes,
                 'target_store_fingerprints' => array_values(array_map('strval', $targetStores)),
                 'target_store_assessments' => $targetStoreAssessments,
+                'actor_aware_profiles' => array_values(array_filter(
+                    $actorAwareProfiles,
+                    static fn (array $profile): bool => ($profile['mutation_kind'] ?? null) === $mutationKind,
+                )),
+                'observed_actor_profiles' => $observedActorProfiles,
             ];
         }
 
         return $profiles;
+    }
+
+    /**
+     * @param array<string, mixed> $operationalResponse
+     * @return list<array<string, mixed>>
+     */
+    private function actorAwareMutationProfiles(array $operationalResponse): array
+    {
+        $policies = array_filter(
+            (array) ($operationalResponse['authorization_mode_scope_policies'] ?? []),
+            static fn (mixed $value, mixed $key): bool => is_string($key) && is_array($value),
+            ARRAY_FILTER_USE_BOTH,
+        );
+
+        $profiles = [];
+        $responseMode = (string) ($operationalResponse['response_mode'] ?? 'normal_operations');
+        $escalationLevel = (string) ($operationalResponse['escalation_level'] ?? 'none');
+
+        foreach ($policies as $authorizationMode => $policy) {
+            $this->collectActorAwareMutationProfilesFromPolicy(
+                $profiles,
+                $policy,
+                $authorizationMode,
+                null,
+                null,
+                null,
+                'authorization_mode_scope_policy',
+                $responseMode,
+                $escalationLevel,
+            );
+        }
+
+        return $this->normalizeActorAwarePolicyProfiles($profiles);
+    }
+
+    /**
+     * @param list<array<string, mixed>> $profiles
+     * @param array<string, mixed> $policy
+     */
+    private function collectActorAwareMutationProfilesFromPolicy(
+        array &$profiles,
+        array $policy,
+        ?string $authorizationMode,
+        ?string $actorPrivilegeLevel,
+        ?string $actorTargetRelation,
+        ?string $actorTargetScopeRelation,
+        string $policySource,
+        string $responseMode,
+        string $escalationLevel,
+    ): void {
+        $allowedScopes = array_values(array_map(
+            static fn (mixed $value): string => (string) $value,
+            (array) ($policy['allowed_remote_mutation_scopes'] ?? []),
+        ));
+        $deniedScopes = array_values(array_map(
+            static fn (mixed $value): string => (string) $value,
+            (array) ($policy['denied_remote_mutation_scopes'] ?? []),
+        ));
+        /** @var array<string, string> $scopeReasonCodes */
+        $scopeReasonCodes = array_filter(
+            (array) ($policy['scope_denial_reason_codes'] ?? []),
+            static fn (mixed $value, mixed $key): bool => is_string($key) && is_string($value),
+            ARRAY_FILTER_USE_BOTH,
+        );
+        $policyReasonCode = is_string($policy['policy_reason_code'] ?? null)
+            ? $policy['policy_reason_code']
+            : null;
+        $scopePolicy = is_string($policy['remote_mutation_scope_policy'] ?? null)
+            ? $policy['remote_mutation_scope_policy']
+            : 'allow_all';
+
+        foreach (['all', 'sessions', 'trusted-devices'] as $scope) {
+            $profiles[] = [
+                'scope' => $scope,
+                'mutation_kind' => match ($scope) {
+                    'sessions' => 'session_revocation',
+                    'trusted-devices' => 'trusted_device_revocation',
+                    default => 'aggregated_device_revocation',
+                },
+                'authorization_mode' => $authorizationMode,
+                'actor_privilege_level' => $actorPrivilegeLevel,
+                'actor_target_relation' => $actorTargetRelation,
+                'actor_target_scope_relation' => $actorTargetScopeRelation,
+                'response_mode' => $responseMode,
+                'escalation_level' => $escalationLevel,
+                'scope_policy' => $scopePolicy,
+                'policy_source' => $policySource,
+                'policy_reason_code' => $policyReasonCode,
+                'should_deny' => in_array($scope, $deniedScopes, true),
+                'reason_code' => in_array($scope, $deniedScopes, true)
+                    ? ($scopeReasonCodes[$scope] ?? $policy['remote_mutation_denial_reason_code'] ?? 'distributed_remote_mutation_guard')
+                    : null,
+                'allowed_scopes' => $allowedScopes,
+                'denied_scopes' => $deniedScopes,
+            ];
+        }
+
+        foreach (array_filter(
+            (array) ($policy['privilege_scope_policies'] ?? []),
+            static fn (mixed $value, mixed $key): bool => is_string($key) && is_array($value),
+            ARRAY_FILTER_USE_BOTH,
+        ) as $selector => $nestedPolicy) {
+            $this->collectActorAwareMutationProfilesFromPolicy(
+                $profiles,
+                $nestedPolicy,
+                $authorizationMode,
+                $selector,
+                $actorTargetRelation,
+                $actorTargetScopeRelation,
+                'privilege_scope_policy',
+                $responseMode,
+                $escalationLevel,
+            );
+        }
+
+        foreach (array_filter(
+            (array) ($policy['target_relation_scope_policies'] ?? []),
+            static fn (mixed $value, mixed $key): bool => is_string($key) && is_array($value),
+            ARRAY_FILTER_USE_BOTH,
+        ) as $selector => $nestedPolicy) {
+            $this->collectActorAwareMutationProfilesFromPolicy(
+                $profiles,
+                $nestedPolicy,
+                $authorizationMode,
+                $actorPrivilegeLevel,
+                $selector,
+                $actorTargetScopeRelation,
+                'actor_target_relation_scope_policy',
+                $responseMode,
+                $escalationLevel,
+            );
+        }
+
+        foreach (array_filter(
+            (array) ($policy['target_scope_relation_policies'] ?? []),
+            static fn (mixed $value, mixed $key): bool => is_string($key) && is_array($value),
+            ARRAY_FILTER_USE_BOTH,
+        ) as $selector => $nestedPolicy) {
+            $this->collectActorAwareMutationProfilesFromPolicy(
+                $profiles,
+                $nestedPolicy,
+                $authorizationMode,
+                $actorPrivilegeLevel,
+                $actorTargetRelation,
+                $selector,
+                'actor_target_scope_relation_scope_policy',
+                $responseMode,
+                $escalationLevel,
+            );
+        }
+    }
+
+    /**
+     * @param list<array<string, mixed>> $profiles
+     * @return list<array<string, mixed>>
+     */
+    private function normalizeActorAwarePolicyProfiles(array $profiles): array
+    {
+        usort($profiles, static function (array $left, array $right): int {
+            $leftSpecificity = count(array_filter([
+                $left['authorization_mode'] ?? null,
+                $left['actor_privilege_level'] ?? null,
+                $left['actor_target_relation'] ?? null,
+                $left['actor_target_scope_relation'] ?? null,
+            ], static fn (mixed $value): bool => is_string($value) && trim($value) !== ''));
+            $rightSpecificity = count(array_filter([
+                $right['authorization_mode'] ?? null,
+                $right['actor_privilege_level'] ?? null,
+                $right['actor_target_relation'] ?? null,
+                $right['actor_target_scope_relation'] ?? null,
+            ], static fn (mixed $value): bool => is_string($value) && trim($value) !== ''));
+
+            if ($leftSpecificity !== $rightSpecificity) {
+                return $rightSpecificity <=> $leftSpecificity;
+            }
+
+            foreach ([
+                'mutation_kind',
+                'authorization_mode',
+                'actor_privilege_level',
+                'actor_target_relation',
+                'actor_target_scope_relation',
+                'policy_source',
+                'policy_reason_code',
+            ] as $key) {
+                $comparison = strcmp((string) ($left[$key] ?? ''), (string) ($right[$key] ?? ''));
+
+                if ($comparison !== 0) {
+                    return $comparison;
+                }
+            }
+
+            return strcmp((string) ($left['scope'] ?? ''), (string) ($right['scope'] ?? ''));
+        });
+
+        return $profiles;
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $profiles
+     */
+    private function accumulateMutationActorProfile(
+        array &$profiles,
+        string $profileKey,
+        string $mutationKind,
+        string $scope,
+        ?string $authorizationMode,
+        ?string $actorPrivilegeLevel,
+        ?string $actorTargetRelation,
+        ?string $actorTargetScopeRelation,
+        ?string $policySource,
+        ?string $policyReasonCode,
+        ?string $reasonCode,
+        string $outcome,
+        string $storeFingerprint,
+        string $storeTopology,
+        ?int $occurredAt,
+    ): void {
+        if (! isset($profiles[$profileKey])) {
+            $profiles[$profileKey] = [
+                'mutation_kind' => $mutationKind,
+                'scope' => $scope,
+                'authorization_mode' => $authorizationMode,
+                'actor_privilege_level' => $actorPrivilegeLevel,
+                'actor_target_relation' => $actorTargetRelation,
+                'actor_target_scope_relation' => $actorTargetScopeRelation,
+                'policy_source' => $policySource,
+                'policy_reason_code' => $policyReasonCode,
+                'reason_code' => $reasonCode,
+                'event_count' => 0,
+                'outcomes' => [],
+                'scopes' => [],
+                'store_fingerprints' => [],
+                'store_topologies' => [],
+                'last_observed_at' => null,
+            ];
+        }
+
+        $profiles[$profileKey]['event_count']++;
+        $profiles[$profileKey]['outcomes'][$outcome] = ($profiles[$profileKey]['outcomes'][$outcome] ?? 0) + 1;
+        $profiles[$profileKey]['scopes'][$scope] = ($profiles[$profileKey]['scopes'][$scope] ?? 0) + 1;
+        $profiles[$profileKey]['store_fingerprints'][$storeFingerprint] = true;
+        $profiles[$profileKey]['store_topologies'][$storeTopology] = true;
+
+        if ($occurredAt !== null) {
+            $profiles[$profileKey]['last_observed_at'] = max(
+                (int) ($profiles[$profileKey]['last_observed_at'] ?? 0),
+                $occurredAt,
+            );
+        }
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $profiles
+     * @return list<array<string, mixed>>
+     */
+    private function normalizeMutationActorProfiles(array $profiles): array
+    {
+        $normalized = [];
+
+        foreach ($profiles as $profile) {
+            ksort($profile['outcomes']);
+            ksort($profile['scopes']);
+            $profile['store_fingerprints'] = array_values(array_map(
+                'strval',
+                array_keys((array) ($profile['store_fingerprints'] ?? [])),
+            ));
+            sort($profile['store_fingerprints']);
+            $profile['store_topologies'] = array_values(array_map(
+                'strval',
+                array_keys((array) ($profile['store_topologies'] ?? [])),
+            ));
+            sort($profile['store_topologies']);
+            $normalized[] = $profile;
+        }
+
+        usort($normalized, static function (array $left, array $right): int {
+            $eventComparison = ((int) ($right['event_count'] ?? 0)) <=> ((int) ($left['event_count'] ?? 0));
+
+            if ($eventComparison !== 0) {
+                return $eventComparison;
+            }
+
+            foreach ([
+                'mutation_kind',
+                'authorization_mode',
+                'actor_privilege_level',
+                'actor_target_relation',
+                'actor_target_scope_relation',
+                'policy_source',
+                'policy_reason_code',
+                'reason_code',
+            ] as $key) {
+                $comparison = strcmp((string) ($left[$key] ?? ''), (string) ($right[$key] ?? ''));
+
+                if ($comparison !== 0) {
+                    return $comparison;
+                }
+            }
+
+            return strcmp((string) ($left['scope'] ?? ''), (string) ($right['scope'] ?? ''));
+        });
+
+        return $normalized;
     }
 
     /**
@@ -2398,6 +2810,11 @@ final class AuthSecurityCenterReportCommand extends Command
             ksort($cohort['distributed_guard_policy_sources']);
             ksort($cohort['distributed_guard_policy_reason_codes']);
             ksort($cohort['distributed_guard_reason_codes']);
+            $cohort['mutation_actor_profiles'] = $this->normalizeMutationActorProfiles(
+                is_array($cohort['mutation_actor_profiles'] ?? null)
+                    ? $cohort['mutation_actor_profiles']
+                    : [],
+            );
             $normalized[] = $cohort;
         }
 

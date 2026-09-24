@@ -37,4 +37,14 @@ final readonly class AuthorizationRequest
     {
         return $this->context;
     }
+
+    public function withContext(AuthorizationContext $context): self
+    {
+        return new self(
+            ability: $this->ability,
+            principal: $this->principal,
+            subject: $this->subject,
+            context: $context,
+        );
+    }
 }

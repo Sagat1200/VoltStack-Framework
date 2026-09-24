@@ -435,6 +435,18 @@ PHP
             1,
             $payload['longitudinal_metrics']['distributed_guard_reason_codes']['distributed_recent_lag_guard_delegated_support_delegated_trusted_target_trusted_devices_scope'] ?? null,
         );
+        self::assertCount(3, $payload['longitudinal_metrics']['mutation_actor_profiles'] ?? []);
+        self::assertSame('aggregated_device_revocation', $payload['longitudinal_metrics']['mutation_actor_profiles'][0]['mutation_kind'] ?? null);
+        self::assertSame('direct_admin', $payload['longitudinal_metrics']['mutation_actor_profiles'][0]['authorization_mode'] ?? null);
+        self::assertSame('authorization_mode_scope_policy', $payload['longitudinal_metrics']['mutation_actor_profiles'][0]['policy_source'] ?? null);
+        self::assertSame(['fingerprint-a'], $payload['longitudinal_metrics']['mutation_actor_profiles'][0]['store_fingerprints'] ?? null);
+        self::assertSame('session_revocation', $payload['longitudinal_metrics']['mutation_actor_profiles'][1]['mutation_kind'] ?? null);
+        self::assertSame('delegated_support', $payload['longitudinal_metrics']['mutation_actor_profiles'][1]['actor_privilege_level'] ?? null);
+        self::assertSame('delegated_admin_sessions_scope_target', $payload['longitudinal_metrics']['mutation_actor_profiles'][1]['actor_target_scope_relation'] ?? null);
+        self::assertSame(
+            'distributed_recent_lag_guard_delegated_support_delegated_sessions_target_policy',
+            $payload['longitudinal_metrics']['mutation_actor_profiles'][1]['policy_reason_code'] ?? null,
+        );
         self::assertSame(3, $payload['longitudinal_metrics']['affected_resources']['total'] ?? null);
         self::assertSame(2, $payload['longitudinal_metrics']['affected_resources']['sessions'] ?? null);
         self::assertSame(1, $payload['longitudinal_metrics']['affected_resources']['trusted-devices'] ?? null);
@@ -522,6 +534,18 @@ PHP
         self::assertSame('global_scope_policy', $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['policy_source'] ?? null);
         self::assertFalse($payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['should_deny'] ?? true);
         self::assertSame(['fingerprint-a'], $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['target_store_fingerprints'] ?? null);
+        $recentLagAllActorAwareProfiles = array_values(array_filter(
+            (array) ($payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['actor_aware_profiles'] ?? []),
+            static fn (array $profile): bool => ($profile['actor_target_scope_relation'] ?? null) === 'direct_admin_full_scope_target',
+        ));
+        self::assertCount(1, $recentLagAllActorAwareProfiles);
+        self::assertSame(
+            'distributed_recent_lag_guard_direct_full_target_policy',
+            $recentLagAllActorAwareProfiles[0]['policy_reason_code'] ?? null,
+        );
+        self::assertCount(1, $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['observed_actor_profiles'] ?? []);
+        self::assertSame('direct_admin', $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['observed_actor_profiles'][0]['authorization_mode'] ?? null);
+        self::assertSame(['fingerprint-a'], $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['observed_actor_profiles'][0]['store_fingerprints'] ?? null);
         self::assertSame(795, $payload['longitudinal_metrics']['activity_drift']['max_event_gap_seconds'] ?? null);
         self::assertSame(0, $payload['longitudinal_metrics']['activity_drift']['inactive_stores_last_15m'] ?? null);
         self::assertSame(0, $payload['longitudinal_metrics']['activity_drift']['inactive_stores_last_60m'] ?? null);
@@ -587,6 +611,9 @@ PHP
         self::assertSame(1, $payload['longitudinal_metrics']['store_cohorts'][0]['affected_resources']['trusted-devices'] ?? null);
         self::assertSame(3, $payload['longitudinal_metrics']['store_cohorts'][0]['affected_resources']['total'] ?? null);
         self::assertSame($seedNow - 800, $payload['longitudinal_metrics']['store_cohorts'][0]['latest_event_at'] ?? null);
+        self::assertCount(2, $payload['longitudinal_metrics']['store_cohorts'][0]['mutation_actor_profiles'] ?? []);
+        self::assertSame('aggregated_device_revocation', $payload['longitudinal_metrics']['store_cohorts'][0]['mutation_actor_profiles'][0]['mutation_kind'] ?? null);
+        self::assertSame('session_revocation', $payload['longitudinal_metrics']['store_cohorts'][0]['mutation_actor_profiles'][1]['mutation_kind'] ?? null);
         self::assertSame('fingerprint-b', $payload['longitudinal_metrics']['store_cohorts'][1]['store_fingerprint'] ?? null);
         self::assertSame(1, $payload['longitudinal_metrics']['store_cohorts'][1]['event_count'] ?? null);
         self::assertSame(1, $payload['longitudinal_metrics']['store_cohorts'][1]['authorization_modes']['none'] ?? null);
@@ -741,6 +768,11 @@ PHP
         self::assertSame('trusted_device_revocation', $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][2]['mutation_kind'] ?? null);
         self::assertSame('global_scope_policy', $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][2]['policy_source'] ?? null);
         self::assertFalse($payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][2]['should_deny'] ?? true);
+        $concentratedTrustedActorAwareProfiles = array_values(array_filter(
+            (array) ($payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][2]['actor_aware_profiles'] ?? []),
+            static fn (array $profile): bool => ($profile['actor_target_scope_relation'] ?? null) === 'direct_admin_trusted_devices_scope_target',
+        ));
+        self::assertCount(1, $concentratedTrustedActorAwareProfiles);
         self::assertSame([], $payload['longitudinal_metrics']['activity_drift']['lagging_store_fingerprints'] ?? null);
         self::assertSame([], $payload['longitudinal_metrics']['activity_drift']['stale_store_fingerprints'] ?? null);
         self::assertCount(2, $payload['longitudinal_metrics']['activity_drift']['store_assessments'] ?? []);
@@ -841,6 +873,11 @@ PHP
         self::assertSame('trusted_device_revocation', $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][2]['mutation_kind'] ?? null);
         self::assertSame('global_scope_policy', $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][2]['policy_source'] ?? null);
         self::assertTrue($payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][2]['should_deny'] ?? false);
+        $partialTrustedActorAwareProfiles = array_values(array_filter(
+            (array) ($payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][2]['actor_aware_profiles'] ?? []),
+            static fn (array $profile): bool => ($profile['actor_target_scope_relation'] ?? null) === 'direct_admin_trusted_devices_scope_target',
+        ));
+        self::assertCount(1, $partialTrustedActorAwareProfiles);
         self::assertSame(
             'distributed_partial_visibility_guard_trusted_devices_scope',
             $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][2]['reason_code'] ?? null,
@@ -1092,6 +1129,10 @@ PHP
                 'distributed_guard_scope_decision' => [
                     'scope' => 'all',
                     'mutation_kind' => 'aggregated_device_revocation',
+                    'authorization_mode' => 'direct_admin',
+                    'actor_privilege_level' => 'privileged_admin',
+                    'actor_target_relation' => 'direct_administrative_target',
+                    'actor_target_scope_relation' => 'direct_admin_full_scope_target',
                     'policy_source' => 'authorization_mode_scope_policy',
                     'policy_reason_code' => 'distributed_recent_lag_guard_direct_admin_policy',
                     'reason_code' => null,
@@ -1120,6 +1161,10 @@ PHP
                 'distributed_guard_scope_decision' => [
                     'scope' => 'sessions',
                     'mutation_kind' => 'session_revocation',
+                    'authorization_mode' => 'delegated_admin',
+                    'actor_privilege_level' => 'delegated_support',
+                    'actor_target_relation' => 'delegated_administrative_target',
+                    'actor_target_scope_relation' => 'delegated_admin_sessions_scope_target',
                     'policy_source' => 'actor_target_scope_relation_scope_policy',
                     'policy_reason_code' => 'distributed_recent_lag_guard_delegated_support_delegated_sessions_target_policy',
                     'reason_code' => null,
@@ -1144,6 +1189,10 @@ PHP
                 'distributed_guard_scope_decision' => [
                     'scope' => 'trusted-devices',
                     'mutation_kind' => 'trusted_device_revocation',
+                    'authorization_mode' => 'none',
+                    'actor_privilege_level' => null,
+                    'actor_target_relation' => null,
+                    'actor_target_scope_relation' => null,
                     'policy_source' => 'actor_target_scope_relation_scope_policy',
                     'policy_reason_code' => 'distributed_recent_lag_guard_delegated_support_delegated_trusted_target_policy',
                     'reason_code' => 'distributed_recent_lag_guard_delegated_support_delegated_trusted_target_trusted_devices_scope',

@@ -6,7 +6,15 @@ namespace Quantum\Database\Integration;
 
 use Quantum\Database\Config\DatabaseConfiguration;
 use Quantum\Database\Config\FrameworkDatabaseConfigurationProvider;
+use Quantum\Database\Connection\ConnectionDefinitionRegistry;
+use Quantum\Database\Connection\ConnectionFactory;
+use Quantum\Database\Connection\ConnectionManager;
+use Quantum\Database\Contracts\ConnectionManagerInterface;
 use Quantum\Database\Contracts\DatabaseConfigurationProviderInterface;
+use Quantum\Database\Dialect\DialectResolver;
+use Quantum\Database\Driver\DriverRegistry;
+use Quantum\Database\Driver\PdoDriver;
+use Quantum\Database\Platform\PlatformResolver;
 use Quantum\Database\Runtime\DatabaseContext;
 use Quantum\Database\Runtime\DatabaseExecutionScope;
 use Quantum\Database\Runtime\DatabaseExecutionScopeFactory;
@@ -32,6 +40,31 @@ final class DatabaseServiceProvider extends ServiceProvider
             $app->make(DatabaseConfiguration::class),
             $app->make(DatabaseExecutionScopeFactory::class),
         ));
+        $this->app->singleton(ConnectionDefinitionRegistry::class, fn(Application $app): ConnectionDefinitionRegistry => new ConnectionDefinitionRegistry(
+            $app->make(DatabaseConfiguration::class),
+        ));
+        $this->app->singleton(DriverRegistry::class, function (): DriverRegistry {
+            $registry = new DriverRegistry();
+            $pdoSqlite = new PdoDriver('pdo.sqlite');
+            $pdoMysql = new PdoDriver('pdo.mysql');
+            $pdoPgsql = new PdoDriver('pdo.pgsql');
+
+            $registry->register('sqlite', $pdoSqlite);
+            $registry->register('sqlite3', $pdoSqlite);
+            $registry->register('pdo.sqlite', $pdoSqlite);
+            $registry->register('mysql', $pdoMysql);
+            $registry->register('mariadb', $pdoMysql);
+            $registry->register('pdo.mysql', $pdoMysql);
+            $registry->register('pgsql', $pdoPgsql);
+            $registry->register('postgres', $pdoPgsql);
+            $registry->register('postgresql', $pdoPgsql);
+            $registry->register('pdo.pgsql', $pdoPgsql);
+
+            return $registry;
+        });
+        $this->app->singleton(PlatformResolver::class);
+        $this->app->singleton(DialectResolver::class);
+        $this->app->singleton(ConnectionFactory::class);
         $this->app->singleton(DatabaseScopeLifecycleManager::class);
 
         $this->app->scoped(DatabaseExecutionScope::class, function (Application $app): DatabaseExecutionScope {
@@ -51,6 +84,11 @@ final class DatabaseServiceProvider extends ServiceProvider
             $app->make(DatabaseExecutionScope::class),
             $app->make(DatabaseConfiguration::class),
         ));
+        $this->app->scoped(ConnectionManager::class, fn(Application $app): ConnectionManager => new ConnectionManager(
+            $app->make(ConnectionDefinitionRegistry::class),
+            $app->make(ConnectionFactory::class),
+        ));
+        $this->app->scoped(ConnectionManagerInterface::class, fn(Application $app): ConnectionManagerInterface => $app->make(ConnectionManager::class));
 
         $this->app->onScopeStart(function (Application $app, RuntimeContext $context): void {
             $app->make(DatabaseScopeLifecycleManager::class)->start($context);

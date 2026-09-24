@@ -6,6 +6,7 @@ namespace VoltStack\Framework;
 
 use Quantum\Config\ConfigRepository;
 use Quantum\Auth\AuthenticationServiceProvider;
+use Quantum\Authorization\AuthorizationServiceProvider;
 use Quantum\Database\Integration\DatabaseServiceProvider;
 use Quantum\Auth\Exceptions\AuthExceptionMapper;
 use Quantum\Cache\CacheManager;
@@ -308,6 +309,10 @@ class Application extends Container
 
         if (! isset($this->providers[AuthenticationServiceProvider::class])) {
             $this->register(AuthenticationServiceProvider::class);
+        }
+
+        if (! isset($this->providers[AuthorizationServiceProvider::class])) {
+            $this->register(AuthorizationServiceProvider::class);
         }
 
         if (! isset($this->providers[DatabaseServiceProvider::class])) {

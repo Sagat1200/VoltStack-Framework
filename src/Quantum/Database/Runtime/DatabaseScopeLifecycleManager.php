@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quantum\Database\Runtime;
 
+use Quantum\Database\Connection\ConnectionManager;
 use VoltStack\Framework\Application;
 use VoltStack\Runtime\Context\RuntimeContext;
 
@@ -19,6 +20,7 @@ final class DatabaseScopeLifecycleManager
         /** @var DatabaseExecutionScope $scope */
         $scope = $this->app->make(DatabaseExecutionScope::class);
         $context->set('database.scope_id', $scope->id());
+        $context->set('database.default_connection', $scope->configuration()->defaultConnectionName);
 
         return $scope;
     }
@@ -31,6 +33,11 @@ final class DatabaseScopeLifecycleManager
 
         /** @var DatabaseExecutionScope $scope */
         $scope = $this->app->make(DatabaseExecutionScope::class);
+
+        if ($this->app->resolved(ConnectionManager::class)) {
+            $this->app->make(ConnectionManager::class)->disconnectAll();
+        }
+
         $scope->finalize();
 
         if ($context === null) {

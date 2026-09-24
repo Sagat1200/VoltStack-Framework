@@ -1795,7 +1795,93 @@ final class AuthSecurityCenterReportCommand extends Command
                 'allowed_remote_mutation_scopes' => ['all', 'sessions', 'trusted-devices'],
                 'denied_remote_mutation_scopes' => [],
                 'scope_denial_reason_codes' => [],
-                'authorization_mode_scope_policies' => [],
+                'authorization_mode_scope_policies' => [
+                    'direct_admin' => [
+                        'remote_mutation_scope_policy' => 'allow_all',
+                        'allowed_remote_mutation_scopes' => ['all', 'sessions', 'trusted-devices'],
+                        'denied_remote_mutation_scopes' => [],
+                        'scope_denial_reason_codes' => [],
+                        'policy_reason_code' => 'distributed_recent_lag_guard_direct_admin_policy',
+                    ],
+                    'delegated_admin' => [
+                        'remote_mutation_scope_policy' => 'sessions_only',
+                        'allowed_remote_mutation_scopes' => ['sessions'],
+                        'denied_remote_mutation_scopes' => ['all', 'trusted-devices'],
+                        'scope_denial_reason_codes' => [
+                            'all' => 'distributed_recent_lag_guard_delegated_admin_all_scope',
+                            'trusted-devices' => 'distributed_recent_lag_guard_delegated_admin_trusted_devices_scope',
+                        ],
+                        'policy_reason_code' => 'distributed_recent_lag_guard_delegated_admin_policy',
+                        'privilege_scope_policies' => [
+                            'delegated_support' => [
+                                'remote_mutation_scope_policy' => 'sessions_only',
+                                'allowed_remote_mutation_scopes' => ['sessions'],
+                                'denied_remote_mutation_scopes' => ['all', 'trusted-devices'],
+                                'scope_denial_reason_codes' => [
+                                    'all' => 'distributed_recent_lag_guard_delegated_support_all_scope',
+                                    'trusted-devices' => 'distributed_recent_lag_guard_delegated_support_trusted_devices_scope',
+                                ],
+                                'policy_reason_code' => 'distributed_recent_lag_guard_delegated_support_policy',
+                                'target_relation_scope_policies' => [
+                                    'self_governed' => [
+                                        'remote_mutation_scope_policy' => 'sessions_only',
+                                        'allowed_remote_mutation_scopes' => ['sessions'],
+                                        'denied_remote_mutation_scopes' => ['all', 'trusted-devices'],
+                                        'scope_denial_reason_codes' => [
+                                            'all' => 'distributed_recent_lag_guard_delegated_support_self_governed_all_scope',
+                                            'trusted-devices' => 'distributed_recent_lag_guard_delegated_support_self_governed_trusted_devices_scope',
+                                        ],
+                                        'policy_reason_code' => 'distributed_recent_lag_guard_delegated_support_self_governed_policy',
+                                    ],
+                                    'delegated_administrative_target' => [
+                                        'remote_mutation_scope_policy' => 'sessions_only',
+                                        'allowed_remote_mutation_scopes' => ['sessions'],
+                                        'denied_remote_mutation_scopes' => ['all', 'trusted-devices'],
+                                        'scope_denial_reason_codes' => [
+                                            'all' => 'distributed_recent_lag_guard_delegated_support_delegated_target_all_scope',
+                                            'trusted-devices' => 'distributed_recent_lag_guard_delegated_support_delegated_target_trusted_devices_scope',
+                                        ],
+                                        'policy_reason_code' => 'distributed_recent_lag_guard_delegated_support_delegated_target_policy',
+                                        'target_scope_relation_policies' => [
+                                            'delegated_admin_sessions_scope_target' => [
+                                                'remote_mutation_scope_policy' => 'sessions_only',
+                                                'allowed_remote_mutation_scopes' => ['sessions'],
+                                                'denied_remote_mutation_scopes' => ['all', 'trusted-devices'],
+                                                'scope_denial_reason_codes' => [
+                                                    'all' => 'distributed_recent_lag_guard_delegated_support_delegated_sessions_target_all_scope',
+                                                    'trusted-devices' => 'distributed_recent_lag_guard_delegated_support_delegated_sessions_target_trusted_devices_scope',
+                                                ],
+                                                'policy_reason_code' => 'distributed_recent_lag_guard_delegated_support_delegated_sessions_target_policy',
+                                            ],
+                                            'delegated_admin_trusted_devices_scope_target' => [
+                                                'remote_mutation_scope_policy' => 'deny_all',
+                                                'allowed_remote_mutation_scopes' => [],
+                                                'denied_remote_mutation_scopes' => ['all', 'sessions', 'trusted-devices'],
+                                                'scope_denial_reason_codes' => [
+                                                    'all' => 'distributed_recent_lag_guard_delegated_support_delegated_trusted_target_all_scope',
+                                                    'sessions' => 'distributed_recent_lag_guard_delegated_support_delegated_trusted_target_sessions_scope',
+                                                    'trusted-devices' => 'distributed_recent_lag_guard_delegated_support_delegated_trusted_target_trusted_devices_scope',
+                                                ],
+                                                'policy_reason_code' => 'distributed_recent_lag_guard_delegated_support_delegated_trusted_target_policy',
+                                            ],
+                                        ],
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                    'none' => [
+                        'remote_mutation_scope_policy' => 'deny_all',
+                        'allowed_remote_mutation_scopes' => [],
+                        'denied_remote_mutation_scopes' => ['all', 'sessions', 'trusted-devices'],
+                        'scope_denial_reason_codes' => [
+                            'all' => 'distributed_recent_lag_guard_untrusted_all_scope',
+                            'sessions' => 'distributed_recent_lag_guard_untrusted_sessions_scope',
+                            'trusted-devices' => 'distributed_recent_lag_guard_untrusted_trusted_devices_scope',
+                        ],
+                        'policy_reason_code' => 'distributed_recent_lag_guard_untrusted_policy',
+                    ],
+                ],
                 'next_step' => 'review_lagging_store_health',
                 'target_store_fingerprints' => $targetStores,
             ],

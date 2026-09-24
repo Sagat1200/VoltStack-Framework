@@ -3,6 +3,10 @@
 declare(strict_types=1);
 
 use Quantum\Config\ConfigRepository;
+use Quantum\Authorization\Ability\Ability;
+use Quantum\Authorization\Context\AuthorizationContext;
+use Quantum\Authorization\Contracts\AuthorizationManagerInterface;
+use Quantum\Authorization\Decision\DecisionResult;
 use Quantum\Auth\AuthManager;
 use Quantum\Cache\Repository as CacheRepository;
 use Quantum\Http\Response;
@@ -258,5 +262,45 @@ if (! function_exists('auth')) {
     function auth(): AuthManager
     {
         return app(AuthManager::class);
+    }
+}
+
+if (! function_exists('authorization')) {
+    function authorization(): AuthorizationManagerInterface
+    {
+        return app(AuthorizationManagerInterface::class);
+    }
+}
+
+if (! function_exists('can')) {
+    function can(
+        string|Ability $ability,
+        mixed $subject = null,
+        ?AuthorizationContext $context = null,
+        mixed $principal = null,
+    ): bool {
+        return authorization()->check($ability, $subject, $context, $principal);
+    }
+}
+
+if (! function_exists('cannot')) {
+    function cannot(
+        string|Ability $ability,
+        mixed $subject = null,
+        ?AuthorizationContext $context = null,
+        mixed $principal = null,
+    ): bool {
+        return authorization()->cannot($ability, $subject, $context, $principal);
+    }
+}
+
+if (! function_exists('authorize')) {
+    function authorize(
+        string|Ability $ability,
+        mixed $subject = null,
+        ?AuthorizationContext $context = null,
+        mixed $principal = null,
+    ): DecisionResult {
+        return authorization()->authorize($ability, $subject, $context, $principal);
     }
 }

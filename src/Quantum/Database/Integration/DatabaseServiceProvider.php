@@ -18,6 +18,9 @@ use Quantum\Database\Driver\DriverRegistry;
 use Quantum\Database\Driver\PdoDriver;
 use Quantum\Database\Execution\QueryExecutor;
 use Quantum\Database\Execution\StatementExecutor;
+use Quantum\Database\Migration\MigrationDiscovery;
+use Quantum\Database\Migration\MigrationRepository;
+use Quantum\Database\Migration\MigrationRunner;
 use Quantum\Database\Platform\PlatformResolver;
 use Quantum\Database\Query\Ast\QueryAstFactory;
 use Quantum\Database\Query\Builder\DatabaseQueryManager;
@@ -28,6 +31,8 @@ use Quantum\Database\Runtime\DatabaseContext;
 use Quantum\Database\Runtime\DatabaseExecutionScope;
 use Quantum\Database\Runtime\DatabaseExecutionScopeFactory;
 use Quantum\Database\Runtime\DatabaseScopeLifecycleManager;
+use Quantum\Database\Schema\Compiler\SchemaCompiler;
+use Quantum\Database\Schema\SchemaManager;
 use RuntimeException;
 use VoltStack\Framework\Application;
 use VoltStack\Framework\ServiceProvider;
@@ -75,6 +80,7 @@ final class DatabaseServiceProvider extends ServiceProvider
         $this->app->singleton(DialectResolver::class);
         $this->app->singleton(ConnectionFactory::class);
         $this->app->singleton(QueryAstFactory::class);
+        $this->app->singleton(MigrationDiscovery::class);
         $this->app->singleton(DatabaseScopeLifecycleManager::class);
 
         $this->app->scoped(DatabaseExecutionScope::class, function (Application $app): DatabaseExecutionScope {
@@ -120,6 +126,25 @@ final class DatabaseServiceProvider extends ServiceProvider
         $this->app->scoped(DatabaseQueryManager::class, fn(Application $app): DatabaseQueryManager => new DatabaseQueryManager(
             $app->make(DatabaseQueryRunner::class),
             $app->make(QueryCompilerInterface::class),
+        ));
+        $this->app->scoped(SchemaCompiler::class, fn(Application $app): SchemaCompiler => new SchemaCompiler(
+            $app->make(ConnectionDefinitionRegistry::class),
+            $app->make(DialectResolver::class),
+        ));
+        $this->app->scoped(SchemaManager::class, fn(Application $app): SchemaManager => new SchemaManager(
+            $app->make(SchemaCompiler::class),
+            $app->make(QueryExecutorInterface::class),
+        ));
+        $this->app->scoped(MigrationRepository::class, fn(Application $app): MigrationRepository => new MigrationRepository(
+            $app->make(SchemaManager::class),
+            $app->make(QueryExecutorInterface::class),
+            $app->make(DatabaseQueryManager::class),
+        ));
+        $this->app->scoped(MigrationRunner::class, fn(Application $app): MigrationRunner => new MigrationRunner(
+            $app->make(MigrationDiscovery::class),
+            $app->make(MigrationRepository::class),
+            $app->make(SchemaManager::class),
+            $app->make(ConnectionManagerInterface::class),
         ));
 
         $this->app->onScopeStart(function (Application $app, RuntimeContext $context): void {

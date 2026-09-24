@@ -512,6 +512,23 @@ final class AuthSecurityCenterReportCommand extends Command
                             implode(',', (array) ($operationalResponse['degraded_scope_profiles'] ?? [])),
                         ));
                     }
+
+                    if (($operationalResponse['target_store_assessments'] ?? []) !== []) {
+                        $output->writeln(sprintf(
+                            '    - target_store_assessments=%s',
+                            implode(',', array_map(
+                                static fn (array $assessment): string => sprintf(
+                                    '%s:%s',
+                                    (string) ($assessment['store_fingerprint'] ?? 'unknown-store'),
+                                    (string) ($assessment['status'] ?? 'unknown'),
+                                ),
+                                array_filter(
+                                    (array) ($operationalResponse['target_store_assessments'] ?? []),
+                                    static fn (mixed $value): bool => is_array($value),
+                                ),
+                            )),
+                        ));
+                    }
                 }
 
                 if (($activityDrift['window_coverage'] ?? []) !== []) {
@@ -1668,6 +1685,12 @@ final class AuthSecurityCenterReportCommand extends Command
 
         sort($targetStores);
 
+        $targetStoreAssessments = array_values(array_filter(
+            (array) ($drift['store_assessments'] ?? []),
+            static fn (mixed $value): bool => is_array($value)
+                && in_array((string) ($value['store_fingerprint'] ?? ''), $targetStores, true),
+        ));
+
         return match ($recommendedAction) {
             'investigate_store_dropout' => [
                 'response_mode' => 'contain_store_dropout',
@@ -1688,6 +1711,7 @@ final class AuthSecurityCenterReportCommand extends Command
                 'authorization_mode_scope_policies' => [],
                 'next_step' => 'block_remote_mutations_until_store_recovers',
                 'target_store_fingerprints' => $targetStores,
+                'target_store_assessments' => $targetStoreAssessments,
             ],
             'rebalance_partial_visibility' => [
                 'response_mode' => 'guard_remote_mutations',
@@ -1821,6 +1845,7 @@ final class AuthSecurityCenterReportCommand extends Command
                 ],
                 'next_step' => 'restore_recent_store_visibility',
                 'target_store_fingerprints' => $targetStores,
+                'target_store_assessments' => $targetStoreAssessments,
             ],
             'monitor_concentrated_activity' => [
                 'response_mode' => 'observe_concentrated_activity',
@@ -1834,7 +1859,9 @@ final class AuthSecurityCenterReportCommand extends Command
                 'degraded_scope_profiles' => [
                     'delegated_admin:all->sessions_only',
                     'delegated_admin:trusted-devices->deny_all',
-                    'delegated_support:self_governed->allow_all',
+                    'delegated_support:self_governed_full->allow_all',
+                    'delegated_support:self_governed_sessions->sessions_only',
+                    'delegated_support:self_governed_trusted_devices->trusted_devices_only',
                     'untrusted:*->deny_all',
                 ],
                 'authorization_mode_scope_policies' => [
@@ -1871,6 +1898,35 @@ final class AuthSecurityCenterReportCommand extends Command
                                         'denied_remote_mutation_scopes' => [],
                                         'scope_denial_reason_codes' => [],
                                         'policy_reason_code' => 'distributed_concentrated_activity_guard_delegated_support_self_governed_policy',
+                                        'target_scope_relation_policies' => [
+                                            'self_governed_full_scope_target' => [
+                                                'remote_mutation_scope_policy' => 'allow_all',
+                                                'allowed_remote_mutation_scopes' => ['all', 'sessions', 'trusted-devices'],
+                                                'denied_remote_mutation_scopes' => [],
+                                                'scope_denial_reason_codes' => [],
+                                                'policy_reason_code' => 'distributed_concentrated_activity_guard_delegated_support_self_governed_full_target_policy',
+                                            ],
+                                            'self_governed_sessions_scope_target' => [
+                                                'remote_mutation_scope_policy' => 'sessions_only',
+                                                'allowed_remote_mutation_scopes' => ['sessions'],
+                                                'denied_remote_mutation_scopes' => ['all', 'trusted-devices'],
+                                                'scope_denial_reason_codes' => [
+                                                    'all' => 'distributed_concentrated_activity_guard_delegated_support_self_governed_sessions_target_all_scope',
+                                                    'trusted-devices' => 'distributed_concentrated_activity_guard_delegated_support_self_governed_sessions_target_trusted_devices_scope',
+                                                ],
+                                                'policy_reason_code' => 'distributed_concentrated_activity_guard_delegated_support_self_governed_sessions_target_policy',
+                                            ],
+                                            'self_governed_trusted_devices_scope_target' => [
+                                                'remote_mutation_scope_policy' => 'trusted_devices_only',
+                                                'allowed_remote_mutation_scopes' => ['trusted-devices'],
+                                                'denied_remote_mutation_scopes' => ['all', 'sessions'],
+                                                'scope_denial_reason_codes' => [
+                                                    'all' => 'distributed_concentrated_activity_guard_delegated_support_self_governed_trusted_target_all_scope',
+                                                    'sessions' => 'distributed_concentrated_activity_guard_delegated_support_self_governed_trusted_target_sessions_scope',
+                                                ],
+                                                'policy_reason_code' => 'distributed_concentrated_activity_guard_delegated_support_self_governed_trusted_target_policy',
+                                            ],
+                                        ],
                                     ],
                                     'delegated_administrative_target' => [
                                         'remote_mutation_scope_policy' => 'sessions_only',
@@ -1923,6 +1979,7 @@ final class AuthSecurityCenterReportCommand extends Command
                 ],
                 'next_step' => 'verify_secondary_store_participation',
                 'target_store_fingerprints' => $targetStores,
+                'target_store_assessments' => $targetStoreAssessments,
             ],
             'monitor_recent_lag' => [
                 'response_mode' => 'observe_recent_lag',
@@ -1936,7 +1993,9 @@ final class AuthSecurityCenterReportCommand extends Command
                 'degraded_scope_profiles' => [
                     'delegated_admin:all->sessions_only',
                     'delegated_admin:trusted-devices->deny_all',
-                    'delegated_support:self_governed->sessions_only',
+                    'delegated_support:self_governed_full->sessions_only',
+                    'delegated_support:self_governed_sessions->sessions_only',
+                    'delegated_support:self_governed_trusted_devices->deny_all',
                     'untrusted:*->deny_all',
                 ],
                 'authorization_mode_scope_policies' => [
@@ -1976,6 +2035,39 @@ final class AuthSecurityCenterReportCommand extends Command
                                             'trusted-devices' => 'distributed_recent_lag_guard_delegated_support_self_governed_trusted_devices_scope',
                                         ],
                                         'policy_reason_code' => 'distributed_recent_lag_guard_delegated_support_self_governed_policy',
+                                        'target_scope_relation_policies' => [
+                                            'self_governed_full_scope_target' => [
+                                                'remote_mutation_scope_policy' => 'sessions_only',
+                                                'allowed_remote_mutation_scopes' => ['sessions'],
+                                                'denied_remote_mutation_scopes' => ['all', 'trusted-devices'],
+                                                'scope_denial_reason_codes' => [
+                                                    'all' => 'distributed_recent_lag_guard_delegated_support_self_governed_full_target_all_scope',
+                                                    'trusted-devices' => 'distributed_recent_lag_guard_delegated_support_self_governed_full_target_trusted_devices_scope',
+                                                ],
+                                                'policy_reason_code' => 'distributed_recent_lag_guard_delegated_support_self_governed_full_target_policy',
+                                            ],
+                                            'self_governed_sessions_scope_target' => [
+                                                'remote_mutation_scope_policy' => 'sessions_only',
+                                                'allowed_remote_mutation_scopes' => ['sessions'],
+                                                'denied_remote_mutation_scopes' => ['all', 'trusted-devices'],
+                                                'scope_denial_reason_codes' => [
+                                                    'all' => 'distributed_recent_lag_guard_delegated_support_self_governed_sessions_target_all_scope',
+                                                    'trusted-devices' => 'distributed_recent_lag_guard_delegated_support_self_governed_sessions_target_trusted_devices_scope',
+                                                ],
+                                                'policy_reason_code' => 'distributed_recent_lag_guard_delegated_support_self_governed_sessions_target_policy',
+                                            ],
+                                            'self_governed_trusted_devices_scope_target' => [
+                                                'remote_mutation_scope_policy' => 'deny_all',
+                                                'allowed_remote_mutation_scopes' => [],
+                                                'denied_remote_mutation_scopes' => ['all', 'sessions', 'trusted-devices'],
+                                                'scope_denial_reason_codes' => [
+                                                    'all' => 'distributed_recent_lag_guard_delegated_support_self_governed_trusted_target_all_scope',
+                                                    'sessions' => 'distributed_recent_lag_guard_delegated_support_self_governed_trusted_target_sessions_scope',
+                                                    'trusted-devices' => 'distributed_recent_lag_guard_delegated_support_self_governed_trusted_target_trusted_devices_scope',
+                                                ],
+                                                'policy_reason_code' => 'distributed_recent_lag_guard_delegated_support_self_governed_trusted_target_policy',
+                                            ],
+                                        ],
                                     ],
                                     'delegated_administrative_target' => [
                                         'remote_mutation_scope_policy' => 'sessions_only',
@@ -2028,6 +2120,7 @@ final class AuthSecurityCenterReportCommand extends Command
                 ],
                 'next_step' => 'review_lagging_store_health',
                 'target_store_fingerprints' => $targetStores,
+                'target_store_assessments' => $targetStoreAssessments,
             ],
             'single_store_baseline' => [
                 'response_mode' => 'single_store_baseline',
@@ -2042,6 +2135,7 @@ final class AuthSecurityCenterReportCommand extends Command
                 'authorization_mode_scope_policies' => [],
                 'next_step' => 'confirm_single_store_topology',
                 'target_store_fingerprints' => [],
+                'target_store_assessments' => [],
             ],
             default => [
                 'response_mode' => 'normal_operations',
@@ -2056,6 +2150,7 @@ final class AuthSecurityCenterReportCommand extends Command
                 'authorization_mode_scope_policies' => [],
                 'next_step' => 'continue_normal_operations',
                 'target_store_fingerprints' => [],
+                'target_store_assessments' => [],
             ],
         };
     }

@@ -17,6 +17,8 @@ use Quantum\Authorization\Context\AuthorizationContextFactory;
 use Quantum\Authorization\Core\AuthorizationManager;
 use Quantum\Authorization\Core\AuthorizationPlanner;
 use Quantum\Authorization\Core\AuthorizationRequestFactory;
+use Quantum\Authorization\Core\Stages\GateAuthorizationStage;
+use Quantum\Authorization\Core\Stages\PolicyAuthorizationStage;
 use Quantum\Authorization\Decision\DecisionManager;
 use Quantum\Authorization\Gate\GateRegistry;
 use Quantum\Authorization\Policy\PolicyDispatcher;
@@ -64,13 +66,31 @@ final class AuthorizationServiceProvider extends ServiceProvider
             return new AuthorizationContextFactory($app->make(AuthenticationManagerInterface::class));
         });
         $this->app->scoped(AuthorizationRequestFactory::class);
+        $this->app->scoped(GateAuthorizationStage::class, function (Application $app): GateAuthorizationStage {
+            $failClosed = $app->config('authorization.fail_closed', true);
+
+            return new GateAuthorizationStage(
+                $app->make(GateRegistry::class),
+                is_bool($failClosed) ? $failClosed : (bool) $failClosed,
+            );
+        });
+        $this->app->scoped(PolicyAuthorizationStage::class, function (Application $app): PolicyAuthorizationStage {
+            $failClosed = $app->config('authorization.fail_closed', true);
+
+            return new PolicyAuthorizationStage(
+                $app->make(PolicyRegistry::class),
+                $app->make(PolicyDispatcher::class),
+                is_bool($failClosed) ? $failClosed : (bool) $failClosed,
+            );
+        });
         $this->app->scoped(AuthorizationPlanner::class, function (Application $app): AuthorizationPlanner {
             $failClosed = $app->config('authorization.fail_closed', true);
 
             return new AuthorizationPlanner(
-                $app->make(GateRegistry::class),
-                $app->make(PolicyRegistry::class),
-                $app->make(PolicyDispatcher::class),
+                [
+                    $app->make(GateAuthorizationStage::class),
+                    $app->make(PolicyAuthorizationStage::class),
+                ],
                 $app->make(DecisionManager::class),
                 is_bool($failClosed) ? $failClosed : (bool) $failClosed,
             );

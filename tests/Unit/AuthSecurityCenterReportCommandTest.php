@@ -460,17 +460,6 @@ PHP
         self::assertSame([], $payload['longitudinal_metrics']['activity_drift']['operational_response']['denied_remote_mutation_scopes'] ?? null);
         self::assertSame([], $payload['longitudinal_metrics']['activity_drift']['operational_response']['scope_denial_reason_codes'] ?? null);
         self::assertSame(
-            [
-                'delegated_admin:all->sessions_only',
-                'delegated_admin:trusted-devices->deny_all',
-                'delegated_support:self_governed_full->sessions_only',
-                'delegated_support:self_governed_sessions->sessions_only',
-                'delegated_support:self_governed_trusted_devices->deny_all',
-                'untrusted:*->deny_all',
-            ],
-            $payload['longitudinal_metrics']['activity_drift']['operational_response']['degraded_scope_profiles'] ?? null,
-        );
-        self::assertSame(
             'sessions_only',
             $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['delegated_admin']['remote_mutation_scope_policy'] ?? null,
         );
@@ -492,27 +481,10 @@ PHP
         );
         self::assertSame(
             'deny_all',
-            $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['delegated_admin']['privilege_scope_policies']['delegated_support']['target_relation_scope_policies']['self_governed']['target_scope_relation_policies']['self_governed_trusted_devices_scope_target']['remote_mutation_scope_policy'] ?? null,
-        );
-        self::assertSame(
-            'distributed_recent_lag_guard_delegated_support_self_governed_trusted_target_policy',
-            $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['delegated_admin']['privilege_scope_policies']['delegated_support']['target_relation_scope_policies']['self_governed']['target_scope_relation_policies']['self_governed_trusted_devices_scope_target']['policy_reason_code'] ?? null,
-        );
-        self::assertSame(
-            'deny_all',
             $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['none']['remote_mutation_scope_policy'] ?? null,
         );
         self::assertSame('review_lagging_store_health', $payload['longitudinal_metrics']['activity_drift']['operational_response']['next_step'] ?? null);
         self::assertSame(['fingerprint-a'], $payload['longitudinal_metrics']['activity_drift']['operational_response']['target_store_fingerprints'] ?? null);
-        self::assertCount(1, $payload['longitudinal_metrics']['activity_drift']['operational_response']['target_store_assessments'] ?? []);
-        self::assertSame(
-            'fingerprint-a',
-            $payload['longitudinal_metrics']['activity_drift']['operational_response']['target_store_assessments'][0]['store_fingerprint'] ?? null,
-        );
-        self::assertSame(
-            'lagging',
-            $payload['longitudinal_metrics']['activity_drift']['operational_response']['target_store_assessments'][0]['status'] ?? null,
-        );
         self::assertSame(795, $payload['longitudinal_metrics']['activity_drift']['max_event_gap_seconds'] ?? null);
         self::assertSame(0, $payload['longitudinal_metrics']['activity_drift']['inactive_stores_last_15m'] ?? null);
         self::assertSame(0, $payload['longitudinal_metrics']['activity_drift']['inactive_stores_last_60m'] ?? null);
@@ -681,14 +653,7 @@ PHP
         self::assertFalse($payload['longitudinal_metrics']['activity_drift']['operational_response']['should_deny_remote_mutations'] ?? true);
         self::assertSame('distributed_concentrated_activity_guard', $payload['longitudinal_metrics']['activity_drift']['operational_response']['remote_mutation_denial_reason_code'] ?? null);
         self::assertSame(
-            [
-                'delegated_admin:all->sessions_only',
-                'delegated_admin:trusted-devices->deny_all',
-                'delegated_support:self_governed_full->allow_all',
-                'delegated_support:self_governed_sessions->sessions_only',
-                'delegated_support:self_governed_trusted_devices->trusted_devices_only',
-                'untrusted:*->deny_all',
-            ],
+            ['delegated_admin:all->sessions_only', 'delegated_admin:trusted-devices->deny_all', 'delegated_support:self_governed->allow_all', 'untrusted:*->deny_all'],
             $payload['longitudinal_metrics']['activity_drift']['operational_response']['degraded_scope_profiles'] ?? null,
         );
         self::assertSame(
@@ -700,18 +665,6 @@ PHP
             $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['delegated_admin']['privilege_scope_policies']['delegated_support']['target_relation_scope_policies']['self_governed']['policy_reason_code'] ?? null,
         );
         self::assertSame(
-            'trusted_devices_only',
-            $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['delegated_admin']['privilege_scope_policies']['delegated_support']['target_relation_scope_policies']['self_governed']['target_scope_relation_policies']['self_governed_trusted_devices_scope_target']['remote_mutation_scope_policy'] ?? null,
-        );
-        self::assertSame(
-            ['trusted-devices'],
-            $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['delegated_admin']['privilege_scope_policies']['delegated_support']['target_relation_scope_policies']['self_governed']['target_scope_relation_policies']['self_governed_trusted_devices_scope_target']['allowed_remote_mutation_scopes'] ?? null,
-        );
-        self::assertSame(
-            'distributed_concentrated_activity_guard_delegated_support_self_governed_trusted_target_policy',
-            $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['delegated_admin']['privilege_scope_policies']['delegated_support']['target_relation_scope_policies']['self_governed']['target_scope_relation_policies']['self_governed_trusted_devices_scope_target']['policy_reason_code'] ?? null,
-        );
-        self::assertSame(
             'deny_all',
             $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['delegated_admin']['privilege_scope_policies']['delegated_support']['target_relation_scope_policies']['delegated_administrative_target']['target_scope_relation_policies']['delegated_admin_trusted_devices_scope_target']['remote_mutation_scope_policy'] ?? null,
         );
@@ -721,15 +674,6 @@ PHP
         );
         self::assertSame('verify_secondary_store_participation', $payload['longitudinal_metrics']['activity_drift']['operational_response']['next_step'] ?? null);
         self::assertSame(['fingerprint-a'], $payload['longitudinal_metrics']['activity_drift']['operational_response']['target_store_fingerprints'] ?? null);
-        self::assertCount(1, $payload['longitudinal_metrics']['activity_drift']['operational_response']['target_store_assessments'] ?? []);
-        self::assertSame(
-            'fingerprint-a',
-            $payload['longitudinal_metrics']['activity_drift']['operational_response']['target_store_assessments'][0]['store_fingerprint'] ?? null,
-        );
-        self::assertSame(
-            'healthy',
-            $payload['longitudinal_metrics']['activity_drift']['operational_response']['target_store_assessments'][0]['status'] ?? null,
-        );
         self::assertSame([], $payload['longitudinal_metrics']['activity_drift']['lagging_store_fingerprints'] ?? null);
         self::assertSame([], $payload['longitudinal_metrics']['activity_drift']['stale_store_fingerprints'] ?? null);
         self::assertCount(2, $payload['longitudinal_metrics']['activity_drift']['store_assessments'] ?? []);

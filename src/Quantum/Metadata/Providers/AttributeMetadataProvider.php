@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Quantum\Metadata\Providers;
 
+use Quantum\Authorization\Attributes\Authorize;
+use Quantum\Authorization\Attributes\PublicAccess;
 use Quantum\Controllers\Attributes\Interceptors;
 use Quantum\Controllers\Attributes\ParameterAliases;
 use Quantum\Controllers\Security\Attributes\AuthenticationRequired;
@@ -89,6 +91,8 @@ final class AttributeMetadataProvider implements MetadataProviderInterface
             ...$reflection->getAttributes(Meta::class, ReflectionAttribute::IS_INSTANCEOF),
             ...$reflection->getAttributes(Interceptors::class, ReflectionAttribute::IS_INSTANCEOF),
             ...$reflection->getAttributes(ParameterAliases::class, ReflectionAttribute::IS_INSTANCEOF),
+            ...$reflection->getAttributes(Authorize::class, ReflectionAttribute::IS_INSTANCEOF),
+            ...$reflection->getAttributes(PublicAccess::class, ReflectionAttribute::IS_INSTANCEOF),
             ...$reflection->getAttributes(Expose::class, ReflectionAttribute::IS_INSTANCEOF),
             ...$reflection->getAttributes(Policies::class, ReflectionAttribute::IS_INSTANCEOF),
             ...$reflection->getAttributes(Permissions::class, ReflectionAttribute::IS_INSTANCEOF),
@@ -145,6 +149,40 @@ final class AttributeMetadataProvider implements MetadataProviderInterface
                         priority: $instance->priority ?? $this->priority(),
                         final: $instance->final,
                     );
+                }
+
+                if ($instance instanceof PublicAccess) {
+                    $fragments[] = new MetadataFragment(
+                        key: 'authorization.public',
+                        value: true,
+                        origin: new MetadataOrigin(
+                            provider: $this->name(),
+                            type: 'attribute',
+                            location: $location,
+                        ),
+                        priority: $this->priority(),
+                    );
+                }
+
+                if ($instance instanceof Authorize) {
+                    $ability = trim($instance->ability);
+
+                    if ($ability !== '') {
+                        $fragments[] = new MetadataFragment(
+                            key: 'authorization.requirements',
+                            value: [[
+                                'ability' => $ability,
+                                'subject' => $instance->subject,
+                                'source' => str_contains($location, '@') ? 'method' : 'class',
+                            ]],
+                            origin: new MetadataOrigin(
+                                provider: $this->name(),
+                                type: 'attribute',
+                                location: $location,
+                            ),
+                            priority: $this->priority(),
+                        );
+                    }
                 }
 
                 if ($instance instanceof Policies) {

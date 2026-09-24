@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quantum\Database\Runtime;
 
 use Quantum\Database\Connection\ConnectionManager;
+use Quantum\Database\Transaction\TransactionManager;
 use VoltStack\Framework\Application;
 use VoltStack\Runtime\Context\RuntimeContext;
 
@@ -33,6 +34,10 @@ final class DatabaseScopeLifecycleManager
 
         /** @var DatabaseExecutionScope $scope */
         $scope = $this->app->make(DatabaseExecutionScope::class);
+
+        if ($this->app->resolved(TransactionManager::class)) {
+            $this->app->make(TransactionManager::class)->rollbackOpenTransactions();
+        }
 
         if ($this->app->resolved(ConnectionManager::class)) {
             $this->app->make(ConnectionManager::class)->disconnectAll();

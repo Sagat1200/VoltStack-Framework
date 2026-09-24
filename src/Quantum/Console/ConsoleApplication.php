@@ -335,9 +335,18 @@ final class ConsoleApplication
             }
 
             $provider = $app->register($providerClass);
+        }
 
+        $registered = [];
+
+        foreach ($app->getProviders() as $provider) {
             foreach ($provider->commands() as $commandClass) {
+                if (isset($registered[$commandClass])) {
+                    continue;
+                }
+
                 $this->add($this->makeProviderCommand($commandClass));
+                $registered[$commandClass] = true;
             }
         }
     }

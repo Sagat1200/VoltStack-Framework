@@ -9,6 +9,7 @@ use Quantum\Compilation\Contracts\CompiledControllerFactoryInterface;
 use Quantum\Authorization\Attributes\Authorize;
 use Quantum\Authorization\Attributes\PublicAccess;
 use Quantum\Authorization\Contracts\AuthorizationManagerInterface;
+use Quantum\Authorization\Contracts\AuthorizationMetadataResolverInterface;
 use Quantum\Controllers\ControllerContext;
 use Quantum\Controllers\ControllerDefinition;
 use Quantum\Controllers\ControllerExecutionContext;
@@ -65,6 +66,7 @@ final class ControllerEngine
         private readonly ?CompiledControllerFactoryInterface $compiledFactory = null,
         private readonly ?ControllerSecurityManagerInterface $securityManager = null,
         private readonly ?AuthorizationManagerInterface $authorizationManager = null,
+        private readonly ?AuthorizationMetadataResolverInterface $authorizationMetadataResolver = null,
     ) {
         $enabled = $this->app->config('controller_compilation.enabled', false);
         $this->compilationGloballyEnabled = is_bool($enabled) ? $enabled : (bool) $enabled;
@@ -441,6 +443,18 @@ final class ControllerEngine
      */
     private function extractAuthorizationMetadata(RouteMatch $match, ?ControllerDefinition $definition = null): array
     {
+        try {
+            if ($this->authorizationMetadataResolver !== null) {
+                $resolved = $this->authorizationMetadataResolver->resolve($match, $definition);
+
+                return [
+                    'public' => $resolved->public(),
+                    'requirements' => $resolved->requirements(),
+                ];
+            }
+        } catch (Throwable) {
+        }
+
         $meta = [
             'requirements' => [],
         ];
@@ -465,46 +479,20 @@ final class ControllerEngine
                                 continue;
                             }
 
+                            $ability = trim($requirement['ability']);
+
+                            if ($ability === '') {
+                                continue;
+                            }
+
                             $meta['requirements'][] = [
-                                'ability' => trim($requirement['ability']),
+                                'ability' => $ability,
                                 'subject' => $requirement['subject'] ?? null,
                                 'source' => 'route',
                             ];
                         }
                     }
                 }
-            }
-        } catch (Throwable) {
-        }
-
-        if ($definition === null) {
-            return $meta;
-        }
-
-        try {
-            [$controllerClass, $method] = $this->controllerParts($definition);
-
-            if ($controllerClass === null || ! class_exists($controllerClass)) {
-                return $meta;
-            }
-
-            $classReflection = new ReflectionClass($controllerClass);
-            $classAttrs = $this->collectAuthorizationAttributes($classReflection, 'class');
-            $methodAttrs = [];
-
-            if ($method !== null && method_exists($controllerClass, $method)) {
-                $methodReflection = new ReflectionMethod($controllerClass, $method);
-                $methodAttrs = $this->collectAuthorizationAttributes($methodReflection, 'method');
-            }
-
-            $merged = $this->mergeAuthorizationLayers($classAttrs, $methodAttrs);
-
-            if (($merged['public'] ?? false) === true) {
-                $meta['public'] = true;
-            }
-
-            foreach ($merged['requirements'] ?? [] as $requirement) {
-                $meta['requirements'][] = $requirement;
             }
         } catch (Throwable) {
         }

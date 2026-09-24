@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quantum\Database\Migration;
 
 use Quantum\Database\Contracts\ConnectionManagerInterface;
+use Quantum\Database\Telemetry\DatabaseTelemetryEmitter;
 use RuntimeException;
 
 final class MigrationRunner
@@ -14,16 +15,24 @@ final class MigrationRunner
         private readonly MigrationRepository $repository,
         private readonly \Quantum\Database\Schema\SchemaManager $schema,
         private readonly ConnectionManagerInterface $connections,
+        private readonly DatabaseTelemetryEmitter $telemetry,
     ) {
     }
 
-    public function migrate(?string $path = null): int
+    public function migrate(?string $path = null, ?string $connectionName = null): int
     {
-        $this->repository->ensureRepository();
+        $repository = $connectionName === null
+            ? $this->repository
+            : $this->repository->connection($connectionName);
+        $schema = $connectionName === null
+            ? $this->schema
+            : $this->schema->connection($connectionName);
+
+        $repository->ensureRepository();
 
         $discovered = $this->discovery->discover($path);
-        $applied = array_flip($this->repository->appliedNames());
-        $batch = $this->repository->nextBatchNumber();
+        $applied = array_flip($repository->appliedNames());
+        $batch = $repository->nextBatchNumber();
         $count = 0;
 
         foreach ($discovered as $migration) {
@@ -31,19 +40,27 @@ final class MigrationRunner
                 continue;
             }
 
-            $migration->instance->up($this->schema);
-            $this->repository->logApplied($migration->name, $batch);
+            $migration->instance->up($schema);
+            $repository->logApplied($migration->name, $batch);
             $count++;
         }
 
         $this->connections->disconnectAll();
+        $this->telemetry->migrationsCompleted('migrated', $count, $path, $connectionName);
 
         return $count;
     }
 
-    public function rollbackLastBatch(?string $path = null): int
+    public function rollbackLastBatch(?string $path = null, ?string $connectionName = null): int
     {
-        $this->repository->ensureRepository();
+        $repository = $connectionName === null
+            ? $this->repository
+            : $this->repository->connection($connectionName);
+        $schema = $connectionName === null
+            ? $this->schema
+            : $this->schema->connection($connectionName);
+
+        $repository->ensureRepository();
 
         $available = [];
 
@@ -53,19 +70,20 @@ final class MigrationRunner
 
         $count = 0;
 
-        foreach ($this->repository->lastBatchMigrationNames() as $migrationName) {
+        foreach ($repository->lastBatchMigrationNames() as $migrationName) {
             $migration = $available[$migrationName] ?? null;
 
             if ($migration === null) {
                 throw new RuntimeException(sprintf('Unable to rollback migration [%s] because the file is missing.', $migrationName));
             }
 
-            $migration->instance->down($this->schema);
-            $this->repository->remove($migrationName);
+            $migration->instance->down($schema);
+            $repository->remove($migrationName);
             $count++;
         }
 
         $this->connections->disconnectAll();
+        $this->telemetry->migrationsCompleted('rolled_back', $count, $path, $connectionName);
 
         return $count;
     }

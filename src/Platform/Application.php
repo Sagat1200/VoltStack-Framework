@@ -308,18 +308,6 @@ class Application extends Container
             $this->singleton(ControllerInterceptorRegistry::class);
         }
 
-        if (! isset($this->providers[AuthenticationServiceProvider::class])) {
-            $this->register(AuthenticationServiceProvider::class);
-        }
-
-        if (! isset($this->providers[AuthorizationServiceProvider::class])) {
-            $this->register(AuthorizationServiceProvider::class);
-        }
-
-        if (! isset($this->providers[DatabaseServiceProvider::class])) {
-            $this->register(DatabaseServiceProvider::class);
-        }
-
         if (! isset($this->bindings[ControllerInterceptorRegistryInterface::class])) {
             $this->singleton(
                 ControllerInterceptorRegistryInterface::class,
@@ -431,6 +419,18 @@ class Application extends Container
 
         if (! isset($this->bindings[MetadataEngineInterface::class])) {
             $this->singleton(MetadataEngineInterface::class, fn(Application $app) => $app->make(MetadataEngine::class));
+        }
+
+        if (! isset($this->providers[AuthenticationServiceProvider::class])) {
+            $this->register(AuthenticationServiceProvider::class);
+        }
+
+        if (! isset($this->providers[AuthorizationServiceProvider::class])) {
+            $this->register(AuthorizationServiceProvider::class);
+        }
+
+        if (! isset($this->providers[DatabaseServiceProvider::class])) {
+            $this->register(DatabaseServiceProvider::class);
         }
 
         if (! isset($this->bindings[ControllerMetadataResolver::class])) {

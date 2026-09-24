@@ -96,7 +96,7 @@ final class MetadataEngine implements MetadataEngineInterface
             mode: $request->mode,
         ));
 
-        if ($depth > 0) {
+        if ($parent !== null) {
             foreach ($fragments as $i => $fragment) {
                 $schema = $this->schemas->get($fragment->key);
 

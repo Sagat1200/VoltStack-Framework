@@ -8,11 +8,13 @@ use PDOException;
 use PDOStatement;
 use Quantum\Database\Contracts\ConnectionManagerInterface;
 use Quantum\Database\Contracts\StatementExecutorInterface;
+use Quantum\Database\Telemetry\DatabaseTelemetryEmitter;
 
 final class StatementExecutor implements StatementExecutorInterface
 {
     public function __construct(
         private readonly ConnectionManagerInterface $connections,
+        private readonly DatabaseTelemetryEmitter $telemetry,
     ) {
     }
 
@@ -22,13 +24,18 @@ final class StatementExecutor implements StatementExecutorInterface
         ?ExecutionContext $context = null,
     ): DatabaseResult {
         $connection = $this->connections->connection($command->connectionName);
+        $startedAt = hrtime(true);
 
         try {
             $statement = $connection->pdo()->prepare($command->sql);
             $statement->execute($bindings->normalized());
 
-            return $this->mapResult($statement, $connection->pdo()->lastInsertId(), $command);
+            $result = $this->mapResult($statement, $connection->pdo()->lastInsertId(), $command);
+            $this->telemetry->queryExecuted($command, $result, (hrtime(true) - $startedAt) / 1_000_000);
+
+            return $result;
         } catch (PDOException $exception) {
+            $this->telemetry->queryFailed($command, $exception, (hrtime(true) - $startedAt) / 1_000_000);
             throw ExecutionException::fromThrowable('statement_execution', $exception, $command, $context);
         }
     }

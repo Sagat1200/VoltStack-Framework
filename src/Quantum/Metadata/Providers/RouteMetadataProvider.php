@@ -55,9 +55,52 @@ final class RouteMetadataProvider implements MetadataProviderInterface
                 origin: $origin,
                 priority: $this->priority(),
             );
+
+            if ($key !== 'authorization' || ! is_array($value)) {
+                continue;
+            }
+
+            if (array_key_exists('public', $value)) {
+                $fragments[] = new MetadataFragment(
+                    key: 'authorization.public',
+                    value: (bool) $value['public'],
+                    origin: $origin,
+                    priority: $this->priority(),
+                );
+            }
+
+            if (isset($value['requirements']) && is_array($value['requirements'])) {
+                $requirements = [];
+
+                foreach ($value['requirements'] as $requirement) {
+                    if (! is_array($requirement) || ! isset($requirement['ability']) || ! is_string($requirement['ability'])) {
+                        continue;
+                    }
+
+                    $ability = trim($requirement['ability']);
+
+                    if ($ability === '') {
+                        continue;
+                    }
+
+                    $requirements[] = [
+                        'ability' => $ability,
+                        'subject' => $requirement['subject'] ?? null,
+                        'source' => 'route',
+                    ];
+                }
+
+                if ($requirements !== []) {
+                    $fragments[] = new MetadataFragment(
+                        key: 'authorization.requirements',
+                        value: $requirements,
+                        origin: $origin,
+                        priority: $this->priority(),
+                    );
+                }
+            }
         }
 
         return $fragments;
     }
 }
-

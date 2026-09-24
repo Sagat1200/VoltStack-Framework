@@ -4,15 +4,21 @@ declare(strict_types=1);
 
 namespace Quantum\Database\Integration;
 
+use Quantum\Console\Commands\DatabaseMigrateCommand;
+use Quantum\Console\Commands\DatabaseRollbackCommand;
+use Quantum\Console\Commands\DatabaseStatusCommand;
+use Quantum\Database\Database;
 use Quantum\Database\Config\DatabaseConfiguration;
 use Quantum\Database\Config\FrameworkDatabaseConfigurationProvider;
 use Quantum\Database\Connection\ConnectionDefinitionRegistry;
 use Quantum\Database\Connection\ConnectionFactory;
 use Quantum\Database\Connection\ConnectionManager;
 use Quantum\Database\Contracts\ConnectionManagerInterface;
+use Quantum\Database\Contracts\DatabaseInterface;
 use Quantum\Database\Contracts\DatabaseConfigurationProviderInterface;
 use Quantum\Database\Contracts\QueryExecutorInterface;
 use Quantum\Database\Contracts\StatementExecutorInterface;
+use Quantum\Database\Contracts\TransactionManagerInterface;
 use Quantum\Database\Dialect\DialectResolver;
 use Quantum\Database\Driver\DriverRegistry;
 use Quantum\Database\Driver\PdoDriver;
@@ -33,6 +39,8 @@ use Quantum\Database\Runtime\DatabaseExecutionScopeFactory;
 use Quantum\Database\Runtime\DatabaseScopeLifecycleManager;
 use Quantum\Database\Schema\Compiler\SchemaCompiler;
 use Quantum\Database\Schema\SchemaManager;
+use Quantum\Database\Telemetry\DatabaseTelemetryEmitter;
+use Quantum\Database\Transaction\TransactionManager;
 use RuntimeException;
 use VoltStack\Framework\Application;
 use VoltStack\Framework\ServiceProvider;
@@ -82,6 +90,10 @@ final class DatabaseServiceProvider extends ServiceProvider
         $this->app->singleton(QueryAstFactory::class);
         $this->app->singleton(MigrationDiscovery::class);
         $this->app->singleton(DatabaseScopeLifecycleManager::class);
+        $this->app->singleton(DatabaseTelemetryEmitter::class, fn(Application $app): DatabaseTelemetryEmitter => new DatabaseTelemetryEmitter(
+            $app->make(\Quantum\Telemetry\Contracts\TelemetryManagerInterface::class),
+            $app->make(DatabaseConfiguration::class),
+        ));
 
         $this->app->scoped(DatabaseExecutionScope::class, function (Application $app): DatabaseExecutionScope {
             $runtimeContext = RuntimeContext::current();
@@ -107,6 +119,7 @@ final class DatabaseServiceProvider extends ServiceProvider
         $this->app->scoped(ConnectionManagerInterface::class, fn(Application $app): ConnectionManagerInterface => $app->make(ConnectionManager::class));
         $this->app->scoped(StatementExecutor::class, fn(Application $app): StatementExecutor => new StatementExecutor(
             $app->make(ConnectionManagerInterface::class),
+            $app->make(DatabaseTelemetryEmitter::class),
         ));
         $this->app->scoped(StatementExecutorInterface::class, fn(Application $app): StatementExecutorInterface => $app->make(StatementExecutor::class));
         $this->app->scoped(QueryExecutor::class, fn(Application $app): QueryExecutor => new QueryExecutor(
@@ -145,7 +158,23 @@ final class DatabaseServiceProvider extends ServiceProvider
             $app->make(MigrationRepository::class),
             $app->make(SchemaManager::class),
             $app->make(ConnectionManagerInterface::class),
+            $app->make(DatabaseTelemetryEmitter::class),
         ));
+        $this->app->scoped(TransactionManager::class, fn(Application $app): TransactionManager => new TransactionManager(
+            $app->make(ConnectionManagerInterface::class),
+            $app->make(DatabaseTelemetryEmitter::class),
+        ));
+        $this->app->scoped(TransactionManagerInterface::class, fn(Application $app): TransactionManagerInterface => $app->make(TransactionManager::class));
+        $this->app->scoped(Database::class, fn(Application $app): Database => new Database(
+            $app->make(DatabaseConfiguration::class),
+            $app->make(ConnectionManagerInterface::class),
+            $app->make(DatabaseQueryManager::class),
+            $app->make(SchemaManager::class),
+            $app->make(MigrationRepository::class),
+            $app->make(MigrationRunner::class),
+            $app->make(TransactionManagerInterface::class),
+        ));
+        $this->app->scoped(DatabaseInterface::class, fn(Application $app): DatabaseInterface => $app->make(Database::class));
 
         $this->app->onScopeStart(function (Application $app, RuntimeContext $context): void {
             $app->make(DatabaseScopeLifecycleManager::class)->start($context);
@@ -154,5 +183,14 @@ final class DatabaseServiceProvider extends ServiceProvider
         $this->app->onScopeEnd(function (Application $app, ?RuntimeContext $context): void {
             $app->make(DatabaseScopeLifecycleManager::class)->end($context);
         });
+    }
+
+    public function commands(): array
+    {
+        return [
+            DatabaseStatusCommand::class,
+            DatabaseMigrateCommand::class,
+            DatabaseRollbackCommand::class,
+        ];
     }
 }

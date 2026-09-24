@@ -18,12 +18,33 @@ final class MigrationRepository
         private readonly QueryExecutorInterface $queries,
         private readonly DatabaseQueryManager $db,
         private readonly string $table = 'quantum_migrations',
+        private readonly ?string $connectionName = null,
     ) {
+    }
+
+    public function connection(string $name): self
+    {
+        return new self(
+            $this->schema,
+            $this->queries,
+            $this->db,
+            $this->table,
+            $name,
+        );
+    }
+
+    public function tableName(): string
+    {
+        return $this->table;
     }
 
     public function ensureRepository(): void
     {
-        $this->schema->create($this->table, function (\Quantum\Database\Schema\Builder\TableBlueprint $table): void {
+        $schema = $this->connectionName === null
+            ? $this->schema
+            : $this->schema->connection($this->connectionName);
+
+        $schema->create($this->table, function (\Quantum\Database\Schema\Builder\TableBlueprint $table): void {
             $table->id();
             $table->string('migration')->unique();
             $table->integer('batch');
@@ -36,7 +57,7 @@ final class MigrationRepository
      */
     public function appliedNames(): array
     {
-        $rows = $this->db->table($this->table)
+        $rows = $this->db->table($this->table, $this->connectionName)
             ->select('migration')
             ->orderBy('migration')
             ->get()
@@ -49,6 +70,7 @@ final class MigrationRepository
     {
         $result = $this->queries->execute(new CompiledDatabaseCommand(
             sql: sprintf('SELECT MAX(batch) AS aggregate FROM %s', $this->table),
+            connectionName: $this->connectionName,
             resultType: DatabaseResultType::Scalar,
         ));
 
@@ -57,7 +79,7 @@ final class MigrationRepository
 
     public function logApplied(string $migration, int $batch): void
     {
-        $this->db->table($this->table)->insert([
+        $this->db->table($this->table, $this->connectionName)->insert([
             'migration' => $migration,
             'batch' => $batch,
             'applied_at' => gmdate('c'),
@@ -66,7 +88,7 @@ final class MigrationRepository
 
     public function remove(string $migration): void
     {
-        $this->db->table($this->table)
+        $this->db->table($this->table, $this->connectionName)
             ->where('migration', $migration)
             ->delete();
     }
@@ -78,6 +100,7 @@ final class MigrationRepository
     {
         $lastBatch = (int) ($this->queries->execute(new CompiledDatabaseCommand(
             sql: sprintf('SELECT MAX(batch) AS aggregate FROM %s', $this->table),
+            connectionName: $this->connectionName,
             resultType: DatabaseResultType::Scalar,
         ))->scalar() ?? 0);
 
@@ -88,6 +111,7 @@ final class MigrationRepository
         $rows = $this->queries->execute(
             new CompiledDatabaseCommand(
                 sql: sprintf('SELECT migration FROM %s WHERE batch = ? ORDER BY id DESC', $this->table),
+                connectionName: $this->connectionName,
                 resultType: DatabaseResultType::Rows,
             ),
             new RuntimeBindingSet([$lastBatch]),
@@ -100,6 +124,7 @@ final class MigrationRepository
     {
         return (int) ($this->queries->execute(new CompiledDatabaseCommand(
             sql: sprintf('SELECT COUNT(*) AS aggregate FROM %s', $this->table),
+            connectionName: $this->connectionName,
             resultType: DatabaseResultType::Scalar,
         ))->scalar() ?? 0);
     }

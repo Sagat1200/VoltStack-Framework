@@ -10,6 +10,7 @@ use Quantum\Authorization\Ability\AbilityRegistry;
 use Quantum\Authorization\Contracts\AbilityNormalizerInterface;
 use Quantum\Authorization\Contracts\AuthorizationContextFactoryInterface;
 use Quantum\Authorization\Contracts\AuthorizationManagerInterface;
+use Quantum\Authorization\Contracts\AuthorizationMetadataResolverInterface;
 use Quantum\Authorization\Contracts\AuthorizationPlannerInterface;
 use Quantum\Authorization\Contracts\PrincipalResolverInterface;
 use Quantum\Authorization\Contracts\SubjectResolverInterface;
@@ -21,11 +22,16 @@ use Quantum\Authorization\Core\Stages\GateAuthorizationStage;
 use Quantum\Authorization\Core\Stages\PolicyAuthorizationStage;
 use Quantum\Authorization\Decision\DecisionManager;
 use Quantum\Authorization\Gate\GateRegistry;
+use Quantum\Authorization\Metadata\AuthorizationMetadataResolver;
 use Quantum\Authorization\Policy\PolicyDispatcher;
 use Quantum\Authorization\Policy\PolicyRegistry;
 use Quantum\Authorization\Principal\PrincipalResolver;
 use Quantum\Authorization\Subject\SubjectResolver;
 use Quantum\Config\ConfigRepository;
+use Quantum\Metadata\MetadataMergeStrategy;
+use Quantum\Metadata\MetadataValueType;
+use Quantum\Metadata\Schema\MetadataSchema;
+use Quantum\Metadata\Schema\MetadataSchemaRegistry;
 use VoltStack\Framework\Application;
 use VoltStack\Framework\ServiceProvider;
 
@@ -34,6 +40,7 @@ final class AuthorizationServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->mergeDefaultConfiguration();
+        $this->registerMetadataSchemas();
 
         $this->app->singleton(AbilityRegistry::class);
         $this->app->singleton(GateRegistry::class);
@@ -62,6 +69,12 @@ final class AuthorizationServiceProvider extends ServiceProvider
         $this->app->scoped(PrincipalResolverInterface::class, function (Application $app): PrincipalResolverInterface {
             return new PrincipalResolver($app->make(AuthenticationManagerInterface::class));
         });
+        $this->app->scoped(
+            AuthorizationMetadataResolverInterface::class,
+            fn(Application $app): AuthorizationMetadataResolverInterface => new AuthorizationMetadataResolver(
+                $app->make(\Quantum\Metadata\Contracts\MetadataEngineInterface::class),
+            ),
+        );
         $this->app->scoped(AuthorizationContextFactoryInterface::class, function (Application $app): AuthorizationContextFactoryInterface {
             return new AuthorizationContextFactory($app->make(AuthenticationManagerInterface::class));
         });
@@ -113,6 +126,24 @@ final class AuthorizationServiceProvider extends ServiceProvider
         $existing = $config->get('authorization', []);
         $existing = is_array($existing) ? $existing : [];
         $config->set('authorization', $this->mergeRecursive($this->defaults(), $existing));
+    }
+
+    private function registerMetadataSchemas(): void
+    {
+        $registry = $this->app->make(MetadataSchemaRegistry::class);
+
+        $registry->register(new MetadataSchema(
+            key: 'authorization.public',
+            type: MetadataValueType::Bool,
+            merge: MetadataMergeStrategy::Replace,
+            defaultValue: false,
+        ));
+        $registry->register(new MetadataSchema(
+            key: 'authorization.requirements',
+            type: MetadataValueType::Array,
+            merge: MetadataMergeStrategy::Append,
+            defaultValue: [],
+        ));
     }
 
     /**

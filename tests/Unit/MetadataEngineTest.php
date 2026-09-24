@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
+use Quantum\Authorization\Attributes\Authorize;
+use Quantum\Authorization\Attributes\PublicAccess;
 use Quantum\Config\ConfigRepository;
 use Quantum\Metadata\Contracts\MetadataEngineInterface;
 use Quantum\Metadata\Contracts\MetadataProviderInterface;
@@ -205,6 +207,50 @@ final class MetadataEngineTest extends TestCase
 
         self::assertSame(['auth'], $bag->get('controller.interceptors'));
     }
+
+    public function test_it_projects_authorization_attributes_into_metadata(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $engine = $app->make(MetadataEngineInterface::class);
+
+        $route = new Route(RouteDefinition::make(['GET'], '/meta-authz-attr', TestAuthorizationMetadataController::class));
+        $match = new RouteMatch($route, [], 'GET');
+        $routeSubject = new RouteMatchSubject($match);
+        $classSubject = new ControllerClassSubject(TestAuthorizationMetadataController::class, $routeSubject);
+        $methodSubject = new ControllerMethodSubject(TestAuthorizationMetadataController::class, '__invoke', $classSubject);
+
+        $bag = $engine->resolve(new MetadataRequest(
+            subject: $methodSubject,
+            keys: ['authorization.public', 'authorization.requirements'],
+        ));
+
+        self::assertTrue($bag->get('authorization.public'));
+        self::assertSame([
+            ['ability' => 'documents.class-view', 'subject' => null, 'source' => 'class'],
+            ['ability' => 'documents.method-view', 'subject' => 'document', 'source' => 'method'],
+        ], $bag->get('authorization.requirements'));
+    }
+
+    public function test_it_projects_route_authorization_metadata_into_metadata_engine(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $engine = $app->make(MetadataEngineInterface::class);
+
+        $route = new Route(RouteDefinition::make(['GET'], '/meta-authz-route', fn () => 'ok'));
+        $route->authorize('documents.route-view', 'document');
+        $route->publicAccess();
+        $match = new RouteMatch($route, [], 'GET');
+
+        $bag = $engine->resolve(new MetadataRequest(
+            subject: new RouteMatchSubject($match),
+            keys: ['authorization.public', 'authorization.requirements'],
+        ));
+
+        self::assertTrue($bag->get('authorization.public'));
+        self::assertSame([
+            ['ability' => 'documents.route-view', 'subject' => 'document', 'source' => 'route'],
+        ], $bag->get('authorization.requirements'));
+    }
 }
 
 #[Meta('custom.class', 'class-value')]
@@ -222,6 +268,17 @@ final class TestMetadataController
 #[ParameterAliases(['user' => 'userId'])]
 final class TestFriendlyAttributeController
 {
+    public function __invoke(): string
+    {
+        return 'ok';
+    }
+}
+
+#[Authorize('documents.class-view')]
+final class TestAuthorizationMetadataController
+{
+    #[PublicAccess]
+    #[Authorize('documents.method-view', 'document')]
     public function __invoke(): string
     {
         return 'ok';

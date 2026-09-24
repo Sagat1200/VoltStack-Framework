@@ -8,10 +8,12 @@ use PHPUnit\Framework\TestCase;
 use Quantum\Authorization\Contracts\AuthorizationManagerInterface;
 use Quantum\Authorization\Contracts\PrincipalInterface;
 use Quantum\Authorization\Exceptions\AuthorizationDeniedException;
+use Quantum\Authorization\Exceptions\AuthorizationEvaluationException;
 use Quantum\Authorization\Gate\GateRegistry;
 use Quantum\Authorization\Policy\Attributes\PolicyFor;
 use Quantum\Authorization\Policy\PolicyRegistry;
 use Quantum\Authorization\Principal\Principal;
+use Quantum\Config\ConfigRepository;
 use VoltStack\Framework\Application;
 
 final class AuthorizationManagerTest extends TestCase
@@ -91,6 +93,66 @@ final class AuthorizationManagerTest extends TestCase
             new AuthorizationArticle(7),
             principal: new Principal('9'),
         ));
+    }
+
+    public function test_authorization_manager_can_allow_by_default_when_strategy_is_configured(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('authorization', [
+            'default_strategy' => 'allow',
+            'fail_closed' => true,
+            'abilities' => [],
+            'policies' => [],
+        ]);
+
+        $manager = $app->make(AuthorizationManagerInterface::class);
+        $decision = $manager->decide('reports.preview');
+
+        self::assertTrue($decision->isAllowed());
+        self::assertSame('allow_by_default', $decision->reasonCode());
+    }
+
+    public function test_authorization_manager_can_fail_open_when_evaluator_throws(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('authorization', [
+            'default_strategy' => 'allow',
+            'fail_closed' => false,
+            'abilities' => [],
+            'policies' => [],
+        ]);
+        $app->make(GateRegistry::class)->define('reports.preview', static function (): bool {
+            throw new \RuntimeException('planner exploded');
+        });
+
+        $manager = $app->make(AuthorizationManagerInterface::class);
+        $decision = $manager->decide('reports.preview');
+
+        self::assertTrue($decision->isAllowed());
+        self::assertSame('all_evaluators_abstained_allow_by_default', $decision->reasonCode());
+    }
+
+    public function test_authorization_manager_fails_closed_when_evaluator_throws(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('authorization', [
+            'default_strategy' => 'deny',
+            'fail_closed' => true,
+            'abilities' => [],
+            'policies' => [],
+        ]);
+        $app->make(GateRegistry::class)->define('reports.preview', static function (): bool {
+            throw new \RuntimeException('planner exploded');
+        });
+
+        $manager = $app->make(AuthorizationManagerInterface::class);
+        $decision = $manager->decide('reports.preview');
+
+        self::assertTrue($decision->isFailure());
+        self::assertSame('authorization_evaluation_failed_fail_closed', $decision->reasonCode());
+
+        $this->expectException(AuthorizationEvaluationException::class);
+        $manager->authorize('reports.preview');
     }
 }
 

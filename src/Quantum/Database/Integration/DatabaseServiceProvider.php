@@ -19,6 +19,11 @@ use Quantum\Database\Driver\PdoDriver;
 use Quantum\Database\Execution\QueryExecutor;
 use Quantum\Database\Execution\StatementExecutor;
 use Quantum\Database\Platform\PlatformResolver;
+use Quantum\Database\Query\Ast\QueryAstFactory;
+use Quantum\Database\Query\Builder\DatabaseQueryManager;
+use Quantum\Database\Query\Compiler\QueryCompilerInterface;
+use Quantum\Database\Query\Compiler\SqlCompiler;
+use Quantum\Database\Query\DatabaseQueryRunner;
 use Quantum\Database\Runtime\DatabaseContext;
 use Quantum\Database\Runtime\DatabaseExecutionScope;
 use Quantum\Database\Runtime\DatabaseExecutionScopeFactory;
@@ -69,6 +74,7 @@ final class DatabaseServiceProvider extends ServiceProvider
         $this->app->singleton(PlatformResolver::class);
         $this->app->singleton(DialectResolver::class);
         $this->app->singleton(ConnectionFactory::class);
+        $this->app->singleton(QueryAstFactory::class);
         $this->app->singleton(DatabaseScopeLifecycleManager::class);
 
         $this->app->scoped(DatabaseExecutionScope::class, function (Application $app): DatabaseExecutionScope {
@@ -101,6 +107,20 @@ final class DatabaseServiceProvider extends ServiceProvider
             $app->make(StatementExecutorInterface::class),
         ));
         $this->app->scoped(QueryExecutorInterface::class, fn(Application $app): QueryExecutorInterface => $app->make(QueryExecutor::class));
+        $this->app->scoped(SqlCompiler::class, fn(Application $app): SqlCompiler => new SqlCompiler(
+            $app->make(QueryAstFactory::class),
+            $app->make(ConnectionDefinitionRegistry::class),
+            $app->make(DialectResolver::class),
+        ));
+        $this->app->scoped(QueryCompilerInterface::class, fn(Application $app): QueryCompilerInterface => $app->make(SqlCompiler::class));
+        $this->app->scoped(DatabaseQueryRunner::class, fn(Application $app): DatabaseQueryRunner => new DatabaseQueryRunner(
+            $app->make(QueryCompilerInterface::class),
+            $app->make(QueryExecutorInterface::class),
+        ));
+        $this->app->scoped(DatabaseQueryManager::class, fn(Application $app): DatabaseQueryManager => new DatabaseQueryManager(
+            $app->make(DatabaseQueryRunner::class),
+            $app->make(QueryCompilerInterface::class),
+        ));
 
         $this->app->onScopeStart(function (Application $app, RuntimeContext $context): void {
             $app->make(DatabaseScopeLifecycleManager::class)->start($context);

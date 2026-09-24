@@ -615,6 +615,72 @@ PHP
         self::assertSame(['fingerprint-a'], $payload['longitudinal_metrics']['activity_drift']['operational_response']['target_store_fingerprints'] ?? null);
     }
 
+    public function test_it_derives_a_guarded_observability_response_for_concentrated_activity(): void
+    {
+        $seedNow = time();
+        $app = $this->bootstrappedApplication();
+        $this->seedSecurityCenterFixtures($app, $seedNow);
+        $auditLogPath = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'audit' . DIRECTORY_SEPARATOR . 'security-center-revoke-concentrated.jsonl';
+        $this->seedLongitudinalConcentratedAuditTrail($auditLogPath, $seedNow);
+
+        $command = new AuthSecurityCenterReportCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'auth:security-center:report',
+                '--now=' . $seedNow,
+                '--audit-log-source=' . $auditLogPath,
+                '--json',
+            ]),
+            $output,
+        );
+
+        /** @var array<string, mixed> $payload */
+        $payload = json_decode($output->stdout(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(0, $exitCode);
+        self::assertSame('concentrated', $payload['longitudinal_metrics']['multi_store_summary']['coordination_profile'] ?? null);
+        self::assertSame(0.75, $payload['longitudinal_metrics']['multi_store_summary']['top_recent_store_share_15m'] ?? null);
+        self::assertTrue($payload['longitudinal_metrics']['activity_drift']['drift_detected'] ?? false);
+        self::assertSame('concentrated_activity', $payload['longitudinal_metrics']['activity_drift']['drift_profile'] ?? null);
+        self::assertSame('concentrated', $payload['longitudinal_metrics']['activity_drift']['coordination_profile'] ?? null);
+        self::assertSame('low', $payload['longitudinal_metrics']['activity_drift']['severity'] ?? null);
+        self::assertSame('monitor_concentrated_activity', $payload['longitudinal_metrics']['activity_drift']['recommended_action'] ?? null);
+        self::assertSame('fingerprint-a', $payload['longitudinal_metrics']['activity_drift']['reference_store_fingerprint'] ?? null);
+        self::assertSame('observe_concentrated_activity', $payload['longitudinal_metrics']['activity_drift']['operational_response']['response_mode'] ?? null);
+        self::assertFalse($payload['longitudinal_metrics']['activity_drift']['operational_response']['should_deny_remote_mutations'] ?? true);
+        self::assertSame('distributed_concentrated_activity_guard', $payload['longitudinal_metrics']['activity_drift']['operational_response']['remote_mutation_denial_reason_code'] ?? null);
+        self::assertSame(
+            ['delegated_admin:all->sessions_only', 'delegated_admin:trusted-devices->deny_all', 'delegated_support:self_governed->allow_all', 'untrusted:*->deny_all'],
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['degraded_scope_profiles'] ?? null,
+        );
+        self::assertSame(
+            'sessions_only',
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['delegated_admin']['remote_mutation_scope_policy'] ?? null,
+        );
+        self::assertSame(
+            'distributed_concentrated_activity_guard_delegated_support_self_governed_policy',
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['delegated_admin']['privilege_scope_policies']['delegated_support']['target_relation_scope_policies']['self_governed']['policy_reason_code'] ?? null,
+        );
+        self::assertSame(
+            'deny_all',
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['delegated_admin']['privilege_scope_policies']['delegated_support']['target_relation_scope_policies']['delegated_administrative_target']['target_scope_relation_policies']['delegated_admin_trusted_devices_scope_target']['remote_mutation_scope_policy'] ?? null,
+        );
+        self::assertSame(
+            'distributed_concentrated_activity_guard_delegated_support_delegated_trusted_target_policy',
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['authorization_mode_scope_policies']['delegated_admin']['privilege_scope_policies']['delegated_support']['target_relation_scope_policies']['delegated_administrative_target']['target_scope_relation_policies']['delegated_admin_trusted_devices_scope_target']['policy_reason_code'] ?? null,
+        );
+        self::assertSame('verify_secondary_store_participation', $payload['longitudinal_metrics']['activity_drift']['operational_response']['next_step'] ?? null);
+        self::assertSame(['fingerprint-a'], $payload['longitudinal_metrics']['activity_drift']['operational_response']['target_store_fingerprints'] ?? null);
+        self::assertSame([], $payload['longitudinal_metrics']['activity_drift']['lagging_store_fingerprints'] ?? null);
+        self::assertSame([], $payload['longitudinal_metrics']['activity_drift']['stale_store_fingerprints'] ?? null);
+        self::assertCount(2, $payload['longitudinal_metrics']['activity_drift']['store_assessments'] ?? []);
+        self::assertSame('healthy', $payload['longitudinal_metrics']['activity_drift']['store_assessments'][0]['status'] ?? null);
+        self::assertSame('healthy', $payload['longitudinal_metrics']['activity_drift']['store_assessments'][1]['status'] ?? null);
+    }
+
     public function test_it_derives_a_scope_guarded_operational_response_for_partial_visibility(): void
     {
         $seedNow = time();
@@ -1028,6 +1094,106 @@ PHP
                 'summary' => [
                     'revoked_sessions' => 1,
                     'revoked_trusted_devices' => 0,
+                ],
+            ],
+        ];
+
+        file_put_contents(
+            $path,
+            implode(PHP_EOL, array_map(
+                static fn (array $event): string => (string) json_encode($event, JSON_THROW_ON_ERROR),
+                $events,
+            )) . PHP_EOL,
+        );
+    }
+
+    private function seedLongitudinalConcentratedAuditTrail(string $path, int $seedNow): void
+    {
+        $directory = dirname($path);
+
+        if (! is_dir($directory)) {
+            mkdir($directory, 0777, true);
+        }
+
+        $events = [
+            [
+                'event' => 'security_center_device_revocation_planned',
+                'occurred_at' => $seedNow - 180,
+                'correlation_id' => 'concentrated-corr-1',
+                'operation_id' => 'concentrated-op-1',
+                'result' => 'dry_run',
+                'operational_context' => [
+                    'store_topology' => 'shared_file_store_candidate',
+                    'store_fingerprint' => 'fingerprint-a',
+                ],
+                'administrative_metrics' => [
+                    'requested_scope' => 'all',
+                    'actor_scope_profile' => 'full',
+                    'actor_authorization_mode' => 'direct_admin',
+                    'affected_total_resources' => 2,
+                ],
+                'summary' => [
+                    'revoked_sessions' => 1,
+                    'revoked_trusted_devices' => 1,
+                ],
+            ],
+            [
+                'event' => 'security_center_device_revocation_executed',
+                'occurred_at' => $seedNow - 120,
+                'correlation_id' => 'concentrated-corr-2',
+                'operation_id' => 'concentrated-op-2',
+                'result' => 'executed',
+                'operational_context' => [
+                    'store_topology' => 'shared_file_store_candidate',
+                    'store_fingerprint' => 'fingerprint-a',
+                ],
+                'administrative_metrics' => [
+                    'requested_scope' => 'sessions',
+                    'actor_scope_profile' => 'sessions_only',
+                    'actor_authorization_mode' => 'delegated_admin',
+                    'affected_total_resources' => 1,
+                ],
+                'summary' => [
+                    'revoked_sessions' => 1,
+                    'revoked_trusted_devices' => 0,
+                ],
+            ],
+            [
+                'event' => 'security_center_device_revocation_executed',
+                'occurred_at' => $seedNow - 60,
+                'correlation_id' => 'concentrated-corr-3',
+                'operation_id' => 'concentrated-op-3',
+                'result' => 'executed',
+                'operational_context' => [
+                    'store_topology' => 'shared_file_store_candidate',
+                    'store_fingerprint' => 'fingerprint-a',
+                ],
+                'administrative_metrics' => [
+                    'requested_scope' => 'sessions',
+                    'actor_scope_profile' => 'sessions_only',
+                    'actor_authorization_mode' => 'delegated_admin',
+                    'affected_total_resources' => 1,
+                ],
+                'summary' => [
+                    'revoked_sessions' => 1,
+                    'revoked_trusted_devices' => 0,
+                ],
+            ],
+            [
+                'event' => 'security_center_device_revocation_rejected',
+                'occurred_at' => $seedNow - 30,
+                'correlation_id' => 'concentrated-corr-4',
+                'operation_id' => 'concentrated-op-4',
+                'result' => 'authorization_failed',
+                'operational_context' => [
+                    'store_topology' => 'mixed_driver_topology',
+                    'store_fingerprint' => 'fingerprint-b',
+                ],
+                'administrative_metrics' => [
+                    'requested_scope' => 'trusted-devices',
+                    'actor_scope_profile' => 'none',
+                    'actor_authorization_mode' => null,
+                    'affected_total_resources' => 0,
                 ],
             ],
         ];

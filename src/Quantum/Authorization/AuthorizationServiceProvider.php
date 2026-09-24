@@ -10,10 +10,12 @@ use Quantum\Authorization\Ability\AbilityRegistry;
 use Quantum\Authorization\Contracts\AbilityNormalizerInterface;
 use Quantum\Authorization\Contracts\AuthorizationContextFactoryInterface;
 use Quantum\Authorization\Contracts\AuthorizationManagerInterface;
+use Quantum\Authorization\Contracts\AuthorizationPlannerInterface;
 use Quantum\Authorization\Contracts\PrincipalResolverInterface;
 use Quantum\Authorization\Contracts\SubjectResolverInterface;
 use Quantum\Authorization\Context\AuthorizationContextFactory;
 use Quantum\Authorization\Core\AuthorizationManager;
+use Quantum\Authorization\Core\AuthorizationPlanner;
 use Quantum\Authorization\Core\AuthorizationRequestFactory;
 use Quantum\Authorization\Decision\DecisionManager;
 use Quantum\Authorization\Gate\GateRegistry;
@@ -44,7 +46,14 @@ final class AuthorizationServiceProvider extends ServiceProvider
             return $registry;
         });
         $this->app->singleton(PolicyDispatcher::class);
-        $this->app->singleton(DecisionManager::class);
+        $this->app->singleton(DecisionManager::class, function (Application $app): DecisionManager {
+            $strategy = $app->config('authorization.default_strategy', 'deny');
+            $strategy = is_string($strategy) ? strtolower(trim($strategy)) : 'deny';
+
+            return new DecisionManager(
+                defaultStrategy: $strategy === 'allow' ? 'allow' : 'deny',
+            );
+        });
 
         $this->app->scoped(AbilityNormalizerInterface::class, AbilityNormalizer::class);
         $this->app->scoped(SubjectResolverInterface::class, SubjectResolver::class);
@@ -55,6 +64,21 @@ final class AuthorizationServiceProvider extends ServiceProvider
             return new AuthorizationContextFactory($app->make(AuthenticationManagerInterface::class));
         });
         $this->app->scoped(AuthorizationRequestFactory::class);
+        $this->app->scoped(AuthorizationPlanner::class, function (Application $app): AuthorizationPlanner {
+            $failClosed = $app->config('authorization.fail_closed', true);
+
+            return new AuthorizationPlanner(
+                $app->make(GateRegistry::class),
+                $app->make(PolicyRegistry::class),
+                $app->make(PolicyDispatcher::class),
+                $app->make(DecisionManager::class),
+                is_bool($failClosed) ? $failClosed : (bool) $failClosed,
+            );
+        });
+        $this->app->scoped(
+            AuthorizationPlannerInterface::class,
+            fn(Application $app): AuthorizationPlannerInterface => $app->make(AuthorizationPlanner::class),
+        );
         $this->app->scoped(AuthorizationManager::class);
         $this->app->scoped(
             AuthorizationManagerInterface::class,

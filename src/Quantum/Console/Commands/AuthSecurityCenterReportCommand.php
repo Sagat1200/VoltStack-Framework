@@ -505,6 +505,13 @@ final class AuthSecurityCenterReportCommand extends Command
                         implode(',', (array) ($operationalResponse['denied_remote_mutation_scopes'] ?? [])),
                         count((array) ($operationalResponse['target_store_fingerprints'] ?? [])),
                     ));
+
+                    if (($operationalResponse['degraded_scope_profiles'] ?? []) !== []) {
+                        $output->writeln(sprintf(
+                            '    - degraded_profiles=%s',
+                            implode(',', (array) ($operationalResponse['degraded_scope_profiles'] ?? [])),
+                        ));
+                    }
                 }
 
                 if (($activityDrift['window_coverage'] ?? []) !== []) {
@@ -1372,6 +1379,7 @@ final class AuthSecurityCenterReportCommand extends Command
             'top_recent_store_topology' => null,
             'top_recent_store_15m_events' => 0,
             'top_recent_store_60m_events' => 0,
+            'top_recent_store_share_15m' => 0.0,
             'latest_event_spread_seconds' => null,
             'coordination_profile' => 'idle',
         ];
@@ -1428,6 +1436,7 @@ final class AuthSecurityCenterReportCommand extends Command
         $topShare = $total15mEvents > 0
             ? ((int) $summary['top_recent_store_15m_events']) / $total15mEvents
             : 0.0;
+        $summary['top_recent_store_share_15m'] = $topShare;
 
         $summary['coordination_profile'] = match (true) {
             $summary['observed_stores'] <= 1 => 'single_store',
@@ -1454,6 +1463,7 @@ final class AuthSecurityCenterReportCommand extends Command
         $drift = [
             'drift_detected' => false,
             'drift_profile' => 'none',
+            'coordination_profile' => (string) ($multiStoreSummary['coordination_profile'] ?? 'idle'),
             'severity' => 'none',
             'reference_window' => 'last_15m',
             'recommended_action' => 'none',
@@ -1475,6 +1485,7 @@ final class AuthSecurityCenterReportCommand extends Command
                 'allowed_remote_mutation_scopes' => ['all', 'sessions', 'trusted-devices'],
                 'denied_remote_mutation_scopes' => [],
                 'scope_denial_reason_codes' => [],
+                'degraded_scope_profiles' => [],
                 'next_step' => 'continue_normal_operations',
                 'target_store_fingerprints' => [],
             ],
@@ -1585,12 +1596,17 @@ final class AuthSecurityCenterReportCommand extends Command
             ],
         ];
         $drift['store_assessments'] = $storeAssessments;
-        $drift['drift_detected'] = $inactive15m > 0 || $inactive60m > 0 || $laggingStores !== [];
+        $concentratedActivity = $inactive15m === 0
+            && $inactive60m === 0
+            && $laggingStores === []
+            && ($multiStoreSummary['coordination_profile'] ?? null) === 'concentrated';
+        $drift['drift_detected'] = $inactive15m > 0 || $inactive60m > 0 || $laggingStores !== [] || $concentratedActivity;
 
         $drift['drift_profile'] = match (true) {
             $inactive60m > 0 => 'store_dropout',
             $inactive15m > 0 => 'partial_visibility',
             $laggingStores !== [] => 'recent_lag',
+            $concentratedActivity => 'concentrated_activity',
             default => 'none',
         };
 
@@ -1598,6 +1614,7 @@ final class AuthSecurityCenterReportCommand extends Command
             $drift['drift_detected'] === false => 'none',
             $inactive60m > 0 || $maxGap >= 3600 => 'high',
             $inactive15m > 0 || $maxGap >= 1800 => 'medium',
+            $concentratedActivity => 'low',
             default => 'low',
         };
 
@@ -1607,6 +1624,7 @@ final class AuthSecurityCenterReportCommand extends Command
             $inactive60m > 0 => 'investigate_store_dropout',
             $inactive15m > 0 => 'rebalance_partial_visibility',
             $laggingStores !== [] => 'monitor_recent_lag',
+            $concentratedActivity => 'monitor_concentrated_activity',
             default => 'none',
         };
 
@@ -1638,6 +1656,16 @@ final class AuthSecurityCenterReportCommand extends Command
             ),
         ))));
 
+        if ($targetStores === [] && $recommendedAction === 'monitor_concentrated_activity') {
+            $referenceStore = is_string($drift['reference_store_fingerprint'] ?? null)
+                ? trim((string) $drift['reference_store_fingerprint'])
+                : '';
+
+            if ($referenceStore !== '') {
+                $targetStores = [$referenceStore];
+            }
+        }
+
         sort($targetStores);
 
         return match ($recommendedAction) {
@@ -1654,6 +1682,9 @@ final class AuthSecurityCenterReportCommand extends Command
                     'sessions' => 'distributed_store_dropout_guard_sessions_scope',
                     'trusted-devices' => 'distributed_store_dropout_guard_trusted_devices_scope',
                 ],
+                'degraded_scope_profiles' => [
+                    'all_remote_mutations:deny_all',
+                ],
                 'authorization_mode_scope_policies' => [],
                 'next_step' => 'block_remote_mutations_until_store_recovers',
                 'target_store_fingerprints' => $targetStores,
@@ -1669,6 +1700,11 @@ final class AuthSecurityCenterReportCommand extends Command
                 'scope_denial_reason_codes' => [
                     'all' => 'distributed_partial_visibility_guard_all_scope',
                     'trusted-devices' => 'distributed_partial_visibility_guard_trusted_devices_scope',
+                ],
+                'degraded_scope_profiles' => [
+                    'direct_admin:all->sessions_only',
+                    'delegated_admin:*->deny_all',
+                    'delegated_admin_sessions_scope_target:sessions->sessions_only',
                 ],
                 'authorization_mode_scope_policies' => [
                     'direct_admin' => [
@@ -1786,6 +1822,108 @@ final class AuthSecurityCenterReportCommand extends Command
                 'next_step' => 'restore_recent_store_visibility',
                 'target_store_fingerprints' => $targetStores,
             ],
+            'monitor_concentrated_activity' => [
+                'response_mode' => 'observe_concentrated_activity',
+                'escalation_level' => 'low',
+                'should_deny_remote_mutations' => false,
+                'remote_mutation_denial_reason_code' => 'distributed_concentrated_activity_guard',
+                'remote_mutation_scope_policy' => 'allow_all',
+                'allowed_remote_mutation_scopes' => ['all', 'sessions', 'trusted-devices'],
+                'denied_remote_mutation_scopes' => [],
+                'scope_denial_reason_codes' => [],
+                'degraded_scope_profiles' => [
+                    'delegated_admin:all->sessions_only',
+                    'delegated_admin:trusted-devices->deny_all',
+                    'delegated_support:self_governed->allow_all',
+                    'untrusted:*->deny_all',
+                ],
+                'authorization_mode_scope_policies' => [
+                    'direct_admin' => [
+                        'remote_mutation_scope_policy' => 'allow_all',
+                        'allowed_remote_mutation_scopes' => ['all', 'sessions', 'trusted-devices'],
+                        'denied_remote_mutation_scopes' => [],
+                        'scope_denial_reason_codes' => [],
+                        'policy_reason_code' => 'distributed_concentrated_activity_guard_direct_admin_policy',
+                    ],
+                    'delegated_admin' => [
+                        'remote_mutation_scope_policy' => 'sessions_only',
+                        'allowed_remote_mutation_scopes' => ['sessions'],
+                        'denied_remote_mutation_scopes' => ['all', 'trusted-devices'],
+                        'scope_denial_reason_codes' => [
+                            'all' => 'distributed_concentrated_activity_guard_delegated_admin_all_scope',
+                            'trusted-devices' => 'distributed_concentrated_activity_guard_delegated_admin_trusted_devices_scope',
+                        ],
+                        'policy_reason_code' => 'distributed_concentrated_activity_guard_delegated_admin_policy',
+                        'privilege_scope_policies' => [
+                            'delegated_support' => [
+                                'remote_mutation_scope_policy' => 'sessions_only',
+                                'allowed_remote_mutation_scopes' => ['sessions'],
+                                'denied_remote_mutation_scopes' => ['all', 'trusted-devices'],
+                                'scope_denial_reason_codes' => [
+                                    'all' => 'distributed_concentrated_activity_guard_delegated_support_all_scope',
+                                    'trusted-devices' => 'distributed_concentrated_activity_guard_delegated_support_trusted_devices_scope',
+                                ],
+                                'policy_reason_code' => 'distributed_concentrated_activity_guard_delegated_support_policy',
+                                'target_relation_scope_policies' => [
+                                    'self_governed' => [
+                                        'remote_mutation_scope_policy' => 'allow_all',
+                                        'allowed_remote_mutation_scopes' => ['all', 'sessions', 'trusted-devices'],
+                                        'denied_remote_mutation_scopes' => [],
+                                        'scope_denial_reason_codes' => [],
+                                        'policy_reason_code' => 'distributed_concentrated_activity_guard_delegated_support_self_governed_policy',
+                                    ],
+                                    'delegated_administrative_target' => [
+                                        'remote_mutation_scope_policy' => 'sessions_only',
+                                        'allowed_remote_mutation_scopes' => ['sessions'],
+                                        'denied_remote_mutation_scopes' => ['all', 'trusted-devices'],
+                                        'scope_denial_reason_codes' => [
+                                            'all' => 'distributed_concentrated_activity_guard_delegated_support_delegated_target_all_scope',
+                                            'trusted-devices' => 'distributed_concentrated_activity_guard_delegated_support_delegated_target_trusted_devices_scope',
+                                        ],
+                                        'policy_reason_code' => 'distributed_concentrated_activity_guard_delegated_support_delegated_target_policy',
+                                        'target_scope_relation_policies' => [
+                                            'delegated_admin_sessions_scope_target' => [
+                                                'remote_mutation_scope_policy' => 'sessions_only',
+                                                'allowed_remote_mutation_scopes' => ['sessions'],
+                                                'denied_remote_mutation_scopes' => ['all', 'trusted-devices'],
+                                                'scope_denial_reason_codes' => [
+                                                    'all' => 'distributed_concentrated_activity_guard_delegated_support_delegated_sessions_target_all_scope',
+                                                    'trusted-devices' => 'distributed_concentrated_activity_guard_delegated_support_delegated_sessions_target_trusted_devices_scope',
+                                                ],
+                                                'policy_reason_code' => 'distributed_concentrated_activity_guard_delegated_support_delegated_sessions_target_policy',
+                                            ],
+                                            'delegated_admin_trusted_devices_scope_target' => [
+                                                'remote_mutation_scope_policy' => 'deny_all',
+                                                'allowed_remote_mutation_scopes' => [],
+                                                'denied_remote_mutation_scopes' => ['all', 'sessions', 'trusted-devices'],
+                                                'scope_denial_reason_codes' => [
+                                                    'all' => 'distributed_concentrated_activity_guard_delegated_support_delegated_trusted_target_all_scope',
+                                                    'sessions' => 'distributed_concentrated_activity_guard_delegated_support_delegated_trusted_target_sessions_scope',
+                                                    'trusted-devices' => 'distributed_concentrated_activity_guard_delegated_support_delegated_trusted_target_trusted_devices_scope',
+                                                ],
+                                                'policy_reason_code' => 'distributed_concentrated_activity_guard_delegated_support_delegated_trusted_target_policy',
+                                            ],
+                                        ],
+                                    ],
+                                ],
+                            ],
+                        ],
+                    ],
+                    'none' => [
+                        'remote_mutation_scope_policy' => 'deny_all',
+                        'allowed_remote_mutation_scopes' => [],
+                        'denied_remote_mutation_scopes' => ['all', 'sessions', 'trusted-devices'],
+                        'scope_denial_reason_codes' => [
+                            'all' => 'distributed_concentrated_activity_guard_untrusted_all_scope',
+                            'sessions' => 'distributed_concentrated_activity_guard_untrusted_sessions_scope',
+                            'trusted-devices' => 'distributed_concentrated_activity_guard_untrusted_trusted_devices_scope',
+                        ],
+                        'policy_reason_code' => 'distributed_concentrated_activity_guard_untrusted_policy',
+                    ],
+                ],
+                'next_step' => 'verify_secondary_store_participation',
+                'target_store_fingerprints' => $targetStores,
+            ],
             'monitor_recent_lag' => [
                 'response_mode' => 'observe_recent_lag',
                 'escalation_level' => $severity === 'none' ? 'low' : $severity,
@@ -1795,6 +1933,12 @@ final class AuthSecurityCenterReportCommand extends Command
                 'allowed_remote_mutation_scopes' => ['all', 'sessions', 'trusted-devices'],
                 'denied_remote_mutation_scopes' => [],
                 'scope_denial_reason_codes' => [],
+                'degraded_scope_profiles' => [
+                    'delegated_admin:all->sessions_only',
+                    'delegated_admin:trusted-devices->deny_all',
+                    'delegated_support:self_governed->sessions_only',
+                    'untrusted:*->deny_all',
+                ],
                 'authorization_mode_scope_policies' => [
                     'direct_admin' => [
                         'remote_mutation_scope_policy' => 'allow_all',
@@ -1894,6 +2038,7 @@ final class AuthSecurityCenterReportCommand extends Command
                 'allowed_remote_mutation_scopes' => ['all', 'sessions', 'trusted-devices'],
                 'denied_remote_mutation_scopes' => [],
                 'scope_denial_reason_codes' => [],
+                'degraded_scope_profiles' => [],
                 'authorization_mode_scope_policies' => [],
                 'next_step' => 'confirm_single_store_topology',
                 'target_store_fingerprints' => [],
@@ -1907,6 +2052,7 @@ final class AuthSecurityCenterReportCommand extends Command
                 'allowed_remote_mutation_scopes' => ['all', 'sessions', 'trusted-devices'],
                 'denied_remote_mutation_scopes' => [],
                 'scope_denial_reason_codes' => [],
+                'degraded_scope_profiles' => [],
                 'authorization_mode_scope_policies' => [],
                 'next_step' => 'continue_normal_operations',
                 'target_store_fingerprints' => [],

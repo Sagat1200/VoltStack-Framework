@@ -592,6 +592,138 @@ PHP
         self::assertSame('delegated_admin_trusted_devices_scope_target', $events[0]['distributed_guard_scope_decision']['actor_target_scope_relation'] ?? null);
     }
 
+    public function test_it_allows_trusted_device_scope_when_distributed_guard_is_concentrated_activity_for_self_governed_delegated_actor(): void
+    {
+        $seedNow = time();
+        $app = $this->bootstrappedApplication();
+        $this->seedFixtures($app, $seedNow);
+        $auditLogSource = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'audit' . DIRECTORY_SEPARATOR . 'security-center-concentrated.jsonl';
+        $this->seedLongitudinalConcentratedAuditTrail($auditLogSource, $seedNow);
+
+        $command = new AuthSecurityCenterRevokeDeviceCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'auth:security-center:revoke-device',
+                '--identity=902',
+                '--type=user',
+                '--device-reference=devref_support_admin',
+                '--actor-identity=902',
+                '--actor-type=user',
+                '--actor-session-public-id=sess_pub_support_admin',
+                '--scope=trusted-devices',
+                '--audit-log-source=' . $auditLogSource,
+                '--json',
+            ]),
+            $output,
+        );
+
+        /** @var array<string, mixed> $payload */
+        $payload = json_decode($output->stdout(), true, 512, JSON_THROW_ON_ERROR);
+        $sessions = $app->make(AuthenticationSessionRepositoryInterface::class);
+        $trustedDevices = $app->make(TrustedDeviceRepositoryInterface::class);
+
+        self::assertSame(0, $exitCode);
+        self::assertSame('concentrated_activity', $payload['distributed_guard']['activity_drift']['drift_profile'] ?? null);
+        self::assertSame('concentrated', $payload['distributed_guard']['activity_drift']['coordination_profile'] ?? null);
+        self::assertSame('monitor_concentrated_activity', $payload['distributed_guard']['activity_drift']['recommended_action'] ?? null);
+        self::assertSame('observe_concentrated_activity', $payload['distributed_guard']['operational_response']['response_mode'] ?? null);
+        self::assertSame(
+            ['delegated_admin:all->sessions_only', 'delegated_admin:trusted-devices->deny_all', 'delegated_support:self_governed->allow_all', 'untrusted:*->deny_all'],
+            $payload['distributed_guard']['operational_response']['degraded_scope_profiles'] ?? null,
+        );
+        self::assertFalse($payload['distributed_guard_scope_decision']['should_deny'] ?? true);
+        self::assertSame('trusted-devices', $payload['distributed_guard_scope_decision']['scope'] ?? null);
+        self::assertSame('delegated_admin', $payload['distributed_guard_scope_decision']['authorization_mode'] ?? null);
+        self::assertSame('delegated_support', $payload['distributed_guard_scope_decision']['actor_privilege_level'] ?? null);
+        self::assertSame('self_governed', $payload['distributed_guard_scope_decision']['actor_target_relation'] ?? null);
+        self::assertSame('self_governed_trusted_devices_scope_target', $payload['distributed_guard_scope_decision']['actor_target_scope_relation'] ?? null);
+        self::assertSame('allow_all', $payload['distributed_guard_scope_decision']['scope_policy'] ?? null);
+        self::assertSame('actor_target_relation_scope_policy', $payload['distributed_guard_scope_decision']['policy_source'] ?? null);
+        self::assertSame(
+            'distributed_concentrated_activity_guard_delegated_support_self_governed_policy',
+            $payload['distributed_guard_scope_decision']['policy_reason_code'] ?? null,
+        );
+        self::assertSame(['all', 'sessions', 'trusted-devices'], $payload['distributed_guard_scope_decision']['allowed_scopes'] ?? null);
+        self::assertSame([], $payload['distributed_guard_scope_decision']['denied_scopes'] ?? null);
+        self::assertInstanceOf(AuthenticationSession::class, $sessions->find('session-support-admin'));
+        self::assertNull($trustedDevices->find('tdv_support_admin'));
+    }
+
+    public function test_it_rejects_full_scope_when_distributed_guard_is_concentrated_activity_for_delegated_target(): void
+    {
+        $seedNow = time();
+        $app = $this->bootstrappedApplication();
+        $this->seedFixtures($app, $seedNow);
+        $auditLogPath = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'audit' . DIRECTORY_SEPARATOR . 'security-center-concentrated-delegated-guard.jsonl';
+        $auditLogSource = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'audit' . DIRECTORY_SEPARATOR . 'security-center-concentrated.jsonl';
+        $this->seedLongitudinalConcentratedAuditTrail($auditLogSource, $seedNow);
+
+        $command = new AuthSecurityCenterRevokeDeviceCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'auth:security-center:revoke-device',
+                '--identity=801',
+                '--type=user',
+                '--device-reference=devref_admin_alpha',
+                '--actor-identity=902',
+                '--actor-type=user',
+                '--actor-session-public-id=sess_pub_support_admin',
+                '--scope=all',
+                '--audit-log=' . $auditLogPath,
+                '--audit-log-source=' . $auditLogSource,
+                '--json',
+            ]),
+            $output,
+        );
+
+        /** @var array<string, mixed> $payload */
+        $payload = json_decode($output->stdout(), true, 512, JSON_THROW_ON_ERROR);
+        $sessions = $app->make(AuthenticationSessionRepositoryInterface::class);
+        $trustedDevices = $app->make(TrustedDeviceRepositoryInterface::class);
+
+        self::assertSame(1, $exitCode);
+        self::assertSame('distributed_concentrated_activity_guard_delegated_support_delegated_target_all_scope', $payload['reason_code'] ?? null);
+        self::assertSame('concentrated_activity', $payload['distributed_guard']['activity_drift']['drift_profile'] ?? null);
+        self::assertSame('observe_concentrated_activity', $payload['distributed_guard']['operational_response']['response_mode'] ?? null);
+        self::assertTrue($payload['distributed_guard_scope_decision']['should_deny'] ?? false);
+        self::assertSame('all', $payload['distributed_guard_scope_decision']['scope'] ?? null);
+        self::assertSame('delegated_admin', $payload['distributed_guard_scope_decision']['authorization_mode'] ?? null);
+        self::assertSame('delegated_support', $payload['distributed_guard_scope_decision']['actor_privilege_level'] ?? null);
+        self::assertSame('delegated_administrative_target', $payload['distributed_guard_scope_decision']['actor_target_relation'] ?? null);
+        self::assertSame('delegated_admin_full_scope_target', $payload['distributed_guard_scope_decision']['actor_target_scope_relation'] ?? null);
+        self::assertSame('sessions_only', $payload['distributed_guard_scope_decision']['scope_policy'] ?? null);
+        self::assertSame('actor_target_relation_scope_policy', $payload['distributed_guard_scope_decision']['policy_source'] ?? null);
+        self::assertSame(
+            'distributed_concentrated_activity_guard_delegated_support_delegated_target_policy',
+            $payload['distributed_guard_scope_decision']['policy_reason_code'] ?? null,
+        );
+        self::assertSame(['sessions'], $payload['distributed_guard_scope_decision']['allowed_scopes'] ?? null);
+        self::assertSame(['all', 'trusted-devices'], $payload['distributed_guard_scope_decision']['denied_scopes'] ?? null);
+        self::assertSame(
+            'distributed_concentrated_activity_guard_delegated_support_delegated_target_all_scope',
+            $payload['distributed_guard_scope_decision']['reason_code'] ?? null,
+        );
+        self::assertInstanceOf(AuthenticationSession::class, $sessions->find('session-admin-alpha'));
+        self::assertInstanceOf(AuthenticationSession::class, $sessions->find('session-admin-alpha-peer'));
+        self::assertInstanceOf(TrustedDevice::class, $trustedDevices->find('tdv_admin_alpha'));
+
+        $events = $this->readAuditEvents($auditLogPath);
+        self::assertCount(1, $events);
+        self::assertSame('security_center_device_revocation_rejected', $events[0]['event'] ?? null);
+        self::assertSame('distributed_guard_denied', $events[0]['result'] ?? null);
+        self::assertSame('distributed_concentrated_activity_guard_delegated_support_delegated_target_all_scope', $events[0]['reason_code'] ?? null);
+        self::assertSame(
+            'distributed_concentrated_activity_guard_delegated_support_delegated_target_policy',
+            $events[0]['distributed_guard_scope_decision']['policy_reason_code'] ?? null,
+        );
+    }
+
     public function test_it_allows_session_scope_when_distributed_guard_is_partial_visibility_for_delegated_session_target(): void
     {
         $seedNow = time();
@@ -1340,6 +1472,110 @@ PHP
                 'summary' => [
                     'revoked_sessions' => 1,
                     'revoked_trusted_devices' => 0,
+                ],
+            ],
+        ];
+
+        file_put_contents(
+            $path,
+            implode(PHP_EOL, array_map(
+                static fn (array $event): string => (string) json_encode($event, JSON_THROW_ON_ERROR),
+                $events,
+            )) . PHP_EOL,
+        );
+    }
+
+    private function seedLongitudinalConcentratedAuditTrail(string $path, int $seedNow): void
+    {
+        $directory = dirname($path);
+
+        if (! is_dir($directory)) {
+            mkdir($directory, 0777, true);
+        }
+
+        $events = [
+            [
+                'event' => 'security_center_device_revocation_executed',
+                'occurred_at' => $seedNow - 180,
+                'correlation_id' => 'concentrated-corr-1',
+                'operation_id' => 'concentrated-op-1',
+                'result' => 'executed',
+                'operational_context' => [
+                    'store_topology' => 'shared_file_store_candidate',
+                    'store_fingerprint' => 'fingerprint-a',
+                ],
+                'administrative_metrics' => [
+                    'requested_scope' => 'all',
+                    'actor_scope_profile' => 'full',
+                    'actor_authorization_mode' => 'direct_admin',
+                    'affected_total_resources' => 2,
+                ],
+                'summary' => [
+                    'revoked_sessions' => 1,
+                    'revoked_trusted_devices' => 1,
+                ],
+            ],
+            [
+                'event' => 'security_center_device_revocation_executed',
+                'occurred_at' => $seedNow - 120,
+                'correlation_id' => 'concentrated-corr-2',
+                'operation_id' => 'concentrated-op-2',
+                'result' => 'executed',
+                'operational_context' => [
+                    'store_topology' => 'shared_file_store_candidate',
+                    'store_fingerprint' => 'fingerprint-a',
+                ],
+                'administrative_metrics' => [
+                    'requested_scope' => 'sessions',
+                    'actor_scope_profile' => 'sessions_only',
+                    'actor_authorization_mode' => 'delegated_admin',
+                    'affected_total_resources' => 1,
+                ],
+                'summary' => [
+                    'revoked_sessions' => 1,
+                    'revoked_trusted_devices' => 0,
+                ],
+            ],
+            [
+                'event' => 'security_center_device_revocation_executed',
+                'occurred_at' => $seedNow - 60,
+                'correlation_id' => 'concentrated-corr-3',
+                'operation_id' => 'concentrated-op-3',
+                'result' => 'executed',
+                'operational_context' => [
+                    'store_topology' => 'shared_file_store_candidate',
+                    'store_fingerprint' => 'fingerprint-a',
+                ],
+                'administrative_metrics' => [
+                    'requested_scope' => 'sessions',
+                    'actor_scope_profile' => 'sessions_only',
+                    'actor_authorization_mode' => 'delegated_admin',
+                    'affected_total_resources' => 1,
+                ],
+                'summary' => [
+                    'revoked_sessions' => 1,
+                    'revoked_trusted_devices' => 0,
+                ],
+            ],
+            [
+                'event' => 'security_center_device_revocation_executed',
+                'occurred_at' => $seedNow - 30,
+                'correlation_id' => 'concentrated-corr-4',
+                'operation_id' => 'concentrated-op-4',
+                'result' => 'executed',
+                'operational_context' => [
+                    'store_topology' => 'mixed_driver_topology',
+                    'store_fingerprint' => 'fingerprint-b',
+                ],
+                'administrative_metrics' => [
+                    'requested_scope' => 'trusted-devices',
+                    'actor_scope_profile' => 'trusted_devices_only',
+                    'actor_authorization_mode' => 'delegated_admin',
+                    'affected_total_resources' => 1,
+                ],
+                'summary' => [
+                    'revoked_sessions' => 0,
+                    'revoked_trusted_devices' => 1,
                 ],
             ],
         ];

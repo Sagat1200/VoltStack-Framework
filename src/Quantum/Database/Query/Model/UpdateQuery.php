@@ -1,0 +1,34 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Quantum\Database\Query\Model;
+
+use Quantum\Database\Query\QueryInterface;
+use Quantum\Database\Query\QueryMetadata;
+use Quantum\Database\Query\QueryType;
+
+final readonly class UpdateQuery implements QueryInterface
+{
+    /**
+     * @param array<string, mixed> $values
+     * @param list<Predicate> $predicates
+     */
+    public function __construct(
+        public TableReference $table,
+        public array $values,
+        public array $predicates = [],
+        public QueryMetadata $queryMetadata = new QueryMetadata(),
+    ) {
+    }
+
+    public function type(): QueryType
+    {
+        return QueryType::Update;
+    }
+
+    public function metadata(): QueryMetadata
+    {
+        return $this->queryMetadata;
+    }
+}

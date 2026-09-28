@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quantum\Auth;
 
+use Quantum\Auth\Authenticators\BearerAuthenticator;
 use Quantum\Auth\Authenticators\PasswordAuthenticator;
 use Quantum\Auth\Authenticators\SessionAuthenticator;
 use Quantum\Auth\Context\AuthenticationContextAccessor;
@@ -14,6 +15,7 @@ use Quantum\Auth\Contracts\AuthenticatorInterface;
 use Quantum\Auth\Contracts\AuthenticatorResolverInterface;
 use Quantum\Auth\Contracts\IdentityProviderInterface;
 use Quantum\Auth\Contracts\InventoryReconcilerInterface;
+use Quantum\Auth\Contracts\OpaqueTokenRepositoryInterface;
 use Quantum\Auth\Contracts\PasswordPolicyInterface;
 use Quantum\Auth\Contracts\SessionRepositoryDriverFactoryInterface;
 use Quantum\Auth\Contracts\TrustedDeviceRepositoryDriverFactoryInterface;
@@ -29,9 +31,12 @@ use Quantum\Auth\Runtime\SessionRepositoryDriverFactory;
 use Quantum\Auth\Runtime\TrustedDeviceRepositoryDriverFactory;
 use Quantum\Auth\Sessions\FileAuthenticationSessionRepository;
 use Quantum\Auth\Sessions\InMemoryAuthenticationSessionRepository;
+use Quantum\Auth\Tokens\FileOpaqueTokenRepository;
+use Quantum\Auth\Tokens\InMemoryOpaqueTokenRepository;
 use Quantum\Config\ConfigRepository;
 use Quantum\HttpKernel\MiddlewareAliasRegistry;
 use Quantum\Middlewares\AuthMiddleware;
+use Quantum\Middlewares\BearerAuthMiddleware;
 use Quantum\Middlewares\GuestMiddleware;
 use Quantum\Middlewares\MfaMiddleware;
 use VoltStack\Framework\Application;
@@ -110,14 +115,48 @@ final class AuthenticationServiceProvider extends ServiceProvider
             ]);
         });
 
+        $this->app->singleton(OpaqueTokenRepositoryInterface::class, function (Application $app): OpaqueTokenRepositoryInterface {
+            $driver = strtolower(trim((string) $app->config('auth.tokens.driver', 'memory')));
+
+            if ($driver === 'file') {
+                try {
+                    $storagePath = $app->storagePath('framework/auth/tokens');
+                } catch (\Throwable) {
+                    $storagePath = null;
+                }
+
+                $directory = is_string($storagePath) && trim($storagePath) !== ''
+                    ? $storagePath
+                    : (sys_get_temp_dir() . '/voltstack-auth-tokens');
+
+                return new FileOpaqueTokenRepository($directory);
+            }
+
+            return new InMemoryOpaqueTokenRepository();
+        });
+
         $this->app->scoped(AuthenticatorInterface::class, fn(Application $app) => new PasswordAuthenticator(
             $app->make(IdentityProviderInterface::class),
             $app->make(PasswordPolicyInterface::class),
             $app->make(TrustedDeviceRepositoryInterface::class),
             $app->make(ConfigRepository::class),
         ));
+
+        $this->app->scoped(BearerAuthenticator::class, static function (Application $app): BearerAuthenticator {
+            return new BearerAuthenticator(
+                $app->make(IdentityProviderInterface::class),
+                $app->make(OpaqueTokenRepositoryInterface::class),
+            );
+        });
+
         $this->app->scoped(SessionAuthenticator::class);
-        $this->app->scoped(AuthenticatorResolverInterface::class, DefaultAuthenticatorResolver::class);
+        $this->app->scoped(AuthenticatorResolverInterface::class, static function (Application $app): AuthenticatorResolverInterface {
+            return new DefaultAuthenticatorResolver(
+                $app->make(SessionAuthenticator::class),
+                $app->make(AuthenticatorInterface::class),
+                $app->make(BearerAuthenticator::class),
+            );
+        });
         $this->app->scoped(AuthenticationOrchestratorInterface::class, AuthenticationOrchestrator::class);
         $this->app->scoped(AuthManager::class, fn(Application $app) => new AuthManager(
             $app->make(AuthenticationContextAccessor::class),
@@ -128,11 +167,13 @@ final class AuthenticationServiceProvider extends ServiceProvider
         ));
         $this->app->scoped(AuthenticationManagerInterface::class, fn(Application $app) => $app->make(AuthManager::class));
         $this->app->scoped(AuthMiddleware::class);
+        $this->app->scoped(BearerAuthMiddleware::class);
         $this->app->scoped(GuestMiddleware::class);
         $this->app->scoped(MfaMiddleware::class);
 
         // The alias must exist before route registration so fluent and attribute routes can resolve it.
         $this->app->make(MiddlewareAliasRegistry::class)->alias('auth', AuthMiddleware::class);
+        $this->app->make(MiddlewareAliasRegistry::class)->alias('auth.bearer', BearerAuthMiddleware::class);
         $this->app->make(MiddlewareAliasRegistry::class)->alias('guest', GuestMiddleware::class);
         $this->app->make(MiddlewareAliasRegistry::class)->alias('mfa', MfaMiddleware::class);
     }

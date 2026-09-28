@@ -6,6 +6,7 @@ namespace Quantum\Auth\Authenticators;
 
 use Quantum\Auth\Context\AuthenticationContext;
 use Quantum\Auth\Contracts\AuthenticatorInterface;
+use Quantum\Auth\Contracts\DistributedPasswordGovernanceProviderInterface;
 use Quantum\Auth\Contracts\IdentityProviderInterface;
 use Quantum\Auth\Contracts\MultiFactorIdentityProviderInterface;
 use Quantum\Auth\Contracts\MutableIdentityProviderInterface;
@@ -29,6 +30,7 @@ use Quantum\Auth\Exceptions\SecondFactorRequiredException;
 use Quantum\Auth\Exceptions\StepUpAuthenticationRequiredException;
 use Quantum\Auth\Identity\IdentityReference;
 use Quantum\Auth\Identity\IdentitySecurityState;
+use Quantum\Auth\Passwords\RetentionTieredEnforcer;
 use Quantum\Auth\Runtime\AuthenticationOperationContext;
 use Quantum\Auth\Support\AuthenticationAssurance;
 use Quantum\Config\ConfigRepository;
@@ -151,6 +153,34 @@ final class PasswordAuthenticator implements AuthenticatorInterface
             ? array_values(array_filter($lifecycleMetadata['password_rotation_history'], static fn (mixed $v): bool => is_string($v)))
             : [];
 
+        $governanceRetentionTier = null;
+        if ($this->identityProvider instanceof DistributedPasswordGovernanceProviderInterface) {
+            $governanceRetentionTier = $this->identityProvider->retentionTierFor($identity);
+            $retentionEnforcer = new RetentionTieredEnforcer();
+            if ($passwordCreatedAt > 0 && $retentionEnforcer->requiresImmediateExpiry($lifecycleMetadata, $governanceRetentionTier)) {
+                $days = $retentionEnforcer->retentionDaysForTier($governanceRetentionTier);
+                $cutoff = $passwordCreatedAt + ($days * 86400);
+
+                return AuthenticationDecision::rejected([
+                    'reason' => 'password_retention_expired',
+                    'authenticator' => 'password',
+                    'password_created_at' => $passwordCreatedAt,
+                    'password_expires_at' => $cutoff,
+                    'retention_tier' => $governanceRetentionTier,
+                    'retention_days' => $days,
+                    'exception' => PasswordExpiredException::class,
+                    'exception_arguments' => [
+                        'message' => sprintf('Password retention policy for tier %s requires rotation every %d days.', $governanceRetentionTier, $days),
+                        'code' => 0,
+                        'previous' => null,
+                        'passwordCreatedAt' => $passwordCreatedAt,
+                        'expiresAt' => $cutoff,
+                        'expiresAfterSeconds' => $days * 86400,
+                    ],
+                ]);
+            }
+        }
+
         if ($passwordCreatedAt > 0 && $this->passwordPolicy->isExpired($passwordCreatedAt, $passwordExpiresAt)) {
             $expiresAfter = null;
             if ($passwordExpiresAt !== null && $passwordCreatedAt > 0) {
@@ -235,11 +265,28 @@ final class PasswordAuthenticator implements AuthenticatorInterface
         $trustedDeviceInvalid = $trustedDeviceValidation->invalid;
         $trustedDeviceChallengeReduced = false;
 
+        $governanceStrength = null;
+        if ($this->identityProvider instanceof DistributedPasswordGovernanceProviderInterface) {
+            $governanceStrength = $this->identityProvider->credentialStrengthCheck($credentials->password);
+        }
+
         if ($needsRehash && $this->identityProvider instanceof PasswordRehashingIdentityProviderInterface) {
+            $newHashedValue = $this->passwordPolicy->hash($credentials->password);
             $rehashed = $this->identityProvider->upgradePasswordHash(
                 $identity,
-                $this->passwordPolicy->hash($credentials->password),
+                $newHashedValue,
             );
+            if ($rehashed && $this->identityProvider instanceof DistributedPasswordGovernanceProviderInterface) {
+                $actorSessionPublicId = is_string($context->request->attribute('actor_session_public_id')) ? trim((string) $context->request->attribute('actor_session_public_id')) : 'rehash_local_' . substr(bin2hex(random_bytes(4)), 0, 8);
+                $this->identityProvider->saveRotationReceipt(
+                    $identity,
+                    $passwordHash,
+                    $newHashedValue,
+                    time(),
+                    $actorSessionPublicId,
+                    'auto_rehash_upgrade',
+                );
+            }
         }
 
         if ($this->identityProvider instanceof MultiFactorIdentityProviderInterface) {
@@ -291,7 +338,7 @@ final class PasswordAuthenticator implements AuthenticatorInterface
                 method: 'password',
                 attributes: AuthenticationAssurance::enrichAttributes($contextAttributes, 'password'),
             ),
-            [
+            array_filter(array_merge([
                 'authenticator' => 'password',
                 'identifier' => $credentials->identifier,
                 'password_needs_rehash' => $needsRehash,
@@ -301,7 +348,11 @@ final class PasswordAuthenticator implements AuthenticatorInterface
                 'trusted_device_replayed' => $trustedDeviceValidation->replayed,
                 'trusted_device_public_id' => $trustedDevice?->publicId->value,
                 'trusted_device_rotate' => $trustedDeviceChallengeReduced && $this->rotateTrustedDeviceOnChallengeReduction(),
-            ],
+                'retention_tier' => $governanceRetentionTier,
+                'credential_strength_score' => is_array($governanceStrength) ? (int) ($governanceStrength['score'] ?? 0) : null,
+                'credential_strength_issues' => is_array($governanceStrength) && isset($governanceStrength['issues']) && is_array($governanceStrength['issues']) ? array_values($governanceStrength['issues']) : null,
+                'credential_strength_passes' => is_array($governanceStrength) && isset($governanceStrength['passes']) ? (bool) $governanceStrength['passes'] : null,
+            ])),
         );
     }
 

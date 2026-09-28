@@ -4,14 +4,16 @@ declare(strict_types=1);
 
 namespace Quantum\Auth\Identity;
 
+use Quantum\Auth\Contracts\DistributedPasswordGovernanceProviderInterface;
 use Quantum\Auth\Contracts\IdentityProviderInterface;
 use Quantum\Auth\Contracts\MultiFactorIdentityProviderInterface;
 use Quantum\Auth\Contracts\MutableIdentityProviderInterface;
 use Quantum\Auth\Contracts\PasswordLifecycleAwareProviderInterface;
 use Quantum\Auth\Contracts\PasswordRehashingIdentityProviderInterface;
+use Quantum\Auth\Passwords\PasswordRotationReceipt;
 use Quantum\Config\ConfigRepository;
 
-final class LocalIdentityProvider implements IdentityProviderInterface, PasswordRehashingIdentityProviderInterface, MultiFactorIdentityProviderInterface, MutableIdentityProviderInterface, PasswordLifecycleAwareProviderInterface
+final class LocalIdentityProvider implements IdentityProviderInterface, PasswordRehashingIdentityProviderInterface, MultiFactorIdentityProviderInterface, MutableIdentityProviderInterface, PasswordLifecycleAwareProviderInterface, DistributedPasswordGovernanceProviderInterface
 {
     public function __construct(
         private readonly ConfigRepository $config,
@@ -344,6 +346,202 @@ final class LocalIdentityProvider implements IdentityProviderInterface, Password
 
             return $entry;
         });
+    }
+
+    public function bulkInvalidateByIdentifierPrefix(string $identifierPrefix, string $reason): int
+    {
+        $prefix = strtolower(trim($identifierPrefix));
+        if ($prefix === '') {
+            return 0;
+        }
+
+        $identities = $this->configuredIdentities();
+        $invalidated = 0;
+
+        foreach ($identities as $index => $entry) {
+            if (! is_array($entry)) {
+                continue;
+            }
+
+            $match = false;
+            foreach (['identifier', 'email', 'username'] as $key) {
+                if (isset($entry[$key]) && is_string($entry[$key])) {
+                    $candidate = strtolower(trim($entry[$key]));
+                    if ($candidate !== '' && str_starts_with($candidate, $prefix)) {
+                        $match = true;
+                        break;
+                    }
+                }
+            }
+
+            if (! $match) {
+                continue;
+            }
+
+            $entry['security_state'] = IdentitySecurityState::Suspended->value;
+            $entry['status'] = IdentitySecurityState::Suspended->value;
+            if (trim($reason) !== '') {
+                $entry['security_state_reason'] = $reason;
+            }
+            $entry['bulk_invalidated_at'] = time();
+            $entry['bulk_invalidation_reason'] = $reason;
+            $identities[$index] = $entry;
+            $invalidated++;
+        }
+
+        if ($invalidated === 0) {
+            return 0;
+        }
+
+        $this->config->set('auth.providers.local.identities', $identities);
+
+        $storagePath = $this->storagePath();
+        if ($storagePath === null) {
+            return $invalidated;
+        }
+
+        return $this->persistStoredIdentities($storagePath, $identities) ? $invalidated : 0;
+    }
+
+    public function saveRotationReceipt(
+        IdentityInterface $identity,
+        string $previousHash,
+        string $newHash,
+        int $rotatedAt,
+        string $rotatedByActorSessionPublicId,
+        ?string $reason = null,
+    ): bool {
+        $rotatedAt = $rotatedAt > 0 ? $rotatedAt : time();
+        $receipt = new PasswordRotationReceipt(
+            identityId: (string) $identity->identifier(),
+            previousHash: $previousHash,
+            newHash: $newHash,
+            rotatedAt: $rotatedAt,
+            rotatedByActorSessionPublicId: $rotatedByActorSessionPublicId,
+            reason: $reason,
+        );
+
+        $storagePath = $this->storagePath();
+        if ($storagePath !== null) {
+            $dir = dirname($storagePath) . DIRECTORY_SEPARATOR . 'rotation_receipts';
+            if (! is_dir($dir) && ! @mkdir($dir, 0777, true) && ! is_dir($dir)) {
+                $storagePath = null;
+            } else {
+                $identitySafe = preg_replace('/[^a-zA-Z0-9_-]/', '', (string) $identity->identifier()) ?: 'unknown';
+                $fileName = $identitySafe . '_' . $rotatedAt . '_' . substr(bin2hex(random_bytes(4)), 0, 8) . '.json';
+                $filePath = $dir . DIRECTORY_SEPARATOR . $fileName;
+                $payload = json_encode($receipt->toArray(), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+                $written = @file_put_contents($filePath, $payload . PHP_EOL);
+                if ($written !== false) {
+                    return true;
+                }
+            }
+        }
+
+        $key = 'auth.providers.local.rotation_receipts';
+        $existing = $this->config->get($key, []);
+        if (! is_array($existing)) {
+            $existing = [];
+        }
+        $existing[] = $receipt->toArray();
+        $this->config->set($key, $existing);
+
+        return true;
+    }
+
+    public function retentionTierFor(IdentityInterface $identity): string
+    {
+        $entry = $this->entryForIdentity($identity);
+        if ($entry !== null && isset($entry['retention_tier']) && is_string($entry['retention_tier']) && trim($entry['retention_tier']) !== '') {
+            $tier = strtolower(trim($entry['retention_tier']));
+            if (in_array($tier, ['low', 'medium', 'high'], true)) {
+                return $tier;
+            }
+        }
+
+        $configured = $this->config->get('auth.password.retention.default_tier');
+        if (is_string($configured) && trim($configured) !== '') {
+            $tier = strtolower(trim($configured));
+            if (in_array($tier, ['low', 'medium', 'high'], true)) {
+                return $tier;
+            }
+        }
+
+        return 'medium';
+    }
+
+    public function credentialStrengthCheck(string $rawPassword): array
+    {
+        $issues = [];
+        $score = 0;
+
+        $len = strlen($rawPassword);
+        if ($len < 8) {
+            $issues[] = 'min_length';
+        } else {
+            $score += 20;
+            if ($len >= 12) {
+                $score += 10;
+            }
+            if ($len >= 16) {
+                $score += 10;
+            }
+        }
+
+        if (preg_match('/[A-Z]/', $rawPassword) === 1) {
+            $score += 15;
+        } else {
+            $issues[] = 'no_uppercase';
+        }
+
+        if (preg_match('/[a-z]/', $rawPassword) === 1) {
+            $score += 15;
+        } else {
+            $issues[] = 'no_lowercase';
+        }
+
+        if (preg_match('/[0-9]/', $rawPassword) === 1) {
+            $score += 15;
+        } else {
+            $issues[] = 'no_digit';
+        }
+
+        if (preg_match('/[^A-Za-z0-9]/', $rawPassword) === 1) {
+            $score += 15;
+        } else {
+            $issues[] = 'no_symbol';
+        }
+
+        $blacklist = [
+            'password', '12345678', 'qwerty123', 'admin123', 'letmein1',
+            'welcome1', 'password1', 'abc12345', '123456789', '1234567890',
+            'iloveyou', 'sunshine', 'princess', 'football', 'baseball',
+        ];
+        if (in_array(strtolower($rawPassword), $blacklist, true)) {
+            $score = min($score, 15);
+            $issues[] = 'common_password';
+        }
+
+        return [
+            'score' => min(100, max(0, $score)),
+            'issues' => array_values($issues),
+            'passes' => $score >= 50 && $len >= 8 && ! in_array('common_password', $issues, true),
+        ];
+    }
+
+    public function multiDimLockoutThresholds(): array
+    {
+        $byIdentifier = $this->config->get('auth.password.lockout.multi_dim.by_identifier');
+        $byDeviceRef = $this->config->get('auth.password.lockout.multi_dim.by_device_ref');
+        $byIpPrefix = $this->config->get('auth.password.lockout.multi_dim.by_ip_prefix');
+        $windowSeconds = $this->config->get('auth.password.lockout.multi_dim.window_seconds');
+
+        return [
+            'by_identifier' => (is_numeric($byIdentifier) && (int) $byIdentifier > 0) ? (int) $byIdentifier : 10,
+            'by_device_ref' => (is_numeric($byDeviceRef) && (int) $byDeviceRef > 0) ? (int) $byDeviceRef : 15,
+            'by_ip_prefix' => (is_numeric($byIpPrefix) && (int) $byIpPrefix > 0) ? (int) $byIpPrefix : 25,
+            'window_seconds' => (is_numeric($windowSeconds) && (int) $windowSeconds > 0) ? (int) $windowSeconds : 900,
+        ];
     }
 
     /**

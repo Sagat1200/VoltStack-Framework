@@ -5,269 +5,190 @@ declare(strict_types=1);
 namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
-use Quantum\Auth\Contracts\AuthenticationSessionRepositoryInterface;
-use Quantum\Auth\Contracts\BulkDeletableSessionRepositoryInterface;
-use Quantum\Auth\Contracts\FilterableAuthenticationSessionRepositoryInterface;
-use Quantum\Auth\Contracts\FilterableTrustedDeviceRepositoryInterface;
-use Quantum\Auth\Contracts\InventoryReconcilerInterface;
-use Quantum\Auth\Contracts\SessionRepositoryDriverFactoryInterface;
-use Quantum\Auth\Contracts\TrustedDeviceRepositoryDriverFactoryInterface;
-use Quantum\Auth\Contracts\TrustedDeviceRepositoryInterface;
-use Quantum\Auth\Devices\FileTrustedDeviceRepository;
-use Quantum\Auth\Devices\InMemoryTrustedDeviceRepository;
-use Quantum\Auth\Devices\InventoryReconciler;
-use Quantum\Auth\Devices\TrustedDevice;
-use Quantum\Auth\Devices\TrustedDevicePublicId;
-use Quantum\Auth\Identity\GenericIdentity;
-use Quantum\Auth\Identity\IdentityIdentifier;
-use Quantum\Auth\Identity\IdentityReference;
-use Quantum\Auth\Runtime\SessionRepositoryDriverFactory;
-use Quantum\Auth\Runtime\TrustedDeviceRepositoryDriverFactory;
-use Quantum\Auth\Sessions\AuthenticationSession;
-use Quantum\Auth\Sessions\AuthenticationSessionId;
-use Quantum\Auth\Sessions\FileAuthenticationSessionRepository;
-use Quantum\Auth\Sessions\InMemoryAuthenticationSessionRepository;
-use RuntimeException;
+use Quantum\Auth\AbuseProtection\BruteForceCounter;
+use Quantum\Auth\AbuseProtection\CredentialStuffingBloomFilter;
+use Quantum\Auth\AbuseProtection\ThrottleDecision;
+use Quantum\Auth\AbuseProtection\ThrottleEngineV1;
+use Quantum\Auth\Contracts\AuthenticatorResolverInterface;
+use Quantum\Auth\Decisions\AuthenticationDecisionStatus;
+use Quantum\Auth\Runtime\AuthenticationOperationContext;
+use Quantum\Auth\Runtime\AuthenticationOrchestrator;
+use Quantum\Auth\Context\AuthenticationRequest;
+use Quantum\Auth\Contracts\AuthenticatorInterface;
+use Quantum\Auth\Decisions\AuthenticationDecision;
 
 final class BloqueBTest extends TestCase
 {
-    public function test_session_factory_registers_custom_driver_and_makes_instance(): void
+    public function test_brute_force_counter_1m_window_increments_count(): void
     {
-        $factory = new SessionRepositoryDriverFactory();
-
-        self::assertTrue($factory->hasDriver('memory'));
-        self::assertTrue($factory->hasDriver('file'));
-        self::assertFalse($factory->hasDriver('custom-driver'));
-
-        $custom = new InMemoryAuthenticationSessionRepository();
-        $factory->registerDriver('custom-driver', static fn () => $custom);
-
-        self::assertTrue($factory->hasDriver('custom-driver'));
-        self::assertSame($custom, $factory->make('custom-driver'));
-        self::assertInstanceOf(AuthenticationSessionRepositoryInterface::class, $factory->make('memory'));
-        self::assertInstanceOf(FileAuthenticationSessionRepository::class, $factory->make('file', [
-            'storage_path' => sys_get_temp_dir() . '/voltstack-bloque-b-sessions-' . bin2hex(random_bytes(4)),
-        ]));
-    }
-
-    public function test_session_factory_throws_for_unknown_driver(): void
-    {
-        $factory = new SessionRepositoryDriverFactory();
-
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('Unknown session repository driver');
-
-        $factory->make('nonexistent-driver');
-    }
-
-    public function test_trusted_device_factory_registers_custom_driver(): void
-    {
-        $factory = new TrustedDeviceRepositoryDriverFactory();
-
-        self::assertTrue($factory->hasDriver('memory'));
-        self::assertTrue($factory->hasDriver('file'));
-        self::assertFalse($factory->hasDriver('custom-tdv-driver'));
-
-        $custom = new InMemoryTrustedDeviceRepository();
-        $factory->registerDriver('custom-tdv-driver', static fn () => $custom);
-
-        self::assertSame($custom, $factory->make('custom-tdv-driver'));
-        self::assertInstanceOf(TrustedDeviceRepositoryInterface::class, $factory->make('memory'));
-        self::assertInstanceOf(FileTrustedDeviceRepository::class, $factory->make('file', [
-            'storage_path' => sys_get_temp_dir() . '/voltstack-bloque-b-tdv-' . bin2hex(random_bytes(4)),
-        ]));
-    }
-
-    public function test_trusted_device_factory_throws_for_unknown_driver(): void
-    {
-        $factory = new TrustedDeviceRepositoryDriverFactory();
-
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('Unknown trusted device repository driver');
-
-        $factory->make('nope');
-    }
-
-    public function test_session_repos_implement_filterable_and_bulk_interfaces(): void
-    {
-        $memory = new InMemoryAuthenticationSessionRepository();
-        $file = new FileAuthenticationSessionRepository(sys_get_temp_dir() . '/voltstack-bloque-b-session-file-' . bin2hex(random_bytes(4)));
-
-        self::assertInstanceOf(FilterableAuthenticationSessionRepositoryInterface::class, $memory);
-        self::assertInstanceOf(BulkDeletableSessionRepositoryInterface::class, $memory);
-        self::assertInstanceOf(FilterableAuthenticationSessionRepositoryInterface::class, $file);
-        self::assertInstanceOf(BulkDeletableSessionRepositoryInterface::class, $file);
-    }
-
-    public function test_trusted_device_repos_implement_filterable_interface(): void
-    {
-        $memory = new InMemoryTrustedDeviceRepository();
-        $file = new FileTrustedDeviceRepository(sys_get_temp_dir() . '/voltstack-bloque-b-tdv-file-' . bin2hex(random_bytes(4)));
-
-        self::assertInstanceOf(FilterableTrustedDeviceRepositoryInterface::class, $memory);
-        self::assertInstanceOf(FilterableTrustedDeviceRepositoryInterface::class, $file);
-    }
-
-    public function test_filterable_session_find_and_count_with_identity_criteria(): void
-    {
-        $repo = new InMemoryAuthenticationSessionRepository();
-
-        $identityA = new GenericIdentity(new IdentityIdentifier('a'), 'user');
-        $identityB = new GenericIdentity(new IdentityIdentifier('b'), 'user');
+        $counter = new BruteForceCounter();
         $now = time();
+        $key = 'identifier:testuser@test';
 
-        for ($i = 1; $i <= 4; $i++) {
-            $repo->save(new AuthenticationSession(
-                id: new AuthenticationSessionId('sess-a-' . $i),
-                identity: $identityA,
-                reference: new IdentityReference($identityA->identifier(), $identityA->type()),
-                method: 'password',
-                issuedAt: $now - 100,
-                expiresAt: $now + 3600,
-                attributes: [
-                    'status' => 'active',
-                    'authentication_method' => 'password',
-                    'session_type' => 'web',
-                    'device_fingerprint' => ($i % 2 === 0) ? 'fp-even' : 'fp-odd',
-                ],
-            ));
+        for ($i = 0; $i < 3; $i++) {
+            $counter->increment($key, $now);
         }
 
-        $repo->save(new AuthenticationSession(
-            id: new AuthenticationSessionId('sess-b-1'),
-            identity: $identityB,
-            reference: new IdentityReference($identityB->identifier(), $identityB->type()),
-            method: 'password',
-            issuedAt: $now - 100,
-            expiresAt: $now + 3600,
-            attributes: ['status' => 'active', 'authentication_method' => 'password'],
-        ));
-
-        $found = $repo->findByCriteria(['identity_id' => 'a']);
-        self::assertCount(4, $found);
-
-        $countIdentityA = $repo->countByCriteria(['identity_id' => 'a']);
-        self::assertSame(4, $countIdentityA);
-
-        $identityBcount = $repo->countByCriteria(['identity_id' => 'b']);
-        self::assertSame(1, $identityBcount);
-
-        $limited = $repo->findByCriteria(['identity_id' => 'a', 'limit' => 2]);
-        self::assertCount(2, $limited);
-
-        $fpEven = $repo->findByCriteria(['device_fingerprint' => 'fp-even']);
-        self::assertCount(2, $fpEven);
+        $counts = $counter->currentCounts($key, $now);
+        self::assertSame(3, $counts['1m']);
+        self::assertSame(3, $counts['5m']);
+        self::assertSame(3, $counts['15m']);
     }
 
-    public function test_bulk_session_delete_by_criteria_and_ids(): void
+    public function test_brute_force_counter_1m_window_expires_old_entries_correctly(): void
     {
-        $repo = new InMemoryAuthenticationSessionRepository();
-
-        $identityA = new GenericIdentity(new IdentityIdentifier('x'), 'user');
-        $identityB = new GenericIdentity(new IdentityIdentifier('y'), 'user');
+        $counter = new BruteForceCounter();
         $now = time();
 
-        for ($i = 1; $i <= 3; $i++) {
-            $repo->save(new AuthenticationSession(
-                id: new AuthenticationSessionId('x-' . $i),
-                identity: $identityA,
-                reference: new IdentityReference($identityA->identifier(), $identityA->type()),
-                method: 'password',
-                issuedAt: $now - 1000,
-                expiresAt: $now - 100,
-                attributes: ['status' => 'expired'],
-            ));
-        }
+        $key = 'identifier:expiry@test';
+        $counter->increment($key, $now - 120);
+        $counter->increment($key, $now - 120);
+        $counter->increment($key, $now - 10);
 
-        $repo->save(new AuthenticationSession(
-            id: new AuthenticationSessionId('y-active'),
-            identity: $identityB,
-            reference: new IdentityReference($identityB->identifier(), $identityB->type()),
-            method: 'password',
-            issuedAt: $now - 100,
-            expiresAt: $now + 3600,
-            attributes: ['status' => 'active'],
-        ));
-
-        self::assertSame(4, $repo->countByCriteria([]));
-        $deleted = $repo->deleteByCriteria(['identity_id' => 'x']);
-        self::assertSame(3, $deleted);
-        self::assertNull($repo->find('x-1'));
-        self::assertNull($repo->find('x-2'));
-        self::assertNull($repo->find('x-3'));
-        self::assertNotNull($repo->find('y-active'));
-
-        $repo->save(new AuthenticationSession(
-            id: new AuthenticationSessionId('y-2'),
-            identity: $identityB,
-            reference: new IdentityReference($identityB->identifier(), $identityB->type()),
-            method: 'password',
-            issuedAt: $now - 50,
-            expiresAt: $now + 3600,
-            attributes: ['status' => 'active'],
-        ));
-
-        $deletedByIds = $repo->deleteByIds(['y-active', 'y-2', 'unknown-nothing']);
-        self::assertSame(2, $deletedByIds);
+        $counts = $counter->currentCounts($key, $now);
+        self::assertSame(1, $counts['1m']);
+        self::assertSame(3, $counts['5m']);
+        self::assertSame(3, $counts['15m']);
     }
 
-    public function test_filterable_trusted_device_find_and_count(): void
+    public function test_brute_force_counter_5m_cumulative_across_multiple_increments(): void
     {
-        $repo = new InMemoryTrustedDeviceRepository();
+        $counter = new BruteForceCounter();
+        $now = time();
+        $key = 'identifier:cumulative@test';
 
-        $identity = new GenericIdentity(new IdentityIdentifier('ident-t-1'), 'user');
-        $reference = new IdentityReference($identity->identifier(), $identity->type());
+        for ($i = 0; $i < 2; $i++) {
+            $counter->increment($key, $now - 240);
+        }
+        for ($i = 0; $i < 3; $i++) {
+            $counter->increment($key, $now - 30);
+        }
+
+        $counts = $counter->currentCounts($key, $now);
+        self::assertSame(3, $counts['1m']);
+        self::assertSame(5, $counts['5m']);
+        self::assertSame(5, $counts['15m']);
+    }
+
+    public function test_bloom_filter_matches_known_compromised_password_as_stuffing_flag(): void
+    {
+        $bloom = new CredentialStuffingBloomFilter();
+        self::assertTrue($bloom->isProbablyCompromised('password'));
+        self::assertTrue($bloom->isProbablyCompromised('123456'));
+        self::assertTrue($bloom->isProbablyCompromised('admin'));
+    }
+
+    public function test_bloom_filter_allows_unknown_complex_password(): void
+    {
+        $bloom = new CredentialStuffingBloomFilter();
+        self::assertFalse($bloom->isProbablyCompromised('N0t-A-C0mm0n-P@ss-2025-XyZ!'));
+        self::assertFalse($bloom->isProbablyCompromised('Unique-Ph-R4s3-Here-' . bin2hex(random_bytes(4))));
+    }
+
+    public function test_throttle_engine_allows_baseline_clean_user(): void
+    {
+        $counter = new BruteForceCounter();
+        $bloom = new CredentialStuffingBloomFilter();
+        $engine = new ThrottleEngineV1($counter, $bloom);
+
+        $decision = $engine->decide(
+            identifier: 'clean_user@test',
+            deviceRef: 'dev_clean_01',
+            ipPrefix: '192.168.1',
+            rawPassword: 'My-Safe-Pass-2025-Xz!',
+        );
+
+        self::assertTrue($decision->isAllowed());
+        self::assertNull($decision->reasonCode);
+        self::assertSame(0, $decision->retryAfterSeconds);
+    }
+
+    public function test_throttle_engine_denies_after_brute_threshold_breached(): void
+    {
+        $counter = new BruteForceCounter();
+        $bloom = new CredentialStuffingBloomFilter();
+        $engine = new ThrottleEngineV1($counter, $bloom, thresholds: ['1m' => 3, '5m' => 5, '15m' => 10]);
         $now = time();
 
-        for ($i = 1; $i <= 3; $i++) {
-            $repo->save(new TrustedDevice(
-                publicId: new TrustedDevicePublicId('tdv_bloqueb_' . $i),
-                reference: $reference,
-                deviceReference: 'device-ref-' . $i,
-                issuedAt: $now - 1000,
-                expiresAt: $now + 86400,
-                lastUsedAt: $now - 100,
-                attributes: [
-                    'device_fingerprint' => 'fp-' . $i,
-                    'status' => ($i === 1 ? 'revoked' : 'trusted'),
-                    'scope' => ($i === 3 ? 'admin' : 'api'),
-                ],
-            ));
+        $key = 'identifier:brute_target@test';
+        for ($i = 0; $i < 4; $i++) {
+            $counter->increment($key, $now);
         }
 
-        $allByIdentity = $repo->findByCriteria(['identity_id' => 'ident-t-1', 'status' => 'trusted']);
-        self::assertCount(2, $allByIdentity);
-
-        $countAll = $repo->countByCriteria(['identity_id' => 'ident-t-1', 'status' => 'trusted']);
-        self::assertSame(2, $countAll);
-
-        $includeExpired = $repo->findByCriteria(['identity_id' => 'ident-t-1', 'include_expired' => true, 'status' => ['trusted', 'revoked']]);
-        self::assertCount(3, $includeExpired);
-
-        $byDeviceRef = $repo->findByCriteria(['device_reference' => 'device-ref-2', 'include_expired' => true]);
-        self::assertCount(1, $byDeviceRef);
-
-        $byScope = $repo->findByCriteria(['scope' => 'admin', 'include_expired' => true]);
-        self::assertCount(1, $byScope);
-
-        $limited = $repo->findByCriteria(['include_expired' => true, 'limit' => 1]);
-        self::assertCount(1, $limited);
+        $decision = $engine->decide(identifier: 'brute_target@test');
+        self::assertTrue($decision->isDenied());
+        self::assertSame('brute_threshold_1m', $decision->reasonCode);
+        self::assertGreaterThanOrEqual(60, $decision->retryAfterSeconds);
     }
 
-    public function test_inventory_reconciler_smoke_empty(): void
+    public function test_throttle_engine_denies_credential_stuffing_combined_with_repeated_attempts(): void
     {
-        $sessions = new InMemoryAuthenticationSessionRepository();
-        $trustedDevices = new InMemoryTrustedDeviceRepository();
-        $reconciler = new InventoryReconciler($sessions, $trustedDevices);
+        $counter = new BruteForceCounter();
+        $bloom = new CredentialStuffingBloomFilter();
+        $engine = new ThrottleEngineV1($counter, $bloom);
+        $now = time();
 
-        $result = $reconciler->reconcile(null, true);
+        $key = 'identifier:stuffing@test';
+        $counter->increment($key, $now - 180);
+        $counter->increment($key, $now - 60);
 
-        self::assertSame(0, $result['scanned']);
-        self::assertSame(0, $result['updated']);
-        self::assertSame(0, $result['promoted']);
-        self::assertSame(0, $result['demoted']);
-        self::assertSame(0, $result['skipped_without_device']);
-        self::assertGreaterThan(0, $result['evaluated_at']);
-        self::assertInstanceOf(InventoryReconcilerInterface::class, $reconciler);
+        $decision = $engine->decide(
+            identifier: 'stuffing@test',
+            rawPassword: 'password',
+        );
+
+        self::assertTrue($decision->isDenied());
+        $reasons = explode('|', (string) $decision->reasonCode);
+        self::assertContains('credential_stuffing', $reasons);
+    }
+
+    public function test_throttle_decision_retry_after_seconds_is_correct_for_5m_window(): void
+    {
+        $counter = new BruteForceCounter();
+        $bloom = new CredentialStuffingBloomFilter();
+        $engine = new ThrottleEngineV1($counter, $bloom, thresholds: ['1m' => 100, '5m' => 2, '15m' => 100]);
+        $now = time();
+
+        $key = 'identifier:retry@test';
+        $counter->increment($key, $now - 120);
+        $counter->increment($key, $now - 10);
+
+        $decision = $engine->decide(identifier: 'retry@test');
+        self::assertTrue($decision->isDenied());
+        self::assertSame(300, $decision->retryAfterSeconds);
+    }
+
+    public function test_orchestrator_without_throttle_injected_stays_baseline_compat_no_op(): void
+    {
+        $allowAuthenticator = new class implements AuthenticatorInterface {
+            public function supports(AuthenticationOperationContext $context): bool
+            {
+                return true;
+            }
+
+            public function authenticate(AuthenticationOperationContext $context): AuthenticationDecision
+            {
+                return AuthenticationDecision::unauthenticated(['authenticator' => 'noop_auth']);
+            }
+        };
+
+        $resolver = $this->createMock(AuthenticatorResolverInterface::class);
+        $resolver->method('resolve')->willReturn([$allowAuthenticator]);
+
+        $orchestrator = new AuthenticationOrchestrator($resolver);
+
+        $request = new AuthenticationRequest(
+            requestId: 'throttle-noop-' . bin2hex(random_bytes(4)),
+            transport: 'runtime',
+            attributes: [
+                'credentials' => ['identifier' => 'clean@test', 'password' => 'Valid123!'],
+            ],
+        );
+        $ctx = new AuthenticationOperationContext('authenticate', $request);
+        $decision = $orchestrator->execute($ctx);
+
+        self::assertSame(AuthenticationDecisionStatus::Unauthenticated, $decision->status);
+        self::assertArrayNotHasKey('retry_after_seconds', $decision->metadata);
+        self::assertArrayNotHasKey('throttle_reason', $decision->metadata);
     }
 }

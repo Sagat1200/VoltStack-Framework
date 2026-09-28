@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Quantum\Auth\Support;
 
 use Quantum\Controllers\Security\Context\AuthenticationStrength;
+use Quantum\Auth\Runtime\AssuranceProfile;
+use Quantum\Auth\Runtime\AuthenticationMethodReferenceList;
 
 final class AuthenticationAssurance
 {
@@ -90,5 +92,44 @@ final class AuthenticationAssurance
             'anonymous', 'none', 'guest' => AuthenticationStrength::Anonymous,
             default => null,
         };
+    }
+
+    public static function composeAssuranceFromAmr(AuthenticationMethodReferenceList $amr): AssuranceProfile
+    {
+        $hasPwd = $amr->hasAmr('pwd') || $amr->hasAmr('password');
+        $hasSession = $amr->hasAmr('session');
+        $hasRemembered = $amr->hasAmr('remembered') || $amr->hasAmr('remember');
+        $hasMfa = $amr->hasAmr('mfa') || $amr->hasAmr('multi_factor') || $amr->hasAmr('otp');
+        $hasHwk = $amr->hasAmr('hwk') || $amr->hasAmr('hardware') || $amr->hasAmr('hardware_backed');
+        $hasPasskey = $amr->hasAmr('passkey') || $amr->hasAmr('biometric') || $amr->hasAmr('fido2');
+        $hasToken = $amr->hasAmr('token') || $amr->hasAmr('bearer');
+
+        if ($hasPasskey) {
+            return AssuranceProfile::HighestBiometricPasskey;
+        }
+        if ($hasHwk && ($hasMfa || $hasPwd)) {
+            return AssuranceProfile::HighHardwareBacked;
+        }
+        if ($hasMfa || ($hasPwd && $hasSession && $hasRemembered)) {
+            return AssuranceProfile::HighMfa;
+        }
+        if ($hasSession && $hasRemembered) {
+            return AssuranceProfile::MediumSessionRemembered;
+        }
+        if ($hasToken) {
+            return AssuranceProfile::MediumToken;
+        }
+        if ($hasPwd || $hasSession) {
+            return AssuranceProfile::LowPassword;
+        }
+        if ($amr->count() === 0) {
+            return AssuranceProfile::LowBasic;
+        }
+        return AssuranceProfile::Lowest;
+    }
+
+    public static function meetsMinimumAssurance(AssuranceProfile $actual, AssuranceProfile $required): bool
+    {
+        return $actual->value >= $required->value;
     }
 }

@@ -29,6 +29,8 @@ use Quantum\Auth\Exceptions\StaleAuthenticationSessionException;
 use Quantum\Auth\Exceptions\StepUpAuthenticationRequiredException;
 use Quantum\Auth\Identity\IdentityReference;
 use Quantum\Auth\Runtime\AuthenticationOperationContext;
+use Quantum\Auth\Runtime\AuthenticationPolicyEngine;
+use Quantum\Auth\Runtime\PolicyDecision;
 use Quantum\Auth\Sessions\AuthenticationSession;
 use Quantum\Auth\Sessions\AuthenticationSessionId;
 use Quantum\Auth\Sessions\AuthenticationSessionPublicId;
@@ -48,6 +50,7 @@ final class AuthManager implements AuthenticationManagerInterface
         private readonly AuthenticationSessionRepositoryInterface $sessions,
         private readonly TrustedDeviceRepositoryInterface $trustedDeviceRepository,
         private readonly ConfigRepository $config,
+        private readonly ?AuthenticationPolicyEngine $policyEngine = null,
     ) {}
 
     /**
@@ -477,6 +480,28 @@ final class AuthManager implements AuthenticationManagerInterface
             return [];
         }
 
+        if ($this->policyEngine !== null) {
+            $policyIdentity = $this->resolvePolicyIdentityFor($identity, $type);
+            $now = time();
+            $sessionCount = count($this->managedSessionsForIdentity($identity, $type));
+            $tdvCount = count($this->managedTrustedDevicesForIdentity($identity, $type));
+            $policyContext = [
+                'now' => $now,
+                'current_session_count' => $sessionCount,
+                'current_trusted_device_count' => $tdvCount,
+                'scope' => 'managed_devices',
+            ];
+            $state = $this->policyIdentitySecurityState($policyIdentity);
+            if ($state !== null) {
+                $policyContext['security_state'] = $state;
+            }
+            $decision = $this->policyEngine->evaluate('managed_devices', $policyIdentity, $policyContext);
+
+            if ($decision->isDenied()) {
+                return [];
+            }
+        }
+
         $this->sessions->purgeExpired();
         $this->trustedDeviceRepository->purgeExpired();
 
@@ -651,6 +676,27 @@ final class AuthManager implements AuthenticationManagerInterface
 
         if (! $this->canAdministrativelyManageManagedDeviceScope($context, $scope)) {
             return false;
+        }
+
+        if ($this->policyEngine !== null) {
+            $policyIdentity = $this->resolvePolicyIdentityFor($identity, $type);
+            $now = time();
+            $policyContext = [
+                'now' => $now,
+                'scope' => $scope,
+                'device_reference' => $deviceReference,
+                'current_session_count' => count($this->managedSessionsForIdentity($identity, $type)),
+                'current_trusted_device_count' => count($this->managedTrustedDevicesForIdentity($identity, $type)),
+            ];
+            $state = $this->policyIdentitySecurityState($policyIdentity);
+            if ($state !== null) {
+                $policyContext['security_state'] = $state;
+            }
+            $decision = $this->policyEngine->evaluate('revoke_managed_device', $policyIdentity, $policyContext);
+
+            if ($decision->isDenied()) {
+                return false;
+            }
         }
 
         $this->sessions->purgeExpired();
@@ -2233,6 +2279,49 @@ final class AuthManager implements AuthenticationManagerInterface
         $this->runtimeContext()->set(AuthenticationHttpState::ACTIVE_SESSION_ID_KEY, null);
         $this->queueLogoutCookie();
         $this->runtimeContext()->set(AuthenticationHttpState::PENDING_SESSION_HEADER_KEY, 'cleared');
+    }
+
+    /**
+     * @param string $identifier
+     * @param string $type
+     * @return \Quantum\Auth\Identity\IdentityInterface|null
+     */
+    private function resolvePolicyIdentityFor(string $identifier, string $type): ?\Quantum\Auth\Identity\IdentityInterface
+    {
+        try {
+            /** @var \Quantum\Auth\Contracts\IdentityProviderInterface $idp */
+            $idp = \VoltStack\Framework\App::container()
+                ->make(\Quantum\Auth\Contracts\IdentityProviderInterface::class);
+
+            return $idp->findByIdentifier($identifier);
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * @param \Quantum\Auth\Identity\IdentityInterface|null $identity
+     * @return string|null
+     */
+    private function policyIdentitySecurityState(?\Quantum\Auth\Identity\IdentityInterface $identity): ?string
+    {
+        if ($identity === null) {
+            return null;
+        }
+
+        try {
+            /** @var \Quantum\Auth\Contracts\IdentityProviderInterface $idp */
+            $idp = \VoltStack\Framework\App::container()
+                ->make(\Quantum\Auth\Contracts\IdentityProviderInterface::class);
+
+            if ($idp instanceof \Quantum\Auth\Contracts\MutableIdentityProviderInterface) {
+                return $idp->securityStateFor($identity)->value;
+            }
+        } catch (\Throwable) {
+            return null;
+        }
+
+        return null;
     }
 
     /**

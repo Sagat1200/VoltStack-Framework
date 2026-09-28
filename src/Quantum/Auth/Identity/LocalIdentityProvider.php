@@ -6,10 +6,12 @@ namespace Quantum\Auth\Identity;
 
 use Quantum\Auth\Contracts\IdentityProviderInterface;
 use Quantum\Auth\Contracts\MultiFactorIdentityProviderInterface;
+use Quantum\Auth\Contracts\MutableIdentityProviderInterface;
+use Quantum\Auth\Contracts\PasswordLifecycleAwareProviderInterface;
 use Quantum\Auth\Contracts\PasswordRehashingIdentityProviderInterface;
 use Quantum\Config\ConfigRepository;
 
-final class LocalIdentityProvider implements IdentityProviderInterface, PasswordRehashingIdentityProviderInterface, MultiFactorIdentityProviderInterface
+final class LocalIdentityProvider implements IdentityProviderInterface, PasswordRehashingIdentityProviderInterface, MultiFactorIdentityProviderInterface, MutableIdentityProviderInterface, PasswordLifecycleAwareProviderInterface
 {
     public function __construct(
         private readonly ConfigRepository $config,
@@ -89,7 +91,33 @@ final class LocalIdentityProvider implements IdentityProviderInterface, Password
                 continue;
             }
 
+            $oldHash = is_string($entry['password_hash'] ?? null) && trim((string) $entry['password_hash']) !== ''
+                ? (string) $entry['password_hash']
+                : null;
+
             $entry['password_hash'] = $passwordHash;
+
+            if (! isset($entry['password_created_at']) || ! is_int($entry['password_created_at']) || $entry['password_created_at'] <= 0) {
+                $entry['password_created_at'] = time();
+            }
+
+            $entry['password_last_rotated_at'] = time();
+
+            $history = isset($entry['password_rotation_history']) && is_array($entry['password_rotation_history'])
+                ? array_values(array_filter($entry['password_rotation_history'], static fn (mixed $v): bool => is_string($v) && trim((string) $v) !== ''))
+                : [];
+
+            if ($oldHash !== null) {
+                $history[] = $oldHash;
+            }
+
+            $historyDepth = $this->rotationHistoryDepth();
+            if ($historyDepth > 0 && count($history) > $historyDepth) {
+                $history = array_values(array_slice($history, -$historyDepth));
+            }
+
+            $entry['password_rotation_history'] = $history;
+
             $identities[$index] = $entry;
             $updated = true;
             break;
@@ -151,6 +179,252 @@ final class LocalIdentityProvider implements IdentityProviderInterface, Password
         }
 
         return hash_equals($configuredCode, trim($secondFactor));
+    }
+
+    public function passwordLifecycleMetadataFor(IdentityInterface $identity): array
+    {
+        $entry = $this->entryForIdentity($identity) ?? [];
+
+        $createdAt = isset($entry['password_created_at']) && is_int($entry['password_created_at']) && $entry['password_created_at'] > 0
+            ? $entry['password_created_at']
+            : 0;
+
+        $lastRotatedAt = isset($entry['password_last_rotated_at']) && is_int($entry['password_last_rotated_at']) && $entry['password_last_rotated_at'] > 0
+            ? $entry['password_last_rotated_at']
+            : 0;
+
+        $expiresAt = isset($entry['password_expires_at']) && is_int($entry['password_expires_at']) && $entry['password_expires_at'] > 0
+            ? $entry['password_expires_at']
+            : null;
+
+        $history = isset($entry['password_rotation_history']) && is_array($entry['password_rotation_history'])
+            ? array_values(array_filter($entry['password_rotation_history'], static fn (mixed $v): bool => is_string($v) && trim((string) $v) !== ''))
+            : [];
+
+        $failedAttempts = isset($entry['failed_attempts']) && is_int($entry['failed_attempts'])
+            ? max(0, $entry['failed_attempts'])
+            : 0;
+
+        $lockoutUntil = isset($entry['lockout_until']) && is_int($entry['lockout_until']) && $entry['lockout_until'] > 0
+            ? $entry['lockout_until']
+            : null;
+
+        $lastFailedAttemptAt = isset($entry['last_failed_attempt_at']) && is_int($entry['last_failed_attempt_at']) && $entry['last_failed_attempt_at'] > 0
+            ? $entry['last_failed_attempt_at']
+            : null;
+
+        try {
+            $securityState = $this->securityStateFor($identity);
+        } catch (\Throwable) {
+            $securityState = IdentitySecurityState::Active;
+        }
+
+        $securityStateReason = isset($entry['security_state_reason']) && is_string($entry['security_state_reason']) && trim($entry['security_state_reason']) !== ''
+            ? $entry['security_state_reason']
+            : null;
+
+        return [
+            'password_created_at' => $createdAt,
+            'password_last_rotated_at' => $lastRotatedAt,
+            'password_expires_at' => $expiresAt,
+            'password_rotation_history' => $history,
+            'failed_attempts' => $failedAttempts,
+            'lockout_until' => $lockoutUntil,
+            'last_failed_attempt_at' => $lastFailedAttemptAt,
+            'security_state' => $securityState->value,
+            'security_state_reason' => $securityStateReason,
+        ];
+    }
+
+    public function updateSecurityState(IdentityInterface $identity, IdentitySecurityState $state, ?string $reason = null): bool
+    {
+        return $this->updateEntry($identity, static function (array $entry) use ($state, $reason): array {
+            $entry['security_state'] = $state->value;
+            $entry['status'] = $state->value;
+            if ($reason !== null && trim($reason) !== '') {
+                $entry['security_state_reason'] = $reason;
+            } else {
+                unset($entry['security_state_reason']);
+            }
+
+            return $entry;
+        });
+    }
+
+    public function setSecondFactorRequired(IdentityInterface $identity, bool $required): bool
+    {
+        return $this->updateEntry($identity, static function (array $entry) use ($required): array {
+            $entry['mfa_required'] = $required;
+            $entry['second_factor_required'] = $required;
+
+            return $entry;
+        });
+    }
+
+    public function recordFailedAuthentication(IdentityInterface $identity): void
+    {
+        $threshold = $this->lockoutAttemptsThreshold();
+        $lockoutWindow = $this->lockoutWindowSeconds();
+
+        $this->updateEntry($identity, function (array $entry) use ($threshold, $lockoutWindow): array {
+            $lastFailedAt = isset($entry['last_failed_attempt_at']) && is_int($entry['last_failed_attempt_at'])
+                ? $entry['last_failed_attempt_at']
+                : 0;
+
+            $current = time();
+            $failedAttempts = isset($entry['failed_attempts']) && is_int($entry['failed_attempts'])
+                ? $entry['failed_attempts']
+                : 0;
+
+            if ($lockoutWindow > 0 && $lastFailedAt > 0 && ($current - $lastFailedAt) > $lockoutWindow) {
+                $failedAttempts = 0;
+            }
+
+            $failedAttempts++;
+            $entry['failed_attempts'] = $failedAttempts;
+            $entry['last_failed_attempt_at'] = $current;
+
+            if ($threshold > 0 && $lockoutWindow > 0 && $failedAttempts >= $threshold) {
+                $entry['lockout_until'] = $current + $lockoutWindow;
+                $entry['security_state'] = IdentitySecurityState::Locked->value;
+            }
+
+            return $entry;
+        });
+    }
+
+    public function clearFailedAuthentication(IdentityInterface $identity): void
+    {
+        $this->updateEntry($identity, static function (array $entry): array {
+            $entry['failed_attempts'] = 0;
+            unset($entry['last_failed_attempt_at']);
+            unset($entry['lockout_until']);
+            $state = strtolower(trim((string) ($entry['security_state'] ?? $entry['status'] ?? 'active')));
+            if ($state === IdentitySecurityState::Locked->value) {
+                $entry['security_state'] = IdentitySecurityState::Active->value;
+                $entry['status'] = IdentitySecurityState::Active->value;
+            }
+
+            return $entry;
+        });
+    }
+
+    public function isLockedOut(IdentityInterface $identity): bool
+    {
+        $entry = $this->entryForIdentity($identity);
+
+        if ($entry === null) {
+            return false;
+        }
+
+        $lockoutUntil = isset($entry['lockout_until']) && is_int($entry['lockout_until']) && $entry['lockout_until'] > 0
+            ? $entry['lockout_until']
+            : null;
+
+        if ($lockoutUntil !== null && time() < $lockoutUntil) {
+            return true;
+        }
+
+        $state = strtolower(trim((string) ($entry['security_state'] ?? $entry['status'] ?? 'active')));
+
+        return $state === IdentitySecurityState::Locked->value;
+    }
+
+    public function unlock(IdentityInterface $identity): bool
+    {
+        return $this->updateEntry($identity, static function (array $entry): array {
+            $entry['failed_attempts'] = 0;
+            unset($entry['lockout_until']);
+            unset($entry['last_failed_attempt_at']);
+            $state = strtolower(trim((string) ($entry['security_state'] ?? $entry['status'] ?? 'active')));
+            if ($state === IdentitySecurityState::Locked->value) {
+                $entry['security_state'] = IdentitySecurityState::Active->value;
+                $entry['status'] = IdentitySecurityState::Active->value;
+            }
+
+            return $entry;
+        });
+    }
+
+    /**
+     * @param callable(array<string, mixed>): array<string, mixed> $mutator
+     */
+    private function updateEntry(IdentityInterface $identity, callable $mutator): bool
+    {
+        $identities = $this->configuredIdentities();
+        $updated = false;
+
+        foreach ($identities as $index => $entry) {
+            if (! is_array($entry) || ! $this->matchesIdentity($entry, $identity)) {
+                continue;
+            }
+
+            $mutated = $mutator($entry);
+            if (! is_array($mutated)) {
+                break;
+            }
+
+            $identities[$index] = $mutated;
+            $updated = true;
+            break;
+        }
+
+        if (! $updated) {
+            return false;
+        }
+
+        $this->config->set('auth.providers.local.identities', $identities);
+
+        $storagePath = $this->storagePath();
+
+        if ($storagePath === null) {
+            return true;
+        }
+
+        return $this->persistStoredIdentities($storagePath, $identities);
+    }
+
+    private function lockoutAttemptsThreshold(): int
+    {
+        $value = $this->config->get('auth.password.lockout.attempts_threshold');
+
+        if ($value === null) {
+            return 0;
+        }
+
+        $value = is_numeric($value) ? (int) $value : -1;
+
+        return max(0, $value);
+    }
+
+    private function lockoutWindowSeconds(): int
+    {
+        $value = $this->config->get('auth.password.lockout.window_seconds');
+
+        if ($value === null) {
+            return 0;
+        }
+
+        $value = is_numeric($value) ? (int) $value : -1;
+
+        return max(0, $value);
+    }
+
+    private function rotationHistoryDepth(): int
+    {
+        $value = $this->config->get('auth.password.rotation_history_depth');
+
+        if ($value === null) {
+            $value = $this->config->get('auth.password.rotation_history_size');
+        }
+
+        if ($value === null) {
+            return 0;
+        }
+
+        $value = is_numeric($value) ? (int) $value : -1;
+
+        return max(0, $value);
     }
 
     /**

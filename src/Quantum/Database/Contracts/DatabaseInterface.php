@@ -6,6 +6,7 @@ namespace Quantum\Database\Contracts;
 
 use Quantum\Database\ORM\Contracts\EntityManagerInterface;
 use Quantum\Database\ORM\Contracts\EntityRepositoryInterface;
+use Quantum\Database\ORM\Contracts\RepositoryFactoryInterface;
 use Quantum\Database\Query\Builder\DatabaseQueryManager;
 use Quantum\Database\Query\Builder\SelectQueryBuilder;
 use Quantum\Database\Schema\SchemaManager;
@@ -32,4 +33,6 @@ interface DatabaseInterface
     public function entityManager(): EntityManagerInterface;
 
     public function repository(string $entityClass): EntityRepositoryInterface;
+
+    public function repositoryFactory(): RepositoryFactoryInterface;
 }

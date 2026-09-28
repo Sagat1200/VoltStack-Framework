@@ -126,6 +126,34 @@ final class SelectQueryBuilder
         return $this->runner->run($query)->first();
     }
 
+    public function count(?string $column = null): int
+    {
+        $builder = (new self(
+            $this->table,
+            $this->runner,
+            $this->compiler,
+            $this->connectionName,
+        ))->wherePredicates($this->predicates);
+
+        if ($column !== null && $column !== '' && $column !== '*') {
+            $builder->where($column, '!=', null);
+        }
+
+        return count($builder->get());
+    }
+
+    /**
+     * @param list<Predicate> $predicates
+     */
+    private function wherePredicates(array $predicates): self
+    {
+        foreach ($predicates as $predicate) {
+            $this->predicates[] = $predicate;
+        }
+
+        return $this;
+    }
+
     /**
      * @param array<string, mixed> $values
      */

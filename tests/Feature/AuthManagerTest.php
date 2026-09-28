@@ -8,7 +8,14 @@ use PHPUnit\Framework\TestCase;
 use Quantum\Auth\Contracts\AuthenticationManagerInterface;
 use Quantum\Auth\Contracts\AuthenticationSessionRepositoryInterface;
 use Quantum\Auth\Contracts\TrustedDeviceRepositoryInterface;
+use Quantum\Auth\Credentials\PasswordCredentials;
+use Quantum\Auth\Context\AuthenticationRequest;
+use Quantum\Auth\Devices\InMemoryTrustedDeviceRepository;
 use Quantum\Auth\Exceptions\IdentityNotEligibleException;
+use Quantum\Auth\Identity\LocalIdentityProvider;
+use Quantum\Auth\Authenticators\PasswordAuthenticator;
+use Quantum\Auth\Passwords\PasswordPolicy;
+use Quantum\Auth\Runtime\AuthenticationOperationContext;
 use Quantum\Auth\Sessions\AuthenticationSession;
 use Quantum\Auth\Support\AuthenticationHttpState;
 use Quantum\Config\ConfigRepository;
@@ -6073,5 +6080,52 @@ final class AuthManagerTest extends TestCase
         }
 
         return null;
+    }
+
+    public function test_it_returns_password_expired_decision_when_password_past_expiry_age(): void
+    {
+        $oldCreatedAt = time() - 120;
+        $config = new ConfigRepository([
+            'auth' => [
+                'password' => [
+                    'expires_after_seconds' => 60,
+                ],
+                'providers' => [
+                    'local' => [
+                        'identities' => [
+                            [
+                                'id' => 101,
+                                'identifier' => 'expired-password@example.com',
+                                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                                'password_created_at' => $oldCreatedAt,
+                                'type' => 'user',
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $provider = new LocalIdentityProvider($config);
+        $policy = new PasswordPolicy($config);
+        $trusted = new InMemoryTrustedDeviceRepository();
+        $authenticator = new PasswordAuthenticator($provider, $policy, $trusted, $config);
+
+        $decision = $authenticator->authenticate(new AuthenticationOperationContext(
+            operation: 'authenticate',
+            request: new AuthenticationRequest(
+                requestId: 'req-expired',
+                attributes: [
+                    'credentials' => [
+                        'identifier' => 'expired-password@example.com',
+                        'password' => 'secret-123',
+                    ],
+                ],
+            ),
+        ));
+
+        self::assertFalse($decision->isAuthenticated());
+        self::assertSame('password_expired', $decision->metadata['reason'] ?? null);
+        self::assertSame($oldCreatedAt, $decision->metadata['password_created_at'] ?? null);
     }
 }

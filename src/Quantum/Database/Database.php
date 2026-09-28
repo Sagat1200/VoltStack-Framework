@@ -13,6 +13,7 @@ use Quantum\Database\Migration\MigrationRepository;
 use Quantum\Database\Migration\MigrationRunner;
 use Quantum\Database\ORM\Contracts\EntityManagerInterface;
 use Quantum\Database\ORM\Contracts\EntityRepositoryInterface;
+use Quantum\Database\ORM\Contracts\RepositoryFactoryInterface;
 use Quantum\Database\Query\Builder\DatabaseQueryManager;
 use Quantum\Database\Query\Builder\SelectQueryBuilder;
 use Quantum\Database\Schema\SchemaManager;
@@ -29,6 +30,7 @@ final class Database implements DatabaseInterface
         private readonly MigrationRunner $migrations,
         private readonly TransactionManagerInterface $transactions,
         private readonly EntityManagerInterface $entityManager,
+        private readonly RepositoryFactoryInterface $repositoryFactory,
     ) {
     }
 
@@ -99,5 +101,10 @@ final class Database implements DatabaseInterface
     public function repository(string $entityClass): EntityRepositoryInterface
     {
         return $this->entityManager->repository($entityClass);
+    }
+
+    public function repositoryFactory(): RepositoryFactoryInterface
+    {
+        return $this->repositoryFactory;
     }
 }

@@ -159,6 +159,11 @@ final class EntityQuery
         return $this->manager->hydrateManaged($this->metadata, $row);
     }
 
+    public function count(?string $column = null): int
+    {
+        return $this->query->count($column);
+    }
+
     private function normalizeAssociationWhereValue(EntityAssociationMetadata $association, mixed $value): int|string|null
     {
         if ($value === null) {

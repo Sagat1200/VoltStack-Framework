@@ -11,6 +11,7 @@ use Quantum\Database\ORM\Attributes\Id;
 use Quantum\Database\ORM\Attributes\ManyToOne;
 use Quantum\Database\ORM\Attributes\OneToMany;
 use Quantum\Database\ORM\Attributes\Table;
+use Quantum\Database\ORM\CustomRepositoryRegistry;
 use Quantum\Database\ORM\Model;
 use Quantum\Database\ORM\Types\TypeRegistry;
 use BackedEnum;
@@ -29,6 +30,7 @@ final class EntityMetadataRegistry
 
     public function __construct(
         private readonly ?TypeRegistry $types = null,
+        private readonly ?CustomRepositoryRegistry $customRepositories = null,
     ) {
     }
 
@@ -121,7 +123,7 @@ final class EntityMetadataRegistry
             identifier: $identifier,
             associations: [],
             embeddeds: $embeddeds,
-            repositoryClass: $entityAttribute?->repository,
+            repositoryClass: $this->resolveRepositoryClass($entityClass, $entityAttribute?->repository),
         );
         $this->metadata[$entityClass] = $shell;
 
@@ -140,7 +142,7 @@ final class EntityMetadataRegistry
             identifier: $identifier,
             associations: $associations,
             embeddeds: $embeddeds,
-            repositoryClass: $entityAttribute?->repository,
+            repositoryClass: $this->resolveRepositoryClass($entityClass, $entityAttribute?->repository),
         );
         $this->metadata[$entityClass] = $final;
 
@@ -554,5 +556,20 @@ final class EntityMetadataRegistry
             DateTimeImmutable::class => 'datetime_immutable',
             default => null,
         };
+    }
+
+    /**
+     * @param class-string                 $entityClass
+     * @param class-string|null            $fromEntityAttribute
+     *
+     * @return class-string|null
+     */
+    private function resolveRepositoryClass(string $entityClass, ?string $fromEntityAttribute): ?string
+    {
+        if ($fromEntityAttribute !== null && $fromEntityAttribute !== '') {
+            return $fromEntityAttribute;
+        }
+
+        return $this->customRepositories?->repositoryFor($entityClass);
     }
 }

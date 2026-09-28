@@ -31,6 +31,9 @@ use Quantum\Database\Migration\MigrationDiscovery;
 use Quantum\Database\Migration\MigrationRepository;
 use Quantum\Database\Migration\MigrationRunner;
 use Quantum\Database\ORM\Contracts\EntityManagerInterface;
+use Quantum\Database\ORM\Contracts\RepositoryFactoryInterface;
+use Quantum\Database\ORM\CustomRepositoryRegistry;
+use Quantum\Database\ORM\EntityRepositoryFactory;
 use Quantum\Database\ORM\EntityManager;
 use Quantum\Database\ORM\IdentityMap;
 use Quantum\Database\ORM\Metadata\EntityMetadataRegistry;
@@ -102,8 +105,10 @@ final class DatabaseServiceProvider extends ServiceProvider
         $this->app->singleton(MigrationDiscovery::class);
         $this->app->singleton(DatabaseScopeLifecycleManager::class);
         $this->app->singleton(TypeRegistry::class);
+        $this->app->singleton(CustomRepositoryRegistry::class);
         $this->app->singleton(EntityMetadataRegistry::class, fn(Application $app): EntityMetadataRegistry => new EntityMetadataRegistry(
             $app->make(TypeRegistry::class),
+            $app->make(CustomRepositoryRegistry::class),
         ));
         $this->app->singleton(FactoryDiscovery::class);
         $this->app->singleton(FactoryRegistry::class, fn(Application $app): FactoryRegistry => new FactoryRegistry(
@@ -195,6 +200,10 @@ final class DatabaseServiceProvider extends ServiceProvider
             $app->make(TransactionManagerInterface::class),
         ));
         $this->app->scoped(EntityManagerInterface::class, fn(Application $app): EntityManagerInterface => $app->make(EntityManager::class));
+        $this->app->scoped(EntityRepositoryFactory::class, fn(Application $app): EntityRepositoryFactory => new EntityRepositoryFactory(
+            $app->make(EntityManagerInterface::class),
+        ));
+        $this->app->scoped(RepositoryFactoryInterface::class, fn(Application $app): RepositoryFactoryInterface => $app->make(EntityRepositoryFactory::class));
         $this->app->scoped(Database::class, fn(Application $app): Database => new Database(
             $app->make(DatabaseConfiguration::class),
             $app->make(ConnectionManagerInterface::class),
@@ -204,6 +213,7 @@ final class DatabaseServiceProvider extends ServiceProvider
             $app->make(MigrationRunner::class),
             $app->make(TransactionManagerInterface::class),
             $app->make(EntityManagerInterface::class),
+            $app->make(RepositoryFactoryInterface::class),
         ));
         $this->app->scoped(DatabaseInterface::class, fn(Application $app): DatabaseInterface => $app->make(Database::class));
         $this->app->scoped(SeederRunner::class, fn(Application $app): SeederRunner => new SeederRunner(

@@ -727,7 +727,7 @@ class Application extends Container
                     $shutdownHandlerRegistered = true;
                     $debugMode = (bool) ($app->config('app.debug', false) === true
                         || $app->config('exceptions.debug', false) === true
-                        || (\defined('APP_DEBUG') && APP_DEBUG === true));
+                        || (\defined('APP_DEBUG') && constant('APP_DEBUG') === true));
                     register_shutdown_function(static function () use ($debugMode): void {
                         $last = error_get_last();
                         if ($last === null) {
@@ -1059,6 +1059,7 @@ HTML;
     {
         if (is_string($provider)) {
             /** @var ServiceProvider $provider */
+            /** @var string $provider */
             $provider = $this->make($provider);
         }
 

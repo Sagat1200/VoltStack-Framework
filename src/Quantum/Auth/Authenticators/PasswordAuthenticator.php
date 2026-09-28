@@ -8,19 +8,27 @@ use Quantum\Auth\Context\AuthenticationContext;
 use Quantum\Auth\Contracts\AuthenticatorInterface;
 use Quantum\Auth\Contracts\IdentityProviderInterface;
 use Quantum\Auth\Contracts\MultiFactorIdentityProviderInterface;
+use Quantum\Auth\Contracts\MutableIdentityProviderInterface;
+use Quantum\Auth\Contracts\PasswordLifecycleAwareProviderInterface;
 use Quantum\Auth\Contracts\PasswordPolicyInterface;
 use Quantum\Auth\Contracts\PasswordRehashingIdentityProviderInterface;
 use Quantum\Auth\Contracts\TrustedDeviceRepositoryInterface;
 use Quantum\Auth\Credentials\PasswordCredentials;
 use Quantum\Auth\Decisions\AuthenticationDecision;
+use Quantum\Auth\Devices\InMemoryTrustedDeviceRepository;
 use Quantum\Auth\Devices\TrustedDeviceCredentialValidator;
+use Quantum\Auth\Exceptions\AccountSuspendedException;
+use Quantum\Auth\Exceptions\CredentialLockedException;
 use Quantum\Auth\Exceptions\IdentityNotEligibleException;
 use Quantum\Auth\Exceptions\InvalidSecondFactorException;
 use Quantum\Auth\Exceptions\InvalidCredentialsException;
+use Quantum\Auth\Exceptions\PasswordExpiredException;
+use Quantum\Auth\Exceptions\PasswordRotationRequiredException;
 use Quantum\Auth\Exceptions\SecondFactorNotAvailableException;
 use Quantum\Auth\Exceptions\SecondFactorRequiredException;
 use Quantum\Auth\Exceptions\StepUpAuthenticationRequiredException;
 use Quantum\Auth\Identity\IdentityReference;
+use Quantum\Auth\Identity\IdentitySecurityState;
 use Quantum\Auth\Runtime\AuthenticationOperationContext;
 use Quantum\Auth\Support\AuthenticationAssurance;
 use Quantum\Config\ConfigRepository;
@@ -31,8 +39,8 @@ final class PasswordAuthenticator implements AuthenticatorInterface
     public function __construct(
         private readonly IdentityProviderInterface $identityProvider,
         private readonly PasswordPolicyInterface $passwordPolicy,
-        private readonly TrustedDeviceRepositoryInterface $trustedDevices,
-        private readonly ConfigRepository $config,
+        private readonly TrustedDeviceRepositoryInterface $trustedDevices = new InMemoryTrustedDeviceRepository(),
+        private readonly ConfigRepository $config = new ConfigRepository(),
     ) {}
 
     public function supports(AuthenticationOperationContext $context): bool
@@ -71,6 +79,35 @@ final class PasswordAuthenticator implements AuthenticatorInterface
             ]);
         }
 
+        if ($this->identityProvider instanceof MutableIdentityProviderInterface
+            && $this->identityProvider->isLockedOut($identity)) {
+            $metadata = $this->identityProvider instanceof PasswordLifecycleAwareProviderInterface
+                ? $this->identityProvider->passwordLifecycleMetadataFor($identity)
+                : [];
+            $failedAttempts = is_int($metadata['failed_attempts'] ?? null) ? (int) $metadata['failed_attempts'] : 0;
+            $lockoutUntil = is_int($metadata['lockout_until'] ?? null) ? (int) $metadata['lockout_until'] : null;
+            $temporaryLockout = $lockoutUntil !== null && time() < $lockoutUntil;
+            $this->identityProvider->recordFailedAuthentication($identity);
+
+            if ($temporaryLockout) {
+                return AuthenticationDecision::rejected([
+                    'reason' => 'credential_locked',
+                    'authenticator' => 'password',
+                    'security_state' => IdentitySecurityState::Locked->value,
+                    'failed_attempts' => $failedAttempts,
+                    'lockout_until' => $lockoutUntil,
+                    'exception' => CredentialLockedException::class,
+                    'exception_arguments' => [
+                        'message' => 'Credential is temporarily locked due to repeated failed authentication attempts.',
+                        'code' => 0,
+                        'previous' => null,
+                        'lockoutUntil' => $lockoutUntil,
+                        'failedAttempts' => $failedAttempts,
+                    ],
+                ]);
+            }
+        }
+
         $securityState = $this->identityProvider->securityStateFor($identity);
 
         if (! $securityState->isEligibleForAuthentication()) {
@@ -79,16 +116,103 @@ final class PasswordAuthenticator implements AuthenticatorInterface
                 'authenticator' => 'password',
                 'security_state' => $securityState->value,
                 'exception' => IdentityNotEligibleException::class,
+                'exception_arguments' => [
+                    'state' => $securityState,
+                    'message' => 'Identity is not eligible for authentication.',
+                ],
             ]);
         }
 
         $passwordHash = $this->identityProvider->passwordHashFor($identity);
 
         if (! is_string($passwordHash) || $passwordHash === '' || ! $this->passwordPolicy->verify($credentials->password, $passwordHash)) {
+            if ($this->identityProvider instanceof MutableIdentityProviderInterface) {
+                $this->identityProvider->recordFailedAuthentication($identity);
+            }
+
             return AuthenticationDecision::rejected([
                 'reason' => 'invalid_credentials',
                 'authenticator' => 'password',
                 'exception' => InvalidCredentialsException::class,
+            ]);
+        }
+
+        $lifecycleMetadata = $this->identityProvider instanceof PasswordLifecycleAwareProviderInterface
+            ? $this->identityProvider->passwordLifecycleMetadataFor($identity)
+            : [];
+
+        if ($this->identityProvider instanceof MutableIdentityProviderInterface) {
+            $this->identityProvider->clearFailedAuthentication($identity);
+        }
+
+        $passwordCreatedAt = is_int($lifecycleMetadata['password_created_at'] ?? null) ? (int) $lifecycleMetadata['password_created_at'] : 0;
+        $passwordExpiresAt = is_int($lifecycleMetadata['password_expires_at'] ?? null) ? (int) $lifecycleMetadata['password_expires_at'] : null;
+        $rotationHistory = isset($lifecycleMetadata['password_rotation_history']) && is_array($lifecycleMetadata['password_rotation_history'])
+            ? array_values(array_filter($lifecycleMetadata['password_rotation_history'], static fn (mixed $v): bool => is_string($v)))
+            : [];
+
+        if ($passwordCreatedAt > 0 && $this->passwordPolicy->isExpired($passwordCreatedAt, $passwordExpiresAt)) {
+            $expiresAfter = null;
+            if ($passwordExpiresAt !== null && $passwordCreatedAt > 0) {
+                $expiresAfter = $passwordExpiresAt - $passwordCreatedAt;
+            }
+
+            return AuthenticationDecision::rejected([
+                'reason' => 'password_expired',
+                'authenticator' => 'password',
+                'password_created_at' => $passwordCreatedAt,
+                'password_expires_at' => $passwordExpiresAt,
+                'exception' => PasswordExpiredException::class,
+                'exception_arguments' => [
+                    'message' => 'Password has expired and must be rotated before continuing.',
+                    'code' => 0,
+                    'previous' => null,
+                    'passwordCreatedAt' => $passwordCreatedAt,
+                    'expiresAt' => $passwordExpiresAt,
+                    'expiresAfterSeconds' => $expiresAfter,
+                ],
+            ]);
+        }
+
+        if ($passwordCreatedAt > 0 && $this->passwordPolicy->needsRotation($passwordCreatedAt)) {
+            $age = time() - $passwordCreatedAt;
+            $window = $this->rotationWindowSeconds();
+
+            return AuthenticationDecision::rejected([
+                'reason' => 'password_rotation_required',
+                'authenticator' => 'password',
+                'password_created_at' => $passwordCreatedAt,
+                'password_age_seconds' => $age,
+                'rotation_window_seconds' => $window,
+                'exception' => PasswordRotationRequiredException::class,
+                'exception_arguments' => [
+                    'message' => 'Password rotation is required before authentication can continue.',
+                    'code' => 0,
+                    'previous' => null,
+                    'passwordCreatedAt' => $passwordCreatedAt,
+                    'rotationWindowSeconds' => $window,
+                    'ageSeconds' => max(0, $age),
+                ],
+            ]);
+        }
+
+        if ($rotationHistory !== [] && ! $this->passwordPolicy->checkAgainstHistory($credentials->password, $rotationHistory)) {
+            $age = $passwordCreatedAt > 0 ? time() - $passwordCreatedAt : 0;
+
+            return AuthenticationDecision::rejected([
+                'reason' => 'password_matches_rotation_history',
+                'authenticator' => 'password',
+                'password_created_at' => $passwordCreatedAt,
+                'password_age_seconds' => max(0, $age),
+                'exception' => PasswordRotationRequiredException::class,
+                'exception_arguments' => [
+                    'message' => 'New password matches a recently used password; rotation must use a new value.',
+                    'code' => 0,
+                    'previous' => null,
+                    'passwordCreatedAt' => max(0, $passwordCreatedAt),
+                    'rotationWindowSeconds' => 0,
+                    'ageSeconds' => max(0, $age),
+                ],
             ]);
         }
 
@@ -290,6 +414,19 @@ final class PasswordAuthenticator implements AuthenticatorInterface
     private function rotateTrustedDeviceOnChallengeReduction(): bool
     {
         return (bool) $this->config->get('auth.trusted_devices.rotation.on_challenge_reduction', true);
+    }
+
+    private function rotationWindowSeconds(): int
+    {
+        $value = $this->config->get('auth.password.min_rotation_interval_seconds');
+
+        if ($value === null) {
+            return 0;
+        }
+
+        $value = is_numeric($value) ? (int) $value : -1;
+
+        return max(0, $value);
     }
 
     private function deviceReferenceSalt(): string

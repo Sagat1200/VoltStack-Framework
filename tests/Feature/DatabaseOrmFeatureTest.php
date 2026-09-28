@@ -15,7 +15,10 @@ use Quantum\Database\ORM\Attributes\Entity;
 use Quantum\Database\ORM\Attributes\Id;
 use Quantum\Database\ORM\Attributes\ManyToOne;
 use Quantum\Database\ORM\Attributes\OneToMany;
+use Quantum\Database\ORM\Attributes\RepositoryFor;
 use Quantum\Database\ORM\Contracts\EntityRepositoryInterface;
+use Quantum\Database\ORM\Contracts\RepositoryFactoryInterface;
+use Quantum\Database\ORM\CustomRepositoryRegistry;
 use Quantum\Database\ORM\EntityRepository;
 use Quantum\Database\ORM\EntityState;
 use Quantum\Database\ORM\Metadata\EntityAssociationMetadata;
@@ -533,6 +536,99 @@ final class DatabaseOrmFeatureTest extends TestCase
         }
     }
 
+    public function test_repository_factory_with_di_typed_and_ergonomic_helpers(): void
+    {
+        $app = $this->makeApp();
+
+        $customRepoRegistry = $app->make(CustomRepositoryRegistry::class);
+        $customRepoRegistry->register(OrmProductRepository::class);
+        self::assertSame(OrmProductRepository::class, $customRepoRegistry->repositoryFor(OrmProduct::class));
+
+        $scope = $app->make(ScopeManager::class);
+        $scope->begin(Request::create('/database/orm/repository-factory', 'GET'));
+
+        try {
+            $database = $app->make(DatabaseInterface::class);
+            $database->schema()->create('orm_tags', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+                $table->string('slug');
+                $table->boolean('visible');
+            }, true);
+
+            $registry = $app->make(EntityMetadataRegistry::class);
+            $productMeta = $registry->for(OrmProduct::class);
+            self::assertSame(OrmProductRepository::class, $productMeta->repositoryClass);
+
+            $factory = $app->make(RepositoryFactoryInterface::class);
+            $userRepo = $factory->repositoryFor(OrmUser::class);
+            self::assertInstanceOf(OrmUserRepository::class, $userRepo);
+            self::assertSame(OrmUser::class, $userRepo->getEntityClass());
+            self::assertSame($database->entityManager(), $userRepo->getEntityManager());
+
+            $dbRepoFactory = $database->repositoryFactory();
+            self::assertSame($factory, $dbRepoFactory);
+
+            $tagRepo = $factory->repositoryFor(OrmTag::class);
+            self::assertInstanceOf(EntityRepository::class, $tagRepo);
+
+            $php = new OrmTag();
+            $php->name = 'PHP';
+            $php->slug = 'php';
+            $php->visible = true;
+
+            $framework = new OrmTag();
+            $framework->name = 'Framework';
+            $framework->slug = 'framework';
+            $framework->visible = true;
+
+            $hidden = new OrmTag();
+            $hidden->name = 'Hidden Draft';
+            $hidden->slug = 'hidden-draft';
+            $hidden->visible = false;
+
+            $tagRepo->save($php);
+            $tagRepo->save($framework);
+            $tagRepo->save($hidden, flush: true);
+            self::assertNotNull($php->id);
+            self::assertNotNull($framework->id);
+            self::assertNotNull($hidden->id);
+
+            $rawCount = $database->table('orm_tags')->count();
+            self::assertSame(3, $rawCount);
+
+            $allViaCount = $tagRepo->count();
+            self::assertSame(3, $allViaCount);
+
+            self::assertTrue($tagRepo->exists(['slug' => 'php']));
+            self::assertFalse($tagRepo->exists(['slug' => 'missing']));
+            self::assertSame(2, $tagRepo->count(['visible' => true]));
+            self::assertSame(1, $tagRepo->count(['visible' => false]));
+
+            $query = $database->entityManager()->query(OrmTag::class);
+            self::assertSame(2, $query->where('visible', true)->count());
+
+            $reloadedPhp = $tagRepo->findOneBy(['slug' => 'php']);
+            self::assertInstanceOf(OrmTag::class, $reloadedPhp);
+            self::assertSame('PHP', $reloadedPhp->name);
+
+            $tagRepo->delete($hidden, flush: true);
+            self::assertSame(2, $tagRepo->count());
+            self::assertFalse($tagRepo->exists(['slug' => 'hidden-draft']));
+
+            $byName = $tagRepo->findBy([], ['name' => 'asc']);
+            self::assertCount(2, $byName);
+            self::assertSame('Framework', $byName[0]->name);
+            self::assertSame('PHP', $byName[1]->name);
+
+            $customProductRepo = $factory->repositoryFor(OrmProduct::class);
+            self::assertInstanceOf(OrmProductRepository::class, $customProductRepo);
+            self::assertSame('sku-based-lookup', $customProductRepo->label());
+        } finally {
+            $scope->end();
+        }
+    }
+
     private function deleteDirectory(string $path): void
     {
         if (! is_dir($path)) {
@@ -699,4 +795,29 @@ final class OrmProduct
 
     #[Embedded(class: OrmDimensions::class, prefix: 'dim_')]
     public ?OrmDimensions $dimensions = null;
+}
+
+#[Entity]
+final class OrmTag
+{
+    #[Id]
+    public ?int $id = null;
+
+    #[Column]
+    public string $name;
+
+    #[Column]
+    public string $slug;
+
+    #[Column]
+    public bool $visible = false;
+}
+
+#[RepositoryFor(OrmProduct::class)]
+final class OrmProductRepository extends EntityRepository
+{
+    public function label(): string
+    {
+        return 'sku-based-lookup';
+    }
 }

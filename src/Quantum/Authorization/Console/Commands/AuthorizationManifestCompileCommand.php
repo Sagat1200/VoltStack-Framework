@@ -90,7 +90,7 @@ final class AuthorizationManifestCompileCommand extends Command
                             '  <error>[SKIP] %s %s -> %s: %s</error>',
                             $method,
                             $route->path(),
-                            $definition?->action() ?? 'inline',
+                            $this->formatActionForOutput($definition),
                             $exception->getMessage(),
                         ));
                     }
@@ -143,7 +143,7 @@ final class AuthorizationManifestCompileCommand extends Command
 
     private function controllerDefinitionFromRoute(Route $route): ?ControllerDefinition
     {
-        $action = $route->definition()->action;
+        $action = $route->definition()->action();
 
         if ($action === null || $action === '') {
             return null;
@@ -154,6 +154,28 @@ final class AuthorizationManifestCompileCommand extends Command
         } catch (\Throwable) {
             return null;
         }
+    }
+
+    private function formatActionForOutput(?ControllerDefinition $definition): string
+    {
+        if ($definition === null) {
+            return 'inline';
+        }
+
+        $action = $definition->action();
+
+        if (is_string($action)) {
+            return $action;
+        }
+
+        if (is_array($action)) {
+            $class = is_object($action[0] ?? null) ? get_class($action[0]) : (string) ($action[0] ?? '');
+            $method = (string) ($action[1] ?? '');
+
+            return trim($class . '::' . $method, ':');
+        }
+
+        return 'callable';
     }
 
     /**

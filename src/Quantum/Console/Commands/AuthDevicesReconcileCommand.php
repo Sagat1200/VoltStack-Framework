@@ -4,9 +4,7 @@ declare(strict_types=1);
 
 namespace Quantum\Console\Commands;
 
-use Quantum\Auth\Contracts\AuthenticationSessionRepositoryInterface;
-use Quantum\Auth\Contracts\TrustedDeviceRepositoryInterface;
-use Quantum\Auth\Sessions\AuthenticationSession;
+use Quantum\Auth\Contracts\InventoryReconcilerInterface;
 use Quantum\Console\Command;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
@@ -45,83 +43,11 @@ final class AuthDevicesReconcileCommand extends Command
     public function handle(Input $input, Output $output): int
     {
         $app = $this->bootstrapApplication();
-        $sessions = $app->make(AuthenticationSessionRepositoryInterface::class);
-        $trustedDevices = $app->make(TrustedDeviceRepositoryInterface::class);
         $now = $this->resolveNow($input);
         $dryRun = $input->hasOption('dry-run');
 
-        $trustedIndex = [];
-
-        foreach ($trustedDevices->all($now) as $device) {
-            $trustedIndex[$this->trustedDeviceKey(
-                $device->reference->type,
-                $device->reference->identifier->value,
-                $device->deviceReference,
-            )] = $device->publicId->value;
-        }
-
-        $scanned = 0;
-        $updated = 0;
-        $promoted = 0;
-        $demoted = 0;
-        $skippedExpired = 0;
-        $skippedWithoutDevice = 0;
-
-        foreach ($sessions->all() as $session) {
-            if ($session->isExpired($now)) {
-                $skippedExpired++;
-                continue;
-            }
-
-            $scanned++;
-            $deviceReference = $this->sessionDeviceReference($session);
-
-            if ($deviceReference === null) {
-                $skippedWithoutDevice++;
-                continue;
-            }
-
-            $trustedDevicePublicId = $trustedIndex[$this->trustedDeviceKey(
-                $session->reference->type,
-                $session->reference->identifier->value,
-                $deviceReference,
-            )] ?? null;
-
-            $expectedTrusted = $trustedDevicePublicId !== null;
-            $currentTrusted = $this->sessionTrustState($session) === 'trusted';
-            $currentTrustedDevicePublicId = $this->sessionTrustedDevicePublicId($session);
-            $currentCredentialPresent = (bool) ($session->attributes['trusted_device_credential_present'] ?? false);
-
-            if (
-                $currentTrusted === $expectedTrusted
-                && $currentTrustedDevicePublicId === $trustedDevicePublicId
-                && $currentCredentialPresent === $expectedTrusted
-            ) {
-                continue;
-            }
-
-            $updated++;
-            $promoted += $expectedTrusted ? 1 : 0;
-            $demoted += $expectedTrusted ? 0 : 1;
-
-            if ($dryRun) {
-                continue;
-            }
-
-            $sessions->touch(new AuthenticationSession(
-                id: $session->id,
-                identity: $session->identity,
-                reference: $session->reference,
-                method: $session->method,
-                issuedAt: $session->issuedAt,
-                expiresAt: $session->expiresAt,
-                attributes: array_merge($session->attributes, [
-                    'session_device_trust_state' => $expectedTrusted ? 'trusted' : 'unknown',
-                    'trusted_device_public_id' => $trustedDevicePublicId,
-                    'trusted_device_credential_present' => $expectedTrusted,
-                ]),
-            ));
-        }
+        $reconciler = $app->make(InventoryReconcilerInterface::class);
+        $result = $reconciler->reconcile($now, $dryRun);
 
         if ($input->hasOption('verbose')) {
             $sessionDriver = (string) $app->config('auth.session.driver', 'memory');
@@ -132,7 +58,7 @@ final class AuthDevicesReconcileCommand extends Command
 
             $output->writeln(sprintf('Driver sesiones: %s', $sessionDriver));
             $output->writeln(sprintf('Driver trusted devices: %s', $trustedDriver));
-            $output->writeln(sprintf('Evaluado en: %d', $now ?? time()));
+            $output->writeln(sprintf('Evaluado en: %d', $result['evaluated_at']));
             $output->writeln(sprintf('Dry run: %s', $dryRun ? 'si' : 'no'));
             $output->writeln();
         }
@@ -140,12 +66,12 @@ final class AuthDevicesReconcileCommand extends Command
         $output->writeln($dryRun
             ? 'Reconciliacion de trusted devices calculada correctamente (dry-run).'
             : 'Reconciliacion de trusted devices ejecutada correctamente.');
-        $output->writeln(sprintf('  Sesiones activas escaneadas: %d', $scanned));
-        $output->writeln(sprintf('  Sesiones reconciliadas: %d', $updated));
-        $output->writeln(sprintf('  Promovidas a trusted: %d', $promoted));
-        $output->writeln(sprintf('  Degradadas a unknown: %d', $demoted));
-        $output->writeln(sprintf('  Sesiones expiradas omitidas: %d', $skippedExpired));
-        $output->writeln(sprintf('  Sesiones sin device_reference omitidas: %d', $skippedWithoutDevice));
+        $output->writeln(sprintf('  Sesiones activas escaneadas: %d', $result['scanned']));
+        $output->writeln(sprintf('  Sesiones reconciliadas: %d', $result['updated']));
+        $output->writeln(sprintf('  Promovidas a trusted: %d', $result['promoted']));
+        $output->writeln(sprintf('  Degradadas a unknown: %d', $result['demoted']));
+        $output->writeln(sprintf('  Sesiones expiradas omitidas: %d', $result['skipped_expired']));
+        $output->writeln(sprintf('  Sesiones sin device_reference omitidas: %d', $result['skipped_without_device']));
 
         return 0;
     }
@@ -159,37 +85,5 @@ final class AuthDevicesReconcileCommand extends Command
         }
 
         return null;
-    }
-
-    private function sessionDeviceReference(AuthenticationSession $session): ?string
-    {
-        $value = $session->attributes['session_device_reference'] ?? null;
-
-        return is_string($value) && trim($value) !== ''
-            ? trim($value)
-            : null;
-    }
-
-    private function sessionTrustState(AuthenticationSession $session): string
-    {
-        $value = $session->attributes['session_device_trust_state'] ?? null;
-
-        return is_string($value) && trim($value) !== ''
-            ? trim($value)
-            : 'unknown';
-    }
-
-    private function sessionTrustedDevicePublicId(AuthenticationSession $session): ?string
-    {
-        $value = $session->attributes['trusted_device_public_id'] ?? null;
-
-        return is_string($value) && trim($value) !== ''
-            ? trim($value)
-            : null;
-    }
-
-    private function trustedDeviceKey(string $type, string $identifier, string $deviceReference): string
-    {
-        return strtolower(trim($type)) . '|' . trim($identifier) . '|' . trim($deviceReference);
     }
 }

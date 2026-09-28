@@ -275,17 +275,17 @@ final class BloqueCTest extends TestCase
         ));
 
         self::assertTrue($decision->isAuthenticated());
-        $ctx = $decision->context();
+        $ctx = $decision->context;
         self::assertNotNull($ctx);
         self::assertSame('bearer', $ctx->method);
         self::assertSame('bearer-user@example.test', $ctx->reference->identifier->value);
-        self::assertSame(['api.read', 'api.write'], $decision->metadata()['access_token_scopes'] ?? null);
+        self::assertSame(['api.read', 'api.write'], $decision->metadata['access_token_scopes'] ?? null);
     }
 
     public function test_bearer_authenticator_rejects_expired_and_revoked(): void
     {
         $config = new ConfigRepository();
-        $config->set('auth.identities', [
+        $config->set('auth.providers.local.identities', [
             [
                 'identifier' => 'expired@example.test',
                 'type' => 'user',
@@ -315,7 +315,7 @@ final class BloqueCTest extends TestCase
             ),
         ));
         self::assertFalse($expiredDecision->isAuthenticated());
-        self::assertTrue($expiredDecision->metadata()['token_expired'] ?? false);
+        self::assertTrue($expiredDecision->metadata['token_expired'] ?? false);
 
         $activeId = TokenId::generateAccess();
         $tokens->saveAccessToken(new OpaqueAccessToken(
@@ -334,7 +334,7 @@ final class BloqueCTest extends TestCase
             ),
         ));
         self::assertFalse($revokedDecision->isAuthenticated());
-        self::assertTrue($revokedDecision->metadata()['token_revoked'] ?? false);
+        self::assertTrue($revokedDecision->metadata['token_revoked'] ?? false);
     }
 
     public function test_in_memory_lists_by_identity(): void

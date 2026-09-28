@@ -7,7 +7,11 @@ namespace Quantum\Authorization;
 use Quantum\Auth\Contracts\AuthenticationManagerInterface;
 use Quantum\Authorization\Ability\AbilityNormalizer;
 use Quantum\Authorization\Ability\AbilityRegistry;
+use Quantum\Authorization\Authority\InMemoryAuthorityRepository;
+use Quantum\Authorization\Console\Commands\AuthorizationManifestClearCommand;
+use Quantum\Authorization\Console\Commands\AuthorizationManifestCompileCommand;
 use Quantum\Authorization\Contracts\AbilityNormalizerInterface;
+use Quantum\Authorization\Contracts\AuthorityRepositoryInterface;
 use Quantum\Authorization\Contracts\AuthorizationContextFactoryInterface;
 use Quantum\Authorization\Contracts\AuthorizationManagerInterface;
 use Quantum\Authorization\Contracts\AuthorizationMetadataResolverInterface;
@@ -20,9 +24,13 @@ use Quantum\Authorization\Core\AuthorizationManager;
 use Quantum\Authorization\Core\AuthorizationPlanner;
 use Quantum\Authorization\Core\AuthorizationRequestFactory;
 use Quantum\Authorization\Core\Stages\GateAuthorizationStage;
+use Quantum\Authorization\Core\Stages\ManifestRequirementsEnforcementStage;
 use Quantum\Authorization\Core\Stages\PolicyAuthorizationStage;
 use Quantum\Authorization\Decision\DecisionManager;
 use Quantum\Authorization\Gate\GateRegistry;
+use Quantum\Authorization\Manifest\Contracts\AuthorizationManifestStoreInterface;
+use Quantum\Authorization\Manifest\FilesystemAuthorizationManifestStore;
+use Quantum\Authorization\Manifest\InMemoryAuthorizationManifestStore;
 use Quantum\Authorization\Metadata\AuthorizationMetadataResolver;
 use Quantum\Authorization\Metadata\MetadataAuthorizationContextEnricher;
 use Quantum\Authorization\Policy\PolicyDispatcher;
@@ -43,6 +51,8 @@ final class AuthorizationServiceProvider extends ServiceProvider
     {
         $this->mergeDefaultConfiguration();
         $this->registerMetadataSchemas();
+        $this->registerManifestStore();
+        $this->registerAuthorityRepository();
 
         $this->app->singleton(AbilityRegistry::class);
         $this->app->singleton(GateRegistry::class);
@@ -75,6 +85,7 @@ final class AuthorizationServiceProvider extends ServiceProvider
             AuthorizationMetadataResolverInterface::class,
             fn(Application $app): AuthorizationMetadataResolverInterface => new AuthorizationMetadataResolver(
                 $app->make(\Quantum\Metadata\Contracts\MetadataEngineInterface::class),
+                $this->resolveManifestStore($app),
             ),
         );
         $this->app->scoped(
@@ -87,6 +98,16 @@ final class AuthorizationServiceProvider extends ServiceProvider
             return new AuthorizationContextFactory($app->make(AuthenticationManagerInterface::class));
         });
         $this->app->scoped(AuthorizationRequestFactory::class);
+        $this->app->scoped(ManifestRequirementsEnforcementStage::class, function (Application $app): ManifestRequirementsEnforcementStage {
+            $failClosed = $app->config('authorization.fail_closed', true);
+            $evaluateConcretely = $app->config('authorization.authority.evaluate_requirements_concretely', false);
+
+            return new ManifestRequirementsEnforcementStage(
+                is_bool($failClosed) ? $failClosed : (bool) $failClosed,
+                $this->resolveAuthorityRepository($app),
+                is_bool($evaluateConcretely) ? $evaluateConcretely : (bool) $evaluateConcretely,
+            );
+        });
         $this->app->scoped(GateAuthorizationStage::class, function (Application $app): GateAuthorizationStage {
             $failClosed = $app->config('authorization.fail_closed', true);
 
@@ -112,6 +133,7 @@ final class AuthorizationServiceProvider extends ServiceProvider
                     $app->make(AuthorizationRequestEnricherInterface::class),
                 ],
                 [
+                    $app->make(ManifestRequirementsEnforcementStage::class),
                     $app->make(GateAuthorizationStage::class),
                     $app->make(PolicyAuthorizationStage::class),
                 ],
@@ -128,6 +150,65 @@ final class AuthorizationServiceProvider extends ServiceProvider
             AuthorizationManagerInterface::class,
             fn(Application $app): AuthorizationManagerInterface => $app->make(AuthorizationManager::class),
         );
+    }
+
+    private function registerManifestStore(): void
+    {
+        $this->app->singleton(
+            AuthorizationManifestStoreInterface::class,
+            function (Application $app): AuthorizationManifestStoreInterface {
+                $manifestPath = $app->config('authorization.manifest.path');
+
+                if (is_string($manifestPath) && trim($manifestPath) !== '') {
+                    return new FilesystemAuthorizationManifestStore($manifestPath);
+                }
+
+                return new InMemoryAuthorizationManifestStore();
+            },
+        );
+    }
+
+    private function resolveManifestStore(Application $app): ?AuthorizationManifestStoreInterface
+    {
+        $enabled = $app->config('authorization.manifest.enabled', true);
+
+        if (! $this->booleanOf($enabled)) {
+            return null;
+        }
+
+        try {
+            return $app->make(AuthorizationManifestStoreInterface::class);
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    private function registerAuthorityRepository(): void
+    {
+        $this->app->singleton(
+            AuthorityRepositoryInterface::class,
+            function (Application $app): AuthorityRepositoryInterface {
+                $config = $app->config('authorization.authority.grants', []);
+                $seed = is_array($config) ? $config : [];
+
+                return new InMemoryAuthorityRepository($seed);
+            },
+        );
+    }
+
+    private function resolveAuthorityRepository(Application $app): ?AuthorityRepositoryInterface
+    {
+        $enabled = $app->config('authorization.authority.enabled', true);
+
+        if (! $this->booleanOf($enabled)) {
+            return null;
+        }
+
+        try {
+            return $app->make(AuthorityRepositoryInterface::class);
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     private function mergeDefaultConfiguration(): void
@@ -178,6 +259,26 @@ final class AuthorizationServiceProvider extends ServiceProvider
         return $merged;
     }
 
+    private function booleanOf(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        return (bool) $value;
+    }
+
+    /**
+     * @return list<class-string<\Quantum\Console\Command>>
+     */
+    public function commands(): array
+    {
+        return [
+            AuthorizationManifestCompileCommand::class,
+            AuthorizationManifestClearCommand::class,
+        ];
+    }
+
     /**
      * @return array<string, mixed>
      */
@@ -188,6 +289,15 @@ final class AuthorizationServiceProvider extends ServiceProvider
             'fail_closed' => true,
             'abilities' => [],
             'policies' => [],
+            'manifest' => [
+                'enabled' => true,
+                'path' => null,
+            ],
+            'authority' => [
+                'enabled' => true,
+                'evaluate_requirements_concretely' => false,
+                'grants' => [],
+            ],
         ];
     }
 }

@@ -6,6 +6,7 @@ namespace Quantum\Database\Integration;
 
 use Quantum\Console\Commands\DatabaseMigrateCommand;
 use Quantum\Console\Commands\DatabaseRollbackCommand;
+use Quantum\Console\Commands\DatabaseSeedCommand;
 use Quantum\Console\Commands\DatabaseStatusCommand;
 use Quantum\Database\Database;
 use Quantum\Database\Config\DatabaseConfiguration;
@@ -24,6 +25,8 @@ use Quantum\Database\Driver\DriverRegistry;
 use Quantum\Database\Driver\PdoDriver;
 use Quantum\Database\Execution\QueryExecutor;
 use Quantum\Database\Execution\StatementExecutor;
+use Quantum\Database\Factories\FactoryDiscovery;
+use Quantum\Database\Factories\FactoryRegistry;
 use Quantum\Database\Migration\MigrationDiscovery;
 use Quantum\Database\Migration\MigrationRepository;
 use Quantum\Database\Migration\MigrationRunner;
@@ -45,6 +48,8 @@ use Quantum\Database\Runtime\DatabaseExecutionScopeFactory;
 use Quantum\Database\Runtime\DatabaseScopeLifecycleManager;
 use Quantum\Database\Schema\Compiler\SchemaCompiler;
 use Quantum\Database\Schema\SchemaManager;
+use Quantum\Database\Seeders\SeederDiscovery;
+use Quantum\Database\Seeders\SeederRunner;
 use Quantum\Database\Telemetry\DatabaseTelemetryEmitter;
 use Quantum\Database\Transaction\TransactionManager;
 use RuntimeException;
@@ -100,6 +105,11 @@ final class DatabaseServiceProvider extends ServiceProvider
         $this->app->singleton(EntityMetadataRegistry::class, fn(Application $app): EntityMetadataRegistry => new EntityMetadataRegistry(
             $app->make(TypeRegistry::class),
         ));
+        $this->app->singleton(FactoryDiscovery::class);
+        $this->app->singleton(FactoryRegistry::class, fn(Application $app): FactoryRegistry => new FactoryRegistry(
+            $app->make(FactoryDiscovery::class),
+        ));
+        $this->app->singleton(SeederDiscovery::class);
         $this->app->singleton(DatabaseTelemetryEmitter::class, fn(Application $app): DatabaseTelemetryEmitter => new DatabaseTelemetryEmitter(
             $app->make(\Quantum\Telemetry\Contracts\TelemetryManagerInterface::class),
             $app->make(DatabaseConfiguration::class),
@@ -196,6 +206,10 @@ final class DatabaseServiceProvider extends ServiceProvider
             $app->make(EntityManagerInterface::class),
         ));
         $this->app->scoped(DatabaseInterface::class, fn(Application $app): DatabaseInterface => $app->make(Database::class));
+        $this->app->scoped(SeederRunner::class, fn(Application $app): SeederRunner => new SeederRunner(
+            $app,
+            $app->make(SeederDiscovery::class),
+        ));
 
         $this->app->onScopeStart(function (Application $app, RuntimeContext $context): void {
             $app->make(DatabaseScopeLifecycleManager::class)->start($context);
@@ -212,6 +226,7 @@ final class DatabaseServiceProvider extends ServiceProvider
             DatabaseStatusCommand::class,
             DatabaseMigrateCommand::class,
             DatabaseRollbackCommand::class,
+            DatabaseSeedCommand::class,
         ];
     }
 }

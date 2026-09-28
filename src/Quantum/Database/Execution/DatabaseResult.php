@@ -4,7 +4,15 @@ declare(strict_types=1);
 
 namespace Quantum\Database\Execution;
 
-final readonly class DatabaseResult
+use Countable;
+use IteratorAggregate;
+use ArrayIterator;
+use Traversable;
+
+/**
+ * @implements IteratorAggregate<int, array<string, mixed>>
+ */
+final readonly class DatabaseResult implements Countable, IteratorAggregate
 {
     /**
      * @param list<array<string, mixed>> $rows
@@ -46,5 +54,19 @@ final readonly class DatabaseResult
     public function isEmpty(): bool
     {
         return $this->rows === [] && $this->affectedRows === 0;
+    }
+
+    public function count(): int
+    {
+        if ($this->type === DatabaseResultType::Rows) {
+            return count($this->rows);
+        }
+
+        return $this->affectedRows;
+    }
+
+    public function getIterator(): Traversable
+    {
+        return new ArrayIterator($this->rows);
     }
 }

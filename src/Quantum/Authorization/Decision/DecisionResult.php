@@ -14,6 +14,7 @@ final readonly class DecisionResult
         private string $source = 'authorization',
         private string $reasonCode = 'deny_by_default',
         private array $metadata = [],
+        private ?string $metadataFingerprint = null,
     ) {}
 
     /**
@@ -21,7 +22,7 @@ final readonly class DecisionResult
      */
     public static function allow(string $source = 'authorization', string $reasonCode = 'explicit_allow', array $metadata = []): self
     {
-        return new self(Decision::Allow, $source, $reasonCode, $metadata);
+        return new self(Decision::Allow, $source, $reasonCode, $metadata, self::extractFingerprint($metadata));
     }
 
     /**
@@ -29,7 +30,7 @@ final readonly class DecisionResult
      */
     public static function deny(string $source = 'authorization', string $reasonCode = 'deny_by_default', array $metadata = []): self
     {
-        return new self(Decision::Deny, $source, $reasonCode, $metadata);
+        return new self(Decision::Deny, $source, $reasonCode, $metadata, self::extractFingerprint($metadata));
     }
 
     /**
@@ -37,7 +38,7 @@ final readonly class DecisionResult
      */
     public static function abstain(string $source = 'authorization', string $reasonCode = 'policy_abstain', array $metadata = []): self
     {
-        return new self(Decision::Abstain, $source, $reasonCode, $metadata);
+        return new self(Decision::Abstain, $source, $reasonCode, $metadata, self::extractFingerprint($metadata));
     }
 
     /**
@@ -45,7 +46,7 @@ final readonly class DecisionResult
      */
     public static function challenge(string $source = 'authorization', string $reasonCode = 'authentication_required', array $metadata = []): self
     {
-        return new self(Decision::Challenge, $source, $reasonCode, $metadata);
+        return new self(Decision::Challenge, $source, $reasonCode, $metadata, self::extractFingerprint($metadata));
     }
 
     /**
@@ -53,7 +54,7 @@ final readonly class DecisionResult
      */
     public static function failure(string $source = 'authorization', string $reasonCode = 'authorization_evaluation_failed', array $metadata = []): self
     {
-        return new self(Decision::Failure, $source, $reasonCode, $metadata);
+        return new self(Decision::Failure, $source, $reasonCode, $metadata, self::extractFingerprint($metadata));
     }
 
     public function decision(): Decision
@@ -102,5 +103,20 @@ final readonly class DecisionResult
     public function isAbstain(): bool
     {
         return $this->decision === Decision::Abstain;
+    }
+
+    public function metadataFingerprint(): ?string
+    {
+        return $this->metadataFingerprint;
+    }
+
+    /**
+     * @param array<string, mixed> $metadata
+     */
+    private static function extractFingerprint(array $metadata): ?string
+    {
+        $fingerprint = $metadata['metadata_fingerprint'] ?? null;
+
+        return is_string($fingerprint) && trim($fingerprint) !== '' ? $fingerprint : null;
     }
 }

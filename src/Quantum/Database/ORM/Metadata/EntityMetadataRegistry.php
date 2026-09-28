@@ -5,8 +5,11 @@ declare(strict_types=1);
 namespace Quantum\Database\ORM\Metadata;
 
 use Quantum\Database\ORM\Attributes\Column;
+use Quantum\Database\ORM\Attributes\Embedded;
 use Quantum\Database\ORM\Attributes\Entity;
 use Quantum\Database\ORM\Attributes\Id;
+use Quantum\Database\ORM\Attributes\ManyToOne;
+use Quantum\Database\ORM\Attributes\OneToMany;
 use Quantum\Database\ORM\Attributes\Table;
 use Quantum\Database\ORM\Model;
 use Quantum\Database\ORM\Types\TypeRegistry;
@@ -63,25 +66,36 @@ final class EntityMetadataRegistry
         $table = $this->resolveTable($reflection);
         $fields = [];
         $identifier = null;
+        $associationProperties = [];
+        $embeddedProperties = [];
 
         foreach ($reflection->getProperties() as $property) {
             $field = $this->mapProperty($property);
 
-            if ($field === null) {
-                continue;
+            if ($field !== null) {
+                $fields[$field->name] = $field;
+
+                if ($field->identifier) {
+                    if ($identifier !== null) {
+                        throw new RuntimeException(sprintf(
+                            'Entity [%s] declares more than one identifier field.',
+                            $entityClass,
+                        ));
+                    }
+
+                    $identifier = $field;
+                }
             }
 
-            $fields[$field->name] = $field;
+            if (
+                $property->getAttributes(ManyToOne::class, ReflectionAttribute::IS_INSTANCEOF) !== []
+                || $property->getAttributes(OneToMany::class, ReflectionAttribute::IS_INSTANCEOF) !== []
+            ) {
+                $associationProperties[] = $property;
+            }
 
-            if ($field->identifier) {
-                if ($identifier !== null) {
-                    throw new RuntimeException(sprintf(
-                        'Entity [%s] declares more than one identifier field.',
-                        $entityClass,
-                    ));
-                }
-
-                $identifier = $field;
+            if ($property->getAttributes(Embedded::class, ReflectionAttribute::IS_INSTANCEOF) !== []) {
+                $embeddedProperties[] = $property;
             }
         }
 
@@ -92,13 +106,45 @@ final class EntityMetadataRegistry
             ));
         }
 
-        return new EntityMetadata(
+        $embeddeds = [];
+        foreach ($embeddedProperties as $property) {
+            $embedded = $this->mapEmbedded($property);
+            if ($embedded !== null) {
+                $embeddeds[$embedded->name] = $embedded;
+            }
+        }
+
+        $shell = new EntityMetadata(
             className: $entityClass,
             table: $table,
             fields: $fields,
             identifier: $identifier,
+            associations: [],
+            embeddeds: $embeddeds,
             repositoryClass: $entityAttribute?->repository,
         );
+        $this->metadata[$entityClass] = $shell;
+
+        $associations = [];
+        foreach ($associationProperties as $property) {
+            $association = $this->mapAssociation($property, $entityClass);
+            if ($association !== null) {
+                $associations[$association->name] = $association;
+            }
+        }
+
+        $final = new EntityMetadata(
+            className: $entityClass,
+            table: $table,
+            fields: $fields,
+            identifier: $identifier,
+            associations: $associations,
+            embeddeds: $embeddeds,
+            repositoryClass: $entityAttribute?->repository,
+        );
+        $this->metadata[$entityClass] = $final;
+
+        return $final;
     }
 
     private function mapProperty(ReflectionProperty $property): ?EntityFieldMetadata
@@ -256,5 +302,257 @@ final class EntityMetadataRegistry
     private function typeRegistry(): TypeRegistry
     {
         return $this->types ?? new TypeRegistry();
+    }
+
+    private function mapAssociation(ReflectionProperty $property, string $declaringEntity): ?EntityAssociationMetadata
+    {
+        $manyToOneAttrs = $property->getAttributes(ManyToOne::class, ReflectionAttribute::IS_INSTANCEOF);
+        $oneToManyAttrs = $property->getAttributes(OneToMany::class, ReflectionAttribute::IS_INSTANCEOF);
+
+        if ($manyToOneAttrs === [] && $oneToManyAttrs === []) {
+            return null;
+        }
+
+        $propertyName = $property->getName();
+
+        if ($manyToOneAttrs !== []) {
+            /** @var ManyToOne $attr */
+            $attr = $manyToOneAttrs[0]->newInstance();
+            $target = $attr->targetEntity;
+
+            if (! $this->validateEntityTarget($target, $declaringEntity, $propertyName)) {
+                return null;
+            }
+
+            $sourceField = $this->guessManyToOneSourceField($propertyName, $attr);
+            $targetMetadata = $this->for($target);
+            $targetColumn = $attr->referencedColumn !== null && trim($attr->referencedColumn) !== ''
+                ? trim($attr->referencedColumn)
+                : $targetMetadata->identifier->column;
+
+            return new EntityAssociationMetadata(
+                name: $propertyName,
+                kind: EntityAssociationMetadata::KIND_MANY_TO_ONE,
+                targetEntity: $target,
+                property: $property,
+                sourceField: $sourceField,
+                sourceColumn: $attr->joinColumn !== null && trim($attr->joinColumn) !== ''
+                    ? trim($attr->joinColumn)
+                    : $this->guessManyToOneJoinColumn($sourceField),
+                targetField: $targetMetadata->identifier->name,
+                targetColumn: $targetColumn,
+                inversedBy: $attr->inversedBy,
+            );
+        }
+
+        /** @var OneToMany $attr */
+        $attr = $oneToManyAttrs[0]->newInstance();
+        $target = $attr->targetEntity;
+
+        if (! $this->validateEntityTarget($target, $declaringEntity, $propertyName)) {
+            return null;
+        }
+
+        $targetMetadata = $this->for($target);
+        $mappedBy = $attr->mappedBy;
+
+        if (! $targetMetadata->hasAssociation($mappedBy)) {
+            throw new RuntimeException(sprintf(
+                'Entity [%s] association [%s::$%s] maps to [%s::$%s], but target has no such association.',
+                $declaringEntity,
+                $declaringEntity,
+                $propertyName,
+                $target,
+                $mappedBy,
+            ));
+        }
+
+        $mappedByAssociation = $targetMetadata->association($mappedBy);
+
+        return new EntityAssociationMetadata(
+            name: $propertyName,
+            kind: EntityAssociationMetadata::KIND_ONE_TO_MANY,
+            targetEntity: $target,
+            property: $property,
+            sourceField: $mappedByAssociation->targetField,
+            sourceColumn: $mappedByAssociation->targetColumn,
+            targetField: $mappedByAssociation->sourceField,
+            targetColumn: $mappedByAssociation->sourceColumn,
+            mappedBy: $mappedBy,
+        );
+    }
+
+    private function validateEntityTarget(string $target, string $declaringEntity, string $propertyName): bool
+    {
+        if (! class_exists($target)) {
+            throw new RuntimeException(sprintf(
+                'Entity [%s] association [%s::$%s] references unknown target entity [%s].',
+                $declaringEntity,
+                $declaringEntity,
+                $propertyName,
+                $target,
+            ));
+        }
+
+        if (! $this->has($target)) {
+            throw new RuntimeException(sprintf(
+                'Entity [%s] association [%s::$%s] targets [%s], which is not a valid ORM entity.',
+                $declaringEntity,
+                $declaringEntity,
+                $propertyName,
+                $target,
+            ));
+        }
+
+        return true;
+    }
+
+    private function guessManyToOneSourceField(string $associationName, ManyToOne $attr): string
+    {
+        if ($attr->joinColumn !== null && trim($attr->joinColumn) !== '') {
+            $snake = trim($attr->joinColumn);
+            $candidate = $this->snakeToCamel($snake);
+            if (str_ends_with($candidate, 'Id') && $candidate !== 'Id') {
+                return substr($candidate, 0, -2);
+            }
+        }
+
+        return $associationName;
+    }
+
+    private function guessManyToOneJoinColumn(string $sourceField): string
+    {
+        return $this->toSnakeCase($sourceField) . '_id';
+    }
+
+    private function snakeToCamel(string $value): string
+    {
+        return lcfirst(str_replace('_', '', ucwords($value, '_')));
+    }
+
+    private function mapEmbedded(ReflectionProperty $property): ?EntityEmbeddedMetadata
+    {
+        $attributes = $property->getAttributes(Embedded::class, ReflectionAttribute::IS_INSTANCEOF);
+
+        if ($attributes === []) {
+            return null;
+        }
+
+        /** @var Embedded $attr */
+        $attr = $attributes[0]->newInstance();
+        $propertyName = $property->getName();
+        $embeddableClass = $attr->class;
+
+        if (! class_exists($embeddableClass)) {
+            throw new RuntimeException(sprintf(
+                'Entity [%s] declares embedded [%s] with unknown class [%s].',
+                $property->getDeclaringClass()->getName(),
+                $propertyName,
+                $embeddableClass,
+            ));
+        }
+
+        $prefix = $attr->prefix !== null && trim($attr->prefix) !== ''
+            ? trim($attr->prefix)
+            : $this->defaultEmbeddedPrefix($propertyName);
+
+        $embeddableReflection = new ReflectionClass($embeddableClass);
+        $innerFields = [];
+
+        foreach ($embeddableReflection->getProperties() as $innerProperty) {
+            $innerField = $this->mapEmbeddedProperty($innerProperty, $prefix);
+
+            if ($innerField === null) {
+                continue;
+            }
+
+            if (isset($innerFields[$innerField->name])) {
+                throw new RuntimeException(sprintf(
+                    'Embedded [%s::$%s] of class [%s] declares duplicate inner field [%s].',
+                    $property->getDeclaringClass()->getName(),
+                    $propertyName,
+                    $embeddableClass,
+                    $innerField->name,
+                ));
+            }
+
+            $innerFields[$innerField->name] = $innerField;
+        }
+
+        if ($innerFields === []) {
+            throw new RuntimeException(sprintf(
+                'Embedded [%s::$%s] of class [%s] has no #[Column] fields declared.',
+                $property->getDeclaringClass()->getName(),
+                $propertyName,
+                $embeddableClass,
+            ));
+        }
+
+        return new EntityEmbeddedMetadata(
+            name: $propertyName,
+            embeddableClass: $embeddableClass,
+            columnPrefix: $prefix,
+            property: $property,
+            innerFields: $innerFields,
+        );
+    }
+
+    private function defaultEmbeddedPrefix(string $propertyName): string
+    {
+        return $this->toSnakeCase($propertyName) . '_';
+    }
+
+    private function mapEmbeddedProperty(ReflectionProperty $property, string $prefix): ?EntityEmbeddedFieldMetadata
+    {
+        $columnAttributes = $property->getAttributes(Column::class, ReflectionAttribute::IS_INSTANCEOF);
+
+        if ($columnAttributes === []) {
+            return null;
+        }
+
+        /** @var Column $column */
+        $column = $columnAttributes[0]->newInstance();
+        $type = $this->resolveEmbeddedType($property, $column);
+        $enumClass = $this->resolveEnumClass($property, $column, $type);
+        $baseColumn = $column->name !== null && trim($column->name) !== ''
+            ? trim($column->name)
+            : $this->toSnakeCase($property->getName());
+
+        return new EntityEmbeddedFieldMetadata(
+            name: $property->getName(),
+            column: $prefix . $baseColumn,
+            property: $property,
+            type: $type,
+            enumClass: $enumClass,
+            typeHandler: $type !== null ? $this->typeRegistry()->for($type) : null,
+        );
+    }
+
+    private function resolveEmbeddedType(ReflectionProperty $property, Column $column): ?string
+    {
+        $explicit = $column->type !== null && trim($column->type) !== ''
+            ? trim($column->type)
+            : null;
+
+        if ($explicit !== null) {
+            return $explicit;
+        }
+
+        $phpType = $this->propertyType($property);
+
+        if ($phpType === null) {
+            return null;
+        }
+
+        if (enum_exists($phpType) && is_subclass_of($phpType, BackedEnum::class)) {
+            return 'enum';
+        }
+
+        return match ($phpType) {
+            'int', 'float', 'bool', 'string' => $phpType,
+            'array' => 'json',
+            DateTimeImmutable::class => 'datetime_immutable',
+            default => null,
+        };
     }
 }

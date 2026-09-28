@@ -76,6 +76,36 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         $correlationId = $this->resolveCorrelationId($input, 'security-center-revoke-device');
         $operationId = $this->createOperationId('security-center-revoke-device');
 
+        $defaultRejectionResourceCoverage = static function (string $scope): array {
+            $targeted = match ($scope) {
+                'sessions' => ['sessions'],
+                'trusted-devices' => ['trusted-devices'],
+                default => ['sessions', 'trusted-devices'],
+            };
+
+            return [
+                'targeted_resource_kinds' => $targeted,
+                'matched_resources' => [
+                    'sessions' => 0,
+                    'trusted-devices' => 0,
+                    'total' => 0,
+                ],
+                'affected_resources' => [
+                    'sessions' => 0,
+                    'trusted-devices' => 0,
+                    'total' => 0,
+                ],
+                'affected_resource_kinds' => [],
+                'missing_targeted_resource_kinds' => $targeted,
+                'has_partial_affected_resource_coverage' => false,
+                'has_any_affected_resources' => false,
+                'target_store_fingerprints' => [],
+                'target_store_statuses' => [],
+                'degraded_target_store_fingerprints' => [],
+                'has_degraded_target_stores' => false,
+            ];
+        };
+
         if ($identity === null) {
             $this->writeAuditEvent($auditLogPath, [
                 'event' => 'security_center_device_revocation_rejected',
@@ -84,12 +114,25 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 'operation_id' => $operationId,
                 'result' => 'validation_failed',
                 'reason_code' => 'missing_identity',
+                'resource_coverage' => $defaultRejectionResourceCoverage('all'),
             ]);
 
-            return $this->renderValidationFailure($output, $json, 'La opcion --identity es obligatoria.');
+            return $this->renderValidationFailure(
+                $output,
+                $json,
+                'La opcion --identity es obligatoria.',
+                'missing_identity',
+                $correlationId,
+                $operationId,
+                'all',
+            );
         }
 
         if ($deviceReference === null) {
+            $target = [
+                'identity' => $identity,
+                'type' => $type,
+            ];
             $this->writeAuditEvent($auditLogPath, [
                 'event' => 'security_center_device_revocation_rejected',
                 'occurred_at' => $eventTimestamp,
@@ -97,16 +140,28 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 'operation_id' => $operationId,
                 'result' => 'validation_failed',
                 'reason_code' => 'missing_device_reference',
-                'target' => [
-                    'identity' => $identity,
-                    'type' => $type,
-                ],
+                'target' => $target,
+                'resource_coverage' => $defaultRejectionResourceCoverage('all'),
             ]);
 
-            return $this->renderValidationFailure($output, $json, 'La opcion --device-reference es obligatoria.');
+            return $this->renderValidationFailure(
+                $output,
+                $json,
+                'La opcion --device-reference es obligatoria.',
+                'missing_device_reference',
+                $correlationId,
+                $operationId,
+                'all',
+                $target,
+            );
         }
 
         if ($actorIdentity === null) {
+            $target = [
+                'identity' => $identity,
+                'type' => $type,
+                'device_reference' => $deviceReference,
+            ];
             $this->writeAuditEvent($auditLogPath, [
                 'event' => 'security_center_device_revocation_rejected',
                 'occurred_at' => $eventTimestamp,
@@ -114,17 +169,32 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 'operation_id' => $operationId,
                 'result' => 'validation_failed',
                 'reason_code' => 'missing_actor_identity',
-                'target' => [
-                    'identity' => $identity,
-                    'type' => $type,
-                    'device_reference' => $deviceReference,
-                ],
+                'target' => $target,
+                'resource_coverage' => $defaultRejectionResourceCoverage('all'),
             ]);
 
-            return $this->renderValidationFailure($output, $json, 'La opcion --actor-identity es obligatoria.');
+            return $this->renderValidationFailure(
+                $output,
+                $json,
+                'La opcion --actor-identity es obligatoria.',
+                'missing_actor_identity',
+                $correlationId,
+                $operationId,
+                'all',
+                $target,
+            );
         }
 
         if ($actorSessionPublicId === null) {
+            $target = [
+                'identity' => $identity,
+                'type' => $type,
+                'device_reference' => $deviceReference,
+            ];
+            $actor = [
+                'identity' => $actorIdentity,
+                'type' => $actorType,
+            ];
             $this->writeAuditEvent($auditLogPath, [
                 'event' => 'security_center_device_revocation_rejected',
                 'occurred_at' => $eventTimestamp,
@@ -132,42 +202,57 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 'operation_id' => $operationId,
                 'result' => 'validation_failed',
                 'reason_code' => 'missing_actor_session_public_id',
-                'target' => [
-                    'identity' => $identity,
-                    'type' => $type,
-                    'device_reference' => $deviceReference,
-                ],
-                'actor' => [
-                    'identity' => $actorIdentity,
-                    'type' => $actorType,
-                ],
+                'target' => $target,
+                'actor' => $actor,
+                'resource_coverage' => $defaultRejectionResourceCoverage('all'),
             ]);
 
-            return $this->renderValidationFailure($output, $json, 'La opcion --actor-session-public-id es obligatoria.');
+            return $this->renderValidationFailure(
+                $output,
+                $json,
+                'La opcion --actor-session-public-id es obligatoria.',
+                'missing_actor_session_public_id',
+                $correlationId,
+                $operationId,
+                'all',
+                $target,
+                $actor,
+            );
         }
 
         if ($scope === null) {
+            $target = [
+                'identity' => $identity,
+                'type' => $type,
+                'device_reference' => $deviceReference,
+            ];
+            $actor = [
+                'identity' => $actorIdentity,
+                'type' => $actorType,
+                'session_public_id' => $actorSessionPublicId,
+            ];
             $this->writeAuditEvent($auditLogPath, [
                 'event' => 'security_center_device_revocation_rejected',
                 'occurred_at' => $eventTimestamp,
+                'correlation_id' => $correlationId,
+                'operation_id' => $operationId,
                 'result' => 'validation_failed',
                 'reason_code' => 'invalid_scope',
-                'target' => [
-                    'identity' => $identity,
-                    'type' => $type,
-                    'device_reference' => $deviceReference,
-                ],
-                'actor' => [
-                    'identity' => $actorIdentity,
-                    'type' => $actorType,
-                    'session_public_id' => $actorSessionPublicId,
-                ],
+                'target' => $target,
+                'actor' => $actor,
+                'resource_coverage' => $defaultRejectionResourceCoverage('all'),
             ]);
 
             return $this->renderValidationFailure(
                 $output,
                 $json,
                 'La opcion --scope debe ser all, sessions o trusted-devices.',
+                'invalid_scope',
+                $correlationId,
+                $operationId,
+                'all',
+                $target,
+                $actor,
             );
         }
 
@@ -200,6 +285,20 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 affectedTrustedDevices: 0,
             );
 
+            $rejectionCoverage = $defaultRejectionResourceCoverage($scope);
+            $target = [
+                'identity' => $identity,
+                'type' => $type,
+                'device_reference' => $deviceReference,
+                'scope' => $scope,
+            ];
+            $actor = [
+                'identity' => $actorIdentity,
+                'type' => $actorType,
+                'session_public_id' => $actorSessionPublicId,
+                'management_authorization_reason_code' => $actorAuthorization['authorization_reason_code'] ?? null,
+            ];
+
             $this->writeAuditEvent($auditLogPath, [
                 'event' => 'security_center_device_revocation_rejected',
                 'occurred_at' => $eventTimestamp,
@@ -207,26 +306,25 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 'operation_id' => $operationId,
                 'result' => 'authorization_failed',
                 'reason_code' => 'unauthorized_management_actor',
-                'target' => [
-                    'identity' => $identity,
-                    'type' => $type,
-                    'device_reference' => $deviceReference,
-                    'scope' => $scope,
-                ],
-                'actor' => [
-                    'identity' => $actorIdentity,
-                    'type' => $actorType,
-                    'session_public_id' => $actorSessionPublicId,
-                    'management_authorization_reason_code' => $actorAuthorization['authorization_reason_code'] ?? null,
-                ],
+                'target' => $target,
+                'actor' => $actor,
                 'operational_context' => $operationalContext,
                 'administrative_metrics' => $administrativeMetrics,
+                'resource_coverage' => $rejectionCoverage,
             ]);
 
             return $this->renderAuthorizationFailure(
                 $output,
                 $json,
                 'El actor administrativo no tiene una sesion gobernada valida para revocar dispositivos agregados.',
+                'unauthorized_management_actor',
+                $correlationId,
+                $operationId,
+                $scope,
+                $target,
+                $actor,
+                $operationalContext,
+                $administrativeMetrics,
             );
         }
 
@@ -266,6 +364,14 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             affectedSessions: count($sessionsToRevoke),
             affectedTrustedDevices: count($trustedDevicesToRevoke),
         );
+        $resourceCoverage = $this->resourceCoverage(
+            scope: $scope,
+            distributedGuard: $distributedGuard,
+            matchedSessions: count($matchedSessions),
+            matchedTrustedDevices: count($matchedTrustedDevices),
+            affectedSessions: count($sessionsToRevoke),
+            affectedTrustedDevices: count($trustedDevicesToRevoke),
+        );
 
         if (
             ! $dryRun
@@ -282,6 +388,14 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 matchedTrustedDevices: count($matchedTrustedDevices),
                 affectedSessions: count($sessionsToRevoke),
                 affectedTrustedDevices: count($trustedDevicesToRevoke),
+            );
+            $guardDeniedResourceCoverage = $this->resourceCoverage(
+                scope: $scope,
+                distributedGuard: $distributedGuard,
+                matchedSessions: count($matchedSessions),
+                matchedTrustedDevices: count($matchedTrustedDevices),
+                affectedSessions: 0,
+                affectedTrustedDevices: 0,
             );
 
             $denialReasonCode = is_string($distributedGuardScopeDecision['reason_code'] ?? null)
@@ -322,6 +436,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 'administrative_metrics' => $guardedAdministrativeMetrics,
                 'distributed_guard' => $distributedGuard,
                 'distributed_guard_scope_decision' => $distributedGuardScopeDecision,
+                'resource_coverage' => $guardDeniedResourceCoverage,
             ]);
 
             return $this->renderDistributedGuardFailure(
@@ -331,6 +446,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 $denialReasonCode,
                 $distributedGuard,
                 $distributedGuardScopeDecision,
+                $guardDeniedResourceCoverage,
             );
         }
 
@@ -378,6 +494,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 'authorized' => true,
             ],
             'administrative_metrics' => $administrativeMetrics,
+            'resource_coverage' => $resourceCoverage,
         ];
 
         if ($includePublicIds) {
@@ -442,6 +559,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             'administrative_metrics' => $administrativeMetrics,
             'distributed_guard' => $distributedGuard,
             'distributed_guard_scope_decision' => $distributedGuardScopeDecision,
+            'resource_coverage' => $resourceCoverage,
             'summary' => $payload['summary'],
             'detail' => $payload['detail'] ?? null,
         ]);
@@ -618,12 +736,76 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             : null;
     }
 
-    private function renderValidationFailure(Output $output, bool $json, string $message): int
-    {
+    /**
+     * @param array<string, mixed> $target
+     * @param array<string, mixed> $actor
+     * @param array<string, mixed>|null $operationalContext
+     * @param array<string, mixed>|null $administrativeMetrics
+     */
+    private function renderValidationFailure(
+        Output $output,
+        bool $json,
+        string $message,
+        string $reasonCode,
+        string $correlationId,
+        string $operationId,
+        ?string $scope = null,
+        array $target = [],
+        array $actor = [],
+        ?array $operationalContext = null,
+        ?array $administrativeMetrics = null,
+    ): int {
+        $effectiveScope = is_string($scope) && trim($scope) !== '' ? trim($scope) : 'all';
+        $targetedResourceKinds = $this->targetedResourceKindsForScope($effectiveScope);
+        $resourceCoverage = [
+            'targeted_resource_kinds' => $targetedResourceKinds,
+            'matched_resources' => [
+                'sessions' => 0,
+                'trusted-devices' => 0,
+                'total' => 0,
+            ],
+            'affected_resources' => [
+                'sessions' => 0,
+                'trusted-devices' => 0,
+                'total' => 0,
+            ],
+            'affected_resource_kinds' => [],
+            'missing_targeted_resource_kinds' => $targetedResourceKinds,
+            'has_partial_affected_resource_coverage' => false,
+            'has_any_affected_resources' => false,
+            'target_store_fingerprints' => [],
+            'target_store_statuses' => [],
+            'degraded_target_store_fingerprints' => [],
+            'has_degraded_target_stores' => false,
+        ];
+
         if ($json) {
-            $output->writeln((string) json_encode([
+            $payload = [
                 'error' => $message,
-            ], JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
+                'result' => 'validation_failed',
+                'reason_code' => $reasonCode,
+                'correlation_id' => $correlationId,
+                'operation_id' => $operationId,
+                'resource_coverage' => $resourceCoverage,
+            ];
+
+            if ($target !== []) {
+                $payload['target'] = $target;
+            }
+
+            if ($actor !== []) {
+                $payload['actor'] = $actor;
+            }
+
+            if ($operationalContext !== null) {
+                $payload['operational_context'] = $operationalContext;
+            }
+
+            if ($administrativeMetrics !== null) {
+                $payload['administrative_metrics'] = $administrativeMetrics;
+            }
+
+            $output->writeln((string) json_encode($payload, JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
 
             return 1;
         }
@@ -633,12 +815,61 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         return 1;
     }
 
-    private function renderAuthorizationFailure(Output $output, bool $json, string $message): int
-    {
+    /**
+     * @param array<string, mixed> $target
+     * @param array<string, mixed> $actor
+     * @param array<string, mixed> $operationalContext
+     * @param array<string, mixed> $administrativeMetrics
+     */
+    private function renderAuthorizationFailure(
+        Output $output,
+        bool $json,
+        string $message,
+        string $reasonCode,
+        string $correlationId,
+        string $operationId,
+        string $scope,
+        array $target,
+        array $actor,
+        array $operationalContext,
+        array $administrativeMetrics,
+    ): int {
+        $targetedResourceKinds = $this->targetedResourceKindsForScope($scope);
+        $matchedTotal = (int) ($administrativeMetrics['matched_total_resources'] ?? 0);
+        $resourceCoverage = [
+            'targeted_resource_kinds' => $targetedResourceKinds,
+            'matched_resources' => [
+                'sessions' => 0,
+                'trusted-devices' => 0,
+                'total' => $matchedTotal,
+            ],
+            'affected_resources' => [
+                'sessions' => 0,
+                'trusted-devices' => 0,
+                'total' => 0,
+            ],
+            'affected_resource_kinds' => [],
+            'missing_targeted_resource_kinds' => $targetedResourceKinds,
+            'has_partial_affected_resource_coverage' => false,
+            'has_any_affected_resources' => false,
+            'target_store_fingerprints' => [],
+            'target_store_statuses' => [],
+            'degraded_target_store_fingerprints' => [],
+            'has_degraded_target_stores' => false,
+        ];
+
         if ($json) {
             $output->writeln((string) json_encode([
                 'error' => $message,
-                'reason_code' => 'unauthorized_management_actor',
+                'result' => 'authorization_failed',
+                'reason_code' => $reasonCode,
+                'correlation_id' => $correlationId,
+                'operation_id' => $operationId,
+                'target' => $target,
+                'actor' => $actor,
+                'operational_context' => $operationalContext,
+                'administrative_metrics' => $administrativeMetrics,
+                'resource_coverage' => $resourceCoverage,
             ], JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
 
             return 1;
@@ -659,6 +890,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         string $reasonCode,
         array $distributedGuard,
         array $distributedGuardScopeDecision,
+        array $resourceCoverage,
     ): int {
         if ($json) {
             $output->writeln((string) json_encode([
@@ -666,6 +898,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
                 'reason_code' => $reasonCode,
                 'distributed_guard' => $distributedGuard,
                 'distributed_guard_scope_decision' => $distributedGuardScopeDecision,
+                'resource_coverage' => $resourceCoverage,
             ], JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT));
 
             return 1;
@@ -675,6 +908,104 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         $output->writeln(sprintf('Reason code: %s', $reasonCode));
 
         return 1;
+    }
+
+    /**
+     * @param array<string, mixed> $distributedGuard
+     * @return array{
+     *   targeted_resource_kinds:list<string>,
+     *   matched_resources:array{sessions:int, trusted-devices:int, total:int},
+     *   affected_resources:array{sessions:int, trusted-devices:int, total:int},
+     *   affected_resource_kinds:list<string>,
+     *   missing_targeted_resource_kinds:list<string>,
+     *   has_partial_affected_resource_coverage:bool,
+     *   has_any_affected_resources:bool,
+     *   target_store_fingerprints:list<string>,
+     *   target_store_statuses:array<string, int>,
+     *   degraded_target_store_fingerprints:list<string>,
+     *   has_degraded_target_stores:bool
+     * }
+     */
+    private function resourceCoverage(
+        string $scope,
+        array $distributedGuard,
+        int $matchedSessions,
+        int $matchedTrustedDevices,
+        int $affectedSessions,
+        int $affectedTrustedDevices,
+    ): array {
+        $targetedResourceKinds = $this->targetedResourceKindsForScope($scope);
+        $affectedResourceKinds = [];
+
+        if ($affectedSessions > 0) {
+            $affectedResourceKinds[] = 'sessions';
+        }
+
+        if ($affectedTrustedDevices > 0) {
+            $affectedResourceKinds[] = 'trusted-devices';
+        }
+
+        $targetStoreFingerprints = array_values(array_filter(array_map(
+            static fn (mixed $value): string => is_string($value) ? trim($value) : '',
+            (array) ($distributedGuard['operational_response']['target_store_fingerprints'] ?? []),
+        ), static fn (string $value): bool => $value !== ''));
+        sort($targetStoreFingerprints);
+
+        $targetStoreAssessments = array_values(array_filter(
+            (array) ($distributedGuard['operational_response']['target_store_assessments'] ?? []),
+            static fn (mixed $value): bool => is_array($value),
+        ));
+        $targetStoreStatuses = [];
+        $degradedTargetStoreFingerprints = [];
+
+        foreach ($targetStoreAssessments as $assessment) {
+            $status = $this->normalizedString($assessment['status'] ?? null, 'unknown');
+            $targetStoreStatuses[$status] = ($targetStoreStatuses[$status] ?? 0) + 1;
+
+            $fingerprint = $this->normalizedString($assessment['store_fingerprint'] ?? null, '');
+            if ($fingerprint !== '' && $status !== 'healthy') {
+                $degradedTargetStoreFingerprints[$fingerprint] = true;
+            }
+        }
+
+        ksort($targetStoreStatuses);
+        $degradedFingerprints = array_values(array_map('strval', array_keys($degradedTargetStoreFingerprints)));
+        sort($degradedFingerprints);
+        $missingTargetedResourceKinds = array_values(array_diff($targetedResourceKinds, $affectedResourceKinds));
+
+        return [
+            'targeted_resource_kinds' => $targetedResourceKinds,
+            'matched_resources' => [
+                'sessions' => $matchedSessions,
+                'trusted-devices' => $matchedTrustedDevices,
+                'total' => $matchedSessions + $matchedTrustedDevices,
+            ],
+            'affected_resources' => [
+                'sessions' => $affectedSessions,
+                'trusted-devices' => $affectedTrustedDevices,
+                'total' => $affectedSessions + $affectedTrustedDevices,
+            ],
+            'affected_resource_kinds' => $affectedResourceKinds,
+            'missing_targeted_resource_kinds' => $missingTargetedResourceKinds,
+            'has_partial_affected_resource_coverage' => $affectedResourceKinds !== [] && $missingTargetedResourceKinds !== [],
+            'has_any_affected_resources' => ($affectedSessions + $affectedTrustedDevices) > 0,
+            'target_store_fingerprints' => $targetStoreFingerprints,
+            'target_store_statuses' => $targetStoreStatuses,
+            'degraded_target_store_fingerprints' => $degradedFingerprints,
+            'has_degraded_target_stores' => $degradedFingerprints !== [],
+        ];
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function targetedResourceKindsForScope(string $scope): array
+    {
+        return match ($scope) {
+            'sessions' => ['sessions'],
+            'trusted-devices' => ['trusted-devices'],
+            default => ['sessions', 'trusted-devices'],
+        };
     }
 
     /**

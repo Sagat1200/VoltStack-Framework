@@ -1051,6 +1051,11 @@ final class AuthSecurityCenterReportCommand extends Command
                 'delegated_admin' => 0,
                 'none' => 0,
             ],
+            'matched_resources' => [
+                'sessions' => 0,
+                'trusted-devices' => 0,
+                'total' => 0,
+            ],
             'affected_resources' => [
                 'sessions' => 0,
                 'trusted-devices' => 0,
@@ -1109,19 +1114,47 @@ final class AuthSecurityCenterReportCommand extends Command
             $eventSummary = is_array($event['summary'] ?? null)
                 ? $event['summary']
                 : [];
-            $affectedSessions = is_numeric($eventSummary['revoked_sessions'] ?? null)
-                ? (int) $eventSummary['revoked_sessions']
+            $resourceCoverage = $this->eventResourceCoverage($event, $administrativeMetrics, $eventSummary, $requestedScope);
+            $matchedResources = is_array($resourceCoverage['matched_resources'] ?? null)
+                ? $resourceCoverage['matched_resources']
+                : [];
+            $matchedSessions = is_numeric($matchedResources['sessions'] ?? null)
+                ? (int) $matchedResources['sessions']
                 : 0;
-            $affectedTrustedDevices = is_numeric($eventSummary['revoked_trusted_devices'] ?? null)
-                ? (int) $eventSummary['revoked_trusted_devices']
+            $matchedTrustedDevices = is_numeric($matchedResources['trusted-devices'] ?? null)
+                ? (int) $matchedResources['trusted-devices']
                 : 0;
-            $affectedTotalResources = $administrativeMetrics['affected_total_resources'] ?? ($affectedSessions + $affectedTrustedDevices);
-            $affectedResourceKinds = $this->deriveAffectedResourceKinds($administrativeMetrics, $affectedSessions, $affectedTrustedDevices);
+            $matchedTotalResources = is_numeric($matchedResources['total'] ?? null)
+                ? (int) $matchedResources['total']
+                : ($matchedSessions + $matchedTrustedDevices);
+            $affectedResources = is_array($resourceCoverage['affected_resources'] ?? null)
+                ? $resourceCoverage['affected_resources']
+                : [];
+            $affectedSessions = is_numeric($affectedResources['sessions'] ?? null)
+                ? (int) $affectedResources['sessions']
+                : 0;
+            $affectedTrustedDevices = is_numeric($affectedResources['trusted-devices'] ?? null)
+                ? (int) $affectedResources['trusted-devices']
+                : 0;
+            $affectedTotalResources = is_numeric($affectedResources['total'] ?? null)
+                ? (int) $affectedResources['total']
+                : ($affectedSessions + $affectedTrustedDevices);
+            $affectedResourceKinds = array_values(array_filter(array_map(
+                static fn (mixed $value): string => is_string($value) ? trim($value) : '',
+                (array) ($resourceCoverage['affected_resource_kinds'] ?? []),
+            ), static fn (string $value): bool => $value !== ''));
+            $targetedResourceKinds = array_values(array_filter(array_map(
+                static fn (mixed $value): string => is_string($value) ? trim($value) : '',
+                (array) ($resourceCoverage['targeted_resource_kinds'] ?? []),
+            ), static fn (string $value): bool => $value !== ''));
 
             $metrics['scopes'][$requestedScope] = ($metrics['scopes'][$requestedScope] ?? 0) + 1;
             $metrics['actor_scope_profiles'][$actorScopeProfile] = ($metrics['actor_scope_profiles'][$actorScopeProfile] ?? 0) + 1;
             $metrics['authorization_modes'][$authorizationMode] = ($metrics['authorization_modes'][$authorizationMode] ?? 0) + 1;
-            $metrics['affected_resources']['total'] += is_numeric($affectedTotalResources) ? (int) $affectedTotalResources : 0;
+            $metrics['matched_resources']['total'] += $matchedTotalResources;
+            $metrics['matched_resources']['sessions'] += $matchedSessions;
+            $metrics['matched_resources']['trusted-devices'] += $matchedTrustedDevices;
+            $metrics['affected_resources']['total'] += $affectedTotalResources;
             $metrics['affected_resources']['sessions'] += $affectedSessions;
             $metrics['affected_resources']['trusted-devices'] += $affectedTrustedDevices;
 
@@ -1203,6 +1236,11 @@ final class AuthSecurityCenterReportCommand extends Command
                     'distributed_guard_policy_reason_codes' => [],
                     'distributed_guard_reason_codes' => [],
                     'mutation_actor_profiles' => [],
+                    'matched_resources' => [
+                        'sessions' => 0,
+                        'trusted-devices' => 0,
+                        'total' => 0,
+                    ],
                     'affected_resources' => [
                         'sessions' => 0,
                         'trusted-devices' => 0,
@@ -1223,7 +1261,10 @@ final class AuthSecurityCenterReportCommand extends Command
             $storeCohorts[$cohortKey]['scopes'][$requestedScope] = ($storeCohorts[$cohortKey]['scopes'][$requestedScope] ?? 0) + 1;
             $storeCohorts[$cohortKey]['authorization_modes'][$authorizationMode] = ($storeCohorts[$cohortKey]['authorization_modes'][$authorizationMode] ?? 0) + 1;
             $storeCohorts[$cohortKey]['mutation_kinds'][$mutationKind] = ($storeCohorts[$cohortKey]['mutation_kinds'][$mutationKind] ?? 0) + 1;
-            $storeCohorts[$cohortKey]['affected_resources']['total'] += is_numeric($affectedTotalResources) ? (int) $affectedTotalResources : 0;
+            $storeCohorts[$cohortKey]['matched_resources']['total'] += $matchedTotalResources;
+            $storeCohorts[$cohortKey]['matched_resources']['sessions'] += $matchedSessions;
+            $storeCohorts[$cohortKey]['matched_resources']['trusted-devices'] += $matchedTrustedDevices;
+            $storeCohorts[$cohortKey]['affected_resources']['total'] += $affectedTotalResources;
             $storeCohorts[$cohortKey]['affected_resources']['sessions'] += $affectedSessions;
             $storeCohorts[$cohortKey]['affected_resources']['trusted-devices'] += $affectedTrustedDevices;
             if (is_string($policySource) && trim($policySource) !== '') {
@@ -1261,6 +1302,9 @@ final class AuthSecurityCenterReportCommand extends Command
                 is_string($policyReasonCode ?? null) ? $policyReasonCode : null,
                 is_string($reasonCode ?? null) ? $reasonCode : null,
                 $outcome,
+                $targetedResourceKinds,
+                $matchedSessions,
+                $matchedTrustedDevices,
                 $affectedSessions,
                 $affectedTrustedDevices,
                 $affectedResourceKinds,
@@ -1281,6 +1325,9 @@ final class AuthSecurityCenterReportCommand extends Command
                 is_string($policyReasonCode ?? null) ? $policyReasonCode : null,
                 is_string($reasonCode ?? null) ? $reasonCode : null,
                 $outcome,
+                $targetedResourceKinds,
+                $matchedSessions,
+                $matchedTrustedDevices,
                 $affectedSessions,
                 $affectedTrustedDevices,
                 $affectedResourceKinds,
@@ -1303,12 +1350,12 @@ final class AuthSecurityCenterReportCommand extends Command
                 'outcome' => $outcome,
                 'scope' => $requestedScope,
                 'authorization_mode' => $authorizationMode,
+                'matched_sessions' => $matchedSessions,
+                'matched_trusted_devices' => $matchedTrustedDevices,
+                'matched_total_resources' => $matchedTotalResources,
                 'affected_sessions' => $affectedSessions,
                 'affected_trusted_devices' => $affectedTrustedDevices,
-                'affected_total_resources' => is_numeric($affectedTotalResources)
-                    ? (int) $affectedTotalResources
-                    : 0,
-                'affected_resource_kinds' => $affectedResourceKinds,
+                'affected_total_resources' => $affectedTotalResources,
             ];
         }
 
@@ -1371,6 +1418,11 @@ final class AuthSecurityCenterReportCommand extends Command
             $scopes = [];
             $authorizationModes = [];
             $storeCounts = [];
+            $matchedResources = [
+                'sessions' => 0,
+                'trusted-devices' => 0,
+                'total' => 0,
+            ];
             $affectedResources = [
                 'sessions' => 0,
                 'trusted-devices' => 0,
@@ -1390,6 +1442,9 @@ final class AuthSecurityCenterReportCommand extends Command
                 $outcomes[$outcome] = ($outcomes[$outcome] ?? 0) + 1;
                 $scopes[$scope] = ($scopes[$scope] ?? 0) + 1;
                 $authorizationModes[$authorizationMode] = ($authorizationModes[$authorizationMode] ?? 0) + 1;
+                $matchedResources['sessions'] += (int) ($event['matched_sessions'] ?? 0);
+                $matchedResources['trusted-devices'] += (int) ($event['matched_trusted_devices'] ?? 0);
+                $matchedResources['total'] += (int) ($event['matched_total_resources'] ?? 0);
                 $affectedResources['sessions'] += (int) ($event['affected_sessions'] ?? 0);
                 $affectedResources['trusted-devices'] += (int) ($event['affected_trusted_devices'] ?? 0);
                 $affectedResources['total'] += (int) ($event['affected_total_resources'] ?? 0);
@@ -1411,6 +1466,7 @@ final class AuthSecurityCenterReportCommand extends Command
                 'outcomes' => $outcomes,
                 'scopes' => $scopes,
                 'authorization_modes' => $authorizationModes,
+                'matched_resources' => $matchedResources,
                 'affected_resources' => $affectedResources,
             ];
         }
@@ -1472,6 +1528,11 @@ final class AuthSecurityCenterReportCommand extends Command
                         && $event['occurred_at'] <= $anchorTimestamp,
                 ));
                 $outcomes = [];
+                $matchedResources = [
+                    'sessions' => 0,
+                    'trusted-devices' => 0,
+                    'total' => 0,
+                ];
                 $affectedResources = [
                     'sessions' => 0,
                     'trusted-devices' => 0,
@@ -1481,6 +1542,9 @@ final class AuthSecurityCenterReportCommand extends Command
                 foreach ($matchingEvents as $event) {
                     $outcome = $this->normalizedMetricKey($event['outcome'] ?? null, 'unknown');
                     $outcomes[$outcome] = ($outcomes[$outcome] ?? 0) + 1;
+                    $matchedResources['sessions'] += (int) ($event['matched_sessions'] ?? 0);
+                    $matchedResources['trusted-devices'] += (int) ($event['matched_trusted_devices'] ?? 0);
+                    $matchedResources['total'] += (int) ($event['matched_total_resources'] ?? 0);
                     $affectedResources['sessions'] += (int) ($event['affected_sessions'] ?? 0);
                     $affectedResources['trusted-devices'] += (int) ($event['affected_trusted_devices'] ?? 0);
                     $affectedResources['total'] += (int) ($event['affected_total_resources'] ?? 0);
@@ -1493,6 +1557,7 @@ final class AuthSecurityCenterReportCommand extends Command
                     'duration_seconds' => $window['duration_seconds'],
                     'event_count' => count($matchingEvents),
                     'outcomes' => $outcomes,
+                    'matched_resources' => $matchedResources,
                     'affected_resources' => $affectedResources,
                 ];
             }
@@ -2466,11 +2531,13 @@ final class AuthSecurityCenterReportCommand extends Command
                 ? $matchingTargetedObservedProfiles
                 : $matchingObservedProfiles;
             $targetedResourceKinds = $this->targetedResourceKindsForScope($scope);
+            $observedMatchedResources = $this->summarizeObservedMatchedResources($observedActorProfiles);
             $observedAffectedResources = $this->summarizeObservedAffectedResources($observedActorProfiles);
             $observedAffectedResourceKinds = $this->observedAffectedResourceKinds($observedActorProfiles);
             $missingTargetedResourceKinds = $observedActorProfiles === []
                 ? []
                 : array_values(array_diff($targetedResourceKinds, $observedAffectedResourceKinds));
+            $hasAnyAffected = (int) ($observedAffectedResources['total'] ?? 0) > 0;
 
             $profiles[] = [
                 'scope' => $scope,
@@ -2494,10 +2561,12 @@ final class AuthSecurityCenterReportCommand extends Command
                 'observed_actor_profiles' => $observedActorProfiles,
                 'resource_coverage' => [
                     'targeted_resource_kinds' => $targetedResourceKinds,
-                    'observed_affected_resources' => $observedAffectedResources,
-                    'observed_affected_resource_kinds' => $observedAffectedResourceKinds,
+                    'matched_resources' => $observedMatchedResources,
+                    'affected_resources' => $observedAffectedResources,
+                    'affected_resource_kinds' => $observedAffectedResourceKinds,
                     'missing_targeted_resource_kinds' => $missingTargetedResourceKinds,
-                    'has_partial_observed_resource_coverage' => $observedActorProfiles !== [] && $missingTargetedResourceKinds !== [],
+                    'has_partial_affected_resource_coverage' => $observedActorProfiles !== [] && $missingTargetedResourceKinds !== [],
+                    'has_any_affected_resources' => $hasAnyAffected,
                     'target_store_statuses' => $targetStoreStatusSummary,
                     'degraded_target_store_fingerprints' => $degradedTargetStoreFingerprints,
                     'has_degraded_target_stores' => $degradedTargetStoreFingerprints !== [],
@@ -2720,6 +2789,9 @@ final class AuthSecurityCenterReportCommand extends Command
         ?string $policyReasonCode,
         ?string $reasonCode,
         string $outcome,
+        array $targetedResourceKinds,
+        int $matchedSessions,
+        int $matchedTrustedDevices,
         int $affectedSessions,
         int $affectedTrustedDevices,
         array $affectedResourceKinds,
@@ -2741,6 +2813,12 @@ final class AuthSecurityCenterReportCommand extends Command
                 'event_count' => 0,
                 'outcomes' => [],
                 'scopes' => [],
+                'targeted_resource_kinds' => [],
+                'matched_resources' => [
+                    'sessions' => 0,
+                    'trusted-devices' => 0,
+                    'total' => 0,
+                ],
                 'affected_resources' => [
                     'sessions' => 0,
                     'trusted-devices' => 0,
@@ -2756,6 +2834,12 @@ final class AuthSecurityCenterReportCommand extends Command
         $profiles[$profileKey]['event_count']++;
         $profiles[$profileKey]['outcomes'][$outcome] = ($profiles[$profileKey]['outcomes'][$outcome] ?? 0) + 1;
         $profiles[$profileKey]['scopes'][$scope] = ($profiles[$profileKey]['scopes'][$scope] ?? 0) + 1;
+        foreach ($targetedResourceKinds as $kind) {
+            $profiles[$profileKey]['targeted_resource_kinds'][(string) $kind] = true;
+        }
+        $profiles[$profileKey]['matched_resources']['sessions'] += $matchedSessions;
+        $profiles[$profileKey]['matched_resources']['trusted-devices'] += $matchedTrustedDevices;
+        $profiles[$profileKey]['matched_resources']['total'] += $matchedSessions + $matchedTrustedDevices;
         $profiles[$profileKey]['affected_resources']['sessions'] += $affectedSessions;
         $profiles[$profileKey]['affected_resources']['trusted-devices'] += $affectedTrustedDevices;
         $profiles[$profileKey]['affected_resources']['total'] += $affectedSessions + $affectedTrustedDevices;
@@ -2784,6 +2868,11 @@ final class AuthSecurityCenterReportCommand extends Command
         foreach ($profiles as $profile) {
             ksort($profile['outcomes']);
             ksort($profile['scopes']);
+            $profile['targeted_resource_kinds'] = array_values(array_map(
+                'strval',
+                array_keys((array) ($profile['targeted_resource_kinds'] ?? [])),
+            ));
+            sort($profile['targeted_resource_kinds']);
             $profile['affected_resource_kinds'] = array_values(array_map(
                 'strval',
                 array_keys((array) ($profile['affected_resource_kinds'] ?? [])),
@@ -2833,30 +2922,141 @@ final class AuthSecurityCenterReportCommand extends Command
     }
 
     /**
+     * @param array<string, mixed> $event
      * @param array<string, mixed> $administrativeMetrics
-     * @return list<string>
+     * @param array<string, mixed> $eventSummary
+     * @return array{
+     *   targeted_resource_kinds:list<string>,
+     *   affected_resources:array{sessions:int, trusted-devices:int, total:int},
+     *   affected_resource_kinds:list<string>
+     * }
      */
-    private function deriveAffectedResourceKinds(array $administrativeMetrics, int $affectedSessions, int $affectedTrustedDevices): array
-    {
-        $resourceKinds = array_values(array_filter(array_map(
-            static fn (mixed $value): string => is_string($value) ? trim($value) : '',
-            (array) ($administrativeMetrics['affected_resource_kinds'] ?? []),
-        ), static fn (string $value): bool => $value !== ''));
+    private function eventResourceCoverage(
+        array $event,
+        array $administrativeMetrics,
+        array $eventSummary,
+        string $requestedScope,
+    ): array {
+        $eventCoverage = is_array($event['resource_coverage'] ?? null)
+            ? $event['resource_coverage']
+            : [];
+        $targetedResourceKinds = $this->normalizeResourceKinds(
+            (array) ($eventCoverage['targeted_resource_kinds'] ?? $this->targetedResourceKindsForScope($requestedScope)),
+        );
 
-        if ($resourceKinds === []) {
-            if ($affectedSessions > 0) {
-                $resourceKinds[] = 'sessions';
-            }
+        $matchedResources = is_array($eventCoverage['matched_resources'] ?? null)
+            ? $eventCoverage['matched_resources']
+            : [];
+        $matchedSessions = is_numeric($matchedResources['sessions'] ?? null)
+            ? (int) $matchedResources['sessions']
+            : (is_numeric($eventSummary['matched_sessions'] ?? null) ? (int) $eventSummary['matched_sessions'] : 0);
+        $matchedTrustedDevices = is_numeric($matchedResources['trusted-devices'] ?? null)
+            ? (int) $matchedResources['trusted-devices']
+            : (is_numeric($eventSummary['matched_trusted_devices'] ?? null) ? (int) $eventSummary['matched_trusted_devices'] : 0);
+        $matchedTotalResources = is_numeric($matchedResources['total'] ?? null)
+            ? (int) $matchedResources['total']
+            : (is_numeric($administrativeMetrics['matched_total_resources'] ?? null)
+                ? (int) $administrativeMetrics['matched_total_resources']
+                : ($matchedSessions + $matchedTrustedDevices));
 
-            if ($affectedTrustedDevices > 0) {
-                $resourceKinds[] = 'trusted-devices';
+        if ($matchedTotalResources > 0 && $matchedSessions === 0 && $matchedTrustedDevices === 0) {
+            if ($requestedScope === 'sessions') {
+                $matchedSessions = $matchedTotalResources;
+            } elseif ($requestedScope === 'trusted-devices') {
+                $matchedTrustedDevices = $matchedTotalResources;
+            } else {
+                $targetIsSessions = in_array('sessions', $targetedResourceKinds, true);
+                $targetIsTrustedDevices = in_array('trusted-devices', $targetedResourceKinds, true);
+                if ($targetIsSessions && ! $targetIsTrustedDevices) {
+                    $matchedSessions = $matchedTotalResources;
+                } elseif (! $targetIsSessions && $targetIsTrustedDevices) {
+                    $matchedTrustedDevices = $matchedTotalResources;
+                } else {
+                    $matchedSessions = (int) ceil($matchedTotalResources / 2);
+                    $matchedTrustedDevices = $matchedTotalResources - $matchedSessions;
+                }
             }
         }
 
-        $resourceKinds = array_values(array_unique($resourceKinds));
-        sort($resourceKinds);
+        $affectedResources = is_array($eventCoverage['affected_resources'] ?? null)
+            ? $eventCoverage['affected_resources']
+            : [];
+        $affectedSessions = is_numeric($affectedResources['sessions'] ?? null)
+            ? (int) $affectedResources['sessions']
+            : (is_numeric($eventSummary['revoked_sessions'] ?? null) ? (int) $eventSummary['revoked_sessions'] : 0);
+        $affectedTrustedDevices = is_numeric($affectedResources['trusted-devices'] ?? null)
+            ? (int) $affectedResources['trusted-devices']
+            : (is_numeric($eventSummary['revoked_trusted_devices'] ?? null) ? (int) $eventSummary['revoked_trusted_devices'] : 0);
+        $affectedTotalResources = is_numeric($affectedResources['total'] ?? null)
+            ? (int) $affectedResources['total']
+            : (is_numeric($administrativeMetrics['affected_total_resources'] ?? null)
+                ? (int) $administrativeMetrics['affected_total_resources']
+                : ($affectedSessions + $affectedTrustedDevices));
+        $affectedKinds = $this->normalizeResourceKinds(
+            (array) ($eventCoverage['affected_resource_kinds'] ?? $administrativeMetrics['affected_resource_kinds'] ?? []),
+        );
 
-        return $resourceKinds;
+        if ($affectedKinds === []) {
+            if ($affectedSessions > 0) {
+                $affectedKinds[] = 'sessions';
+            }
+
+            if ($affectedTrustedDevices > 0) {
+                $affectedKinds[] = 'trusted-devices';
+            }
+        }
+
+        $affectedKinds = $this->normalizeResourceKinds($affectedKinds);
+        $missingTargetedResourceKinds = $targetedResourceKinds === []
+            ? []
+            : array_values(array_diff($targetedResourceKinds, $affectedKinds));
+
+        return [
+            'targeted_resource_kinds' => $targetedResourceKinds,
+            'matched_resources' => [
+                'sessions' => $matchedSessions,
+                'trusted-devices' => $matchedTrustedDevices,
+                'total' => $matchedTotalResources,
+            ],
+            'affected_resources' => [
+                'sessions' => $affectedSessions,
+                'trusted-devices' => $affectedTrustedDevices,
+                'total' => $affectedTotalResources,
+            ],
+            'affected_resource_kinds' => $affectedKinds,
+            'missing_targeted_resource_kinds' => $missingTargetedResourceKinds,
+            'has_partial_affected_resource_coverage' => $targetedResourceKinds !== [] && $missingTargetedResourceKinds !== [],
+            'has_any_affected_resources' => $affectedTotalResources > 0,
+            'target_store_fingerprints' => array_values(array_map(
+                'strval',
+                array_keys(array_filter(
+                    (array) ($eventCoverage['target_store_fingerprints'] ?? []),
+                    static fn (mixed $value): bool => is_string($value) || is_int($value),
+                )),
+            )),
+            'target_store_statuses' => (object) ($eventCoverage['target_store_statuses'] ?? []),
+            'degraded_target_store_fingerprints' => array_values(array_filter(array_map(
+                static fn (mixed $value): string => is_string($value) ? trim($value) : '',
+                (array) ($eventCoverage['degraded_target_store_fingerprints'] ?? []),
+            ), static fn (string $value): bool => $value !== '')),
+            'has_degraded_target_stores' => (bool) ($eventCoverage['has_degraded_target_stores'] ?? false),
+        ];
+    }
+
+    /**
+     * @param list<mixed> $resourceKinds
+     * @return list<string>
+     */
+    private function normalizeResourceKinds(array $resourceKinds): array
+    {
+        $normalized = array_values(array_filter(array_map(
+            static fn (mixed $value): string => is_string($value) ? trim($value) : '',
+            $resourceKinds,
+        ), static fn (string $value): bool => $value !== ''));
+        $normalized = array_values(array_unique($normalized));
+        sort($normalized);
+
+        return $normalized;
     }
 
     /**
@@ -2875,6 +3075,32 @@ final class AuthSecurityCenterReportCommand extends Command
      * @param list<array<string, mixed>> $profiles
      * @return array{sessions:int, trusted-devices:int, total:int}
      */
+    private function summarizeObservedMatchedResources(array $profiles): array
+    {
+        $summary = [
+            'sessions' => 0,
+            'trusted-devices' => 0,
+            'total' => 0,
+        ];
+
+        foreach ($profiles as $profile) {
+            $matchedResources = is_array($profile['matched_resources'] ?? null)
+                ? $profile['matched_resources']
+                : [];
+            $summary['sessions'] += is_numeric($matchedResources['sessions'] ?? null)
+                ? (int) $matchedResources['sessions']
+                : 0;
+            $summary['trusted-devices'] += is_numeric($matchedResources['trusted-devices'] ?? null)
+                ? (int) $matchedResources['trusted-devices']
+                : 0;
+            $summary['total'] += is_numeric($matchedResources['total'] ?? null)
+                ? (int) $matchedResources['total']
+                : 0;
+        }
+
+        return $summary;
+    }
+
     private function summarizeObservedAffectedResources(array $profiles): array
     {
         $summary = [
@@ -2912,15 +3138,12 @@ final class AuthSecurityCenterReportCommand extends Command
         foreach ($profiles as $profile) {
             foreach ((array) ($profile['affected_resource_kinds'] ?? []) as $kind) {
                 if (is_string($kind) && trim($kind) !== '') {
-                    $resourceKinds[trim($kind)] = true;
+                    $resourceKinds[] = trim($kind);
                 }
             }
         }
 
-        $normalized = array_values(array_map('strval', array_keys($resourceKinds)));
-        sort($normalized);
-
-        return $normalized;
+        return $this->normalizeResourceKinds($resourceKinds);
     }
 
     /**
@@ -2967,13 +3190,10 @@ final class AuthSecurityCenterReportCommand extends Command
                 continue;
             }
 
-            $fingerprints[$fingerprint] = true;
+            $fingerprints[] = $fingerprint;
         }
 
-        $normalized = array_values(array_map('strval', array_keys($fingerprints)));
-        sort($normalized);
-
-        return $normalized;
+        return $this->normalizeResourceKinds($fingerprints);
     }
 
     /**

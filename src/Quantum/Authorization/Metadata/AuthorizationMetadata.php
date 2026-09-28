@@ -12,6 +12,7 @@ final readonly class AuthorizationMetadata
     public function __construct(
         private bool $public = false,
         private array $requirements = [],
+        private ?string $fingerprint = null,
     ) {}
 
     public static function empty(): self
@@ -19,6 +20,7 @@ final readonly class AuthorizationMetadata
         return new self(
             public: false,
             requirements: [],
+            fingerprint: null,
         );
     }
 
@@ -35,11 +37,17 @@ final readonly class AuthorizationMetadata
         return $this->requirements;
     }
 
+    public function fingerprint(): ?string
+    {
+        return $this->fingerprint;
+    }
+
     public function payload(): AuthorizationMetadataPayload
     {
         return new AuthorizationMetadataPayload(
             public: $this->public,
             requirements: $this->requirements,
+            fingerprint: $this->fingerprint,
         );
     }
 

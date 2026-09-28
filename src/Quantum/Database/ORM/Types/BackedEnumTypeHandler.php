@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Quantum\Database\ORM\Types;
 
 use BackedEnum;
-use Quantum\Database\ORM\Metadata\EntityFieldMetadata;
+use Quantum\Database\ORM\Metadata\EntityTypedFieldInterface;
 use Quantum\Database\ORM\Types\Contracts\TypeHandlerInterface;
 use RuntimeException;
 
@@ -16,18 +16,18 @@ final readonly class BackedEnumTypeHandler implements TypeHandlerInterface
         return 'enum';
     }
 
-    public function toPhp(mixed $value, EntityFieldMetadata $field): mixed
+    public function toPhp(mixed $value, EntityTypedFieldInterface $field): mixed
     {
         if ($value === null) {
             return null;
         }
 
-        $enumClass = $field->enumClass;
+        $enumClass = $field->enumClass();
 
         if ($enumClass === null) {
             throw new RuntimeException(sprintf(
                 'Field [%s] requires an enum class declaration.',
-                $field->name,
+                $field->name(),
             ));
         }
 
@@ -38,14 +38,14 @@ final readonly class BackedEnumTypeHandler implements TypeHandlerInterface
         if (! is_subclass_of($enumClass, BackedEnum::class)) {
             throw new RuntimeException(sprintf(
                 'Enum field [%s] must use a backed enum class.',
-                $field->name,
+                $field->name(),
             ));
         }
 
         return $enumClass::from($value);
     }
 
-    public function toDatabase(mixed $value, EntityFieldMetadata $field): mixed
+    public function toDatabase(mixed $value, EntityTypedFieldInterface $field): mixed
     {
         if ($value === null) {
             return null;
@@ -56,7 +56,7 @@ final readonly class BackedEnumTypeHandler implements TypeHandlerInterface
         if (! $enum instanceof BackedEnum) {
             throw new RuntimeException(sprintf(
                 'Field [%s] expects a backed enum value.',
-                $field->name,
+                $field->name(),
             ));
         }
 

@@ -4860,6 +4860,274 @@ final class AuthManagerTest extends TestCase
         self::assertSame(200, $targetProtected->statusCode());
     }
 
+    public function test_auth_manager_managed_devices_handles_multiple_target_devices_and_scopes_for_delegated_admin(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
+            [
+                'id' => 301,
+                'identifier' => 'multi-target-a@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+            ],
+            [
+                'id' => 302,
+                'identifier' => 'multi-target-b@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '987654',
+                'type' => 'user',
+            ],
+            [
+                'id' => 303,
+                'identifier' => 'multi-delegated-admin@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'mfa_code' => '654321',
+                'type' => 'user',
+                'auth_management_authority' => 'administrative_actor',
+                'auth_management_ownership_proof' => 'delegated_session',
+                'auth_management_scopes' => ['admin_device_management'],
+                'auth_management_claims_source' => 'identity_attributes',
+                'auth_management_privilege_level' => 'delegated_support',
+            ],
+        ]);
+
+        $router = $app->make(Router::class);
+        $router->post('/target-a-login-browser', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'multi-target-a@example.com',
+                'password' => 'secret-123',
+                'second_factor' => '654321',
+            ])];
+        });
+        $router->post('/target-a-login-mobile', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'multi-target-a@example.com',
+                'password' => 'secret-123',
+                'second_factor' => '654321',
+            ])];
+        });
+        $router->post('/target-a-enroll-browser', function (): array {
+            return ['trusted' => auth()->trustCurrentDevice()];
+        });
+        $router->post('/target-b-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'multi-target-b@example.com',
+                'password' => 'secret-123',
+                'second_factor' => '987654',
+            ])];
+        });
+        $router->post('/target-b-enroll', function (): array {
+            return ['trusted' => auth()->trustCurrentDevice()];
+        });
+        $router->get('/target-a-protected', function (): array {
+            return ['check' => auth()->check()];
+        })->middleware('auth');
+        $router->get('/target-b-protected', function (): array {
+            return ['check' => auth()->check()];
+        })->middleware('auth');
+        $router->post('/delegated-login', function (): array {
+            return ['ok' => auth()->attempt([
+                'identifier' => 'multi-delegated-admin@example.com',
+                'password' => 'secret-123',
+                'second_factor' => '654321',
+            ])];
+        });
+        $router->get('/delegated-devices-a', function (): array {
+            return [
+                'devices' => array_map(static fn ($device): array => [
+                    'device_reference' => $device->deviceReference,
+                    'session_count' => $device->sessionCount,
+                    'has_trusted_device' => $device->hasTrustedDevice,
+                    'management_actor_governed' => $device->managementActorGoverned,
+                    'management_actor_authorized' => $device->managementActorAuthorized,
+                    'management_actor_authorization_mode' => $device->managementActorAuthorizationMode,
+                    'management_actor_privilege_level' => $device->managementActorPrivilegeLevel,
+                    'management_actor_can_manage_sessions' => $device->managementActorCanManageSessions,
+                    'management_actor_can_manage_trusted_devices' => $device->managementActorCanManageTrustedDevices,
+                    'management_actor_target_relation' => $device->managementActorTargetRelation,
+                    'management_actor_target_scope_relation' => $device->managementActorTargetScopeRelation,
+                    'management_target_identity' => $device->managementTargetIdentity,
+                    'management_target_matches_current_identity' => $device->managementTargetMatchesCurrentIdentity,
+                ], auth()->managedDevices('301', 'user')),
+            ];
+        });
+        $router->get('/delegated-devices-b', function (): array {
+            return [
+                'devices' => array_map(static fn ($device): array => [
+                    'device_reference' => $device->deviceReference,
+                    'session_count' => $device->sessionCount,
+                    'has_trusted_device' => $device->hasTrustedDevice,
+                    'management_actor_governed' => $device->managementActorGoverned,
+                    'management_actor_authorized' => $device->managementActorAuthorized,
+                    'management_actor_authorization_mode' => $device->managementActorAuthorizationMode,
+                    'management_actor_privilege_level' => $device->managementActorPrivilegeLevel,
+                    'management_actor_can_manage_sessions' => $device->managementActorCanManageSessions,
+                    'management_actor_can_manage_trusted_devices' => $device->managementActorCanManageTrustedDevices,
+                    'management_actor_target_relation' => $device->managementActorTargetRelation,
+                    'management_actor_target_scope_relation' => $device->managementActorTargetScopeRelation,
+                    'management_target_identity' => $device->managementTargetIdentity,
+                    'management_target_matches_current_identity' => $device->managementTargetMatchesCurrentIdentity,
+                ], auth()->managedDevices('302', 'user')),
+            ];
+        });
+        $router->post('/delegated-revoke', function (): array {
+            $request = RuntimeContext::current()?->request();
+            $identity = is_string($request?->input('identity')) ? trim((string) $request?->input('identity')) : '';
+            $deviceReference = is_string($request?->input('device_reference')) ? trim((string) $request?->input('device_reference')) : '';
+            $scope = in_array((string) $request?->input('scope'), ['all', 'sessions', 'trusted-devices'], true)
+                ? (string) $request?->input('scope')
+                : 'all';
+            return [
+                'revoked' => auth()->revokeManagedDevice($identity, $deviceReference, null, $scope),
+            ];
+        });
+
+        $kernel = $app->make(HttpKernel::class);
+
+        $targetABrowserLogin = $kernel->handle(Request::create('/target-a-login-browser', 'POST', server: [
+            'HTTP_USER_AGENT' => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
+            'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+            'REMOTE_ADDR' => '203.0.113.140',
+        ]));
+        $targetABrowserSession = $targetABrowserLogin->headers()['X-Auth-Session'] ?? null;
+        self::assertIsString($targetABrowserSession);
+
+        $targetAEnroll = $kernel->handle(Request::create('/target-a-enroll-browser', 'POST',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $targetABrowserSession],
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Safari/605.1.15',
+                'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+                'REMOTE_ADDR' => '203.0.113.140',
+            ],
+        ));
+        self::assertTrue((bool) (json_decode($targetAEnroll->content(), true, 512, JSON_THROW_ON_ERROR)['trusted'] ?? false));
+
+        $targetAMobileLogin = $kernel->handle(Request::create('/target-a-login-mobile', 'POST', server: [
+            'HTTP_USER_AGENT' => 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile/15E148',
+            'HTTP_ACCEPT_LANGUAGE' => 'en-US,en;q=0.8',
+            'REMOTE_ADDR' => '203.0.113.141',
+        ]));
+        $targetAMobileSession = $targetAMobileLogin->headers()['X-Auth-Session'] ?? null;
+        self::assertIsString($targetAMobileSession);
+
+        $targetBLogin = $kernel->handle(Request::create('/target-b-login', 'POST', server: [
+            'HTTP_USER_AGENT' => 'Mozilla/5.0 (Linux; Android 14) Chrome/128.0',
+            'HTTP_ACCEPT_LANGUAGE' => 'pt-BR,pt;q=0.9',
+            'REMOTE_ADDR' => '203.0.113.142',
+        ]));
+        $targetBSession = $targetBLogin->headers()['X-Auth-Session'] ?? null;
+        self::assertIsString($targetBSession);
+
+        $targetBEnroll = $kernel->handle(Request::create('/target-b-enroll', 'POST',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $targetBSession],
+            server: [
+                'HTTP_USER_AGENT' => 'Mozilla/5.0 (Linux; Android 14) Chrome/128.0',
+                'HTTP_ACCEPT_LANGUAGE' => 'pt-BR,pt;q=0.9',
+                'REMOTE_ADDR' => '203.0.113.142',
+            ],
+        ));
+        self::assertTrue((bool) (json_decode($targetBEnroll->content(), true, 512, JSON_THROW_ON_ERROR)['trusted'] ?? false));
+
+        $delegatedLogin = $kernel->handle(Request::create('/delegated-login', 'POST', server: [
+            'HTTP_USER_AGENT' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/128.0',
+            'HTTP_ACCEPT_LANGUAGE' => 'es-ES,es;q=0.9',
+            'REMOTE_ADDR' => '203.0.113.143',
+        ]));
+        $delegatedSessionId = $delegatedLogin->headers()['X-Auth-Session'] ?? null;
+        self::assertIsString($delegatedSessionId);
+
+        $listA = $kernel->handle(Request::create('/delegated-devices-a', 'GET',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $delegatedSessionId],
+        ));
+        $devicesA = json_decode($listA->content(), true, 512, JSON_THROW_ON_ERROR)['devices'] ?? null;
+        self::assertSame(200, $listA->statusCode());
+        self::assertIsArray($devicesA);
+        self::assertCount(2, $devicesA);
+        usort($devicesA, static fn (array $a, array $b): int => strcmp((string) $a['device_reference'], (string) $b['device_reference']));
+        self::assertTrue((bool) $devicesA[0]['management_actor_governed']);
+        self::assertTrue((bool) $devicesA[0]['management_actor_authorized']);
+        self::assertSame('delegated_admin', $devicesA[0]['management_actor_authorization_mode'] ?? null);
+        self::assertSame('delegated_support', $devicesA[0]['management_actor_privilege_level'] ?? null);
+        self::assertTrue((bool) $devicesA[0]['management_actor_can_manage_sessions']);
+        self::assertTrue((bool) $devicesA[0]['management_actor_can_manage_trusted_devices']);
+        self::assertSame('delegated_administrative_target', $devicesA[0]['management_actor_target_relation'] ?? null);
+        self::assertSame('delegated_admin_full_scope_target', $devicesA[0]['management_actor_target_scope_relation'] ?? null);
+        self::assertSame('301', $devicesA[0]['management_target_identity'] ?? null);
+        self::assertFalse((bool) $devicesA[0]['management_target_matches_current_identity']);
+
+        $listB = $kernel->handle(Request::create('/delegated-devices-b', 'GET',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $delegatedSessionId],
+        ));
+        $devicesB = json_decode($listB->content(), true, 512, JSON_THROW_ON_ERROR)['devices'] ?? null;
+        self::assertSame(200, $listB->statusCode());
+        self::assertIsArray($devicesB);
+        self::assertCount(1, $devicesB);
+        self::assertSame(1, $devicesB[0]['session_count'] ?? null);
+        self::assertTrue((bool) $devicesB[0]['has_trusted_device']);
+        self::assertSame('delegated_admin_full_scope_target', $devicesB[0]['management_actor_target_scope_relation'] ?? null);
+
+        $sessionRepository = $app->make(AuthenticationSessionRepositoryInterface::class);
+        $trustedDeviceRepository = $app->make(TrustedDeviceRepositoryInterface::class);
+        $sortedA = $devicesA;
+        usort($sortedA, static fn (array $a, array $b): int => strcmp((string) $a['device_reference'], (string) $b['device_reference']));
+        $browserDevice = current(array_values(array_filter($sortedA, static fn (array $d): bool => (bool) ($d['has_trusted_device'] ?? false))));
+        $mobileDevice = current(array_values(array_filter($sortedA, static fn (array $d): bool => ! (bool) ($d['has_trusted_device'] ?? false))));
+        self::assertIsArray($browserDevice);
+        self::assertIsArray($mobileDevice);
+        self::assertNotSame((string) $browserDevice['device_reference'], (string) $mobileDevice['device_reference']);
+        $browserRef = $browserDevice['device_reference'];
+        $mobileRef = $mobileDevice['device_reference'];
+        $targetBDevRef = $devicesB[0]['device_reference'];
+        self::assertTrue((bool) $browserDevice['has_trusted_device']);
+        self::assertFalse((bool) $mobileDevice['has_trusted_device']);
+
+        $revokeABrowserSessions = $kernel->handle(Request::create('/delegated-revoke', 'POST', [
+            'identity' => '301',
+            'device_reference' => $browserRef,
+            'scope' => 'sessions',
+        ], cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $delegatedSessionId]));
+        self::assertTrue((bool) (json_decode($revokeABrowserSessions->content(), true, 512, JSON_THROW_ON_ERROR)['revoked'] ?? false));
+        self::assertNull($sessionRepository->find($targetABrowserSession));
+        self::assertCount(1, array_filter(
+            $trustedDeviceRepository->all(),
+            static fn ($d): bool => $d->reference->identifier->value === '301' && $d->deviceReference === $browserRef,
+        ));
+
+        $revokeAMobileTrusted = $kernel->handle(Request::create('/delegated-revoke', 'POST', [
+            'identity' => '301',
+            'device_reference' => $mobileRef,
+            'scope' => 'trusted-devices',
+        ], cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $delegatedSessionId]));
+        self::assertFalse((bool) (json_decode($revokeAMobileTrusted->content(), true, 512, JSON_THROW_ON_ERROR)['revoked'] ?? true));
+        self::assertInstanceOf(AuthenticationSession::class, $sessionRepository->find($targetAMobileSession));
+
+        $revokeBAll = $kernel->handle(Request::create('/delegated-revoke', 'POST', [
+            'identity' => '302',
+            'device_reference' => $targetBDevRef,
+            'scope' => 'all',
+        ], cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $delegatedSessionId]));
+        self::assertTrue((bool) (json_decode($revokeBAll->content(), true, 512, JSON_THROW_ON_ERROR)['revoked'] ?? false));
+        self::assertNull($sessionRepository->find($targetBSession));
+        self::assertCount(0, array_filter(
+            $trustedDeviceRepository->all(),
+            static fn ($d): bool => $d->reference->identifier->value === '302' && $d->deviceReference === $targetBDevRef,
+        ));
+
+        $targetAProtected = $kernel->handle(Request::create('/target-a-protected', 'GET',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $targetABrowserSession],
+        ));
+        self::assertSame(401, $targetAProtected->statusCode());
+        $targetBProtected = $kernel->handle(Request::create('/target-b-protected', 'GET',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $targetBSession],
+        ));
+        self::assertSame(401, $targetBProtected->statusCode());
+        $targetAMobileProtected = $kernel->handle(Request::create('/target-a-protected', 'GET',
+            cookies: [AuthenticationHttpState::SESSION_COOKIE_NAME => $targetAMobileSession],
+        ));
+        self::assertSame(200, $targetAMobileProtected->statusCode());
+    }
+
     public function test_auth_facade_authenticates_and_uses_configured_cookie_name(): void
     {
         $app = new Application(sys_get_temp_dir());

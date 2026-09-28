@@ -27,14 +27,19 @@ final class AuthorizationPlanner implements AuthorizationPlannerInterface
     {
         $results = [];
         $request = $this->enrich($request);
+        $contextFingerprint = $request->context()->attribute('authorization.metadata.fingerprint');
+        $contextFingerprint = is_string($contextFingerprint) && trim($contextFingerprint) !== '' ? $contextFingerprint : null;
 
         foreach ($this->stages as $stage) {
             try {
                 foreach ($stage->evaluate($request) as $result) {
-                    $results[] = $result;
+                    $results[] = $this->applyFingerprint($result, $contextFingerprint);
                 }
             } catch (\Throwable $exception) {
-                $results[] = $this->stageFailure($stage->name(), $exception);
+                $results[] = $this->applyFingerprint(
+                    $this->stageFailure($stage->name(), $exception),
+                    $contextFingerprint,
+                );
             }
         }
 
@@ -70,5 +75,29 @@ final class AuthorizationPlanner implements AuthorizationPlannerInterface
             reasonCode: 'authorization_evaluation_failed_fail_open',
             metadata: ['exception' => $exception::class, 'message' => $exception->getMessage()],
         );
+    }
+
+    private function applyFingerprint(DecisionResult $result, ?string $fingerprint): DecisionResult
+    {
+        if ($fingerprint === null || $result->metadataFingerprint() !== null) {
+            return $result;
+        }
+
+        $reflection = new \ReflectionClass(DecisionResult::class);
+        $newInstance = $reflection->newInstanceWithoutConstructor();
+
+        foreach (['decision', 'source', 'reasonCode', 'metadata', 'metadataFingerprint'] as $propName) {
+            $prop = $reflection->getProperty($propName);
+            $prop->setAccessible(true);
+
+            if ($propName === 'metadataFingerprint') {
+                $prop->setValue($newInstance, $fingerprint);
+                continue;
+            }
+
+            $prop->setValue($newInstance, $prop->getValue($result));
+        }
+
+        return $newInstance;
     }
 }

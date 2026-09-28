@@ -6,7 +6,7 @@ namespace Quantum\Database\ORM\Types;
 
 use DateTimeImmutable;
 use DateTimeInterface;
-use Quantum\Database\ORM\Metadata\EntityFieldMetadata;
+use Quantum\Database\ORM\Metadata\EntityTypedFieldInterface;
 use Quantum\Database\ORM\Types\Contracts\TypeHandlerInterface;
 use RuntimeException;
 
@@ -17,7 +17,7 @@ final readonly class DateTimeImmutableTypeHandler implements TypeHandlerInterfac
         return 'datetime_immutable';
     }
 
-    public function toPhp(mixed $value, EntityFieldMetadata $field): mixed
+    public function toPhp(mixed $value, EntityTypedFieldInterface $field): mixed
     {
         if ($value === null || $value instanceof DateTimeImmutable) {
             return $value;
@@ -30,7 +30,7 @@ final readonly class DateTimeImmutableTypeHandler implements TypeHandlerInterfac
         if (! is_string($value) && ! is_int($value) && ! is_float($value)) {
             throw new RuntimeException(sprintf(
                 'Field [%s] expects a DateTimeImmutable-compatible value, got [%s].',
-                $field->name,
+                $field->name(),
                 get_debug_type($value),
             ));
         }
@@ -38,7 +38,7 @@ final readonly class DateTimeImmutableTypeHandler implements TypeHandlerInterfac
         return new DateTimeImmutable((string) $value);
     }
 
-    public function toDatabase(mixed $value, EntityFieldMetadata $field): mixed
+    public function toDatabase(mixed $value, EntityTypedFieldInterface $field): mixed
     {
         if ($value === null) {
             return null;
@@ -49,7 +49,7 @@ final readonly class DateTimeImmutableTypeHandler implements TypeHandlerInterfac
         if (! $date instanceof DateTimeImmutable) {
             throw new RuntimeException(sprintf(
                 'Field [%s] expects a DateTimeImmutable value, got [%s].',
-                $field->name,
+                $field->name(),
                 get_debug_type($date),
             ));
         }

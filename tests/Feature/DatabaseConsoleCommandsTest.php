@@ -13,6 +13,7 @@ final class DatabaseConsoleCommandsTest extends TestCase
     private string $basePath;
     private string $databasePath;
     private string $migrationsPath;
+    private string $seedersPath;
 
     protected function setUp(): void
     {
@@ -21,16 +22,19 @@ final class DatabaseConsoleCommandsTest extends TestCase
         $this->basePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-database-console-' . uniqid('', true);
         $this->databasePath = $this->basePath . DIRECTORY_SEPARATOR . 'database.sqlite';
         $this->migrationsPath = $this->basePath . DIRECTORY_SEPARATOR . 'database' . DIRECTORY_SEPARATOR . 'migrations';
+        $this->seedersPath = $this->basePath . DIRECTORY_SEPARATOR . 'database' . DIRECTORY_SEPARATOR . 'seeders';
 
         mkdir($this->basePath, 0777, true);
         mkdir($this->basePath . DIRECTORY_SEPARATOR . 'bootstrap', 0777, true);
         mkdir($this->basePath . DIRECTORY_SEPARATOR . 'config', 0777, true);
         mkdir($this->basePath . DIRECTORY_SEPARATOR . 'database', 0777, true);
         mkdir($this->migrationsPath, 0777, true);
+        mkdir($this->seedersPath, 0777, true);
 
         $this->writeBootstrap();
         $this->writeConfig();
         $this->writeMigration();
+        $this->writeEmptyDatabaseSeeder();
     }
 
     protected function tearDown(): void
@@ -51,6 +55,8 @@ final class DatabaseConsoleCommandsTest extends TestCase
         self::assertSame(0, $console->run(['volt', 'database:status']));
         self::assertSame(0, $console->run(['volt', 'database:rollback']));
         self::assertFalse($this->hasTable('console_items'));
+
+        self::assertSame(0, $console->run(['volt', 'database:seed', '--path=' . $this->seedersPath]));
     }
 
     private function writeBootstrap(): void
@@ -125,6 +131,20 @@ return new class implements \Quantum\Database\Migration\MigrationInterface {
     public function down(\Quantum\Database\Schema\SchemaManager $schema): void
     {
         $schema->dropIfExists('console_items');
+    }
+};
+PHP
+);
+    }
+
+    private function writeEmptyDatabaseSeeder(): void
+    {
+        file_put_contents($this->seedersPath . DIRECTORY_SEPARATOR . 'DatabaseSeeder.php', <<<'PHP'
+<?php
+
+return new class extends \Quantum\Database\Seeders\AbstractSeeder {
+    public function run(\VoltStack\Framework\Application $application): void
+    {
     }
 };
 PHP

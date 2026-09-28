@@ -8,7 +8,7 @@ use ReflectionNamedType;
 use ReflectionProperty;
 use Quantum\Database\ORM\Types\Contracts\TypeHandlerInterface;
 
-final class EntityFieldMetadata
+final class EntityFieldMetadata implements EntityTypedFieldInterface
 {
     /**
      * @param class-string<\BackedEnum>|null $enumClass
@@ -36,6 +36,26 @@ final class EntityFieldMetadata
         }
 
         return $type->getName();
+    }
+
+    public function name(): string
+    {
+        return $this->name;
+    }
+
+    public function column(): string
+    {
+        return $this->column;
+    }
+
+    public function type(): ?string
+    {
+        return $this->type;
+    }
+
+    public function enumClass(): ?string
+    {
+        return $this->enumClass;
     }
 
     public function hasValue(object $entity): bool

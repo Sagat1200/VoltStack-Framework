@@ -134,6 +134,11 @@ PHP
         self::assertSame('801', $events[0]['target']['identity'] ?? null);
         self::assertSame(2, $events[0]['summary']['revoked_sessions'] ?? null);
         self::assertSame(1, $events[0]['summary']['revoked_trusted_devices'] ?? null);
+        self::assertSame(['sessions', 'trusted-devices'], $events[0]['resource_coverage']['targeted_resource_kinds'] ?? null);
+        self::assertSame(3, $events[0]['resource_coverage']['matched_resources']['total'] ?? null);
+        self::assertSame(3, $events[0]['resource_coverage']['affected_resources']['total'] ?? null);
+        self::assertSame(['sessions', 'trusted-devices'], $events[0]['resource_coverage']['affected_resource_kinds'] ?? null);
+        self::assertFalse($events[0]['resource_coverage']['has_partial_affected_resource_coverage'] ?? true);
     }
 
     public function test_it_revokes_sessions_and_trusted_devices_for_an_aggregated_device(): void
@@ -243,6 +248,11 @@ PHP
         self::assertSame(1, $payload['summary']['matched_trusted_devices'] ?? null);
         self::assertSame(0, $payload['summary']['revoked_sessions'] ?? null);
         self::assertSame(1, $payload['summary']['revoked_trusted_devices'] ?? null);
+        self::assertSame(['trusted-devices'], $payload['resource_coverage']['targeted_resource_kinds'] ?? null);
+        self::assertSame(3, $payload['resource_coverage']['matched_resources']['total'] ?? null);
+        self::assertSame(1, $payload['resource_coverage']['affected_resources']['total'] ?? null);
+        self::assertSame(['trusted-devices'], $payload['resource_coverage']['affected_resource_kinds'] ?? null);
+        self::assertSame([], $payload['resource_coverage']['missing_targeted_resource_kinds'] ?? null);
         self::assertInstanceOf(AuthenticationSession::class, $sessions->find('session-admin-alpha'));
         self::assertInstanceOf(AuthenticationSession::class, $sessions->find('session-admin-alpha-peer'));
         self::assertNull($trustedDevices->find('tdv_admin_alpha'));
@@ -505,6 +515,12 @@ PHP
             'distributed_partial_visibility_guard_delegated_support_delegated_full_target_all_scope',
             $payload['distributed_guard_scope_decision']['reason_code'] ?? null,
         );
+        self::assertSame(['sessions', 'trusted-devices'], $payload['resource_coverage']['targeted_resource_kinds'] ?? null);
+        self::assertSame(3, $payload['resource_coverage']['matched_resources']['total'] ?? null);
+        self::assertSame(0, $payload['resource_coverage']['affected_resources']['total'] ?? null);
+        self::assertSame([], $payload['resource_coverage']['affected_resource_kinds'] ?? null);
+        self::assertSame(['fingerprint-a'], $payload['resource_coverage']['degraded_target_store_fingerprints'] ?? null);
+        self::assertTrue($payload['resource_coverage']['has_degraded_target_stores'] ?? false);
         self::assertInstanceOf(AuthenticationSession::class, $sessions->find('session-admin-alpha'));
         self::assertInstanceOf(AuthenticationSession::class, $sessions->find('session-admin-alpha-peer'));
         self::assertInstanceOf(TrustedDevice::class, $trustedDevices->find('tdv_admin_alpha'));
@@ -516,6 +532,8 @@ PHP
         self::assertSame('distributed_partial_visibility_guard_delegated_support_delegated_full_target_all_scope', $events[0]['reason_code'] ?? null);
         self::assertSame('distributed_partial_visibility_guard_delegated_support_delegated_full_target_policy', $events[0]['distributed_guard_scope_decision']['policy_reason_code'] ?? null);
         self::assertSame('delegated_admin', $events[0]['distributed_guard_scope_decision']['authorization_mode'] ?? null);
+        self::assertSame(['sessions', 'trusted-devices'], $events[0]['resource_coverage']['targeted_resource_kinds'] ?? null);
+        self::assertSame(['fingerprint-a'], $events[0]['resource_coverage']['degraded_target_store_fingerprints'] ?? null);
     }
 
     public function test_it_rejects_full_scope_when_distributed_guard_is_recent_lag_for_delegated_full_target(): void
@@ -1061,6 +1079,7 @@ PHP
         $seedNow = time();
         $app = $this->bootstrappedApplication();
         $this->seedFixtures($app, $seedNow);
+        $auditLogPath = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'audit' . DIRECTORY_SEPARATOR . 'revoke-scope-rejection.jsonl';
 
         $command = new AuthSecurityCenterRevokeDeviceCommand($this->basePath);
         $output = new Output();
@@ -1076,6 +1095,8 @@ PHP
                 '--actor-type=user',
                 '--actor-session-public-id=sess_pub_support_sessions',
                 '--scope=trusted-devices',
+                '--correlation-id=revoke-scope-corr-001',
+                '--audit-log=' . $auditLogPath,
                 '--json',
             ]),
             $output,
@@ -1088,8 +1109,58 @@ PHP
 
         self::assertSame(1, $exitCode);
         self::assertSame('unauthorized_management_actor', $payload['reason_code'] ?? null);
+        self::assertSame('authorization_failed', $payload['result'] ?? null);
+        self::assertIsString($payload['error'] ?? null);
+        self::assertNotEmpty($payload['error']);
+        self::assertSame('revoke-scope-corr-001', $payload['correlation_id'] ?? null);
+        self::assertIsString($payload['operation_id'] ?? null);
+        self::assertStringStartsWith('security-center-revoke-device-', (string) ($payload['operation_id'] ?? ''));
+        self::assertIsArray($payload['resource_coverage'] ?? null);
+        self::assertSame(['trusted-devices'], $payload['resource_coverage']['targeted_resource_kinds'] ?? null);
+        self::assertSame(0, $payload['resource_coverage']['matched_resources']['sessions'] ?? -1);
+        self::assertSame(0, $payload['resource_coverage']['matched_resources']['trusted-devices'] ?? -1);
+        self::assertSame(0, $payload['resource_coverage']['matched_resources']['total'] ?? -1);
+        self::assertSame(0, $payload['resource_coverage']['affected_resources']['sessions'] ?? -1);
+        self::assertSame(0, $payload['resource_coverage']['affected_resources']['trusted-devices'] ?? -1);
+        self::assertSame(0, $payload['resource_coverage']['affected_resources']['total'] ?? -1);
+        self::assertSame([], $payload['resource_coverage']['affected_resource_kinds'] ?? ['unexpected-kinds']);
+        self::assertSame(['trusted-devices'], $payload['resource_coverage']['missing_targeted_resource_kinds'] ?? null);
+        self::assertFalse($payload['resource_coverage']['has_partial_affected_resource_coverage'] ?? true);
+        self::assertFalse($payload['resource_coverage']['has_any_affected_resources'] ?? true);
+        self::assertSame([], $payload['resource_coverage']['target_store_fingerprints'] ?? ['not-empty']);
+        self::assertSame([], $payload['resource_coverage']['target_store_statuses'] ?? ['not-empty']);
+        self::assertSame([], $payload['resource_coverage']['degraded_target_store_fingerprints'] ?? ['not-empty']);
+        self::assertFalse($payload['resource_coverage']['has_degraded_target_stores'] ?? true);
+        self::assertIsArray($payload['target'] ?? null);
+        self::assertSame('801', $payload['target']['identity'] ?? null);
+        self::assertIsArray($payload['actor'] ?? null);
+        self::assertSame('903', $payload['actor']['identity'] ?? null);
+        self::assertSame('none', $payload['administrative_metrics']['actor_scope_profile'] ?? null);
+        self::assertIsArray($payload['operational_context'] ?? null);
+        self::assertIsArray($payload['administrative_metrics'] ?? null);
         self::assertInstanceOf(AuthenticationSession::class, $sessions->find('session-admin-beta'));
         self::assertInstanceOf(TrustedDevice::class, $trustedDevices->find('tdv_admin_beta'));
+
+        $events = $this->readAuditEvents($auditLogPath);
+        self::assertCount(1, $events);
+        self::assertSame('security_center_device_revocation_rejected', $events[0]['event'] ?? null);
+        self::assertSame('authorization_failed', $events[0]['result'] ?? null);
+        self::assertSame('unauthorized_management_actor', $events[0]['reason_code'] ?? null);
+        self::assertSame('revoke-scope-corr-001', $events[0]['correlation_id'] ?? null);
+        self::assertSame($payload['operation_id'] ?? null, $events[0]['operation_id'] ?? null);
+        self::assertIsArray($events[0]['resource_coverage'] ?? null);
+        self::assertSame(['trusted-devices'], $events[0]['resource_coverage']['targeted_resource_kinds'] ?? null);
+        self::assertSame(0, $events[0]['resource_coverage']['matched_resources']['total'] ?? -1);
+        self::assertSame(0, $events[0]['resource_coverage']['affected_resources']['total'] ?? -1);
+        self::assertSame([], $events[0]['resource_coverage']['affected_resource_kinds'] ?? ['unexpected-kinds']);
+        self::assertSame(['trusted-devices'], $events[0]['resource_coverage']['missing_targeted_resource_kinds'] ?? null);
+        self::assertFalse($events[0]['resource_coverage']['has_partial_affected_resource_coverage'] ?? true);
+        self::assertFalse($events[0]['resource_coverage']['has_any_affected_resources'] ?? true);
+        self::assertSame([], $events[0]['resource_coverage']['target_store_fingerprints'] ?? ['not-empty']);
+        self::assertSame([], $events[0]['resource_coverage']['target_store_statuses'] ?? ['not-empty']);
+        self::assertSame([], $events[0]['resource_coverage']['degraded_target_store_fingerprints'] ?? ['not-empty']);
+        self::assertFalse($events[0]['resource_coverage']['has_degraded_target_stores'] ?? true);
+        self::assertSame('903', $events[0]['actor']['identity'] ?? null);
     }
 
     public function test_it_rejects_revocation_when_actor_session_is_not_governed_for_admin_device_management(): void
@@ -1112,6 +1183,7 @@ PHP
                 '--actor-identity=802',
                 '--actor-type=user',
                 '--actor-session-public-id=sess_pub_other',
+                '--correlation-id=revoke-unauthorized-corr-002',
                 '--audit-log=' . $auditLogPath,
                 '--json',
             ]),
@@ -1125,10 +1197,36 @@ PHP
 
         self::assertSame(1, $exitCode);
         self::assertSame('unauthorized_management_actor', $payload['reason_code'] ?? null);
+        self::assertSame('authorization_failed', $payload['result'] ?? null);
         self::assertSame(
             'El actor administrativo no tiene una sesion gobernada valida para revocar dispositivos agregados.',
             $payload['error'] ?? null,
         );
+        self::assertSame('revoke-unauthorized-corr-002', $payload['correlation_id'] ?? null);
+        self::assertIsString($payload['operation_id'] ?? null);
+        self::assertStringStartsWith('security-center-revoke-device-', (string) ($payload['operation_id'] ?? ''));
+        self::assertIsArray($payload['resource_coverage'] ?? null);
+        self::assertSame(['sessions', 'trusted-devices'], $payload['resource_coverage']['targeted_resource_kinds'] ?? null);
+        self::assertSame(0, $payload['resource_coverage']['matched_resources']['sessions'] ?? -1);
+        self::assertSame(0, $payload['resource_coverage']['matched_resources']['trusted-devices'] ?? -1);
+        self::assertSame(0, $payload['resource_coverage']['matched_resources']['total'] ?? -1);
+        self::assertSame(0, $payload['resource_coverage']['affected_resources']['sessions'] ?? -1);
+        self::assertSame(0, $payload['resource_coverage']['affected_resources']['trusted-devices'] ?? -1);
+        self::assertSame(0, $payload['resource_coverage']['affected_resources']['total'] ?? -1);
+        self::assertSame([], $payload['resource_coverage']['affected_resource_kinds'] ?? ['unexpected-kinds']);
+        self::assertSame(['sessions', 'trusted-devices'], $payload['resource_coverage']['missing_targeted_resource_kinds'] ?? null);
+        self::assertFalse($payload['resource_coverage']['has_partial_affected_resource_coverage'] ?? true);
+        self::assertFalse($payload['resource_coverage']['has_any_affected_resources'] ?? true);
+        self::assertSame([], $payload['resource_coverage']['target_store_fingerprints'] ?? ['not-empty']);
+        self::assertSame([], $payload['resource_coverage']['target_store_statuses'] ?? ['not-empty']);
+        self::assertSame([], $payload['resource_coverage']['degraded_target_store_fingerprints'] ?? ['not-empty']);
+        self::assertFalse($payload['resource_coverage']['has_degraded_target_stores'] ?? true);
+        self::assertIsArray($payload['target'] ?? null);
+        self::assertSame('801', $payload['target']['identity'] ?? null);
+        self::assertIsArray($payload['actor'] ?? null);
+        self::assertSame('802', $payload['actor']['identity'] ?? null);
+        self::assertIsArray($payload['operational_context'] ?? null);
+        self::assertIsArray($payload['administrative_metrics'] ?? null);
         self::assertInstanceOf(AuthenticationSession::class, $sessions->find('session-admin-alpha'));
         self::assertInstanceOf(TrustedDevice::class, $trustedDevices->find('tdv_admin_alpha'));
 
@@ -1137,11 +1235,399 @@ PHP
         self::assertSame('security_center_device_revocation_rejected', $events[0]['event'] ?? null);
         self::assertSame('authorization_failed', $events[0]['result'] ?? null);
         self::assertSame('unauthorized_management_actor', $events[0]['reason_code'] ?? null);
+        self::assertSame('revoke-unauthorized-corr-002', $events[0]['correlation_id'] ?? null);
+        self::assertSame($payload['operation_id'] ?? null, $events[0]['operation_id'] ?? null);
         self::assertSame('authorization_failed', $events[0]['administrative_metrics']['authorization_outcome'] ?? null);
         self::assertSame('none', $events[0]['administrative_metrics']['actor_scope_profile'] ?? null);
         self::assertSame(0, $events[0]['administrative_metrics']['matched_total_resources'] ?? null);
+        self::assertIsArray($events[0]['resource_coverage'] ?? null);
+        self::assertSame(['sessions', 'trusted-devices'], $events[0]['resource_coverage']['targeted_resource_kinds'] ?? null);
+        self::assertSame(0, $events[0]['resource_coverage']['matched_resources']['total'] ?? -1);
+        self::assertSame(0, $events[0]['resource_coverage']['affected_resources']['total'] ?? -1);
+        self::assertSame([], $events[0]['resource_coverage']['affected_resource_kinds'] ?? ['unexpected-kinds']);
+        self::assertSame(['sessions', 'trusted-devices'], $events[0]['resource_coverage']['missing_targeted_resource_kinds'] ?? null);
+        self::assertFalse($events[0]['resource_coverage']['has_partial_affected_resource_coverage'] ?? true);
+        self::assertFalse($events[0]['resource_coverage']['has_any_affected_resources'] ?? true);
+        self::assertSame([], $events[0]['resource_coverage']['target_store_fingerprints'] ?? ['not-empty']);
+        self::assertSame([], $events[0]['resource_coverage']['target_store_statuses'] ?? ['not-empty']);
+        self::assertSame([], $events[0]['resource_coverage']['degraded_target_store_fingerprints'] ?? ['not-empty']);
+        self::assertFalse($events[0]['resource_coverage']['has_degraded_target_stores'] ?? true);
         self::assertSame('802', $events[0]['actor']['identity'] ?? null);
         self::assertSame('not_administrative_actor', $events[0]['actor']['management_authorization_reason_code'] ?? null);
+    }
+
+    public function test_it_rejects_early_when_identity_option_is_missing_and_emits_structured_envelope_json_and_jsonl(): void
+    {
+        $auditLogPath = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'audit' . DIRECTORY_SEPARATOR . 'reject-missing-identity.jsonl';
+
+        $command = new AuthSecurityCenterRevokeDeviceCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'auth:security-center:revoke-device',
+                '--type=user',
+                '--device-reference=devref_admin_alpha',
+                '--actor-identity=901',
+                '--actor-type=user',
+                '--actor-session-public-id=sess_pub_ops_admin',
+                '--scope=all',
+                '--correlation-id=rej-missing-identity-001',
+                '--audit-log=' . $auditLogPath,
+                '--json',
+            ]),
+            $output,
+        );
+
+        /** @var array<string, mixed> $payload */
+        $payload = json_decode($output->stdout(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(1, $exitCode);
+        self::assertSame('validation_failed', $payload['result'] ?? null);
+        self::assertSame('missing_identity', $payload['reason_code'] ?? null);
+        self::assertSame('La opcion --identity es obligatoria.', $payload['error'] ?? null);
+        self::assertSame('rej-missing-identity-001', $payload['correlation_id'] ?? null);
+        self::assertIsString($payload['operation_id'] ?? null);
+        self::assertStringStartsWith('security-center-revoke-device-', (string) ($payload['operation_id'] ?? ''));
+        self::assertIsArray($payload['resource_coverage'] ?? null);
+        self::assertSame(['sessions', 'trusted-devices'], $payload['resource_coverage']['targeted_resource_kinds'] ?? null);
+        self::assertSame(0, $payload['resource_coverage']['matched_resources']['sessions'] ?? -1);
+        self::assertSame(0, $payload['resource_coverage']['matched_resources']['trusted-devices'] ?? -1);
+        self::assertSame(0, $payload['resource_coverage']['matched_resources']['total'] ?? -1);
+        self::assertSame(0, $payload['resource_coverage']['affected_resources']['sessions'] ?? -1);
+        self::assertSame(0, $payload['resource_coverage']['affected_resources']['trusted-devices'] ?? -1);
+        self::assertSame(0, $payload['resource_coverage']['affected_resources']['total'] ?? -1);
+        self::assertSame([], $payload['resource_coverage']['affected_resource_kinds'] ?? ['unexpected-kinds']);
+        self::assertSame(['sessions', 'trusted-devices'], $payload['resource_coverage']['missing_targeted_resource_kinds'] ?? null);
+        self::assertFalse($payload['resource_coverage']['has_partial_affected_resource_coverage'] ?? true);
+        self::assertFalse($payload['resource_coverage']['has_any_affected_resources'] ?? true);
+        self::assertSame([], $payload['resource_coverage']['target_store_fingerprints'] ?? ['not-empty']);
+        self::assertSame([], $payload['resource_coverage']['target_store_statuses'] ?? ['not-empty']);
+        self::assertSame([], $payload['resource_coverage']['degraded_target_store_fingerprints'] ?? ['not-empty']);
+        self::assertFalse($payload['resource_coverage']['has_degraded_target_stores'] ?? true);
+
+        $events = $this->readAuditEvents($auditLogPath);
+        self::assertCount(1, $events);
+        self::assertSame('security_center_device_revocation_rejected', $events[0]['event'] ?? null);
+        self::assertSame('validation_failed', $events[0]['result'] ?? null);
+        self::assertSame('missing_identity', $events[0]['reason_code'] ?? null);
+        self::assertSame('rej-missing-identity-001', $events[0]['correlation_id'] ?? null);
+        self::assertSame($payload['operation_id'] ?? null, $events[0]['operation_id'] ?? null);
+        self::assertIsArray($events[0]['resource_coverage'] ?? null);
+        self::assertSame(['sessions', 'trusted-devices'], $events[0]['resource_coverage']['targeted_resource_kinds'] ?? null);
+        self::assertSame(0, $events[0]['resource_coverage']['matched_resources']['total'] ?? -1);
+        self::assertSame(0, $events[0]['resource_coverage']['affected_resources']['total'] ?? -1);
+        self::assertSame([], $events[0]['resource_coverage']['affected_resource_kinds'] ?? ['unexpected-kinds']);
+        self::assertSame(['sessions', 'trusted-devices'], $events[0]['resource_coverage']['missing_targeted_resource_kinds'] ?? null);
+        self::assertFalse($events[0]['resource_coverage']['has_partial_affected_resource_coverage'] ?? true);
+        self::assertFalse($events[0]['resource_coverage']['has_any_affected_resources'] ?? true);
+        self::assertSame([], $events[0]['resource_coverage']['target_store_fingerprints'] ?? ['not-empty']);
+        self::assertSame([], $events[0]['resource_coverage']['target_store_statuses'] ?? ['not-empty']);
+        self::assertSame([], $events[0]['resource_coverage']['degraded_target_store_fingerprints'] ?? ['not-empty']);
+        self::assertFalse($events[0]['resource_coverage']['has_degraded_target_stores'] ?? true);
+    }
+
+    public function test_it_rejects_early_when_device_reference_option_is_missing_and_emits_structured_envelope_json_and_jsonl(): void
+    {
+        $auditLogPath = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'audit' . DIRECTORY_SEPARATOR . 'reject-missing-device-reference.jsonl';
+
+        $command = new AuthSecurityCenterRevokeDeviceCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'auth:security-center:revoke-device',
+                '--identity=801',
+                '--type=user',
+                '--actor-identity=901',
+                '--actor-type=user',
+                '--actor-session-public-id=sess_pub_ops_admin',
+                '--scope=sessions',
+                '--correlation-id=rej-missing-device-ref-002',
+                '--audit-log=' . $auditLogPath,
+                '--json',
+            ]),
+            $output,
+        );
+
+        /** @var array<string, mixed> $payload */
+        $payload = json_decode($output->stdout(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(1, $exitCode);
+        self::assertSame('validation_failed', $payload['result'] ?? null);
+        self::assertSame('missing_device_reference', $payload['reason_code'] ?? null);
+        self::assertSame('La opcion --device-reference es obligatoria.', $payload['error'] ?? null);
+        self::assertSame('rej-missing-device-ref-002', $payload['correlation_id'] ?? null);
+        self::assertIsString($payload['operation_id'] ?? null);
+        self::assertStringStartsWith('security-center-revoke-device-', (string) ($payload['operation_id'] ?? ''));
+        self::assertIsArray($payload['target'] ?? null);
+        self::assertSame('801', $payload['target']['identity'] ?? null);
+        self::assertSame('user', $payload['target']['type'] ?? null);
+        self::assertIsArray($payload['resource_coverage'] ?? null);
+        self::assertSame(['sessions', 'trusted-devices'], $payload['resource_coverage']['targeted_resource_kinds'] ?? null);
+        self::assertSame(0, $payload['resource_coverage']['matched_resources']['total'] ?? -1);
+        self::assertSame(0, $payload['resource_coverage']['affected_resources']['total'] ?? -1);
+        self::assertSame([], $payload['resource_coverage']['affected_resource_kinds'] ?? ['unexpected-kinds']);
+        self::assertSame(['sessions', 'trusted-devices'], $payload['resource_coverage']['missing_targeted_resource_kinds'] ?? null);
+        self::assertFalse($payload['resource_coverage']['has_partial_affected_resource_coverage'] ?? true);
+        self::assertFalse($payload['resource_coverage']['has_any_affected_resources'] ?? true);
+        self::assertSame([], $payload['resource_coverage']['target_store_fingerprints'] ?? ['not-empty']);
+        self::assertSame([], $payload['resource_coverage']['target_store_statuses'] ?? ['not-empty']);
+        self::assertSame([], $payload['resource_coverage']['degraded_target_store_fingerprints'] ?? ['not-empty']);
+        self::assertFalse($payload['resource_coverage']['has_degraded_target_stores'] ?? true);
+
+        $events = $this->readAuditEvents($auditLogPath);
+        self::assertCount(1, $events);
+        self::assertSame('security_center_device_revocation_rejected', $events[0]['event'] ?? null);
+        self::assertSame('validation_failed', $events[0]['result'] ?? null);
+        self::assertSame('missing_device_reference', $events[0]['reason_code'] ?? null);
+        self::assertSame('rej-missing-device-ref-002', $events[0]['correlation_id'] ?? null);
+        self::assertSame($payload['operation_id'] ?? null, $events[0]['operation_id'] ?? null);
+        self::assertIsArray($events[0]['target'] ?? null);
+        self::assertSame('801', $events[0]['target']['identity'] ?? null);
+        self::assertIsArray($events[0]['resource_coverage'] ?? null);
+        self::assertSame(['sessions', 'trusted-devices'], $events[0]['resource_coverage']['targeted_resource_kinds'] ?? null);
+        self::assertSame(0, $events[0]['resource_coverage']['matched_resources']['total'] ?? -1);
+        self::assertSame(0, $events[0]['resource_coverage']['affected_resources']['total'] ?? -1);
+        self::assertSame([], $events[0]['resource_coverage']['affected_resource_kinds'] ?? ['unexpected-kinds']);
+        self::assertSame(['sessions', 'trusted-devices'], $events[0]['resource_coverage']['missing_targeted_resource_kinds'] ?? null);
+        self::assertFalse($events[0]['resource_coverage']['has_partial_affected_resource_coverage'] ?? true);
+        self::assertFalse($events[0]['resource_coverage']['has_any_affected_resources'] ?? true);
+        self::assertSame([], $events[0]['resource_coverage']['target_store_fingerprints'] ?? ['not-empty']);
+        self::assertSame([], $events[0]['resource_coverage']['target_store_statuses'] ?? ['not-empty']);
+        self::assertSame([], $events[0]['resource_coverage']['degraded_target_store_fingerprints'] ?? ['not-empty']);
+        self::assertFalse($events[0]['resource_coverage']['has_degraded_target_stores'] ?? true);
+    }
+
+    public function test_it_rejects_early_when_actor_identity_option_is_missing_and_emits_structured_envelope_json_and_jsonl(): void
+    {
+        $auditLogPath = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'audit' . DIRECTORY_SEPARATOR . 'reject-missing-actor-identity.jsonl';
+
+        $command = new AuthSecurityCenterRevokeDeviceCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'auth:security-center:revoke-device',
+                '--identity=801',
+                '--type=user',
+                '--device-reference=devref_admin_alpha',
+                '--actor-type=user',
+                '--actor-session-public-id=sess_pub_ops_admin',
+                '--scope=trusted-devices',
+                '--correlation-id=rej-missing-actor-identity-003',
+                '--audit-log=' . $auditLogPath,
+                '--json',
+            ]),
+            $output,
+        );
+
+        /** @var array<string, mixed> $payload */
+        $payload = json_decode($output->stdout(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(1, $exitCode);
+        self::assertSame('validation_failed', $payload['result'] ?? null);
+        self::assertSame('missing_actor_identity', $payload['reason_code'] ?? null);
+        self::assertSame('La opcion --actor-identity es obligatoria.', $payload['error'] ?? null);
+        self::assertSame('rej-missing-actor-identity-003', $payload['correlation_id'] ?? null);
+        self::assertIsString($payload['operation_id'] ?? null);
+        self::assertStringStartsWith('security-center-revoke-device-', (string) ($payload['operation_id'] ?? ''));
+        self::assertIsArray($payload['target'] ?? null);
+        self::assertSame('801', $payload['target']['identity'] ?? null);
+        self::assertSame('devref_admin_alpha', $payload['target']['device_reference'] ?? null);
+        self::assertIsArray($payload['resource_coverage'] ?? null);
+        self::assertSame(['sessions', 'trusted-devices'], $payload['resource_coverage']['targeted_resource_kinds'] ?? null);
+        self::assertSame(0, $payload['resource_coverage']['matched_resources']['total'] ?? -1);
+        self::assertSame(0, $payload['resource_coverage']['affected_resources']['total'] ?? -1);
+        self::assertSame([], $payload['resource_coverage']['affected_resource_kinds'] ?? ['unexpected-kinds']);
+        self::assertSame(['sessions', 'trusted-devices'], $payload['resource_coverage']['missing_targeted_resource_kinds'] ?? null);
+        self::assertFalse($payload['resource_coverage']['has_partial_affected_resource_coverage'] ?? true);
+        self::assertFalse($payload['resource_coverage']['has_any_affected_resources'] ?? true);
+        self::assertSame([], $payload['resource_coverage']['target_store_fingerprints'] ?? ['not-empty']);
+        self::assertSame([], $payload['resource_coverage']['target_store_statuses'] ?? ['not-empty']);
+        self::assertSame([], $payload['resource_coverage']['degraded_target_store_fingerprints'] ?? ['not-empty']);
+        self::assertFalse($payload['resource_coverage']['has_degraded_target_stores'] ?? true);
+
+        $events = $this->readAuditEvents($auditLogPath);
+        self::assertCount(1, $events);
+        self::assertSame('security_center_device_revocation_rejected', $events[0]['event'] ?? null);
+        self::assertSame('validation_failed', $events[0]['result'] ?? null);
+        self::assertSame('missing_actor_identity', $events[0]['reason_code'] ?? null);
+        self::assertSame('rej-missing-actor-identity-003', $events[0]['correlation_id'] ?? null);
+        self::assertSame($payload['operation_id'] ?? null, $events[0]['operation_id'] ?? null);
+        self::assertIsArray($events[0]['target'] ?? null);
+        self::assertSame('devref_admin_alpha', $events[0]['target']['device_reference'] ?? null);
+        self::assertIsArray($events[0]['resource_coverage'] ?? null);
+        self::assertSame(['sessions', 'trusted-devices'], $events[0]['resource_coverage']['targeted_resource_kinds'] ?? null);
+        self::assertSame(0, $events[0]['resource_coverage']['matched_resources']['total'] ?? -1);
+        self::assertSame(0, $events[0]['resource_coverage']['affected_resources']['total'] ?? -1);
+        self::assertSame([], $events[0]['resource_coverage']['affected_resource_kinds'] ?? ['unexpected-kinds']);
+        self::assertSame(['sessions', 'trusted-devices'], $events[0]['resource_coverage']['missing_targeted_resource_kinds'] ?? null);
+        self::assertFalse($events[0]['resource_coverage']['has_partial_affected_resource_coverage'] ?? true);
+        self::assertFalse($events[0]['resource_coverage']['has_any_affected_resources'] ?? true);
+        self::assertSame([], $events[0]['resource_coverage']['target_store_fingerprints'] ?? ['not-empty']);
+        self::assertSame([], $events[0]['resource_coverage']['target_store_statuses'] ?? ['not-empty']);
+        self::assertSame([], $events[0]['resource_coverage']['degraded_target_store_fingerprints'] ?? ['not-empty']);
+        self::assertFalse($events[0]['resource_coverage']['has_degraded_target_stores'] ?? true);
+    }
+
+    public function test_it_rejects_early_when_actor_session_public_id_option_is_missing_and_emits_structured_envelope_json_and_jsonl(): void
+    {
+        $auditLogPath = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'audit' . DIRECTORY_SEPARATOR . 'reject-missing-actor-session.jsonl';
+
+        $command = new AuthSecurityCenterRevokeDeviceCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'auth:security-center:revoke-device',
+                '--identity=801',
+                '--type=user',
+                '--device-reference=devref_admin_alpha',
+                '--actor-identity=901',
+                '--actor-type=user',
+                '--scope=all',
+                '--correlation-id=rej-missing-actor-session-004',
+                '--audit-log=' . $auditLogPath,
+                '--json',
+            ]),
+            $output,
+        );
+
+        /** @var array<string, mixed> $payload */
+        $payload = json_decode($output->stdout(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(1, $exitCode);
+        self::assertSame('validation_failed', $payload['result'] ?? null);
+        self::assertSame('missing_actor_session_public_id', $payload['reason_code'] ?? null);
+        self::assertSame('La opcion --actor-session-public-id es obligatoria.', $payload['error'] ?? null);
+        self::assertSame('rej-missing-actor-session-004', $payload['correlation_id'] ?? null);
+        self::assertIsString($payload['operation_id'] ?? null);
+        self::assertStringStartsWith('security-center-revoke-device-', (string) ($payload['operation_id'] ?? ''));
+        self::assertIsArray($payload['target'] ?? null);
+        self::assertSame('801', $payload['target']['identity'] ?? null);
+        self::assertSame('devref_admin_alpha', $payload['target']['device_reference'] ?? null);
+        self::assertIsArray($payload['actor'] ?? null);
+        self::assertSame('901', $payload['actor']['identity'] ?? null);
+        self::assertSame('user', $payload['actor']['type'] ?? null);
+        self::assertIsArray($payload['resource_coverage'] ?? null);
+        self::assertSame(['sessions', 'trusted-devices'], $payload['resource_coverage']['targeted_resource_kinds'] ?? null);
+        self::assertSame(0, $payload['resource_coverage']['matched_resources']['total'] ?? -1);
+        self::assertSame(0, $payload['resource_coverage']['affected_resources']['total'] ?? -1);
+        self::assertSame([], $payload['resource_coverage']['affected_resource_kinds'] ?? ['unexpected-kinds']);
+        self::assertSame(['sessions', 'trusted-devices'], $payload['resource_coverage']['missing_targeted_resource_kinds'] ?? null);
+        self::assertFalse($payload['resource_coverage']['has_partial_affected_resource_coverage'] ?? true);
+        self::assertFalse($payload['resource_coverage']['has_any_affected_resources'] ?? true);
+        self::assertSame([], $payload['resource_coverage']['target_store_fingerprints'] ?? ['not-empty']);
+        self::assertSame([], $payload['resource_coverage']['target_store_statuses'] ?? ['not-empty']);
+        self::assertSame([], $payload['resource_coverage']['degraded_target_store_fingerprints'] ?? ['not-empty']);
+        self::assertFalse($payload['resource_coverage']['has_degraded_target_stores'] ?? true);
+
+        $events = $this->readAuditEvents($auditLogPath);
+        self::assertCount(1, $events);
+        self::assertSame('security_center_device_revocation_rejected', $events[0]['event'] ?? null);
+        self::assertSame('validation_failed', $events[0]['result'] ?? null);
+        self::assertSame('missing_actor_session_public_id', $events[0]['reason_code'] ?? null);
+        self::assertSame('rej-missing-actor-session-004', $events[0]['correlation_id'] ?? null);
+        self::assertSame($payload['operation_id'] ?? null, $events[0]['operation_id'] ?? null);
+        self::assertIsArray($events[0]['actor'] ?? null);
+        self::assertSame('901', $events[0]['actor']['identity'] ?? null);
+        self::assertIsArray($events[0]['resource_coverage'] ?? null);
+        self::assertSame(['sessions', 'trusted-devices'], $events[0]['resource_coverage']['targeted_resource_kinds'] ?? null);
+        self::assertSame(0, $events[0]['resource_coverage']['matched_resources']['total'] ?? -1);
+        self::assertSame(0, $events[0]['resource_coverage']['affected_resources']['total'] ?? -1);
+        self::assertSame([], $events[0]['resource_coverage']['affected_resource_kinds'] ?? ['unexpected-kinds']);
+        self::assertSame(['sessions', 'trusted-devices'], $events[0]['resource_coverage']['missing_targeted_resource_kinds'] ?? null);
+        self::assertFalse($events[0]['resource_coverage']['has_partial_affected_resource_coverage'] ?? true);
+        self::assertFalse($events[0]['resource_coverage']['has_any_affected_resources'] ?? true);
+        self::assertSame([], $events[0]['resource_coverage']['target_store_fingerprints'] ?? ['not-empty']);
+        self::assertSame([], $events[0]['resource_coverage']['target_store_statuses'] ?? ['not-empty']);
+        self::assertSame([], $events[0]['resource_coverage']['degraded_target_store_fingerprints'] ?? ['not-empty']);
+        self::assertFalse($events[0]['resource_coverage']['has_degraded_target_stores'] ?? true);
+    }
+
+    public function test_it_rejects_early_when_scope_is_invalid_and_emits_structured_envelope_json_and_jsonl(): void
+    {
+        $auditLogPath = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'audit' . DIRECTORY_SEPARATOR . 'reject-invalid-scope.jsonl';
+
+        $command = new AuthSecurityCenterRevokeDeviceCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'auth:security-center:revoke-device',
+                '--identity=801',
+                '--type=user',
+                '--device-reference=devref_admin_alpha',
+                '--actor-identity=901',
+                '--actor-type=user',
+                '--actor-session-public-id=sess_pub_ops_admin',
+                '--scope=malformed-scope-value',
+                '--correlation-id=rej-invalid-scope-005',
+                '--audit-log=' . $auditLogPath,
+                '--json',
+            ]),
+            $output,
+        );
+
+        /** @var array<string, mixed> $payload */
+        $payload = json_decode($output->stdout(), true, 512, JSON_THROW_ON_ERROR);
+
+        self::assertSame(1, $exitCode);
+        self::assertSame('validation_failed', $payload['result'] ?? null);
+        self::assertSame('invalid_scope', $payload['reason_code'] ?? null);
+        self::assertSame('La opcion --scope debe ser all, sessions o trusted-devices.', $payload['error'] ?? null);
+        self::assertSame('rej-invalid-scope-005', $payload['correlation_id'] ?? null);
+        self::assertIsString($payload['operation_id'] ?? null);
+        self::assertStringStartsWith('security-center-revoke-device-', (string) ($payload['operation_id'] ?? ''));
+        self::assertIsArray($payload['target'] ?? null);
+        self::assertSame('801', $payload['target']['identity'] ?? null);
+        self::assertSame('devref_admin_alpha', $payload['target']['device_reference'] ?? null);
+        self::assertIsArray($payload['actor'] ?? null);
+        self::assertSame('901', $payload['actor']['identity'] ?? null);
+        self::assertSame('user', $payload['actor']['type'] ?? null);
+        self::assertSame('sess_pub_ops_admin', $payload['actor']['session_public_id'] ?? null);
+        self::assertIsArray($payload['resource_coverage'] ?? null);
+        self::assertSame(['sessions', 'trusted-devices'], $payload['resource_coverage']['targeted_resource_kinds'] ?? null);
+        self::assertSame(0, $payload['resource_coverage']['matched_resources']['total'] ?? -1);
+        self::assertSame(0, $payload['resource_coverage']['affected_resources']['total'] ?? -1);
+        self::assertSame([], $payload['resource_coverage']['affected_resource_kinds'] ?? ['unexpected-kinds']);
+        self::assertSame(['sessions', 'trusted-devices'], $payload['resource_coverage']['missing_targeted_resource_kinds'] ?? null);
+        self::assertFalse($payload['resource_coverage']['has_partial_affected_resource_coverage'] ?? true);
+        self::assertFalse($payload['resource_coverage']['has_any_affected_resources'] ?? true);
+        self::assertSame([], $payload['resource_coverage']['target_store_fingerprints'] ?? ['not-empty']);
+        self::assertSame([], $payload['resource_coverage']['target_store_statuses'] ?? ['not-empty']);
+        self::assertSame([], $payload['resource_coverage']['degraded_target_store_fingerprints'] ?? ['not-empty']);
+        self::assertFalse($payload['resource_coverage']['has_degraded_target_stores'] ?? true);
+
+        $events = $this->readAuditEvents($auditLogPath);
+        self::assertCount(1, $events);
+        self::assertSame('security_center_device_revocation_rejected', $events[0]['event'] ?? null);
+        self::assertSame('validation_failed', $events[0]['result'] ?? null);
+        self::assertSame('invalid_scope', $events[0]['reason_code'] ?? null);
+        self::assertSame('rej-invalid-scope-005', $events[0]['correlation_id'] ?? null);
+        self::assertSame($payload['operation_id'] ?? null, $events[0]['operation_id'] ?? null);
+        self::assertIsArray($events[0]['target'] ?? null);
+        self::assertSame('801', $events[0]['target']['identity'] ?? null);
+        self::assertIsArray($events[0]['actor'] ?? null);
+        self::assertSame('sess_pub_ops_admin', $events[0]['actor']['session_public_id'] ?? null);
+        self::assertIsArray($events[0]['resource_coverage'] ?? null);
+        self::assertSame(['sessions', 'trusted-devices'], $events[0]['resource_coverage']['targeted_resource_kinds'] ?? null);
+        self::assertSame(0, $events[0]['resource_coverage']['matched_resources']['total'] ?? -1);
+        self::assertSame(0, $events[0]['resource_coverage']['affected_resources']['total'] ?? -1);
+        self::assertSame([], $events[0]['resource_coverage']['affected_resource_kinds'] ?? ['unexpected-kinds']);
+        self::assertSame(['sessions', 'trusted-devices'], $events[0]['resource_coverage']['missing_targeted_resource_kinds'] ?? null);
+        self::assertFalse($events[0]['resource_coverage']['has_partial_affected_resource_coverage'] ?? true);
+        self::assertFalse($events[0]['resource_coverage']['has_any_affected_resources'] ?? true);
+        self::assertSame([], $events[0]['resource_coverage']['target_store_fingerprints'] ?? ['not-empty']);
+        self::assertSame([], $events[0]['resource_coverage']['target_store_statuses'] ?? ['not-empty']);
+        self::assertSame([], $events[0]['resource_coverage']['degraded_target_store_fingerprints'] ?? ['not-empty']);
+        self::assertFalse($events[0]['resource_coverage']['has_degraded_target_stores'] ?? true);
     }
 
     public function test_it_rejects_remote_revocation_when_distributed_guard_detects_store_dropout(): void
@@ -1207,6 +1693,9 @@ PHP
         self::assertSame('full', $events[0]['administrative_metrics']['actor_scope_profile'] ?? null);
         self::assertSame('contain_store_dropout', $events[0]['distributed_guard']['operational_response']['response_mode'] ?? null);
         self::assertSame('distributed_store_dropout_guard_all_scope', $events[0]['distributed_guard_scope_decision']['reason_code'] ?? null);
+        self::assertSame(['sessions', 'trusted-devices'], $events[0]['resource_coverage']['targeted_resource_kinds'] ?? null);
+        self::assertSame([], $events[0]['resource_coverage']['affected_resource_kinds'] ?? null);
+        self::assertSame(['fingerprint-a'], $events[0]['resource_coverage']['degraded_target_store_fingerprints'] ?? null);
     }
 
     public function test_it_rejects_trusted_device_scope_when_distributed_guard_is_partial_visibility(): void

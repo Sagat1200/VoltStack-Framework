@@ -439,15 +439,14 @@ PHP
         self::assertSame('aggregated_device_revocation', $payload['longitudinal_metrics']['mutation_actor_profiles'][0]['mutation_kind'] ?? null);
         self::assertSame('direct_admin', $payload['longitudinal_metrics']['mutation_actor_profiles'][0]['authorization_mode'] ?? null);
         self::assertSame('authorization_mode_scope_policy', $payload['longitudinal_metrics']['mutation_actor_profiles'][0]['policy_source'] ?? null);
+        self::assertSame(['sessions', 'trusted-devices'], $payload['longitudinal_metrics']['mutation_actor_profiles'][0]['targeted_resource_kinds'] ?? null);
         self::assertSame(2, $payload['longitudinal_metrics']['mutation_actor_profiles'][0]['affected_resources']['total'] ?? null);
-        self::assertSame(
-            ['sessions', 'trusted-devices'],
-            $payload['longitudinal_metrics']['mutation_actor_profiles'][0]['affected_resource_kinds'] ?? null,
-        );
+        self::assertSame(['sessions', 'trusted-devices'], $payload['longitudinal_metrics']['mutation_actor_profiles'][0]['affected_resource_kinds'] ?? null);
         self::assertSame(['fingerprint-a'], $payload['longitudinal_metrics']['mutation_actor_profiles'][0]['store_fingerprints'] ?? null);
         self::assertSame('session_revocation', $payload['longitudinal_metrics']['mutation_actor_profiles'][1]['mutation_kind'] ?? null);
         self::assertSame('delegated_support', $payload['longitudinal_metrics']['mutation_actor_profiles'][1]['actor_privilege_level'] ?? null);
         self::assertSame('delegated_admin_sessions_scope_target', $payload['longitudinal_metrics']['mutation_actor_profiles'][1]['actor_target_scope_relation'] ?? null);
+        self::assertSame(['sessions'], $payload['longitudinal_metrics']['mutation_actor_profiles'][1]['targeted_resource_kinds'] ?? null);
         self::assertSame(1, $payload['longitudinal_metrics']['mutation_actor_profiles'][1]['affected_resources']['sessions'] ?? null);
         self::assertSame(['sessions'], $payload['longitudinal_metrics']['mutation_actor_profiles'][1]['affected_resource_kinds'] ?? null);
         self::assertSame(
@@ -547,21 +546,18 @@ PHP
         );
         self::assertSame(
             ['sessions', 'trusted-devices'],
-            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['observed_affected_resource_kinds'] ?? null,
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['affected_resource_kinds'] ?? null,
         );
         self::assertSame(
             2,
-            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['observed_affected_resources']['total'] ?? null,
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['affected_resources']['total'] ?? null,
         );
         self::assertFalse(
-            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['has_partial_observed_resource_coverage'] ?? true,
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['has_partial_affected_resource_coverage'] ?? true,
         );
         self::assertSame(
             ['fingerprint-a'],
             $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['degraded_target_store_fingerprints'] ?? null,
-        );
-        self::assertTrue(
-            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['has_degraded_target_stores'] ?? false,
         );
         $recentLagAllActorAwareProfiles = array_values(array_filter(
             (array) ($payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['actor_aware_profiles'] ?? []),
@@ -574,6 +570,10 @@ PHP
         );
         self::assertCount(1, $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['observed_actor_profiles'] ?? []);
         self::assertSame('direct_admin', $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['observed_actor_profiles'][0]['authorization_mode'] ?? null);
+        self::assertSame(
+            ['sessions', 'trusted-devices'],
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['observed_actor_profiles'][0]['targeted_resource_kinds'] ?? null,
+        );
         self::assertSame(
             ['sessions', 'trusted-devices'],
             $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['observed_actor_profiles'][0]['affected_resource_kinds'] ?? null,
@@ -658,6 +658,14 @@ PHP
         self::assertCount(1, $events);
         self::assertSame(3, $events[0]['report']['longitudinal_metrics']['audit_event_count'] ?? null);
         self::assertSame(3, $events[0]['report']['longitudinal_metrics']['affected_resources']['total'] ?? null);
+        self::assertSame(
+            ['sessions', 'trusted-devices'],
+            $events[0]['report']['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['targeted_resource_kinds'] ?? null,
+        );
+        self::assertSame(
+            ['sessions', 'trusted-devices'],
+            $events[0]['report']['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['affected_resource_kinds'] ?? null,
+        );
         self::assertCount(2, $events[0]['report']['longitudinal_metrics']['store_cohorts'] ?? []);
         self::assertCount(3, $events[0]['report']['longitudinal_metrics']['time_windows'] ?? []);
         self::assertCount(2, $events[0]['report']['longitudinal_metrics']['store_time_windows'] ?? []);
@@ -916,22 +924,18 @@ PHP
         );
         self::assertSame(
             ['sessions'],
-            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['observed_affected_resource_kinds'] ?? null,
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['affected_resource_kinds'] ?? null,
         );
         self::assertSame(
             ['trusted-devices'],
             $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['missing_targeted_resource_kinds'] ?? null,
         );
         self::assertTrue(
-            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['has_partial_observed_resource_coverage'] ?? false,
+            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['has_partial_affected_resource_coverage'] ?? false,
         );
         self::assertSame(
             ['fingerprint-a'],
             $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['degraded_target_store_fingerprints'] ?? null,
-        );
-        self::assertSame(
-            1,
-            $payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][0]['resource_coverage']['target_store_statuses']['inactive_15m'] ?? null,
         );
         $partialTrustedActorAwareProfiles = array_values(array_filter(
             (array) ($payload['longitudinal_metrics']['activity_drift']['operational_response']['mutation_scope_profiles'][2]['actor_aware_profiles'] ?? []),
@@ -985,6 +989,488 @@ PHP
         self::assertIsArray($elevated);
         self::assertSame(['sess_pub_report_beta'], $elevated['session_public_ids'] ?? []);
         self::assertSame('tdv_report_beta', $elevated['trusted_device_public_id'] ?? null);
+    }
+
+    public function test_it_preserves_structured_envelope_correlation_chain_across_snapshot_export_and_audit_log(): void
+    {
+        $seedNow = time();
+        $app = $this->bootstrappedApplication();
+        $this->seedSecurityCenterFixtures($app, $seedNow);
+
+        $auditLogPath = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'audit' . DIRECTORY_SEPARATOR . 'dv-auth-080-harness.jsonl';
+        $exportLogPath = $this->basePath . DIRECTORY_SEPARATOR . 'var' . DIRECTORY_SEPARATOR . 'exports' . DIRECTORY_SEPARATOR . 'dv-auth-080-snapshot.jsonl';
+        $auditDir = dirname($auditLogPath);
+        if (! is_dir($auditDir)) {
+            mkdir($auditDir, 0777, true);
+        }
+        $exportDir = dirname($exportLogPath);
+        if (! is_dir($exportDir)) {
+            mkdir($exportDir, 0777, true);
+        }
+
+        $writeAuditLine = static function (array $event) use ($auditLogPath): void {
+            file_put_contents($auditLogPath, json_encode($event, JSON_THROW_ON_ERROR) . PHP_EOL, FILE_APPEND);
+        };
+
+        $writeAuditLine([
+            'event' => 'security_center_device_revocation_executed',
+            'occurred_at' => $seedNow - 360,
+            'correlation_id' => 'dv-auth-080-correlation-sessions',
+            'operation_id' => 'dv-auth-080-op-sessions-exec',
+            'result' => 'executed',
+            'reason_code' => null,
+            'operational_context' => [
+                'store_topology' => 'shared_file_store_candidate',
+                'store_fingerprint' => 'fingerprint-a',
+            ],
+            'administrative_metrics' => [
+                'requested_scope' => 'sessions',
+                'actor_scope_profile' => 'sessions_only',
+                'actor_authorization_mode' => 'delegated_admin',
+                'actor_privilege_level' => 'delegated_support',
+                'matched_total_resources' => 1,
+                'matched_sessions' => 1,
+                'matched_trusted_devices' => 0,
+                'affected_total_resources' => 1,
+            ],
+            'summary' => [
+                'revoked_sessions' => 1,
+                'revoked_trusted_devices' => 0,
+            ],
+            'resource_coverage' => [
+                'targeted_resource_kinds' => ['sessions'],
+                'matched_resources' => ['sessions' => 1, 'trusted-devices' => 0, 'total' => 1],
+                'affected_resources' => ['sessions' => 1, 'trusted-devices' => 0, 'total' => 1],
+                'affected_resource_kinds' => ['sessions'],
+                'missing_targeted_resource_kinds' => [],
+                'has_partial_affected_resource_coverage' => false,
+                'has_any_affected_resources' => true,
+                'target_store_fingerprints' => ['fingerprint-a'],
+                'target_store_statuses' => ['fingerprint-a' => 'healthy'],
+                'degraded_target_store_fingerprints' => [],
+                'has_degraded_target_stores' => false,
+            ],
+            'distributed_guard_scope_decision' => [
+                'scope' => 'sessions',
+                'mutation_kind' => 'session_revocation',
+                'authorization_mode' => 'delegated_admin',
+                'actor_privilege_level' => 'delegated_support',
+                'actor_target_relation' => 'delegated_administrative_target',
+                'actor_target_scope_relation' => 'delegated_admin_sessions_scope_target',
+                'policy_source' => 'actor_target_scope_relation_scope_policy',
+                'policy_reason_code' => null,
+                'reason_code' => null,
+            ],
+        ]);
+
+        $writeAuditLine([
+            'event' => 'security_center_device_revocation_executed',
+            'occurred_at' => $seedNow - 300,
+            'correlation_id' => 'dv-auth-080-correlation-trusted',
+            'operation_id' => 'dv-auth-080-op-trusted-exec',
+            'result' => 'executed',
+            'reason_code' => null,
+            'operational_context' => [
+                'store_topology' => 'mixed_driver_topology',
+                'store_fingerprint' => 'fingerprint-b',
+            ],
+            'administrative_metrics' => [
+                'requested_scope' => 'trusted-devices',
+                'actor_scope_profile' => 'full',
+                'actor_authorization_mode' => 'direct_admin',
+                'actor_privilege_level' => 'privileged_admin',
+                'matched_total_resources' => 2,
+                'matched_sessions' => 1,
+                'matched_trusted_devices' => 1,
+                'affected_total_resources' => 1,
+            ],
+            'summary' => [
+                'revoked_sessions' => 0,
+                'revoked_trusted_devices' => 1,
+            ],
+            'resource_coverage' => [
+                'targeted_resource_kinds' => ['trusted-devices'],
+                'matched_resources' => ['sessions' => 1, 'trusted-devices' => 1, 'total' => 2],
+                'affected_resources' => ['sessions' => 0, 'trusted-devices' => 1, 'total' => 1],
+                'affected_resource_kinds' => ['trusted-devices'],
+                'missing_targeted_resource_kinds' => [],
+                'has_partial_affected_resource_coverage' => false,
+                'has_any_affected_resources' => true,
+                'target_store_fingerprints' => ['fingerprint-b'],
+                'target_store_statuses' => ['fingerprint-b' => 'healthy'],
+                'degraded_target_store_fingerprints' => [],
+                'has_degraded_target_stores' => false,
+            ],
+            'distributed_guard_scope_decision' => [
+                'scope' => 'trusted-devices',
+                'mutation_kind' => 'trusted_device_revocation',
+                'authorization_mode' => 'direct_admin',
+                'actor_privilege_level' => 'privileged_admin',
+                'actor_target_relation' => 'direct_administrative_target',
+                'actor_target_scope_relation' => 'direct_admin_trusted_devices_scope_target',
+                'policy_source' => 'target_scope_relation_scope_policy',
+                'policy_reason_code' => null,
+                'reason_code' => null,
+            ],
+        ]);
+
+        $writeAuditLine([
+            'event' => 'security_center_device_revocation_executed',
+            'occurred_at' => $seedNow - 240,
+            'correlation_id' => 'dv-auth-080-correlation-all',
+            'operation_id' => 'dv-auth-080-op-all-exec',
+            'result' => 'executed',
+            'reason_code' => null,
+            'operational_context' => [
+                'store_topology' => 'shared_file_store_candidate',
+                'store_fingerprint' => 'fingerprint-a',
+            ],
+            'administrative_metrics' => [
+                'requested_scope' => 'all',
+                'actor_scope_profile' => 'full',
+                'actor_authorization_mode' => 'delegated_admin',
+                'actor_privilege_level' => 'delegated_administrator',
+                'matched_total_resources' => 3,
+                'matched_sessions' => 2,
+                'matched_trusted_devices' => 1,
+                'affected_total_resources' => 3,
+            ],
+            'summary' => [
+                'revoked_sessions' => 2,
+                'revoked_trusted_devices' => 1,
+            ],
+            'resource_coverage' => [
+                'targeted_resource_kinds' => ['sessions', 'trusted-devices'],
+                'matched_resources' => ['sessions' => 2, 'trusted-devices' => 1, 'total' => 3],
+                'affected_resources' => ['sessions' => 2, 'trusted-devices' => 1, 'total' => 3],
+                'affected_resource_kinds' => ['sessions', 'trusted-devices'],
+                'missing_targeted_resource_kinds' => [],
+                'has_partial_affected_resource_coverage' => false,
+                'has_any_affected_resources' => true,
+                'target_store_fingerprints' => ['fingerprint-a'],
+                'target_store_statuses' => ['fingerprint-a' => 'lagging'],
+                'degraded_target_store_fingerprints' => ['fingerprint-a'],
+                'has_degraded_target_stores' => true,
+            ],
+            'distributed_guard_scope_decision' => [
+                'scope' => 'all',
+                'mutation_kind' => 'aggregated_device_revocation',
+                'authorization_mode' => 'delegated_admin',
+                'actor_privilege_level' => 'delegated_administrator',
+                'actor_target_relation' => 'delegated_administrative_target',
+                'actor_target_scope_relation' => 'delegated_admin_full_scope_target',
+                'policy_source' => 'actor_target_scope_relation_scope_policy',
+                'policy_reason_code' => null,
+                'reason_code' => null,
+            ],
+        ]);
+
+        $writeAuditLine([
+            'event' => 'security_center_device_revocation_rejected',
+            'occurred_at' => $seedNow - 180,
+            'correlation_id' => 'dv-auth-080-correlation-validation',
+            'operation_id' => 'dv-auth-080-op-validation-fail',
+            'result' => 'validation_failed',
+            'reason_code' => 'missing_identity',
+            'operational_context' => [
+                'store_topology' => 'mixed_driver_topology',
+                'store_fingerprint' => 'fingerprint-b',
+            ],
+            'administrative_metrics' => [
+                'requested_scope' => 'all',
+                'actor_scope_profile' => 'none',
+                'actor_authorization_mode' => null,
+                'matched_total_resources' => 0,
+                'matched_sessions' => 0,
+                'matched_trusted_devices' => 0,
+                'affected_total_resources' => 0,
+            ],
+            'resource_coverage' => [
+                'targeted_resource_kinds' => [],
+                'matched_resources' => ['sessions' => 0, 'trusted-devices' => 0, 'total' => 0],
+                'affected_resources' => ['sessions' => 0, 'trusted-devices' => 0, 'total' => 0],
+                'affected_resource_kinds' => [],
+                'missing_targeted_resource_kinds' => ['sessions', 'trusted-devices'],
+                'has_partial_affected_resource_coverage' => false,
+                'has_any_affected_resources' => false,
+                'target_store_fingerprints' => ['fingerprint-b'],
+                'target_store_statuses' => ['fingerprint-b' => 'healthy'],
+                'degraded_target_store_fingerprints' => [],
+                'has_degraded_target_stores' => false,
+            ],
+            'distributed_guard_scope_decision' => [
+                'scope' => 'all',
+                'mutation_kind' => 'aggregated_device_revocation',
+                'authorization_mode' => 'none',
+                'actor_privilege_level' => null,
+                'actor_target_relation' => null,
+                'actor_target_scope_relation' => null,
+                'policy_source' => null,
+                'policy_reason_code' => null,
+                'reason_code' => null,
+            ],
+        ]);
+
+        $writeAuditLine([
+            'event' => 'security_center_device_revocation_rejected',
+            'occurred_at' => $seedNow - 120,
+            'correlation_id' => 'dv-auth-080-correlation-authz',
+            'operation_id' => 'dv-auth-080-op-authz-fail',
+            'result' => 'authorization_failed',
+            'reason_code' => 'unauthorized_management_actor',
+            'operational_context' => [
+                'store_topology' => 'shared_file_store_candidate',
+                'store_fingerprint' => 'fingerprint-a',
+            ],
+            'administrative_metrics' => [
+                'requested_scope' => 'trusted-devices',
+                'actor_scope_profile' => 'none',
+                'actor_authorization_mode' => 'none',
+                'matched_total_resources' => 2,
+                'matched_sessions' => 1,
+                'matched_trusted_devices' => 1,
+                'affected_total_resources' => 0,
+            ],
+            'resource_coverage' => [
+                'targeted_resource_kinds' => ['trusted-devices'],
+                'matched_resources' => ['sessions' => 1, 'trusted-devices' => 1, 'total' => 2],
+                'affected_resources' => ['sessions' => 0, 'trusted-devices' => 0, 'total' => 0],
+                'affected_resource_kinds' => [],
+                'missing_targeted_resource_kinds' => [],
+                'has_partial_affected_resource_coverage' => false,
+                'has_any_affected_resources' => false,
+                'target_store_fingerprints' => ['fingerprint-a'],
+                'target_store_statuses' => ['fingerprint-a' => 'healthy'],
+                'degraded_target_store_fingerprints' => [],
+                'has_degraded_target_stores' => false,
+            ],
+            'distributed_guard_scope_decision' => [
+                'scope' => 'trusted-devices',
+                'mutation_kind' => 'trusted_device_revocation',
+                'authorization_mode' => 'none',
+                'actor_privilege_level' => null,
+                'actor_target_relation' => null,
+                'actor_target_scope_relation' => null,
+                'policy_source' => 'actor_target_scope_relation_scope_policy',
+                'policy_reason_code' => 'delegated_support_no_trusted_scope',
+                'reason_code' => 'unauthorized_management_actor',
+            ],
+        ]);
+
+        $writeAuditLine([
+            'event' => 'security_center_device_revocation_denied',
+            'occurred_at' => $seedNow - 60,
+            'correlation_id' => 'dv-auth-080-correlation-guard',
+            'operation_id' => 'dv-auth-080-op-guard-denied',
+            'result' => 'distributed_guard_denied',
+            'reason_code' => 'distributed_recent_lag_guard_delegated_support_delegated_trusted_target_trusted_devices_scope',
+            'operational_context' => [
+                'store_topology' => 'shared_file_store_candidate',
+                'store_fingerprint' => 'fingerprint-a',
+            ],
+            'administrative_metrics' => [
+                'requested_scope' => 'trusted-devices',
+                'actor_scope_profile' => 'sessions_only',
+                'actor_authorization_mode' => 'delegated_admin',
+                'actor_privilege_level' => 'delegated_support',
+                'matched_total_resources' => 2,
+                'matched_sessions' => 1,
+                'matched_trusted_devices' => 1,
+                'affected_total_resources' => 0,
+            ],
+            'resource_coverage' => [
+                'targeted_resource_kinds' => ['trusted-devices'],
+                'matched_resources' => ['sessions' => 1, 'trusted-devices' => 1, 'total' => 2],
+                'affected_resources' => ['sessions' => 0, 'trusted-devices' => 0, 'total' => 0],
+                'affected_resource_kinds' => [],
+                'missing_targeted_resource_kinds' => [],
+                'has_partial_affected_resource_coverage' => false,
+                'has_any_affected_resources' => false,
+                'target_store_fingerprints' => ['fingerprint-a'],
+                'target_store_statuses' => ['fingerprint-a' => 'lagging'],
+                'degraded_target_store_fingerprints' => ['fingerprint-a'],
+                'has_degraded_target_stores' => true,
+            ],
+            'distributed_guard_scope_decision' => [
+                'scope' => 'trusted-devices',
+                'mutation_kind' => 'trusted_device_revocation',
+                'authorization_mode' => 'delegated_admin',
+                'actor_privilege_level' => 'delegated_support',
+                'actor_target_relation' => 'delegated_administrative_target',
+                'actor_target_scope_relation' => 'delegated_admin_trusted_devices_scope_target',
+                'policy_source' => 'actor_target_scope_relation_scope_policy',
+                'policy_reason_code' => 'distributed_recent_lag_guard_delegated_support_delegated_trusted_target_policy',
+                'reason_code' => 'distributed_recent_lag_guard_delegated_support_delegated_trusted_target_trusted_devices_scope',
+            ],
+        ]);
+
+        $sourceCorrelationIds = [
+            'dv-auth-080-correlation-sessions',
+            'dv-auth-080-correlation-trusted',
+            'dv-auth-080-correlation-all',
+            'dv-auth-080-correlation-validation',
+            'dv-auth-080-correlation-authz',
+            'dv-auth-080-correlation-guard',
+        ];
+        $sourceOperationIds = [
+            'dv-auth-080-op-sessions-exec',
+            'dv-auth-080-op-trusted-exec',
+            'dv-auth-080-op-all-exec',
+            'dv-auth-080-op-validation-fail',
+            'dv-auth-080-op-authz-fail',
+            'dv-auth-080-op-guard-denied',
+        ];
+
+        $command = new AuthSecurityCenterReportCommand($this->basePath);
+        $output = new Output();
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'auth:security-center:report',
+                '--now=' . $seedNow,
+                '--audit-log-source=' . $auditLogPath,
+                '--export-log=' . $exportLogPath,
+                '--correlation-id=dv-auth-080-report-run',
+                '--json',
+            ]),
+            $output,
+        );
+
+        $payload = json_decode($output->stdout(), true, 512, JSON_THROW_ON_ERROR);
+        $exportEvents = $this->readExportEvents($exportLogPath);
+        $sourceLines = file($auditLogPath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        $sourceEvents = array_values(array_map(
+            static fn (string $line): array => json_decode($line, true, 512, JSON_THROW_ON_ERROR),
+            is_array($sourceLines) ? $sourceLines : [],
+        ));
+
+        self::assertSame(0, $exitCode);
+        self::assertSame('dv-auth-080-report-run', $payload['correlation_id'] ?? null);
+        self::assertSame($auditLogPath, $payload['filters']['audit_log_source'] ?? null);
+        self::assertSame(6, $payload['longitudinal_metrics']['audit_event_count'] ?? null);
+        self::assertSame(6, $payload['longitudinal_metrics']['unique_correlation_ids'] ?? null);
+        self::assertSame(6, $payload['longitudinal_metrics']['unique_operation_ids'] ?? null);
+        self::assertSame(3, $payload['longitudinal_metrics']['outcomes']['executed'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['outcomes']['validation_failed'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['outcomes']['authorization_failed'] ?? null);
+        self::assertSame(1, $payload['longitudinal_metrics']['outcomes']['distributed_guard_denied'] ?? null);
+
+        $matchedTotal = (int) ($payload['longitudinal_metrics']['matched_resources']['total'] ?? 0);
+        $matchedSessions = (int) ($payload['longitudinal_metrics']['matched_resources']['sessions'] ?? 0);
+        $matchedTrusted = (int) ($payload['longitudinal_metrics']['matched_resources']['trusted-devices'] ?? 0);
+        $affectedTotal = (int) ($payload['longitudinal_metrics']['affected_resources']['total'] ?? 0);
+        $affectedSessions = (int) ($payload['longitudinal_metrics']['affected_resources']['sessions'] ?? 0);
+        $affectedTrusted = (int) ($payload['longitudinal_metrics']['affected_resources']['trusted-devices'] ?? 0);
+        self::assertSame(10, $matchedTotal);
+        self::assertSame(6, $matchedSessions);
+        self::assertSame(4, $matchedTrusted);
+        self::assertSame(5, $affectedTotal);
+        self::assertSame(3, $affectedSessions);
+        self::assertSame(2, $affectedTrusted);
+
+        $correlationHeader = (string) ($payload['correlation_id'] ?? '');
+        self::assertNotSame('', $correlationHeader);
+        $exportCorrelations = array_values(array_unique(array_filter(
+            array_map(
+                static fn (array $e): string => (string) ($e['report']['correlation_id'] ?? ''),
+                $exportEvents,
+            ),
+        )));
+        self::assertContains($correlationHeader, $exportCorrelations);
+
+        $sourceActualCorrelations = [];
+        $sourceActualOperations = [];
+        $sourceIndexed = [];
+        foreach ($sourceEvents as $e) {
+            $c = (string) ($e['correlation_id'] ?? '');
+            $o = (string) ($e['operation_id'] ?? '');
+            if ($c !== '') {
+                $sourceActualCorrelations[] = $c;
+            }
+            if ($o !== '') {
+                $sourceActualOperations[] = $o;
+                $sourceIndexed[$o] = $e;
+            }
+        }
+        $sourceActualCorrelations = array_values(array_unique($sourceActualCorrelations));
+        $sourceActualOperations = array_values(array_unique($sourceActualOperations));
+        sort($sourceActualCorrelations);
+        sort($sourceCorrelationIds);
+        self::assertSame($sourceCorrelationIds, $sourceActualCorrelations);
+        sort($sourceActualOperations);
+        sort($sourceOperationIds);
+        self::assertSame($sourceOperationIds, $sourceActualOperations);
+
+        $storeCohorts = $payload['longitudinal_metrics']['store_cohorts'] ?? [];
+        self::assertGreaterThanOrEqual(2, count($storeCohorts));
+        foreach ($storeCohorts as $cohort) {
+            self::assertIsInt($cohort['unique_correlation_ids'] ?? null);
+            self::assertIsInt($cohort['unique_operation_ids'] ?? null);
+        }
+
+        $exportedReports = array_map(
+            static fn (array $e): array => (array) ($e['report']['longitudinal_metrics'] ?? []),
+            $exportEvents,
+        );
+        foreach ($exportedReports as $reportMetrics) {
+            self::assertSame(10, (int) ($reportMetrics['matched_resources']['total'] ?? 0));
+            self::assertSame(5, (int) ($reportMetrics['affected_resources']['total'] ?? 0));
+            self::assertSame(6, (int) ($reportMetrics['audit_event_count'] ?? 0));
+        }
+
+        $timeWindows = $payload['longitudinal_metrics']['time_windows'] ?? [];
+        self::assertGreaterThanOrEqual(3, count($timeWindows));
+        foreach ($timeWindows as $window) {
+            self::assertArrayHasKey('matched_resources', $window);
+            self::assertArrayHasKey('sessions', $window['matched_resources'] ?? []);
+            self::assertArrayHasKey('trusted-devices', $window['matched_resources'] ?? []);
+            self::assertArrayHasKey('total', $window['matched_resources'] ?? []);
+            self::assertArrayHasKey('affected_resources', $window);
+        }
+        $storeWindows = $payload['longitudinal_metrics']['store_time_windows'] ?? [];
+        self::assertGreaterThanOrEqual(2, count($storeWindows));
+        foreach ($storeWindows as $storeWindow) {
+            foreach (($storeWindow['windows'] ?? []) as $subWindow) {
+                self::assertArrayHasKey('matched_resources', $subWindow);
+                self::assertArrayHasKey('affected_resources', $subWindow);
+            }
+        }
+
+        $mutationActorProfiles = $payload['longitudinal_metrics']['mutation_actor_profiles'] ?? [];
+        $fullScopeProfiles = array_values(array_filter(
+            $mutationActorProfiles,
+            static fn (array $p): bool => ($p['actor_target_scope_relation'] ?? null) === 'delegated_admin_full_scope_target',
+        ));
+        self::assertCount(1, $fullScopeProfiles);
+        self::assertSame(3, (int) ($fullScopeProfiles[0]['matched_resources']['total'] ?? 0));
+        self::assertSame(2, (int) ($fullScopeProfiles[0]['matched_resources']['sessions'] ?? 0));
+        self::assertSame(1, (int) ($fullScopeProfiles[0]['matched_resources']['trusted-devices'] ?? 0));
+        self::assertSame(3, (int) ($fullScopeProfiles[0]['affected_resources']['total'] ?? 0));
+
+        $sessionsScopeProfiles = array_values(array_filter(
+            $mutationActorProfiles,
+            static fn (array $p): bool => ($p['actor_target_scope_relation'] ?? null) === 'delegated_admin_sessions_scope_target',
+        ));
+        self::assertCount(1, $sessionsScopeProfiles);
+        self::assertSame(1, (int) ($sessionsScopeProfiles[0]['matched_resources']['sessions'] ?? 0));
+        self::assertSame(1, (int) ($sessionsScopeProfiles[0]['affected_resources']['sessions'] ?? 0));
+
+        $operationalResponse = $payload['longitudinal_metrics']['activity_drift']['operational_response'] ?? [];
+        $mutationScopeProfiles = $operationalResponse['mutation_scope_profiles'] ?? [];
+        $executedAggregatedProfiles = array_values(array_filter(
+            $mutationScopeProfiles,
+            static fn (array $p): bool => ($p['mutation_kind'] ?? null) === 'aggregated_device_revocation',
+        ));
+        self::assertGreaterThanOrEqual(1, count($executedAggregatedProfiles));
+        $firstAggregated = $executedAggregatedProfiles[0] ?? null;
+        self::assertIsArray($firstAggregated);
+        $matchedTotalScope = (int) ($firstAggregated['resource_coverage']['matched_resources']['total'] ?? 0);
+        $matchedSessionsScope = (int) ($firstAggregated['resource_coverage']['matched_resources']['sessions'] ?? 0);
+        $matchedTrustedScope = (int) ($firstAggregated['resource_coverage']['matched_resources']['trusted-devices'] ?? 0);
+        self::assertGreaterThanOrEqual(3, $matchedTotalScope);
+        self::assertGreaterThanOrEqual(2, $matchedSessionsScope);
+        self::assertGreaterThanOrEqual(1, $matchedTrustedScope);
+        self::assertTrue((bool) ($firstAggregated['resource_coverage']['has_any_affected_resources'] ?? false));
     }
 
     private function seedSecurityCenterFixtures(Application $app, int $seedNow): void

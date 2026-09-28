@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Quantum\Database\ORM\Types;
 
 use JsonException;
-use Quantum\Database\ORM\Metadata\EntityFieldMetadata;
+use Quantum\Database\ORM\Metadata\EntityTypedFieldInterface;
 use Quantum\Database\ORM\Types\Contracts\TypeHandlerInterface;
 use RuntimeException;
 
@@ -16,7 +16,7 @@ final readonly class JsonTypeHandler implements TypeHandlerInterface
         return 'json';
     }
 
-    public function toPhp(mixed $value, EntityFieldMetadata $field): mixed
+    public function toPhp(mixed $value, EntityTypedFieldInterface $field): mixed
     {
         if ($value === null || is_array($value)) {
             return $value;
@@ -25,7 +25,7 @@ final readonly class JsonTypeHandler implements TypeHandlerInterface
         if (! is_string($value)) {
             throw new RuntimeException(sprintf(
                 'Field [%s] expects a JSON string or array, got [%s].',
-                $field->name,
+                $field->name(),
                 get_debug_type($value),
             ));
         }
@@ -35,12 +35,12 @@ final readonly class JsonTypeHandler implements TypeHandlerInterface
         } catch (JsonException $exception) {
             throw new RuntimeException(sprintf(
                 'Field [%s] contains invalid JSON.',
-                $field->name,
+                $field->name(),
             ), previous: $exception);
         }
     }
 
-    public function toDatabase(mixed $value, EntityFieldMetadata $field): mixed
+    public function toDatabase(mixed $value, EntityTypedFieldInterface $field): mixed
     {
         if ($value === null) {
             return null;
@@ -55,7 +55,7 @@ final readonly class JsonTypeHandler implements TypeHandlerInterface
         } catch (JsonException $exception) {
             throw new RuntimeException(sprintf(
                 'Field [%s] cannot be encoded as JSON.',
-                $field->name,
+                $field->name(),
             ), previous: $exception);
         }
     }

@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Quantum\Database\ORM\Types;
 
-use Quantum\Database\ORM\Metadata\EntityFieldMetadata;
+use Quantum\Database\ORM\Metadata\EntityTypedFieldInterface;
 use Quantum\Database\ORM\Types\Contracts\TypeHandlerInterface;
 
 final readonly class ScalarTypeHandler implements TypeHandlerInterface
@@ -19,7 +19,7 @@ final readonly class ScalarTypeHandler implements TypeHandlerInterface
         return $this->type;
     }
 
-    public function toPhp(mixed $value, EntityFieldMetadata $field): mixed
+    public function toPhp(mixed $value, EntityTypedFieldInterface $field): mixed
     {
         if ($value === null) {
             return null;
@@ -34,7 +34,7 @@ final readonly class ScalarTypeHandler implements TypeHandlerInterface
         };
     }
 
-    public function toDatabase(mixed $value, EntityFieldMetadata $field): mixed
+    public function toDatabase(mixed $value, EntityTypedFieldInterface $field): mixed
     {
         return $this->toPhp($value, $field);
     }

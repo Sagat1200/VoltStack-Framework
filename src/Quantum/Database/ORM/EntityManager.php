@@ -7,6 +7,7 @@ namespace Quantum\Database\ORM;
 use Quantum\Database\Contracts\TransactionManagerInterface;
 use Quantum\Database\ORM\Contracts\EntityManagerInterface;
 use Quantum\Database\ORM\Contracts\EntityRepositoryInterface;
+use Quantum\Database\ORM\Metadata\EntityAssociationMetadata;
 use Quantum\Database\ORM\Metadata\EntityMetadata;
 use Quantum\Database\ORM\Metadata\EntityMetadataRegistry;
 use Quantum\Database\Query\Builder\DatabaseQueryManager;
@@ -20,7 +21,7 @@ final class EntityManager implements EntityManagerInterface
     private array $repositories = [];
 
     public function __construct(
-        private readonly EntityMetadataRegistry $metadata,
+        public readonly EntityMetadataRegistry $metadata,
         private readonly DatabaseQueryManager $queries,
         private readonly IdentityMap $identityMap,
         private readonly UnitOfWork $unitOfWork,
@@ -212,6 +213,73 @@ final class EntityManager implements EntityManagerInterface
         );
     }
 
+    public function loadToOne(object $entity, string $associationName): ?object
+    {
+        $metadata = $this->metadata->for($entity::class);
+        $association = $metadata->association($associationName);
+
+        if (! $association->isOwningSide()) {
+            throw new RuntimeException(sprintf(
+                'Association [%s::$%s] is not the owning side. Use loadToMany() for inverse ONE_TO_MANY associations.',
+                $metadata->className,
+                $associationName,
+            ));
+        }
+
+        $fkValue = $this->associationSourceValue($entity, $association);
+        if ($fkValue === null) {
+            $this->assignAssociationValue($entity, $association, null);
+
+            return null;
+        }
+
+        $target = $this->find($association->targetEntity, $fkValue);
+        $this->assignAssociationValue($entity, $association, $target);
+
+        return $target;
+    }
+
+    /**
+     * @return list<object>
+     */
+    public function loadToMany(object $entity, string $associationName): array
+    {
+        $metadata = $this->metadata->for($entity::class);
+        $association = $metadata->association($associationName);
+
+        if (! $association->isInverseSide()) {
+            throw new RuntimeException(sprintf(
+                'Association [%s::$%s] is not the inverse side. Use loadToOne() for owning MANY_TO_ONE associations.',
+                $metadata->className,
+                $associationName,
+            ));
+        }
+
+        $identifier = $metadata->identifierValue($entity);
+        if ($identifier === null) {
+            throw new RuntimeException(sprintf(
+                'Cannot load inverse association [%s::$%s] on an entity without an identifier.',
+                $metadata->className,
+                $associationName,
+            ));
+        }
+
+        $targetMetadata = $this->metadata->for($association->targetEntity);
+        $rows = $this->queries->table($targetMetadata->table)
+            ->where($association->targetColumn, $identifier)
+            ->get()
+            ->rows();
+
+        $results = [];
+        foreach ($rows as $row) {
+            $results[] = $this->hydrateManaged($targetMetadata, $row);
+        }
+
+        $this->assignAssociationValue($entity, $association, $results);
+
+        return $results;
+    }
+
     private function flushInsert(object $entity): void
     {
         $metadata = $this->unitOfWork->metadataFor($entity);
@@ -249,10 +317,44 @@ final class EntityManager implements EntityManagerInterface
         $original = $this->unitOfWork->snapshot($entity);
         unset($original[$metadata->identifier->name]);
 
-        foreach ($current as $field => $value) {
-            if (! array_key_exists($field, $original) || $original[$field] !== $value) {
-                $changes[$metadata->field($field)->column] = $metadata->field($field)->databaseValueFrom($value);
+        $allFields = array_unique(array_merge(array_keys($current), array_keys($original)));
+
+        foreach ($allFields as $field) {
+            $currentHasKey = array_key_exists($field, $current);
+            $originalHasKey = array_key_exists($field, $original);
+            $currentValue = $currentHasKey ? $current[$field] : null;
+            $originalValue = $originalHasKey ? $original[$field] : null;
+
+            if ($currentHasKey && $originalHasKey && $originalValue === $currentValue) {
+                continue;
             }
+
+            if ($metadata->hasField($field)) {
+                $fieldMeta = $metadata->field($field);
+                $changes[$fieldMeta->column] = $fieldMeta->databaseValueFrom($currentValue);
+
+                continue;
+            }
+
+            if (str_contains($field, '.')) {
+                [$embeddedName, $innerName] = explode('.', $field, 2);
+
+                if ($metadata->hasEmbedded($embeddedName)) {
+                    $embedded = $metadata->embedded($embeddedName);
+                    if ($embedded->hasInnerField($innerName)) {
+                        $innerField = $embedded->innerField($innerName);
+                        $changes[$innerField->column] = $innerField->databaseValueFrom($currentValue);
+
+                        continue;
+                    }
+                }
+            }
+
+            throw new RuntimeException(sprintf(
+                'Cannot compute update change for entity [%s] unknown field [%s].',
+                $metadata->className,
+                $field,
+            ));
         }
 
         if ($changes === []) {
@@ -320,5 +422,54 @@ final class EntityManager implements EntityManagerInterface
         }
 
         return $key;
+    }
+
+    private function associationSourceValue(object $entity, EntityAssociationMetadata $association): int|string|null
+    {
+        $metadata = $this->metadata->for($entity::class);
+
+        if ($association->sourceField === null || ! $metadata->hasField($association->sourceField . 'Id')) {
+            $candidate = null;
+            foreach ($metadata->mappedFields() as $field) {
+                if ($association->sourceColumn !== null && $field->column === $association->sourceColumn) {
+                    $candidate = $field;
+                    break;
+                }
+            }
+
+            if ($candidate === null && $association->sourceField !== null && $metadata->hasField($association->sourceField)) {
+                $candidate = $metadata->field($association->sourceField);
+            }
+
+            if ($candidate === null) {
+                return null;
+            }
+
+            $value = $candidate->hasValue($entity) ? $candidate->getValue($entity) : null;
+
+            if ($value === null || $value === '') {
+                return null;
+            }
+
+            return is_int($value) || is_string($value) ? $value : (string) $value;
+        }
+
+        $sourceField = $metadata->field($association->sourceField . 'Id');
+        $value = $sourceField->hasValue($entity) ? $sourceField->getValue($entity) : null;
+
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        return is_int($value) || is_string($value) ? $value : (string) $value;
+    }
+
+    private function assignAssociationValue(object $entity, EntityAssociationMetadata $association, mixed $value): void
+    {
+        $property = $association->property;
+        if (method_exists($property, 'setAccessible')) {
+            $property->setAccessible(true);
+        }
+        $property->setValue($entity, $value);
     }
 }

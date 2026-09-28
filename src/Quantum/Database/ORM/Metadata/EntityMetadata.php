@@ -12,12 +12,16 @@ final class EntityMetadata
 {
     /**
      * @param array<string, EntityFieldMetadata> $fields
+     * @param array<string, EntityAssociationMetadata> $associations
+     * @param array<string, EntityEmbeddedMetadata> $embeddeds
      */
     public function __construct(
         public readonly string $className,
         public readonly string $table,
         public readonly array $fields,
         public readonly EntityFieldMetadata $identifier,
+        public readonly array $associations = [],
+        public readonly array $embeddeds = [],
         public readonly ?string $repositoryClass = null,
     ) {
     }
@@ -41,6 +45,63 @@ final class EntityMetadata
         }
 
         return $this->fields[$name];
+    }
+
+    public function hasField(string $name): bool
+    {
+        return isset($this->fields[$name]);
+    }
+
+    /**
+     * @return list<EntityAssociationMetadata>
+     */
+    public function associations(): array
+    {
+        return array_values($this->associations);
+    }
+
+    public function association(string $name): EntityAssociationMetadata
+    {
+        if (! isset($this->associations[$name])) {
+            throw new RuntimeException(sprintf(
+                'Association [%s] is not mapped for entity [%s].',
+                $name,
+                $this->className,
+            ));
+        }
+
+        return $this->associations[$name];
+    }
+
+    public function hasAssociation(string $name): bool
+    {
+        return isset($this->associations[$name]);
+    }
+
+    /**
+     * @return list<EntityEmbeddedMetadata>
+     */
+    public function embeddeds(): array
+    {
+        return array_values($this->embeddeds);
+    }
+
+    public function embedded(string $name): EntityEmbeddedMetadata
+    {
+        if (! isset($this->embeddeds[$name])) {
+            throw new RuntimeException(sprintf(
+                'Embedded [%s] is not mapped for entity [%s].',
+                $name,
+                $this->className,
+            ));
+        }
+
+        return $this->embeddeds[$name];
+    }
+
+    public function hasEmbedded(string $name): bool
+    {
+        return isset($this->embeddeds[$name]);
     }
 
     public function newInstance(): object
@@ -108,6 +169,21 @@ final class EntityMetadata
             $values[$field->name] = $field->getValue($entity);
         }
 
+        foreach ($this->embeddeds() as $embedded) {
+            if (! $embedded->hasEmbedded($entity)) {
+                continue;
+            }
+
+            $valueObject = $embedded->getEmbedded($entity);
+            foreach ($embedded->mappedInnerFields() as $innerField) {
+                if (! $innerField->hasValue($valueObject)) {
+                    continue;
+                }
+
+                $values[$embedded->name . '.' . $innerField->name] = $innerField->getValue($valueObject);
+            }
+        }
+
         return $values;
     }
 
@@ -130,6 +206,28 @@ final class EntityMetadata
             $values[$field->column] = $field->databaseValue($entity);
         }
 
+        foreach ($this->embeddeds() as $embedded) {
+            if (! $embedded->hasEmbedded($entity)) {
+                $valueObject = null;
+            } else {
+                $valueObject = $embedded->getEmbedded($entity);
+            }
+
+            foreach ($embedded->mappedInnerFields() as $innerField) {
+                if ($valueObject === null) {
+                    $values[$innerField->column] = $innerField->databaseValueFrom(null);
+
+                    continue;
+                }
+
+                if (! $innerField->hasValue($valueObject)) {
+                    continue;
+                }
+
+                $values[$innerField->column] = $innerField->databaseValueFrom($innerField->getValue($valueObject));
+            }
+        }
+
         return $values;
     }
 
@@ -148,6 +246,43 @@ final class EntityMetadata
             }
 
             $field->setValue($entity, $row[$field->column]);
+        }
+
+        foreach ($this->embeddeds() as $embedded) {
+            $hasAnyColumn = false;
+            $allNull = true;
+            $collected = [];
+
+            foreach ($embedded->mappedInnerFields() as $innerField) {
+                if (! array_key_exists($innerField->column, $row)) {
+                    continue;
+                }
+
+                $hasAnyColumn = true;
+                $rowValue = $row[$innerField->column];
+                if ($rowValue !== null) {
+                    $allNull = false;
+                }
+                $collected[$innerField->name] = $rowValue;
+            }
+
+            if (! $hasAnyColumn) {
+                continue;
+            }
+
+            if ($allNull) {
+                $embedded->setEmbedded($entity, null);
+
+                continue;
+            }
+
+            $valueObject = $embedded->newEmbeddableInstance();
+            foreach ($collected as $innerName => $rowValue) {
+                $innerField = $embedded->innerField($innerName);
+                $innerField->setValue($valueObject, $rowValue);
+            }
+
+            $embedded->setEmbedded($entity, $valueObject);
         }
 
         return $entity;

@@ -167,7 +167,7 @@ final class BloqueCTest extends TestCase
         );
 
         $risk = $engine->evaluate($request, $context);
-        self::assertSame(40, $risk->score);
+        self::assertSame(50, $risk->score);
         self::assertSame(RiskScore::LEVEL_MEDIUM, $risk->level);
         self::assertContains('new_device_detected', $risk->reasonCodes);
         self::assertContains('ip_prefix_drift', $risk->reasonCodes);

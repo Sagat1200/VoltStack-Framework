@@ -32,4 +32,30 @@ interface OpaqueTokenRepositoryInterface
      * @return array<int, OpaqueRefreshToken>
      */
     public function listRefreshTokensForIdentity(string $identityType, string $identityId, ?int $now = null): array;
+
+    /**
+     * Marca un refresh token como consumido (one-time use).
+     * Devuelve array con consumed:bool true si se aplicó el cambio, ya_consumido:bool si previamente estaba consumed=true.
+     *
+     * @return array{consumed:bool, already_consumed:bool, previous:?OpaqueRefreshToken}
+     */
+    public function consumeRefreshToken(string $tokenId, ?int $consumedAt = null): array;
+
+    /**
+     * Localiza tokens refresh de una familia por su familyId (si el padre de familia fue reusado).
+     *
+     * @return array<int, OpaqueRefreshToken>
+     */
+    public function findRefreshTokensByFamilyId(string $familyId): array;
+
+    /**
+     * Revoca bulk todo el árbol descendiente de refresh tokens de una misma familia detectando reuse.
+     * Devuelve número de tokens revocados (incluye refresh y accesos vinculados).
+     */
+    public function revokeFamilyByReuse(string $familyId, ?int $reuseDetectedAt = null): int;
+
+    /**
+     * Asigna rotatedTo al refresh token padre tras una rotación exitosa.
+     */
+    public function markRotatedTo(string $parentRefreshTokenId, \Quantum\Auth\Tokens\TokenId $nextRefreshId): void;
 }

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quantum\Database\ORM;
 
+use Quantum\Database\ORM\Metadata\EntityAssociationMetadata;
 use Quantum\Database\ORM\Metadata\EntityMetadata;
 use RuntimeException;
 
@@ -34,6 +35,14 @@ final class UnitOfWork
      */
     private array $keys = [];
 
+    /**
+     * Original OneToMany inverse collection snapshots used by OrphanRemoval detection.
+     * Shape: spl_object_id → association_name → list<spl_object_id of each collection item>
+     *
+     * @var array<int, array<string, list<int>>>
+     */
+    private array $originalCollections = [];
+
     public function registerManaged(object $entity, EntityMetadata $metadata, EntityKey $key): void
     {
         $oid = spl_object_id($entity);
@@ -43,6 +52,7 @@ final class UnitOfWork
         $this->states[$oid] = EntityState::Managed;
         $this->snapshots[$oid] = $metadata->extract($entity);
         $this->keys[$oid] = $key;
+        $this->snapshotOneToManyCollections($entity, $metadata);
     }
 
     public function persist(object $entity, EntityMetadata $metadata, ?EntityKey $key): void
@@ -92,6 +102,7 @@ final class UnitOfWork
             $this->states[$oid],
             $this->snapshots[$oid],
             $this->keys[$oid],
+            $this->originalCollections[$oid],
         );
     }
 
@@ -161,6 +172,7 @@ final class UnitOfWork
         $this->states[$oid] = EntityState::Managed;
         $this->snapshots[$oid] = $metadata->extract($entity);
         $this->keys[$oid] = $key;
+        $this->snapshotOneToManyCollections($entity, $metadata);
     }
 
     public function clear(): void
@@ -170,6 +182,111 @@ final class UnitOfWork
         $this->states = [];
         $this->snapshots = [];
         $this->keys = [];
+        $this->originalCollections = [];
+    }
+
+    /**
+     * Capture the current identity of OneToMany inverse-side collection items
+     * for a given managed entity. Used by OrphanRemoval.
+     */
+    public function snapshotOneToManyCollections(object $entity, EntityMetadata $metadata): void
+    {
+        $oid = spl_object_id($entity);
+        $this->originalCollections[$oid] = [];
+
+        foreach ($metadata->associations() as $assoc) {
+            if (! $assoc->isOneToMany()) {
+                continue;
+            }
+
+            $this->originalCollections[$oid][$assoc->name] = $this->collectObjectIdsFromCollection(
+                $this->readOneToManyCollection($assoc, $entity),
+            );
+        }
+    }
+
+    /**
+     * Compute {removed, added} for a OneToMany inverse collection compared to
+     * its snapshot. Used by cascade REMOVE and OrphanRemoval.
+     *
+     * @return array{removed: list<object>, added: list<object>}
+     */
+    public function collectionDiff(object $entity, string $associationName): array
+    {
+        $oid = spl_object_id($entity);
+        $metadata = $this->metadataFor($entity);
+        $assoc = $metadata->association($associationName);
+
+        $current = $this->readOneToManyCollection($assoc, $entity);
+        $currentIds = $this->collectObjectIdsFromCollection($current);
+        $originalIds = $this->originalCollections[$oid][$associationName] ?? [];
+
+        $currentById = [];
+        foreach ($current as $item) {
+            $currentById[spl_object_id($item)] = $item;
+        }
+
+        $removed = [];
+        $removedIds = array_diff($originalIds, $currentIds);
+        // Items previously in the snapshot that are still alive may have been
+        // re-associated; resolve them from the identity map when still tracked.
+        foreach ($this->entities as $trackedEntity) {
+            $trackedOid = spl_object_id($trackedEntity);
+            if (in_array($trackedOid, $removedIds, true)) {
+                $removed[] = $trackedEntity;
+            }
+        }
+
+        $added = [];
+        $addedIds = array_diff($currentIds, $originalIds);
+        foreach ($addedIds as $oidAdded) {
+            if (isset($currentById[$oidAdded])) {
+                $added[] = $currentById[$oidAdded];
+            }
+        }
+
+        return [
+            'removed' => array_values($removed),
+            'added'   => array_values($added),
+        ];
+    }
+
+    /**
+     * @return iterable<object>
+     */
+    private function readOneToManyCollection(EntityAssociationMetadata $assoc, object $entity): iterable
+    {
+        $property = $assoc->property;
+        $property->setAccessible(true);
+        $raw = $property->getValue($entity);
+        if ($raw === null) {
+            return [];
+        }
+
+        if (! is_iterable($raw)) {
+            return [];
+        }
+
+        return $raw;
+    }
+
+    /**
+     * @param iterable<object> $collection
+     *
+     * @return list<int>
+     */
+    private function collectObjectIdsFromCollection(iterable $collection): array
+    {
+        $ids = [];
+        foreach ($collection as $item) {
+            if (! is_object($item)) {
+                continue;
+            }
+
+            $ids[] = spl_object_id($item);
+        }
+
+        return $ids;
     }
 
     /**

@@ -268,6 +268,20 @@ final class ControllerSecurityContextFactoryTest extends TestCase
                 return 0;
             }
 
+            public function managedDevices(string $identity, ?string $type = null): array
+            {
+                return [];
+            }
+
+            public function revokeManagedDevice(
+                string $identity,
+                string $deviceReference,
+                ?string $type = null,
+                string $scope = 'all'
+            ): bool {
+                return false;
+            }
+
             public function logout(): void {}
         };
 
@@ -384,6 +398,21 @@ final class ControllerSecurityContextFactoryTest extends TestCase
             public function revokeOtherDevices(): int { return 0; }
             public function revokeSession(string $publicId): bool { return false; }
             public function revokeOtherSessions(): int { return 0; }
+
+            public function managedDevices(string $identity, ?string $type = null): array
+            {
+                return [];
+            }
+
+            public function revokeManagedDevice(
+                string $identity,
+                string $deviceReference,
+                ?string $type = null,
+                string $scope = 'all'
+            ): bool {
+                return false;
+            }
+
             public function logout(): void {}
         };
 

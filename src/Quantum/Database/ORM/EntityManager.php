@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quantum\Database\ORM;
 
 use Quantum\Database\Contracts\TransactionManagerInterface;
+use Quantum\Database\ORM\Contracts\Cascade;
 use Quantum\Database\ORM\Contracts\EntityManagerInterface;
 use Quantum\Database\ORM\Contracts\EntityRepositoryInterface;
 use Quantum\Database\ORM\Metadata\EntityAssociationMetadata;
@@ -71,6 +72,8 @@ final class EntityManager implements EntityManagerInterface
         $this->identityMap->register($key, $entity);
         $this->unitOfWork->registerManaged($entity, $metadata, $key);
 
+        $this->dispatchLifecycle('postLoad', $entity);
+
         return $entity;
     }
 
@@ -136,10 +139,17 @@ final class EntityManager implements EntityManagerInterface
 
     public function flush(): void
     {
+        // Step 0: Apply CASCADE operations BFS (visited-guard against circular refs).
+        $this->applyCascadesBeforeFlush(Cascade::PERSIST);
+        $this->applyCascadesBeforeFlush(Cascade::REMOVE);
+
+        // Step 0.1: Collect orphans (inverse OneToMany with orphanRemoval=true).
+        $this->collectOrphansForRemoval();
+
         $operations = function (): void {
-            foreach ($this->unitOfWork->newEntities() as $entity) {
-                $this->flushInsert($entity);
-            }
+            // Insert NEW entities in dependency order so ManyToOne FK references
+            // are populated before the owning side is written to the database.
+            $this->flushNewEntitiesInDependencyOrder();
 
             foreach ($this->dirtyManagedEntities() as $entity) {
                 $this->flushUpdate($entity);
@@ -283,6 +293,10 @@ final class EntityManager implements EntityManagerInterface
     private function flushInsert(object $entity): void
     {
         $metadata = $this->unitOfWork->metadataFor($entity);
+
+        $this->dispatchLifecycle('prePersist', $entity);
+        $this->populateManyToOneForeignKeys($entity, $metadata);
+
         $values = $metadata->extractForWrite(
             $entity,
             includeIdentifier: $metadata->identifierValue($entity) !== null,
@@ -306,12 +320,17 @@ final class EntityManager implements EntityManagerInterface
         $key = $metadata->keyFor($identifier);
         $this->identityMap->register($key, $entity);
         $this->unitOfWork->synchronize($entity, $key);
+
+        $this->dispatchLifecycle('postPersist', $entity);
     }
 
     private function flushUpdate(object $entity): void
     {
         $metadata = $this->unitOfWork->metadataFor($entity);
         $key = $this->requireKey($entity);
+
+        $this->populateManyToOneForeignKeys($entity, $metadata);
+
         $changes = [];
         $current = $metadata->extract($entity, includeIdentifier: false);
         $original = $this->unitOfWork->snapshot($entity);
@@ -372,11 +391,22 @@ final class EntityManager implements EntityManagerInterface
             ));
         }
 
+        $this->dispatchLifecycle('preUpdate', $entity, [
+            'changes' => $changes,
+            'currentValues' => $current,
+            'originalSnapshot' => $original,
+        ]);
+
         $this->queries->table($metadata->table)
             ->where($metadata->identifier->column, $key->identifier)
             ->update($changes);
 
         $this->unitOfWork->synchronize($entity, $key);
+
+        $this->dispatchLifecycle('postUpdate', $entity, [
+            'changes' => $changes,
+            'currentValues' => $current,
+        ]);
     }
 
     private function flushDelete(object $entity): void
@@ -384,9 +414,13 @@ final class EntityManager implements EntityManagerInterface
         $metadata = $this->unitOfWork->metadataFor($entity);
         $key = $this->requireKey($entity);
 
+        $this->dispatchLifecycle('preRemove', $entity);
+
         $this->queries->table($metadata->table)
             ->where($metadata->identifier->column, $key->identifier)
             ->delete();
+
+        $this->dispatchLifecycle('postRemove', $entity);
 
         $this->identityMap->remove($key);
         $this->unitOfWork->detach($entity);
@@ -422,6 +456,327 @@ final class EntityManager implements EntityManagerInterface
         }
 
         return $key;
+    }
+
+    /**
+     * Internal lifecycle dispatcher. Invokes, in order:
+     *   (1) method-level entity #[Pre* / Post*] attribute callbacks
+     *   (2) class-level listeners registered via #[Entity(lifecycleListeners: [X::class])]
+     *
+     * Callbacks stored on EntityMetadata already receive (entity, em, context) as
+     * their argument list, so this routine is a simple linear traversal.
+     *
+     * @param array<string, mixed> $context
+     */
+    private function dispatchLifecycle(string $event, object $entity, array $context = []): void
+    {
+        $metadata = $this->metadata->for($entity::class);
+
+        if (! $metadata->hasCallbacks($event)) {
+            return;
+        }
+
+        foreach ($metadata->callbacksFor($event) as $callback) {
+            $callback($entity, $this, $context);
+        }
+    }
+
+    /**
+     * Apply cascade operations BFS (persist/remove) across the association graph
+     * for every entity currently enqueued in the corresponding UoW states.
+     *
+     * Uses a visited spl_object_id set to prevent infinite recursion when
+     * bidirectional associations both declare cascade on the same operation.
+     *
+     * @param string $operation One of Cascade::PERSIST or Cascade::REMOVE.
+     */
+    private function applyCascadesBeforeFlush(string $operation): void
+    {
+        if ($operation !== Cascade::PERSIST && $operation !== Cascade::REMOVE) {
+            throw new RuntimeException(sprintf(
+                'applyCascadesBeforeFlush only supports %s or %s; got [%s].',
+                Cascade::PERSIST,
+                Cascade::REMOVE,
+                $operation,
+            ));
+        }
+
+        /** @var list<object> $queue */
+        $queue = $operation === Cascade::PERSIST
+            ? array_merge($this->unitOfWork->newEntities(), $this->unitOfWork->managedEntities())
+            : $this->unitOfWork->removedEntities();
+
+        if ($queue === []) {
+            return;
+        }
+
+        $visited = [];
+        foreach ($queue as $seed) {
+            $visited[spl_object_id($seed)] = true;
+        }
+
+        while ($queue !== []) {
+            $current = array_shift($queue);
+            $metadata = $this->metadata->for($current::class);
+
+            foreach ($metadata->associations() as $assoc) {
+                $applies = match ($operation) {
+                    Cascade::PERSIST => $assoc->cascadesPersist(),
+                    Cascade::REMOVE  => $assoc->cascadesRemove(),
+                    default          => false,
+                };
+
+                if (! $applies) {
+                    continue;
+                }
+
+                $targets = $this->readAssociationTargets($current, $assoc);
+                foreach ($targets as $target) {
+                    $targetOid = spl_object_id($target);
+                    if (isset($visited[$targetOid])) {
+                        continue;
+                    }
+
+                    $visited[$targetOid] = true;
+
+                    if ($operation === Cascade::PERSIST) {
+                        if ($this->unitOfWork->state($target) === EntityState::Detached) {
+                            $this->persist($target);
+                        }
+                    } else {
+                        $state = $this->unitOfWork->state($target);
+                        if ($state === EntityState::Managed || $state === EntityState::New) {
+                            $this->remove($target);
+                        }
+                    }
+
+                    $queue[] = $target;
+                }
+            }
+        }
+    }
+
+    /**
+     * Scan every managed entity whose metadata declares a OneToMany inverse
+     * association with orphanRemoval=true, and mark as Removed any collection
+     * member that was present in the original snapshot but is no longer in the
+     * current collection.
+     */
+    private function collectOrphansForRemoval(): void
+    {
+        foreach ($this->unitOfWork->managedEntities() as $entity) {
+            $metadata = $this->metadata->for($entity::class);
+
+            foreach ($metadata->associations() as $assoc) {
+                if (! $assoc->isOneToMany() || ! $assoc->orphanRemoval) {
+                    continue;
+                }
+
+                $diff = $this->unitOfWork->collectionDiff($entity, $assoc->name);
+                foreach ($diff['removed'] as $orphan) {
+                    // V1 constraint: orphanRemoval operates only on Managed
+                    // post-flush entities. New (not yet persisted) items are
+                    // deliberately skipped to keep behaviour deterministic.
+                    if ($this->unitOfWork->state($orphan) !== EntityState::Managed) {
+                        continue;
+                    }
+
+                    $this->remove($orphan);
+                }
+            }
+        }
+    }
+
+    /**
+     * Read a single association's target entities regardless of whether it is
+     * a MANY_TO_ONE (single object) or ONE_TO_MANY (iterable).
+     *
+     * @return list<object>
+     */
+    private function readAssociationTargets(object $entity, EntityAssociationMetadata $assoc): array
+    {
+        $property = $assoc->property;
+        $property->setAccessible(true);
+        $raw = $property->getValue($entity);
+
+        if ($raw === null) {
+            return [];
+        }
+
+        if (is_object($raw) && ! $raw instanceof \Traversable) {
+            return [$raw];
+        }
+
+        if (is_array($raw)) {
+            return array_values(array_filter($raw, 'is_object'));
+        }
+
+        if ($raw instanceof \Traversable) {
+            $out = [];
+            foreach ($raw as $item) {
+                if (is_object($item)) {
+                    $out[] = $item;
+                }
+            }
+
+            return $out;
+        }
+
+        return [];
+    }
+
+    /**
+     * Insert NEW entities in topological order (dependencies first). ManyToOne
+     * owning-sides require the referenced (target) entity to have an id before
+     * the child INSERT is executed.
+     *
+     * Algorithm: repeat passes over remaining NEW entities until the queue is
+     * empty. In each pass only entities whose ManyToOne target identifiers
+     * are already available (assigned or managed-with-id) are inserted. If a
+     * full pass produces no forward progress and entities remain → circular.
+     */
+    private function flushNewEntitiesInDependencyOrder(): void
+    {
+        $remaining = $this->unitOfWork->newEntities();
+        $stallGuard = 0;
+
+        while ($remaining !== []) {
+            $stallGuard++;
+            $progress = false;
+            $next = [];
+
+            foreach ($remaining as $candidate) {
+                if ($this->newEntityIsInsertable($candidate)) {
+                    $this->flushInsert($candidate);
+                    $progress = true;
+
+                    continue;
+                }
+
+                $next[] = $candidate;
+            }
+
+            if (! $progress) {
+                throw new RuntimeException(sprintf(
+                    'Unable to resolve NEW entity insert order for [%s] classes. Circular MANY_TO_ONE reference? Remaining: %s.',
+                    count($next),
+                    implode(', ', array_map(static fn(object $o): string => $o::class, array_slice($next, 0, 5))),
+                ));
+            }
+
+            $remaining = $next;
+        }
+    }
+
+    /**
+     * Can a NEW entity be safely INSERTed right now? Answer is YES when every
+     * ManyToOne owning-side association either:
+     *   - has no target object (nullable FK), or
+     *   - target object already has a non-null identifier (already inserted
+     *     or id assigned by the user ahead of persist).
+     */
+    private function newEntityIsInsertable(object $entity): bool
+    {
+        $metadata = $this->unitOfWork->metadataFor($entity);
+
+        foreach ($metadata->associations() as $assoc) {
+            if (! $assoc->isManyToOne()) {
+                continue;
+            }
+
+            $property = $assoc->property;
+            $property->setAccessible(true);
+            $target = $property->getValue($entity);
+
+            if ($target === null) {
+                continue;
+            }
+
+            if (! is_object($target)) {
+                continue;
+            }
+
+            $targetMeta = $this->metadata->for($target::class);
+            $targetId = $targetMeta->identifierValue($target);
+            if ($targetId === null) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Before writing an entity via INSERT/UPDATE, make sure every ManyToOne
+     * owning side FK field (e.g. `postId` property) is in sync with the
+     * actual identifier value of the associated object held in the PHP
+     * reference (e.g. `$comment->post->id`).
+     *
+     * Uses the same source-field naming convention as associationSourceValue.
+     */
+    private function populateManyToOneForeignKeys(object $entity, EntityMetadata $metadata): void
+    {
+        foreach ($metadata->associations() as $assoc) {
+            if (! $assoc->isManyToOne()) {
+                continue;
+            }
+
+            $target = $this->readSingleAssociationTarget($assoc, $entity);
+            if ($target === null) {
+                continue;
+            }
+
+            $targetMeta = $this->metadata->for($target::class);
+            $targetId = $targetMeta->identifierValue($target);
+            if ($targetId === null) {
+                continue;
+            }
+
+            $this->assignOwningSideForeignKey($entity, $metadata, $assoc, $targetId);
+        }
+    }
+
+    private function readSingleAssociationTarget(EntityAssociationMetadata $assoc, object $entity): ?object
+    {
+        $property = $assoc->property;
+        $property->setAccessible(true);
+        $raw = $property->getValue($entity);
+
+        return is_object($raw) ? $raw : null;
+    }
+
+    /**
+     * @param int|string $value
+     */
+    private function assignOwningSideForeignKey(
+        object $entity,
+        EntityMetadata $metadata,
+        EntityAssociationMetadata $assoc,
+        mixed $value,
+    ): void {
+        // Naming priority (mirrors associationSourceValue helper):
+        //   1. explicit {sourceField}Id field declared on the entity
+        //   2. field whose column matches $assoc->sourceColumn
+        //   3. explicit $assoc->sourceField name directly (if exists as field)
+        if ($assoc->sourceField !== null && $metadata->hasField($assoc->sourceField . 'Id')) {
+            $metadata->field($assoc->sourceField . 'Id')->setValue($entity, $value);
+
+            return;
+        }
+
+        if ($assoc->sourceColumn !== null) {
+            foreach ($metadata->mappedFields() as $field) {
+                if ($field->column === $assoc->sourceColumn) {
+                    $field->setValue($entity, $value);
+
+                    return;
+                }
+            }
+        }
+
+        if ($assoc->sourceField !== null && $metadata->hasField($assoc->sourceField)) {
+            $metadata->field($assoc->sourceField)->setValue($entity, $value);
+        }
     }
 
     private function associationSourceValue(object $entity, EntityAssociationMetadata $association): int|string|null

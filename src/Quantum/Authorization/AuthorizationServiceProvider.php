@@ -7,10 +7,14 @@ namespace Quantum\Authorization;
 use Quantum\Auth\Contracts\AuthenticationManagerInterface;
 use Quantum\Authorization\Ability\AbilityNormalizer;
 use Quantum\Authorization\Ability\AbilityRegistry;
+use Quantum\Authorization\Authority\CachedAuthorityRepository;
 use Quantum\Authorization\Authority\InMemoryAuthorityRepository;
+use Quantum\Authorization\Authority\RequestScopedAuthorityMemoizationCache;
+use Quantum\Authorization\Bridges\ControllerSecurityPlannerBridge;
 use Quantum\Authorization\Console\Commands\AuthorizationManifestClearCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationManifestCompileCommand;
 use Quantum\Authorization\Contracts\AbilityNormalizerInterface;
+use Quantum\Authorization\Contracts\AuthorityMemoizationCacheInterface;
 use Quantum\Authorization\Contracts\AuthorityRepositoryInterface;
 use Quantum\Authorization\Contracts\AuthorizationContextFactoryInterface;
 use Quantum\Authorization\Contracts\AuthorizationManagerInterface;
@@ -53,6 +57,8 @@ final class AuthorizationServiceProvider extends ServiceProvider
         $this->registerMetadataSchemas();
         $this->registerManifestStore();
         $this->registerAuthorityRepository();
+        $this->registerMemoizationBindings();
+        $this->registerControllersSecurityBridgeBinding();
 
         $this->app->singleton(AbilityRegistry::class);
         $this->app->singleton(GateRegistry::class);
@@ -145,7 +151,14 @@ final class AuthorizationServiceProvider extends ServiceProvider
             AuthorizationPlannerInterface::class,
             fn(Application $app): AuthorizationPlannerInterface => $app->make(AuthorizationPlanner::class),
         );
-        $this->app->scoped(AuthorizationManager::class);
+        $this->app->scoped(AuthorizationManager::class, function (Application $app): AuthorizationManager {
+            return new AuthorizationManager(
+                requests: $app->make(AuthorizationRequestFactory::class),
+                planner: $app->make(AuthorizationPlannerInterface::class),
+                authority: $this->resolveAuthorityRepository($app),
+                authorityEarlyGateEnabled: $this->booleanOf($app->config('authorization.authority.early_gate_enabled', false)),
+            );
+        });
         $this->app->scoped(
             AuthorizationManagerInterface::class,
             fn(Application $app): AuthorizationManagerInterface => $app->make(AuthorizationManager::class),
@@ -190,10 +203,48 @@ final class AuthorizationServiceProvider extends ServiceProvider
             function (Application $app): AuthorityRepositoryInterface {
                 $config = $app->config('authorization.authority.grants', []);
                 $seed = is_array($config) ? $config : [];
+                $inner = new InMemoryAuthorityRepository($seed);
+                $memoize = $app->config('authorization.authority.memoize', true);
+                if (! $this->booleanOf($memoize)) {
+                    return $inner;
+                }
 
-                return new InMemoryAuthorityRepository($seed);
+                try {
+                    $cache = $app->make(AuthorityMemoizationCacheInterface::class);
+
+                    return new CachedAuthorityRepository($inner, $cache);
+                } catch (\Throwable) {
+                    return $inner;
+                }
             },
         );
+    }
+
+    private function registerMemoizationBindings(): void
+    {
+        $this->app->scoped(
+            AuthorityMemoizationCacheInterface::class,
+            static fn (): AuthorityMemoizationCacheInterface => new RequestScopedAuthorityMemoizationCache(),
+        );
+    }
+
+    private function registerControllersSecurityBridgeBinding(): void
+    {
+        if (! class_exists(ControllerSecurityPlannerBridge::class)) {
+            return;
+        }
+
+        $bridgeEnabled = $this->app->config('authorization.controllers_security.bridge.enabled', false);
+        if (! $this->booleanOf($bridgeEnabled)) {
+            return;
+        }
+
+        $this->app->scoped(ControllerSecurityPlannerBridge::class, static function (Application $app): ControllerSecurityPlannerBridge {
+            return new ControllerSecurityPlannerBridge(
+                authorization: $app->make(AuthorizationManagerInterface::class),
+                requestFactory: $app->make(AuthorizationRequestFactory::class),
+            );
+        });
     }
 
     private function resolveAuthorityRepository(Application $app): ?AuthorityRepositoryInterface
@@ -297,6 +348,13 @@ final class AuthorizationServiceProvider extends ServiceProvider
                 'enabled' => true,
                 'evaluate_requirements_concretely' => false,
                 'grants' => [],
+                'memoize' => true,
+                'early_gate_enabled' => false,
+            ],
+            'controllers_security' => [
+                'bridge' => [
+                    'enabled' => false,
+                ],
             ],
         ];
     }

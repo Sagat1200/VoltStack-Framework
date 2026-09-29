@@ -15,7 +15,14 @@ use Quantum\Database\ORM\Attributes\Entity;
 use Quantum\Database\ORM\Attributes\Id;
 use Quantum\Database\ORM\Attributes\ManyToOne;
 use Quantum\Database\ORM\Attributes\OneToMany;
+use Quantum\Database\ORM\Attributes\PostLoad;
+use Quantum\Database\ORM\Attributes\PostPersist;
+use Quantum\Database\ORM\Attributes\PrePersist;
+use Quantum\Database\ORM\Attributes\PreUpdate;
 use Quantum\Database\ORM\Attributes\RepositoryFor;
+use Quantum\Database\ORM\Attributes\Table;
+use Quantum\Database\ORM\Contracts\AbstractEntityLifecycleListener;
+use Quantum\Database\ORM\Contracts\Cascade;
 use Quantum\Database\ORM\Contracts\EntityRepositoryInterface;
 use Quantum\Database\ORM\Contracts\RepositoryFactoryInterface;
 use Quantum\Database\ORM\CustomRepositoryRegistry;
@@ -629,6 +636,235 @@ final class DatabaseOrmFeatureTest extends TestCase
         }
     }
 
+    public function test_lifecycle_callbacks_cascade_and_orphan_removal_over_sqlite(): void
+    {
+        $app = $this->makeApp();
+        $scope = $app->make(ScopeManager::class);
+        $scope->begin(Request::create('/database/orm/lifecycle-cascade-orphan', 'GET'));
+
+        try {
+            $database = $app->make(DatabaseInterface::class);
+            $em = $database->entityManager();
+
+            $database->schema()->create('orm_cascade_posts', function (TableBlueprint $t): void {
+                $t->id();
+                $t->string('title');
+                $t->boolean('published');
+                $t->string('created_by')->nullable();
+                $t->string('created_at')->nullable();
+                $t->string('updated_at')->nullable();
+            }, true);
+
+            $database->schema()->create('orm_cascade_comments', function (TableBlueprint $t): void {
+                $t->id();
+                $t->integer('post_id');
+                $t->string('body');
+                $t->string('created_at')->nullable();
+            }, true);
+
+            $database->schema()->create('orm_timestamped_posts', function (TableBlueprint $t): void {
+                $t->id();
+                $t->string('title');
+                $t->string('updated_by')->nullable();
+                $t->string('created_at')->nullable();
+                $t->string('updated_at')->nullable();
+            }, true);
+
+            OrmLifecyclePostListener::reset();
+
+            // ---- Metadata sanity checks BEFORE write (DV-DB-014 attrs wiring) ---------
+            $registry = $app->make(EntityMetadataRegistry::class);
+            $postMeta = $registry->for(OrmCascadePost::class);
+            $commentMeta = $registry->for(OrmCascadeComment::class);
+            $timestampedMeta = $registry->for(OrmLifecyclePost::class);
+
+            // Inverse OneToMany comments association on the post side.
+            $commentsAssoc = $postMeta->association('comments');
+            self::assertSame(EntityAssociationMetadata::KIND_ONE_TO_MANY, $commentsAssoc->kind, 'comments assoc is inverse OneToMany');
+            self::assertTrue($commentsAssoc->isOneToMany(), 'comments isOneToMany() === true');
+            self::assertTrue($commentsAssoc->isInverseSide(), 'comments isInverseSide() === true');
+            self::assertTrue($commentsAssoc->cascadesPersist(), 'comments cascade PERSIST flag on');
+            self::assertTrue($commentsAssoc->cascadesRemove(), 'comments cascade REMOVE flag on');
+            self::assertTrue($commentsAssoc->orphanRemoval, 'comments orphanRemoval on inverse side');
+
+            // Owning ManyToOne post association on the comment side.
+            $postAssoc = $commentMeta->association('post');
+            self::assertSame(EntityAssociationMetadata::KIND_MANY_TO_ONE, $postAssoc->kind, 'post assoc is owning ManyToOne');
+            self::assertTrue($postAssoc->isManyToOne(), 'post isManyToOne() === true');
+            self::assertTrue($postAssoc->isOwningSide(), 'post isOwningSide() === true');
+            self::assertTrue($postAssoc->cascadesPersist(), 'post cascade PERSIST on owning side');
+            self::assertFalse($postAssoc->cascadesRemove(), 'post does NOT cascade REMOVE (configured persist-only)');
+            self::assertFalse($postAssoc->orphanRemoval, 'orphanRemoval never applies to ManyToOne owning');
+
+            // Listener wiring: OrmLifecyclePost has ONLY #[PrePersist] method-level; class listener registers all 7.
+            self::assertCount(2, $timestampedMeta->callbacksFor('prePersist'), 'prePersist = 1 method-level + 1 class listener = 2');
+            self::assertCount(1, $timestampedMeta->callbacksFor('postPersist'), 'postPersist = class listener only (no method-level)');
+            self::assertCount(1, $timestampedMeta->callbacksFor('preUpdate'), 'preUpdate = class listener only');
+            self::assertCount(1, $timestampedMeta->callbacksFor('postUpdate'), 'postUpdate = class listener only');
+            self::assertCount(1, $timestampedMeta->callbacksFor('preRemove'), 'preRemove = class listener only');
+            self::assertCount(1, $timestampedMeta->callbacksFor('postRemove'), 'postRemove = class listener only');
+            self::assertCount(1, $timestampedMeta->callbacksFor('postLoad'), 'postLoad = class listener only (unused method-level)');
+            self::assertTrue($timestampedMeta->hasCallbacks('prePersist'), 'hasCallbacks true for event with callbacks');
+            self::assertFalse($timestampedMeta->hasCallbacks('unknownEvent'), 'hasCallbacks false for unknown event');
+            self::assertFalse($timestampedMeta->hasCallbacks('notAnEvent'), 'hasCallbacks false for any non-event string');
+
+            // ---- 1. CASCADE PERSIST + method-level PrePersist hooks --------------------
+            $post = new OrmCascadePost();
+            $post->title = 'My First Post';
+            $post->published = true;
+
+            $c1 = new OrmCascadeComment();
+            $c1->body = 'Comment #1';
+            $c1->post = $post;
+
+            $c2 = new OrmCascadeComment();
+            $c2->body = 'Comment #2';
+            $c2->post = $post;
+
+            $c3 = new OrmCascadeComment();
+            $c3->body = 'Comment #3';
+            $c3->post = $post;
+
+            $post->comments = [$c1, $c2, $c3];
+
+            // Persist ONLY the post; cascade=[PERSIST] on inverse OneToMany should
+            // auto-persist the 3 child comments.
+            $em->persist($post);
+            $em->flush();
+
+            self::assertNotNull($post->id, 'Post id assigned after insert');
+            self::assertIsInt($post->id, 'Post id type is int (auto increment)');
+            self::assertNotNull($c1->id, 'Comment 1 id assigned via cascade persist');
+            self::assertNotNull($c2->id, 'Comment 2 id assigned via cascade persist');
+            self::assertNotNull($c3->id, 'Comment 3 id assigned via cascade persist');
+            self::assertSame($post->id, $c1->postId, 'Comment 1 postId synchronized from object reference');
+            self::assertSame($post->id, $c2->postId, 'Comment 2 postId synchronized from object reference');
+            self::assertSame($post->id, $c3->postId, 'Comment 3 postId synchronized from object reference');
+            self::assertSame($post, $c1->post, 'Comment 1 back-reference to post kept intact');
+            self::assertSame($post, $c2->post, 'Comment 2 back-reference to post kept intact');
+            self::assertSame($post, $c3->post, 'Comment 3 back-reference to post kept intact');
+            self::assertNotNull($post->createdAt, 'method-level PrePersist on post sets createdAt');
+            self::assertInstanceOf(DateTimeImmutable::class, $post->createdAt, 'post createdAt is DateTimeImmutable instance');
+            self::assertNotNull($c1->createdAt, 'method-level PrePersist on comment 1 sets createdAt');
+            self::assertNotNull($c2->createdAt, 'method-level PrePersist on comment 2 sets createdAt');
+            self::assertNotNull($c3->createdAt, 'method-level PrePersist on comment 3 sets createdAt');
+
+            $rawPosts = $database->table('orm_cascade_posts')->count();
+            $rawComments = $database->table('orm_cascade_comments')->count();
+            self::assertSame(1, $rawPosts, '1 post inserted via explicit persist');
+            self::assertSame(3, $rawComments, '3 comments auto-inserted via cascade persist');
+            $postRow = $database->table('orm_cascade_posts')->where('id', $post->id)->first();
+            self::assertNotNull($postRow, 'Post row retrievable by id');
+            self::assertSame('My First Post', $postRow['title'] ?? null);
+            self::assertSame(1, $postRow['published'] ?? null);
+            self::assertNotNull($postRow['created_at'] ?? null, 'created_at column stored for post');
+
+            // ---- 2. ORPHAN REMOVAL: remove one item from the inverse collection --------
+            $post->comments = [$c1, $c3];
+            $em->flush();
+
+            $commentsAfter = $database->table('orm_cascade_comments')->count();
+            self::assertSame(2, $commentsAfter, '2 comments remain after orphan removal of one item');
+            $orphanRow = $database->table('orm_cascade_comments')->where('body', 'Comment #2')->first();
+            self::assertNull($orphanRow, 'Removed comment #2 no longer exists on DB (orphanRemoval=true)');
+            $comment1Row = $database->table('orm_cascade_comments')->where('id', $c1->id)->first();
+            $comment3Row = $database->table('orm_cascade_comments')->where('id', $c3->id)->first();
+            self::assertNotNull($comment1Row, 'Comment #1 still persisted');
+            self::assertNotNull($comment3Row, 'Comment #3 still persisted');
+            self::assertSame('Comment #1', $comment1Row['body'] ?? null);
+            self::assertSame('Comment #3', $comment3Row['body'] ?? null);
+            self::assertSame((string) $post->id, (string) ($comment1Row['post_id'] ?? ''), 'Kept comment 1 still references post');
+            self::assertSame((string) $post->id, (string) ($comment3Row['post_id'] ?? ''), 'Kept comment 3 still references post');
+
+            // ---- 3. LIFECYCLE method-level + class-level listeners on a timestamped post ----
+            $tPost = new OrmLifecyclePost();
+            $tPost->title = 'Callbacks!';
+            $em->persist($tPost);
+            $em->flush();
+
+            self::assertNotNull($tPost->id, 'Timestamped post id assigned');
+            self::assertIsInt($tPost->id);
+            self::assertNotNull($tPost->createdAt, 'method-level PrePersist sets createdAt');
+            self::assertNotNull($tPost->updatedAt, 'class-level listener sets updatedAt');
+            self::assertSame('listener@example.test', $tPost->updatedBy, 'class-level listener fills updatedBy');
+            self::assertInstanceOf(DateTimeImmutable::class, $tPost->createdAt);
+            self::assertInstanceOf(DateTimeImmutable::class, $tPost->updatedAt);
+
+            self::assertArrayHasKey('prePersist', OrmLifecyclePostListener::$calls, 'listener.prePersist called');
+            self::assertArrayHasKey('postPersist', OrmLifecyclePostListener::$calls, 'listener.postPersist called');
+            self::assertSame($tPost, OrmLifecyclePostListener::$calls['prePersist']['entity'], 'prePersist listener receives the right entity');
+            self::assertSame($tPost, OrmLifecyclePostListener::$calls['postPersist']['entity'], 'postPersist listener receives the right entity');
+            self::assertIsArray(OrmLifecyclePostListener::$calls['prePersist']['context'], 'listener context always array');
+            self::assertSame($em, OrmLifecyclePostListener::$calls['postPersist']['em'], 'listener receives the entity manager');
+
+            // ---- 4. PRE/POST UPDATE with changes context -------------------------------
+            $beforeUpdateAt = $tPost->updatedAt;
+            $tPost->title = 'Callbacks v2';
+            $em->flush();
+
+            self::assertNotNull($tPost->updatedAt, 'preUpdate listener should keep updatedAt set');
+            self::assertGreaterThanOrEqual($beforeUpdateAt, $tPost->updatedAt);
+            self::assertArrayHasKey('preUpdate', OrmLifecyclePostListener::$calls, 'listener.preUpdate called');
+            self::assertArrayHasKey('postUpdate', OrmLifecyclePostListener::$calls, 'listener.postUpdate called');
+            $preUpdateCtx = OrmLifecyclePostListener::$calls['preUpdate']['context'];
+            self::assertArrayHasKey('changes', $preUpdateCtx, 'preUpdate context contains changes key');
+            self::assertArrayHasKey('title', $preUpdateCtx['changes'], 'preUpdate changes includes title column');
+            self::assertSame('Callbacks v2', $preUpdateCtx['changes']['title']);
+            self::assertArrayHasKey('currentValues', $preUpdateCtx, 'preUpdate context includes currentValues field map');
+            self::assertSame('Callbacks v2', $preUpdateCtx['currentValues']['title'] ?? null);
+            self::assertArrayHasKey('originalSnapshot', $preUpdateCtx, 'preUpdate context includes originalSnapshot');
+            self::assertSame('Callbacks!', $preUpdateCtx['originalSnapshot']['title'] ?? null);
+
+            // ---- 5. CASCADE REMOVE: removing post deletes all remaining comments via cascade REMOVE ----
+            $em->remove($post);
+            $em->flush();
+
+            $rowsPost = $database->table('orm_cascade_posts')->count();
+            $rowsComments = $database->table('orm_cascade_comments')->count();
+            self::assertSame(0, $rowsPost, 'post removed via explicit em.remove');
+            self::assertSame(0, $rowsComments, 'comments removed via cascade REMOVE');
+            self::assertFalse($em->contains($post), 'post no longer in UoW after remove+detach');
+            self::assertFalse($em->contains($c1), 'comment1 no longer in UoW after cascade remove');
+            self::assertFalse($em->contains($c3), 'comment3 no longer in UoW after cascade remove');
+
+            // ---- 6. POSTLOAD after hydration through find: clear identity map to force a real DB load ----
+            $em->clear();
+            $tPostReload = $em->find(OrmLifecyclePost::class, $tPost->id);
+            self::assertInstanceOf(OrmLifecyclePost::class, $tPostReload);
+            self::assertNotSame($tPost, $tPostReload, 'clear forced a fresh hydration through find, not cached instance');
+            self::assertSame($tPost->id, $tPostReload->id, 'newly hydrated post retains the same id');
+            self::assertSame('Callbacks v2', $tPostReload->title, 'hydrated post retains the updated title');
+            self::assertNotNull($tPostReload->createdAt, 'hydrated post keeps createdAt from DB');
+            self::assertNotNull($tPostReload->updatedAt, 'hydrated post keeps updatedAt from DB');
+            self::assertSame('listener@example.test', $tPostReload->updatedBy, 'hydrated post keeps updatedBy from DB');
+            self::assertArrayHasKey('postLoad', OrmLifecyclePostListener::$calls, 'class-level listener postLoad invoked on find/hydrate after clear');
+            self::assertSame($tPostReload, OrmLifecyclePostListener::$calls['postLoad']['entity'], 'postLoad listener receives the newly hydrated entity');
+
+            // ---- 7. Backward compat: plain entities without DV-DB-014 attrs remain 100% unchanged ----
+            $bareTagMeta = $registry->for(OrmTag::class);
+            $tagAllCallbacks = 0;
+            foreach (\Quantum\Database\ORM\Metadata\EntityMetadata::KNOWN_LIFECYCLE_EVENTS as $ev) {
+                $tagAllCallbacks += count($bareTagMeta->callbacksFor($ev));
+            }
+            self::assertSame(0, $tagAllCallbacks, 'Plain OrmTag without lifecycle attrs registers zero callbacks across all 7 events');
+
+            $bareUserMeta = $registry->for(OrmUser::class);
+            $userAllCallbacks = 0;
+            foreach (\Quantum\Database\ORM\Metadata\EntityMetadata::KNOWN_LIFECYCLE_EVENTS as $ev) {
+                $userAllCallbacks += count($bareUserMeta->callbacksFor($ev));
+            }
+            self::assertSame(0, $userAllCallbacks, 'Plain OrmUser without lifecycle attrs also registers zero callbacks');
+            // All existing OneToMany/ManyToOne associations on old fixtures default to cascade=[] + orphan=false.
+            foreach ($bareUserMeta->associations() as $bareAssoc) {
+                self::assertFalse($bareAssoc->cascadesPersist());
+                self::assertFalse($bareAssoc->cascadesRemove());
+                self::assertFalse($bareAssoc->orphanRemoval);
+            }
+        } finally {
+            $scope->end();
+        }
+    }
+
     private function deleteDirectory(string $path): void
     {
         if (! is_dir($path)) {
@@ -819,5 +1055,177 @@ final class OrmProductRepository extends EntityRepository
     public function label(): string
     {
         return 'sku-based-lookup';
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * DV-DB-014 Fixtures para Lifecycle + Cascade + OrphanRemoval feature test.
+ * ------------------------------------------------------------------------- */
+
+#[Entity]
+#[Table(name: 'orm_cascade_posts')]
+final class OrmCascadePost
+{
+    #[Id]
+    public ?int $id = null;
+
+    #[Column]
+    public string $title;
+
+    #[Column]
+    public bool $published;
+
+    #[Column(name: 'created_by')]
+    public ?string $createdBy = null;
+
+    #[Column(name: 'created_at', type: 'datetime_immutable')]
+    public ?DateTimeImmutable $createdAt = null;
+
+    #[Column(name: 'updated_at', type: 'datetime_immutable')]
+    public ?DateTimeImmutable $updatedAt = null;
+
+    /** @var list<OrmCascadeComment> */
+    #[OneToMany(
+        targetEntity: OrmCascadeComment::class,
+        mappedBy: 'post',
+        cascade: [Cascade::PERSIST, Cascade::REMOVE],
+        orphanRemoval: true,
+    )]
+    public array $comments = [];
+
+    #[PrePersist]
+    public function stampCreatedAt(): void
+    {
+        if ($this->createdAt === null) {
+            $this->createdAt = new DateTimeImmutable();
+        }
+    }
+}
+
+#[Entity]
+#[Table(name: 'orm_cascade_comments')]
+final class OrmCascadeComment
+{
+    #[Id]
+    public ?int $id = null;
+
+    #[Column(name: 'post_id')]
+    public int $postId;
+
+    #[Column]
+    public string $body;
+
+    #[Column(name: 'created_at', type: 'datetime_immutable')]
+    public ?DateTimeImmutable $createdAt = null;
+
+    #[ManyToOne(
+        targetEntity: OrmCascadePost::class,
+        inversedBy: 'comments',
+        cascade: [Cascade::PERSIST],
+    )]
+    public ?OrmCascadePost $post = null;
+
+    #[PrePersist]
+    public function stampCreatedAt(): void
+    {
+        if ($this->createdAt === null) {
+            $this->createdAt = new DateTimeImmutable();
+        }
+    }
+}
+
+#[Entity(lifecycleListeners: [OrmLifecyclePostListener::class])]
+#[Table(name: 'orm_timestamped_posts')]
+final class OrmLifecyclePost
+{
+    #[Id]
+    public ?int $id = null;
+
+    #[Column]
+    public string $title;
+
+    #[Column(name: 'updated_by')]
+    public ?string $updatedBy = null;
+
+    #[Column(name: 'created_at', type: 'datetime_immutable')]
+    public ?DateTimeImmutable $createdAt = null;
+
+    #[Column(name: 'updated_at', type: 'datetime_immutable')]
+    public ?DateTimeImmutable $updatedAt = null;
+
+    #[PrePersist]
+    public function stampCreatedAt(): void
+    {
+        if ($this->createdAt === null) {
+            $this->createdAt = new DateTimeImmutable();
+        }
+    }
+}
+
+final class OrmLifecyclePostListener extends AbstractEntityLifecycleListener
+{
+    /**
+     * @var array<string, array{entity:object, em:object, context:array<string, mixed>}>
+     */
+    public static array $calls = [];
+
+    public static function reset(): void
+    {
+        self::$calls = [];
+    }
+
+    public function prePersist(object $entity, object $entityManager, array $context = []): void
+    {
+        self::record('prePersist', $entity, $entityManager, $context);
+        if ($entity instanceof OrmLifecyclePost) {
+            $entity->updatedAt = new DateTimeImmutable();
+            $entity->updatedBy = 'listener@example.test';
+        }
+    }
+
+    public function postPersist(object $entity, object $entityManager, array $context = []): void
+    {
+        self::record('postPersist', $entity, $entityManager, $context);
+    }
+
+    public function preUpdate(object $entity, object $entityManager, array $context = []): void
+    {
+        self::record('preUpdate', $entity, $entityManager, $context);
+        if ($entity instanceof OrmLifecyclePost) {
+            $entity->updatedAt = new DateTimeImmutable();
+            $entity->updatedBy = 'listener@example.test';
+        }
+    }
+
+    public function postUpdate(object $entity, object $entityManager, array $context = []): void
+    {
+        self::record('postUpdate', $entity, $entityManager, $context);
+    }
+
+    public function preRemove(object $entity, object $entityManager, array $context = []): void
+    {
+        self::record('preRemove', $entity, $entityManager, $context);
+    }
+
+    public function postRemove(object $entity, object $entityManager, array $context = []): void
+    {
+        self::record('postRemove', $entity, $entityManager, $context);
+    }
+
+    public function postLoad(object $entity, object $entityManager, array $context = []): void
+    {
+        self::record('postLoad', $entity, $entityManager, $context);
+    }
+
+    /**
+     * @param array<string, mixed> $context
+     */
+    private static function record(string $event, object $entity, object $entityManager, array $context): void
+    {
+        self::$calls[$event] = [
+            'entity'  => $entity,
+            'em'      => $entityManager,
+            'context' => $context,
+        ];
     }
 }

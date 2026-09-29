@@ -7,6 +7,7 @@ namespace Quantum\Authorization\Core;
 use Quantum\Authorization\Contracts\AuthorizationEvaluationStageInterface;
 use Quantum\Authorization\Contracts\AuthorizationPlannerInterface;
 use Quantum\Authorization\Contracts\AuthorizationRequestEnricherInterface;
+use Quantum\Authorization\Decision\AuthorizationDecisionPlan;
 use Quantum\Authorization\Decision\DecisionManager;
 use Quantum\Authorization\Decision\DecisionResult;
 
@@ -25,23 +26,7 @@ final class AuthorizationPlanner implements AuthorizationPlannerInterface
 
     public function plan(AuthorizationRequest $request): array
     {
-        $results = [];
-        $request = $this->enrich($request);
-        $contextFingerprint = $request->context()->attribute('authorization.metadata.fingerprint');
-        $contextFingerprint = is_string($contextFingerprint) && trim($contextFingerprint) !== '' ? $contextFingerprint : null;
-
-        foreach ($this->stages as $stage) {
-            try {
-                foreach ($stage->evaluate($request) as $result) {
-                    $results[] = $this->applyFingerprint($result, $contextFingerprint);
-                }
-            } catch (\Throwable $exception) {
-                $results[] = $this->applyFingerprint(
-                    $this->stageFailure($stage->name(), $exception),
-                    $contextFingerprint,
-                );
-            }
-        }
+        [$results, , ] = $this->collectStages($request);
 
         return $results;
     }
@@ -49,6 +34,64 @@ final class AuthorizationPlanner implements AuthorizationPlannerInterface
     public function evaluate(AuthorizationRequest $request): DecisionResult
     {
         return $this->decisions->finalize($this->plan($request));
+    }
+
+    /**
+     * Ejecuta el mismo pipeline que plan() + evaluate(), pero devuelve
+     * un AuthorizationDecisionPlan completo con trazabilidad por stage
+     * y decision final agregada para explainability y auditoria.
+     */
+    public function planAsDecisionPlan(AuthorizationRequest $request): AuthorizationDecisionPlan
+    {
+        [$results, $stagesTrace, $fingerprint] = $this->collectStages($request);
+        $final = $this->decisions->finalize($results);
+
+        return new AuthorizationDecisionPlan(
+            fingerprint: $fingerprint,
+            stages: $stagesTrace,
+            final: $final,
+            evaluatedAt: time(),
+        );
+    }
+
+    /**
+     * Core loop del planner: apply enrichers, iterar stages, aplicar fingerprint
+     * a cada DecisionResult y recolectar tanto la lista plana de resultados como
+     * la estructura agrupada por stage para el explain plan.
+     *
+     * @return array{0: list<DecisionResult>, 1: list<array{name: string, results: list<DecisionResult>}>, 2: string|null}
+     */
+    private function collectStages(AuthorizationRequest $request): array
+    {
+        $results = [];
+        $stagesTrace = [];
+        $request = $this->enrich($request);
+        $contextFingerprint = $request->context()->attribute('authorization.metadata.fingerprint');
+        $contextFingerprint = is_string($contextFingerprint) && trim($contextFingerprint) !== '' ? $contextFingerprint : null;
+
+        foreach ($this->stages as $stage) {
+            $stageName = $stage->name();
+            $stageResults = [];
+
+            try {
+                foreach ($stage->evaluate($request) as $result) {
+                    $fingerprinted = $this->applyFingerprint($result, $contextFingerprint);
+                    $results[] = $fingerprinted;
+                    $stageResults[] = $fingerprinted;
+                }
+            } catch (\Throwable $exception) {
+                $fingerprinted = $this->applyFingerprint(
+                    $this->stageFailure($stageName, $exception),
+                    $contextFingerprint,
+                );
+                $results[] = $fingerprinted;
+                $stageResults[] = $fingerprinted;
+            }
+
+            $stagesTrace[] = ['name' => $stageName, 'results' => $stageResults];
+        }
+
+        return [$results, $stagesTrace, $contextFingerprint];
     }
 
     private function enrich(AuthorizationRequest $request): AuthorizationRequest

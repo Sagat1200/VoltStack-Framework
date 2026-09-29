@@ -22,6 +22,10 @@ final readonly class OpaqueRefreshToken
         public array $scopes = [],
         public array $attributes = [],
         public bool $revoked = false,
+        public bool $consumed = false,
+        public ?int $consumedAt = null,
+        public ?TokenId $rotatedTo = null,
+        public ?string $familyId = null,
     ) {}
 
     public function isExpired(?int $now = null): bool

@@ -4,9 +4,6 @@ declare(strict_types=1);
 
 namespace Quantum\Auth\Passkeys;
 
-/**
- * @internal skeleton V1 — simulated assert result, NO crypto verification en 082
- */
 final readonly class AssertionResult
 {
     public function __construct(
@@ -14,6 +11,8 @@ final readonly class AssertionResult
         public ?string $credentialId = null,
         public ?string $userHandle = null,
         public int $signCountIncremented = 0,
+        public bool $signatureVerified = false,
+        public int $newCounter = 0,
         /** @var array<string, mixed> */
         public array $metadata = [],
     ) {

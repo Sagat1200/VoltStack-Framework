@@ -13,12 +13,22 @@ final class InMemoryOidcJwksCache implements OidcJwksCacheInterface
      */
     private array $keys = [];
 
+    private int $fetchedAt = 0;
+
+    public function __construct(
+        private readonly int $ttlSeconds = 0,
+    ) {
+    }
+
     /**
      * @return array<string, mixed>|null
      */
     public function getKey(string $kid): ?array
     {
         if (trim($kid) === '') {
+            return null;
+        }
+        if ($this->ttlSeconds > 0 && $this->hasExpired()) {
             return null;
         }
         return $this->keys[$kid] ?? null;
@@ -33,5 +43,35 @@ final class InMemoryOidcJwksCache implements OidcJwksCacheInterface
             return;
         }
         $this->keys[$kid] = $jwk;
+    }
+
+    public function markFetchedNow(int $ts = 0): void
+    {
+        $this->fetchedAt = $ts > 0 ? $ts : time();
+    }
+
+    public function getFetchedAt(): int
+    {
+        return $this->fetchedAt;
+    }
+
+    public function getTtlSeconds(): int
+    {
+        return $this->ttlSeconds;
+    }
+
+    public function hasExpired(int $nowTs = 0): bool
+    {
+        if ($this->ttlSeconds <= 0) {
+            return false;
+        }
+        $now = $nowTs > 0 ? $nowTs : time();
+        return $this->fetchedAt > 0 && ($now - $this->fetchedAt) > $this->ttlSeconds;
+    }
+
+    public function clear(): void
+    {
+        $this->keys = [];
+        $this->fetchedAt = 0;
     }
 }

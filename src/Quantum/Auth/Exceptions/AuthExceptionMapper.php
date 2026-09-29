@@ -21,6 +21,9 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
             $throwable instanceof AccountSuspendedException => 403,
             $throwable instanceof PasswordExpiredException,
             $throwable instanceof PasswordRotationRequiredException => 401,
+            $throwable instanceof ThrottleDeniedException => 429,
+            $throwable instanceof RiskDeniedException => 403,
+            $throwable instanceof AssuranceInsufficientException => 423,
             default => null,
         };
     }
@@ -57,6 +60,23 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
                 'X-Auth-Rotation-Window' => (string) $throwable->rotationWindowSeconds,
                 'X-Auth-Password-Age-Seconds' => (string) $throwable->ageSeconds,
             ],
+            $throwable instanceof ThrottleDeniedException => array_filter([
+                'Retry-After' => $throwable->retryAfterSeconds > 0 ? (string) $throwable->retryAfterSeconds : null,
+                'X-Auth-Throttle-Denied' => 'true',
+                'X-Auth-Throttle-Retry-After' => (string) $throwable->retryAfterSeconds,
+                'X-Auth-Throttle-Identifier' => $throwable->identifier,
+            ], static fn (mixed $v): bool => $v !== null),
+            $throwable instanceof RiskDeniedException => [
+                'X-Auth-Risk-Denied' => 'true',
+                'X-Auth-Risk-Score' => (string) $throwable->riskScore,
+                'X-Auth-Risk-Deny-Threshold' => (string) $throwable->denyThreshold,
+            ],
+            $throwable instanceof AssuranceInsufficientException => array_filter([
+                'X-Auth-Assurance-Insufficient' => 'true',
+                'X-Auth-Assurance-Required-Min' => (string) $throwable->requiredMinAssurance,
+                'X-Auth-Assurance-Current' => (string) $throwable->currentAssurance,
+                'X-Auth-Operation' => $throwable->operation,
+            ], static fn (mixed $v): bool => $v !== null),
             default => [],
         };
     }
@@ -82,7 +102,10 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
             $throwable instanceof CredentialLockedException,
             $throwable instanceof AccountSuspendedException,
             $throwable instanceof PasswordExpiredException,
-            $throwable instanceof PasswordRotationRequiredException => $throwable->getMessage(),
+            $throwable instanceof PasswordRotationRequiredException,
+            $throwable instanceof ThrottleDeniedException,
+            $throwable instanceof RiskDeniedException,
+            $throwable instanceof AssuranceInsufficientException => $throwable->getMessage(),
             default => null,
         };
     }
@@ -98,7 +121,10 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
             $throwable instanceof CredentialLockedException,
             $throwable instanceof AccountSuspendedException,
             $throwable instanceof PasswordExpiredException,
-            $throwable instanceof PasswordRotationRequiredException => $throwable->reasonCode,
+            $throwable instanceof PasswordRotationRequiredException,
+            $throwable instanceof ThrottleDeniedException,
+            $throwable instanceof RiskDeniedException,
+            $throwable instanceof AssuranceInsufficientException => $throwable->reasonCode,
             default => null,
         };
     }
@@ -115,6 +141,9 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
             $throwable instanceof AccountSuspendedException => '<p>This account has been suspended and cannot be used to authenticate.</p>',
             $throwable instanceof PasswordExpiredException => '<p>Your password has expired. You must change it before continuing.</p>',
             $throwable instanceof PasswordRotationRequiredException => '<p>Password rotation is required. Please update your password to continue.</p>',
+            $throwable instanceof ThrottleDeniedException => '<p>Too many failed authentication attempts have been detected for this account or IP address. Please wait before trying again.</p>',
+            $throwable instanceof RiskDeniedException => '<p>This authentication attempt has been blocked by the adaptive risk policy. Please try again later or contact support.</p>',
+            $throwable instanceof AssuranceInsufficientException => '<p>Your current authentication level is not sufficient to perform this operation. Please re-authenticate with a stronger assurance method (e.g. MFA, hardware key, passkey).</p>',
             default => null,
         };
     }
@@ -156,6 +185,22 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
                 'rotation_window_seconds' => (string) $throwable->rotationWindowSeconds,
                 'age_seconds' => (string) $throwable->ageSeconds,
             ],
+            $throwable instanceof ThrottleDeniedException => array_filter([
+                'reason_code' => $throwable->reasonCode,
+                'retry_after_seconds' => (string) $throwable->retryAfterSeconds,
+                'throttle_identifier' => $throwable->identifier,
+            ], static fn (mixed $v): bool => $v !== null),
+            $throwable instanceof RiskDeniedException => [
+                'reason_code' => $throwable->reasonCode,
+                'risk_score' => (string) $throwable->riskScore,
+                'deny_threshold' => (string) $throwable->denyThreshold,
+            ],
+            $throwable instanceof AssuranceInsufficientException => array_filter([
+                'reason_code' => $throwable->reasonCode,
+                'required_min_assurance' => (string) $throwable->requiredMinAssurance,
+                'current_assurance' => (string) $throwable->currentAssurance,
+                'operation' => $throwable->operation,
+            ], static fn (mixed $v): bool => $v !== null),
             default => [],
         };
     }

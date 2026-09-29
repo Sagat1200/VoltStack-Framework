@@ -23,6 +23,39 @@ final class AuthenticationOrchestrator implements AuthenticationOrchestratorInte
 
     public function execute(AuthenticationOperationContext $context): AuthenticationDecision
     {
+        $minAssuranceAttr = $context->request->attributes['min_authentication_assurance'] ?? null;
+        $requiredMinAssurance = is_int($minAssuranceAttr) ? $minAssuranceAttr : (is_numeric($minAssuranceAttr) ? (int)$minAssuranceAttr : null);
+        if ($requiredMinAssurance !== null && $requiredMinAssurance > 0) {
+            $currentAssurance = 0;
+            $meta = [];
+            if ($context->currentContext !== null) {
+                try {
+                    $strength = $context->currentContext->authenticationStrength();
+                    $currentAssurance = $strength->value;
+                    $meta['current_assurance_name'] = $strength->name;
+                } catch (\Throwable) {
+                    $currentAssurance = 0;
+                }
+                $assuranceOverride = $context->currentContext->attribute('assurance_value');
+                if (is_int($assuranceOverride)) {
+                    $currentAssurance = $assuranceOverride;
+                    $customName = $context->currentContext->attribute('assurance_name');
+                    if (is_string($customName) && $customName !== '') {
+                        $meta['current_assurance_name'] = $customName;
+                    }
+                }
+            }
+            if ($currentAssurance < $requiredMinAssurance) {
+                return AuthenticationDecision::rejected(array_merge([
+                    'operation' => $context->operation,
+                    'source' => 'orchestrator_preauth_min_assurance',
+                    'reason' => 'auth.assurance_insufficient',
+                    'required_min_assurance' => $requiredMinAssurance,
+                    'current_assurance' => $currentAssurance,
+                ], $meta));
+            }
+        }
+
         if ($this->nonceStore !== null) {
             $existingNonce = $context->request->attributes['auth_nonce'] ?? null;
             if (is_string($existingNonce) && trim($existingNonce) !== '') {

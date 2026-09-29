@@ -5,17 +5,25 @@ declare(strict_types=1);
 namespace Quantum\Auth;
 
 use Quantum\Auth\Authenticators\BearerAuthenticator;
+use Quantum\Auth\Authenticators\OidcAuthenticator;
 use Quantum\Auth\Authenticators\PasswordAuthenticator;
 use Quantum\Auth\Authenticators\SessionAuthenticator;
 use Quantum\Auth\Context\AuthenticationContextAccessor;
+use Quantum\Auth\Contracts\AdaptiveRiskPolicyInterface;
 use Quantum\Auth\Contracts\AuthenticationManagerInterface;
 use Quantum\Auth\Contracts\AuthenticationOrchestratorInterface;
 use Quantum\Auth\Contracts\AuthenticationSessionRepositoryInterface;
 use Quantum\Auth\Contracts\AuthenticatorInterface;
 use Quantum\Auth\Contracts\AuthenticatorResolverInterface;
+use Quantum\Auth\Contracts\DistributedThrottleCounterInterface;
 use Quantum\Auth\Contracts\IdentityProviderInterface;
 use Quantum\Auth\Contracts\InventoryReconcilerInterface;
+use Quantum\Auth\Contracts\OidcJwksCacheInterface;
+use Quantum\Auth\Contracts\OidcSignatureVerifierInterface;
+use Quantum\Auth\Contracts\OidcWellKnownClientInterface;
 use Quantum\Auth\Contracts\OpaqueTokenRepositoryInterface;
+use Quantum\Auth\Contracts\PasskeyCredentialStoreInterface;
+use Quantum\Auth\Contracts\PasskeyCryptoVerifierInterface;
 use Quantum\Auth\Contracts\PasswordPolicyInterface;
 use Quantum\Auth\Contracts\SessionRepositoryDriverFactoryInterface;
 use Quantum\Auth\Contracts\TrustedDeviceRepositoryDriverFactoryInterface;
@@ -23,7 +31,18 @@ use Quantum\Auth\Contracts\TrustedDeviceRepositoryInterface;
 use Quantum\Auth\Devices\FileTrustedDeviceRepository;
 use Quantum\Auth\Devices\InMemoryTrustedDeviceRepository;
 use Quantum\Auth\Devices\InventoryReconciler;
+use Quantum\Auth\Federation\Oidc\CurlOidcWellKnownClient;
+use Quantum\Auth\Federation\Oidc\FileOidcJwksCache;
+use Quantum\Auth\Federation\Oidc\InMemoryMockOidcWellKnownClient;
+use Quantum\Auth\Federation\Oidc\InMemoryOidcJwksCache;
+use Quantum\Auth\Federation\Oidc\OidcIdentityTokenValidator;
+use Quantum\Auth\Federation\Oidc\OpensslJwsSignatureVerifier;
 use Quantum\Auth\Identity\LocalIdentityProvider;
+use Quantum\Auth\Passkeys\CoseOpensslCryptoVerifier;
+use Quantum\Auth\Passkeys\FilePasskeyCredentialStore;
+use Quantum\Auth\Passkeys\InMemoryPasskeyCredentialStore;
+use Quantum\Auth\Passkeys\PasskeyAuthenticator;
+use Quantum\Auth\Passkeys\RelyingPartyConfig;
 use Quantum\Auth\Passwords\PasswordPolicy;
 use Quantum\Auth\Runtime\AuthenticationOrchestrator;
 use Quantum\Auth\Runtime\AuthenticationPolicyEngine;
@@ -35,8 +54,10 @@ use Quantum\Auth\Runtime\SessionCountLimitRule;
 use Quantum\Auth\Runtime\TrustedDeviceEnrollmentLimitRule;
 use Quantum\Auth\Runtime\SessionRepositoryDriverFactory;
 use Quantum\Auth\Runtime\TrustedDeviceRepositoryDriverFactory;
+use Quantum\Auth\AbuseProtection\ConfigBasedAdaptiveRiskPolicy;
 use Quantum\Auth\Sessions\FileAuthenticationSessionRepository;
 use Quantum\Auth\Sessions\InMemoryAuthenticationSessionRepository;
+use Quantum\Auth\Tokens\BearerTokenService;
 use Quantum\Auth\Tokens\FileOpaqueTokenRepository;
 use Quantum\Auth\Tokens\InMemoryOpaqueTokenRepository;
 use Quantum\Config\ConfigRepository;
@@ -166,46 +187,106 @@ final class AuthenticationServiceProvider extends ServiceProvider
             $pipeline = $app->config('auth.authenticators.pipeline', null);
 
             if (! is_array($pipeline) || count($pipeline) === 0) {
-                return $defaultResolver;
-            }
+                $base = $defaultResolver;
+            } else {
+                $composite = new CompositeAuthenticatorResolver();
+                $addedDefault = false;
 
-            $composite = new CompositeAuthenticatorResolver();
-            $addedDefault = false;
+                foreach ($pipeline as $idx => $alias) {
+                    $priority = is_int($idx) ? (100 - $idx) : 100;
+                    $alias = is_string($alias) && trim($alias) !== '' ? trim($alias) : '';
 
-            foreach ($pipeline as $idx => $alias) {
-                $priority = is_int($idx) ? (100 - $idx) : 100;
-                $alias = is_string($alias) && trim($alias) !== '' ? trim($alias) : '';
-
-                if ($alias === '') {
-                    continue;
-                }
-
-                $resolver = null;
-                try {
-                    $candidate = $app->make($alias);
-                    if ($candidate instanceof AuthenticatorResolverInterface) {
-                        $resolver = $candidate;
+                    if ($alias === '') {
+                        continue;
                     }
-                } catch (\Throwable) {
+
                     $resolver = null;
-                }
-
-                if ($resolver === null) {
-                    if ($alias === 'default') {
-                        $composite->addResolver($defaultResolver, $priority);
-                        $addedDefault = true;
+                    try {
+                        $candidate = $app->make($alias);
+                        if ($candidate instanceof AuthenticatorResolverInterface) {
+                            $resolver = $candidate;
+                        }
+                    } catch (\Throwable) {
+                        $resolver = null;
                     }
-                    continue;
+
+                    if ($resolver === null) {
+                        if ($alias === 'default') {
+                            $composite->addResolver($defaultResolver, $priority);
+                            $addedDefault = true;
+                        }
+                        continue;
+                    }
+
+                    $composite->addResolver($resolver, $priority);
                 }
 
-                $composite->addResolver($resolver, $priority);
+                if (! $addedDefault) {
+                    $composite->addResolver($defaultResolver, 0);
+                }
+
+                $base = $composite;
             }
 
-            if (! $addedDefault) {
-                $composite->addResolver($defaultResolver, 0);
+            try {
+                $passkeyEnabled = (bool) $app->make(ConfigRepository::class)->get('auth.passkeys.enabled', false);
+                if ($passkeyEnabled) {
+                    $passkeyAuth = $app->make(PasskeyAuthenticator::class);
+                    if ($passkeyAuth instanceof PasskeyAuthenticator) {
+                        $passkeyOnlyResolver = new class($passkeyAuth) implements AuthenticatorResolverInterface {
+                            public function __construct(private readonly PasskeyAuthenticator $auth) {}
+                            /** @return list<PasskeyAuthenticator> */
+                            public function resolve(\Quantum\Auth\Runtime\AuthenticationOperationContext $context): array
+                            {
+                                if ($this->auth->supports($context)) {
+                                    return [$this->auth];
+                                }
+                                return [];
+                            }
+                        };
+                        if ($base instanceof CompositeAuthenticatorResolver) {
+                            $base->addResolver($passkeyOnlyResolver, 900);
+                        } else {
+                            $c = new CompositeAuthenticatorResolver();
+                            $c->addResolver($passkeyOnlyResolver, 900);
+                            $c->addResolver($base, 0);
+                            $base = $c;
+                        }
+                    }
+                }
+            } catch (\Throwable) {
             }
 
-            return $composite;
+            try {
+                $oidcEnabled = (bool) $app->make(ConfigRepository::class)->get('auth.oidc.enabled', false);
+                if ($oidcEnabled) {
+                    $oidcAuth = $app->make(OidcAuthenticator::class);
+                    if ($oidcAuth instanceof OidcAuthenticator) {
+                        $oidcOnlyResolver = new class($oidcAuth) implements AuthenticatorResolverInterface {
+                            public function __construct(private readonly OidcAuthenticator $auth) {}
+                            /** @return list<OidcAuthenticator> */
+                            public function resolve(\Quantum\Auth\Runtime\AuthenticationOperationContext $context): array
+                            {
+                                if ($this->auth->supports($context)) {
+                                    return [$this->auth];
+                                }
+                                return [];
+                            }
+                        };
+                        if ($base instanceof CompositeAuthenticatorResolver) {
+                            $base->addResolver($oidcOnlyResolver, 850);
+                        } else {
+                            $c = new CompositeAuthenticatorResolver();
+                            $c->addResolver($oidcOnlyResolver, 850);
+                            $c->addResolver($base, 0);
+                            $base = $c;
+                        }
+                    }
+                }
+            } catch (\Throwable) {
+            }
+
+            return $base;
         });
         $this->app->scoped(AuthenticationOrchestratorInterface::class, static function (Application $app): AuthenticationOrchestratorInterface {
             $resolver = $app->make(AuthenticatorResolverInterface::class);
@@ -319,6 +400,30 @@ final class AuthenticationServiceProvider extends ServiceProvider
             }
         });
 
+        $this->app->scoped(PasskeyCryptoVerifierInterface::class, static function (Application $app): ?PasskeyCryptoVerifierInterface {
+            $config = $app->make(ConfigRepository::class);
+            if (! (bool) $config->get('auth.passkeys.crypto.enabled', false)) {
+                return null;
+            }
+            try {
+                return new CoseOpensslCryptoVerifier();
+            } catch (\Throwable) {
+                return null;
+            }
+        });
+
+        $this->app->scoped(OidcSignatureVerifierInterface::class, static function (Application $app): ?OidcSignatureVerifierInterface {
+            $config = $app->make(ConfigRepository::class);
+            if (! (bool) $config->get('auth.oidc.signature.enabled', false)) {
+                return null;
+            }
+            try {
+                return new OpensslJwsSignatureVerifier();
+            } catch (\Throwable) {
+                return null;
+            }
+        });
+
         $this->app->bind(
             AuthenticationPolicyEngine::class,
             static function (Application $app): ?AuthenticationPolicyEngine {
@@ -378,6 +483,205 @@ final class AuthenticationServiceProvider extends ServiceProvider
                 : null,
         ));
         $this->app->scoped(AuthenticationManagerInterface::class, fn(Application $app) => $app->make(AuthManager::class));
+
+        $this->app->scoped(RelyingPartyConfig::class, static function (Application $app): RelyingPartyConfig {
+            $config = $app->make(ConfigRepository::class);
+            $rpId = (string) $config->get('auth.passkeys.rp.id', 'localhost');
+            $rpName = (string) $config->get('auth.passkeys.rp.name', 'VoltStack App');
+            $origins = $config->get('auth.passkeys.rp.origins', null);
+            $originsList = is_array($origins) ? array_values(array_filter($origins, 'is_string')) : [];
+            if (count($originsList) === 0) {
+                $fallbackAppUrl = (string) $config->get('app.url', '');
+                if ($fallbackAppUrl !== '') {
+                    $originsList[] = rtrim($fallbackAppUrl, '/');
+                } else {
+                    $originsList[] = 'http://localhost:8000';
+                }
+            }
+            return new RelyingPartyConfig(
+                id: $rpId !== '' ? $rpId : 'localhost',
+                name: $rpName !== '' ? $rpName : 'VoltStack App',
+                allowedOrigins: $originsList,
+            );
+        });
+
+        $this->app->scoped(PasskeyCredentialStoreInterface::class, static function (Application $app): ?PasskeyCredentialStoreInterface {
+            $config = $app->make(ConfigRepository::class);
+            if (! (bool) $config->get('auth.passkeys.enabled', false)) {
+                return null;
+            }
+            $driver = strtolower(trim((string) $config->get('auth.passkeys.store.driver', 'memory')));
+            try {
+                if ($driver === 'file') {
+                    $storagePath = null;
+                    try {
+                        $storagePath = $app->storagePath('framework/auth/passkeys');
+                    } catch (\Throwable) {
+                        $storagePath = null;
+                    }
+                    $directory = is_string($storagePath) && trim($storagePath) !== ''
+                        ? $storagePath
+                        : (sys_get_temp_dir() . '/voltstack-auth-passkeys');
+                    return new FilePasskeyCredentialStore($directory);
+                }
+                return new InMemoryPasskeyCredentialStore();
+            } catch (\Throwable) {
+                return null;
+            }
+        });
+
+        $this->app->scoped(PasskeyAuthenticator::class, static function (Application $app): ?PasskeyAuthenticator {
+            $config = $app->make(ConfigRepository::class);
+            if (! (bool) $config->get('auth.passkeys.enabled', false)) {
+                return null;
+            }
+            try {
+                $rp = $app->make(RelyingPartyConfig::class);
+                $store = $app->make(PasskeyCredentialStoreInterface::class);
+                if (! $store instanceof PasskeyCredentialStoreInterface) {
+                    return null;
+                }
+                $idp = null;
+                try {
+                    $candidate = $app->make(IdentityProviderInterface::class);
+                    if ($candidate instanceof IdentityProviderInterface) {
+                        $idp = $candidate;
+                    }
+                } catch (\Throwable) {
+                    $idp = null;
+                }
+                return new PasskeyAuthenticator($rp, $store, $idp);
+            } catch (\Throwable) {
+                return null;
+            }
+        });
+
+        $this->app->scoped(DistributedThrottleCounterInterface::class, static function (Application $app): ?DistributedThrottleCounterInterface {
+            $config = $app->make(ConfigRepository::class);
+            if (! (bool) $config->get('auth.throttle.distributed.enabled', false)) {
+                return null;
+            }
+            return null;
+        });
+
+        $this->app->scoped(AdaptiveRiskPolicyInterface::class, static function (Application $app): ?AdaptiveRiskPolicyInterface {
+            $config = $app->make(ConfigRepository::class);
+            if (! (bool) $config->get('auth.risk.enabled', false) && ! (bool) $config->get('auth.risk.adaptive.enabled', false)) {
+                return null;
+            }
+            try {
+                $stepUp = (int) $config->get('auth.risk.adaptive.step_up_threshold', 75);
+                $deny = (int) $config->get('auth.risk.adaptive.deny_threshold', 95);
+                $strengthName = (string) $config->get('auth.risk.adaptive.required_strength_name', 'multi_factor');
+                $strengthValue = (int) $config->get('auth.risk.adaptive.required_strength_value', 500);
+                return new ConfigBasedAdaptiveRiskPolicy(
+                    stepUpThreshold: max(0, min(100, $stepUp)),
+                    denyThreshold: max(0, min(100, $deny)),
+                    requiredStrengthName: $strengthName !== '' ? $strengthName : 'multi_factor',
+                    requiredStrengthValue: max(0, $strengthValue),
+                );
+            } catch (\Throwable) {
+                return null;
+            }
+        });
+
+        $this->app->scoped(BearerTokenService::class, static function (Application $app): BearerTokenService {
+            $config = $app->make(ConfigRepository::class);
+            $accessTtl = (int) $config->get('auth.tokens.access_ttl_seconds', 3600);
+            $refreshTtl = (int) $config->get('auth.tokens.refresh_ttl_seconds', 1209600);
+            return new BearerTokenService(
+                repository: $app->make(OpaqueTokenRepositoryInterface::class),
+                accessTokenTtlSec: $accessTtl > 0 ? $accessTtl : 3600,
+                refreshTokenTtlSec: $refreshTtl > 0 ? $refreshTtl : 1209600,
+            );
+        });
+
+        $this->app->scoped(OidcWellKnownClientInterface::class, static function (Application $app): ?OidcWellKnownClientInterface {
+            $config = $app->make(ConfigRepository::class);
+            if (! (bool) $config->get('auth.oidc.enabled', false)) {
+                return null;
+            }
+            $driver = strtolower(trim((string) $config->get('auth.oidc.well_known.driver', 'curl')));
+            try {
+                if ($driver === 'mock' || $driver === 'in_memory') {
+                    return new InMemoryMockOidcWellKnownClient();
+                }
+                return new CurlOidcWellKnownClient();
+            } catch (\Throwable) {
+                return null;
+            }
+        });
+
+        $this->app->scoped(OidcJwksCacheInterface::class, static function (Application $app): ?OidcJwksCacheInterface {
+            $config = $app->make(ConfigRepository::class);
+            if (! (bool) $config->get('auth.oidc.enabled', false)) {
+                return null;
+            }
+            $driver = strtolower(trim((string) $config->get('auth.oidc.jwks.driver', 'memory')));
+            try {
+                if ($driver === 'file') {
+                    $storagePath = null;
+                    try {
+                        $storagePath = $app->storagePath('framework/auth/oidc-jwks');
+                    } catch (\Throwable) {
+                        $storagePath = null;
+                    }
+                    $directory = is_string($storagePath) && trim($storagePath) !== ''
+                        ? $storagePath
+                        : (sys_get_temp_dir() . '/voltstack-auth-oidc-jwks');
+                    $ttl = (int) $config->get('auth.oidc.jwks.ttl_seconds', 3600);
+                    return new FileOidcJwksCache($directory, $ttl > 0 ? $ttl : 3600);
+                }
+                return new InMemoryOidcJwksCache((int) $config->get('auth.oidc.jwks.ttl_seconds', 3600));
+            } catch (\Throwable) {
+                return null;
+            }
+        });
+
+        $this->app->scoped(OidcAuthenticator::class, static function (Application $app): ?OidcAuthenticator {
+            $config = $app->make(ConfigRepository::class);
+            if (! (bool) $config->get('auth.oidc.enabled', false)) {
+                return null;
+            }
+            try {
+                $sigVerifier = $app->make(OidcSignatureVerifierInterface::class);
+                if (! $sigVerifier instanceof OidcSignatureVerifierInterface) {
+                    if ((bool) $config->get('auth.oidc.signature.enabled', true)) {
+                        $sigVerifier = new OpensslJwsSignatureVerifier();
+                    }
+                }
+                $tokenValidator = new OidcIdentityTokenValidator(
+                    $sigVerifier instanceof OidcSignatureVerifierInterface ? $sigVerifier : null,
+                );
+                $idp = null;
+                try {
+                    $candidate = $app->make(IdentityProviderInterface::class);
+                    if ($candidate instanceof IdentityProviderInterface) {
+                        $idp = $candidate;
+                    }
+                } catch (\Throwable) {
+                    $idp = null;
+                }
+                if (! $idp instanceof IdentityProviderInterface) {
+                    return null;
+                }
+                $jwksCache = null;
+                try {
+                    $candidate = $app->make(OidcJwksCacheInterface::class);
+                    if ($candidate instanceof OidcJwksCacheInterface) {
+                        $jwksCache = $candidate;
+                    }
+                } catch (\Throwable) {
+                    $jwksCache = null;
+                }
+                $expected = $config->get('auth.oidc.expected_claims', []);
+                $claims = is_array($expected) ? $expected : [];
+                return new OidcAuthenticator($tokenValidator, $idp, $jwksCache, $claims);
+            } catch (\Throwable) {
+                return null;
+            }
+        });
+
         $this->app->scoped(AuthMiddleware::class);
         $this->app->scoped(BearerAuthMiddleware::class);
         $this->app->scoped(GuestMiddleware::class);

@@ -10,10 +10,12 @@ use Attribute;
 final readonly class Entity
 {
     /**
-     * @param class-string|null $repository
+     * @param class-string|null                                                                  $repository
+     * @param list<class-string<\Quantum\Database\ORM\Contracts\EntityLifecycleListenerInterface>> $lifecycleListeners
      */
     public function __construct(
         public ?string $repository = null,
+        public array $lifecycleListeners = [],
     ) {
     }
 }

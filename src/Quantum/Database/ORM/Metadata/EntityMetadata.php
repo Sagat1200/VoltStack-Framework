@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quantum\Database\ORM\Metadata;
 
+use Closure;
 use Quantum\Database\ORM\EntityKey;
 use ReflectionClass;
 use RuntimeException;
@@ -11,9 +12,35 @@ use RuntimeException;
 final class EntityMetadata
 {
     /**
-     * @param array<string, EntityFieldMetadata> $fields
-     * @param array<string, EntityAssociationMetadata> $associations
-     * @param array<string, EntityEmbeddedMetadata> $embeddeds
+     * Canonical lifecycle event names supported by the ORM in V1.
+     *
+     * @var array<string, list<Closure>>
+     */
+    private const DEFAULT_LIFECYCLE_CALLBACKS = [
+        'prePersist' => [],
+        'postPersist' => [],
+        'preUpdate' => [],
+        'postUpdate' => [],
+        'preRemove' => [],
+        'postRemove' => [],
+        'postLoad' => [],
+    ];
+
+    public const KNOWN_LIFECYCLE_EVENTS = [
+        'prePersist',
+        'postPersist',
+        'preUpdate',
+        'postUpdate',
+        'preRemove',
+        'postRemove',
+        'postLoad',
+    ];
+
+    /**
+     * @param array<string, EntityFieldMetadata>             $fields
+     * @param array<string, EntityAssociationMetadata>       $associations
+     * @param array<string, EntityEmbeddedMetadata>          $embeddeds
+     * @param array<string, list<Closure>>                   $lifecycleCallbacks Map of event-name → list of Closures bound to the entity instance at dispatch-time.
      */
     public function __construct(
         public readonly string $className,
@@ -23,7 +50,39 @@ final class EntityMetadata
         public readonly array $associations = [],
         public readonly array $embeddeds = [],
         public readonly ?string $repositoryClass = null,
+        public readonly array $lifecycleCallbacks = self::DEFAULT_LIFECYCLE_CALLBACKS,
     ) {
+        $unknownEvents = array_diff(array_keys($lifecycleCallbacks), self::KNOWN_LIFECYCLE_EVENTS);
+        if ($unknownEvents !== []) {
+            throw new RuntimeException(sprintf(
+                'Entity [%s] declares unknown lifecycle events: %s. Allowed: %s.',
+                $className,
+                implode(', ', $unknownEvents),
+                implode(', ', self::KNOWN_LIFECYCLE_EVENTS),
+            ));
+        }
+    }
+
+    public function hasCallbacks(string $event): bool
+    {
+        return isset($this->lifecycleCallbacks[$event]) && $this->lifecycleCallbacks[$event] !== [];
+    }
+
+    /**
+     * @return list<Closure>
+     */
+    public function callbacksFor(string $event): array
+    {
+        if (! in_array($event, self::KNOWN_LIFECYCLE_EVENTS, true)) {
+            throw new RuntimeException(sprintf(
+                'Unknown lifecycle event [%s] for entity [%s]. Allowed: %s.',
+                $event,
+                $this->className,
+                implode(', ', self::KNOWN_LIFECYCLE_EVENTS),
+            ));
+        }
+
+        return $this->lifecycleCallbacks[$event] ?? [];
     }
 
     /**

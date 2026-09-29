@@ -116,7 +116,20 @@ final readonly class DecisionResult
     private static function extractFingerprint(array $metadata): ?string
     {
         $fingerprint = $metadata['metadata_fingerprint'] ?? null;
+        if (is_string($fingerprint) && trim($fingerprint) !== '') {
+            return $fingerprint;
+        }
 
-        return is_string($fingerprint) && trim($fingerprint) !== '' ? $fingerprint : null;
+        if (count($metadata) === 0) {
+            return null;
+        }
+
+        try {
+            $serial = json_encode($metadata, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        } catch (\Throwable) {
+            return null;
+        }
+
+        return sha1('authz_metadata_fingerprint|' . $serial);
     }
 }

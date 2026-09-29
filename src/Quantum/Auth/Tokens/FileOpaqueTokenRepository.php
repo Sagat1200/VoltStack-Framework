@@ -92,6 +92,10 @@ final class FileOpaqueTokenRepository implements OpaqueTokenRepositoryInterface
             'scopes' => $token->scopes,
             'attributes' => $token->attributes,
             'revoked' => $token->revoked,
+            'consumed' => $token->consumed,
+            'consumed_at' => $token->consumedAt,
+            'rotated_to' => $token->rotatedTo?->value,
+            'family_id' => $token->familyId,
         ];
 
         $this->writeFile($this->refreshPath($token->id->value), $payload);
@@ -138,6 +142,10 @@ final class FileOpaqueTokenRepository implements OpaqueTokenRepositoryInterface
             scopes: $existing->scopes,
             attributes: $existing->attributes,
             revoked: true,
+            consumed: $existing->consumed,
+            consumedAt: $existing->consumedAt,
+            rotatedTo: $existing->rotatedTo,
+            familyId: $existing->familyId,
         ));
 
         return true;
@@ -309,8 +317,14 @@ final class FileOpaqueTokenRepository implements OpaqueTokenRepositoryInterface
         $accessTokenId = isset($data['access_token_id']) && is_string($data['access_token_id']) && trim($data['access_token_id']) !== ''
             ? new TokenId($data['access_token_id'])
             : null;
+        $rotatedTo = isset($data['rotated_to']) && is_string($data['rotated_to']) && trim($data['rotated_to']) !== ''
+            ? new TokenId($data['rotated_to'])
+            : null;
         $scopes = is_array($data['scopes'] ?? null) ? array_values(array_filter($data['scopes'], static fn (mixed $v): bool => is_string($v))) : [];
         $attributes = is_array($data['attributes'] ?? null) ? $data['attributes'] : [];
+        $familyId = isset($data['family_id']) && is_string($data['family_id']) && trim($data['family_id']) !== ''
+            ? $data['family_id']
+            : null;
 
         return new OpaqueRefreshToken(
             id: new TokenId((string) ($data['id'] ?? '')),
@@ -325,7 +339,134 @@ final class FileOpaqueTokenRepository implements OpaqueTokenRepositoryInterface
             scopes: $scopes,
             attributes: $attributes,
             revoked: isset($data['revoked']) && $data['revoked'] === true,
+            consumed: isset($data['consumed']) && $data['consumed'] === true,
+            consumedAt: isset($data['consumed_at']) && is_numeric($data['consumed_at']) ? (int) $data['consumed_at'] : null,
+            rotatedTo: $rotatedTo,
+            familyId: $familyId,
         );
+    }
+
+    public function consumeRefreshToken(string $tokenId, ?int $consumedAt = null): array
+    {
+        $existing = $this->findRefreshToken($tokenId);
+        if (! $existing instanceof OpaqueRefreshToken) {
+            return ['consumed' => false, 'already_consumed' => false, 'previous' => null];
+        }
+        if ($existing->consumed) {
+            return ['consumed' => false, 'already_consumed' => true, 'previous' => $existing];
+        }
+        $consumedAt ??= time();
+        $next = new OpaqueRefreshToken(
+            id: $existing->id,
+            reference: $existing->reference,
+            issuedAt: $existing->issuedAt,
+            expiresAt: $existing->expiresAt,
+            accessTokenId: $existing->accessTokenId,
+            clientId: $existing->clientId,
+            scopes: $existing->scopes,
+            attributes: $existing->attributes,
+            revoked: $existing->revoked,
+            consumed: true,
+            consumedAt: $consumedAt,
+            rotatedTo: $existing->rotatedTo,
+            familyId: $existing->familyId,
+        );
+        $this->saveRefreshToken($next);
+        return ['consumed' => true, 'already_consumed' => false, 'previous' => $existing];
+    }
+
+    public function findRefreshTokensByFamilyId(string $familyId): array
+    {
+        if ($familyId === '') {
+            return [];
+        }
+        return $this->collect($this->refreshDirectory, function (mixed $data) use ($familyId): ?OpaqueRefreshToken {
+            $token = $this->hydrateRefreshToken($data);
+            return (is_string($token->familyId) && $token->familyId !== '' && hash_equals($familyId, $token->familyId))
+                ? $token
+                : null;
+        });
+    }
+
+    public function revokeFamilyByReuse(string $familyId, ?int $reuseDetectedAt = null): int
+    {
+        if ($familyId === '') {
+            return 0;
+        }
+        $revoked = 0;
+        $reuseAttr = ['reuse_detected_at' => $reuseDetectedAt ?? time(), 'reuse_revoked' => true];
+        $familyTokens = $this->findRefreshTokensByFamilyId($familyId);
+        $visitedRefresh = [];
+        $queue = $familyTokens;
+        while ($queue !== []) {
+            $refresh = array_shift($queue);
+            if (! $refresh instanceof OpaqueRefreshToken) {
+                continue;
+            }
+            $key = $refresh->id->value;
+            if (isset($visitedRefresh[$key])) {
+                continue;
+            }
+            $visitedRefresh[$key] = true;
+            if (! $refresh->revoked) {
+                $next = new OpaqueRefreshToken(
+                    id: $refresh->id,
+                    reference: $refresh->reference,
+                    issuedAt: $refresh->issuedAt,
+                    expiresAt: $refresh->expiresAt,
+                    accessTokenId: $refresh->accessTokenId,
+                    clientId: $refresh->clientId,
+                    scopes: $refresh->scopes,
+                    attributes: array_replace($refresh->attributes, $reuseAttr),
+                    revoked: true,
+                    consumed: $refresh->consumed,
+                    consumedAt: $refresh->consumedAt,
+                    rotatedTo: $refresh->rotatedTo,
+                    familyId: $refresh->familyId,
+                );
+                $this->saveRefreshToken($next);
+                $revoked++;
+            }
+            if ($refresh->accessTokenId instanceof TokenId) {
+                $access = $this->findAccessToken($refresh->accessTokenId->value);
+                if ($access instanceof OpaqueAccessToken && ! $access->revoked) {
+                    if ($this->revokeAccessToken($access->id->value)) {
+                        $revoked++;
+                    }
+                }
+            }
+            if ($refresh->rotatedTo instanceof TokenId) {
+                $nextRefresh = $this->findRefreshToken($refresh->rotatedTo->value);
+                if ($nextRefresh instanceof OpaqueRefreshToken) {
+                    $queue[] = $nextRefresh;
+                }
+            }
+        }
+        return $revoked;
+    }
+
+    public function markRotatedTo(string $parentRefreshTokenId, TokenId $nextRefreshId): void
+    {
+        $existing = $this->findRefreshToken($parentRefreshTokenId);
+        if (! $existing instanceof OpaqueRefreshToken) {
+            return;
+        }
+        $next = new OpaqueRefreshToken(
+            id: $existing->id,
+            reference: $existing->reference,
+            issuedAt: $existing->issuedAt,
+            expiresAt: $existing->expiresAt,
+            accessTokenId: $existing->accessTokenId,
+            clientId: $existing->clientId,
+            scopes: $existing->scopes,
+            attributes: $existing->attributes,
+            revoked: $existing->revoked,
+            consumed: $existing->consumed,
+            consumedAt: $existing->consumedAt,
+            rotatedTo: $nextRefreshId,
+            familyId: $existing->familyId,
+        );
+        $this->saveRefreshToken($next);
     }
 
     private function accessPath(string $tokenId): string

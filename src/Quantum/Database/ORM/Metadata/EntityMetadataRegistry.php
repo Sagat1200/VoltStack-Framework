@@ -4,13 +4,22 @@ declare(strict_types=1);
 
 namespace Quantum\Database\ORM\Metadata;
 
+use Closure;
 use Quantum\Database\ORM\Attributes\Column;
 use Quantum\Database\ORM\Attributes\Embedded;
 use Quantum\Database\ORM\Attributes\Entity;
 use Quantum\Database\ORM\Attributes\Id;
 use Quantum\Database\ORM\Attributes\ManyToOne;
 use Quantum\Database\ORM\Attributes\OneToMany;
+use Quantum\Database\ORM\Attributes\PostLoad;
+use Quantum\Database\ORM\Attributes\PostPersist;
+use Quantum\Database\ORM\Attributes\PostRemove;
+use Quantum\Database\ORM\Attributes\PostUpdate;
+use Quantum\Database\ORM\Attributes\PrePersist;
+use Quantum\Database\ORM\Attributes\PreRemove;
+use Quantum\Database\ORM\Attributes\PreUpdate;
 use Quantum\Database\ORM\Attributes\Table;
+use Quantum\Database\ORM\Contracts\EntityLifecycleListenerInterface;
 use Quantum\Database\ORM\CustomRepositoryRegistry;
 use Quantum\Database\ORM\Model;
 use Quantum\Database\ORM\Types\TypeRegistry;
@@ -18,6 +27,7 @@ use BackedEnum;
 use DateTimeImmutable;
 use ReflectionAttribute;
 use ReflectionClass;
+use ReflectionMethod;
 use ReflectionProperty;
 use RuntimeException;
 
@@ -116,6 +126,8 @@ final class EntityMetadataRegistry
             }
         }
 
+        $lifecycleCallbacks = $this->buildLifecycleCallbacks($reflection, $entityAttribute?->lifecycleListeners);
+
         $shell = new EntityMetadata(
             className: $entityClass,
             table: $table,
@@ -124,6 +136,7 @@ final class EntityMetadataRegistry
             associations: [],
             embeddeds: $embeddeds,
             repositoryClass: $this->resolveRepositoryClass($entityClass, $entityAttribute?->repository),
+            lifecycleCallbacks: $lifecycleCallbacks,
         );
         $this->metadata[$entityClass] = $shell;
 
@@ -143,6 +156,7 @@ final class EntityMetadataRegistry
             associations: $associations,
             embeddeds: $embeddeds,
             repositoryClass: $this->resolveRepositoryClass($entityClass, $entityAttribute?->repository),
+            lifecycleCallbacks: $lifecycleCallbacks,
         );
         $this->metadata[$entityClass] = $final;
 
@@ -344,6 +358,7 @@ final class EntityMetadataRegistry
                 targetField: $targetMetadata->identifier->name,
                 targetColumn: $targetColumn,
                 inversedBy: $attr->inversedBy,
+                cascade: $attr->cascade,
             );
         }
 
@@ -381,6 +396,8 @@ final class EntityMetadataRegistry
             targetField: $mappedByAssociation->sourceField,
             targetColumn: $mappedByAssociation->sourceColumn,
             mappedBy: $mappedBy,
+            cascade: $attr->cascade,
+            orphanRemoval: $attr->orphanRemoval,
         );
     }
 
@@ -556,6 +573,89 @@ final class EntityMetadataRegistry
             DateTimeImmutable::class => 'datetime_immutable',
             default => null,
         };
+    }
+
+    /**
+     * @return array<class-string, string> Map of lifecycle attribute FQCN → canonical event name.
+     */
+    private function lifecycleAttributeMap(): array
+    {
+        return [
+            PrePersist::class => 'prePersist',
+            PostPersist::class => 'postPersist',
+            PreUpdate::class => 'preUpdate',
+            PostUpdate::class => 'postUpdate',
+            PreRemove::class => 'preRemove',
+            PostRemove::class => 'postRemove',
+            PostLoad::class => 'postLoad',
+        ];
+    }
+
+    /**
+     * Build the lifecycle callbacks map for an entity.
+     *
+     * Produces a shape compatible with EntityMetadata::$lifecycleCallbacks:
+     *   event-name → list<Closure(object $entity, EntityManagerInterface $em, array<string, mixed> $context): void>
+     *
+     * @param ReflectionClass<object>                                         $reflection
+     * @param list<class-string<EntityLifecycleListenerInterface>>|null      $classListeners
+     *
+     * @return array<string, list<Closure>>
+     */
+    private function buildLifecycleCallbacks(ReflectionClass $reflection, ?array $classListeners): array
+    {
+        $result = [];
+        foreach (EntityMetadata::KNOWN_LIFECYCLE_EVENTS as $event) {
+            $result[$event] = [];
+        }
+
+        $attrMap = $this->lifecycleAttributeMap();
+
+        // 1. Method-level lifecycle attributes declared on the entity itself.
+        foreach ($reflection->getMethods(ReflectionMethod::IS_PUBLIC | ReflectionMethod::IS_PROTECTED | ReflectionMethod::IS_PRIVATE) as $method) {
+            foreach ($attrMap as $attrClass => $eventName) {
+                $attrs = $method->getAttributes($attrClass, ReflectionAttribute::IS_INSTANCEOF);
+                if ($attrs === []) {
+                    continue;
+                }
+
+                $method->setAccessible(true);
+                $methodRef = $method;
+                $result[$eventName][] = static function (object $entity, object $em, array $context = []) use ($methodRef): void {
+                    $methodRef->invoke($entity);
+                };
+            }
+        }
+
+        // 2. Class-level external listeners declared via #[Entity(lifecycleListeners: [X::class])].
+        $listeners = $classListeners ?? [];
+        foreach ($listeners as $listenerClass) {
+            if (! is_string($listenerClass) || ! class_exists($listenerClass)) {
+                throw new RuntimeException(sprintf(
+                    'Entity [%s] declares lifecycle listener [%s] that does not exist.',
+                    $reflection->getName(),
+                    is_string($listenerClass) ? $listenerClass : get_debug_type($listenerClass),
+                ));
+            }
+
+            if (! is_subclass_of($listenerClass, EntityLifecycleListenerInterface::class)) {
+                throw new RuntimeException(sprintf(
+                    'Entity [%s] declares lifecycle listener [%s] that does not implement %s.',
+                    $reflection->getName(),
+                    $listenerClass,
+                    EntityLifecycleListenerInterface::class,
+                ));
+            }
+
+            $listenerInstance = new $listenerClass();
+            foreach (EntityMetadata::KNOWN_LIFECYCLE_EVENTS as $eventName) {
+                $result[$eventName][] = static function (object $entity, object $em, array $context = []) use ($listenerInstance, $eventName): void {
+                    $listenerInstance->$eventName($entity, $em, $context);
+                };
+            }
+        }
+
+        return $result;
     }
 
     /**

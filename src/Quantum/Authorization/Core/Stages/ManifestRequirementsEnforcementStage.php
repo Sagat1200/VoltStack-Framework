@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quantum\Authorization\Core\Stages;
 
+use Quantum\Authorization\ABAC\AttributeConditionEvaluator;
 use Quantum\Authorization\Ability\Ability;
 use Quantum\Authorization\Authority\Permission;
 use Quantum\Authorization\Authority\Scope;
@@ -18,6 +19,8 @@ final class ManifestRequirementsEnforcementStage implements AuthorizationEvaluat
         private readonly bool $failClosed = true,
         private readonly ?AuthorityRepositoryInterface $authorityRepository = null,
         private readonly bool $evaluateRequirementsConcretely = false,
+        private readonly bool $evaluateAttributeConditions = false,
+        private readonly ?AttributeConditionEvaluator $attributeConditionEvaluator = null,
     ) {}
 
     public function name(): string
@@ -208,6 +211,31 @@ final class ManifestRequirementsEnforcementStage implements AuthorizationEvaluat
                 continue;
             }
 
+            if ($this->evaluateAttributeConditions && ! $this->conditionSatisfied($request, $requirement['condition'] ?? null)) {
+                $conditionMetadata = [
+                    ...$baseMetadata,
+                    'ability' => $requirement['ability'],
+                    'scope' => (string) $requirementScope,
+                    'abac_condition_attributes' => $this->conditionAttributeNames($requirement['condition'] ?? null),
+                ];
+
+                if ($this->failClosed) {
+                    $results[] = DecisionResult::deny(
+                        source: 'authorization.stage:manifest_requirements',
+                        reasonCode: 'manifest_requirement_attribute_conditions_not_satisfied',
+                        metadata: $conditionMetadata,
+                    );
+                } else {
+                    $results[] = DecisionResult::abstain(
+                        source: 'authorization.stage:manifest_requirements',
+                        reasonCode: 'manifest_requirement_attribute_conditions_not_satisfied_fail_open',
+                        metadata: $conditionMetadata,
+                    );
+                }
+
+                continue;
+            }
+
             $hasPermission = $this->authorityRepository->hasPermission(
                 principalId: $principalId,
                 permission: $permission,
@@ -223,6 +251,7 @@ final class ManifestRequirementsEnforcementStage implements AuthorizationEvaluat
                         'ability' => $requirement['ability'],
                         'scope' => (string) $requirementScope,
                         'repository' => $this->authorityRepository::class,
+                        'abac_conditions_evaluated' => $this->evaluateAttributeConditions && ($requirement['condition'] ?? null) !== null,
                     ],
                 );
             } else {
@@ -242,5 +271,35 @@ final class ManifestRequirementsEnforcementStage implements AuthorizationEvaluat
         }
 
         return $results;
+    }
+
+    private function conditionSatisfied(AuthorizationRequest $request, mixed $condition): bool
+    {
+        if ($condition === null) {
+            return true;
+        }
+
+        if (! $this->evaluateAttributeConditions) {
+            return true;
+        }
+
+        $evaluator = $this->attributeConditionEvaluator ?? new AttributeConditionEvaluator();
+
+        return $evaluator->evaluate($request, $condition);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function conditionAttributeNames(mixed $condition): array
+    {
+        $evaluator = $this->attributeConditionEvaluator ?? new AttributeConditionEvaluator();
+        $names = [];
+
+        foreach ($evaluator->definitions($condition) as $definition) {
+            $names[] = $definition->name;
+        }
+
+        return $names;
     }
 }

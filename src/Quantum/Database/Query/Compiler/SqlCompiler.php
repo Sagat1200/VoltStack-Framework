@@ -174,6 +174,34 @@ final class SqlCompiler implements QueryCompilerInterface
         $segments = [];
 
         foreach ($predicates as $predicate) {
+            $operator = strtoupper(trim($predicate->operator));
+
+            if ($operator === 'IN' || $operator === 'NOT IN') {
+                if (! is_array($predicate->value)) {
+                    throw new RuntimeException(sprintf(
+                        'Predicate operator [%s] expects an array value for column [%s].',
+                        $operator,
+                        $predicate->column,
+                    ));
+                }
+
+                if ($predicate->value === []) {
+                    $segments[] = $operator === 'IN' ? '1 = 0' : '1 = 1';
+                    continue;
+                }
+
+                $placeholders = [];
+                foreach ($predicate->value as $value) {
+                    $placeholders[] = $dialect->parameterPlaceholder(count($bindings));
+                    $bindings[] = $value;
+                }
+
+                $segments[] = $this->quoteIdentifierPath($dialect, $predicate->column)
+                    . ' ' . $operator . ' (' . implode(', ', $placeholders) . ')';
+
+                continue;
+            }
+
             $segments[] = $this->quoteIdentifierPath($dialect, $predicate->column) . ' ' . $predicate->operator . ' ' . $dialect->parameterPlaceholder(count($bindings));
             $bindings[] = $predicate->value;
         }

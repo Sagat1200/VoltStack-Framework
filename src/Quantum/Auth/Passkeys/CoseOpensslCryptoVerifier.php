@@ -79,6 +79,9 @@ final class CoseOpensslCryptoVerifier implements PasskeyCryptoVerifierInterface
                 } catch (UnsupportedCoseAlgorithmException $e) {
                     throw AttestationVerificationFailedException::forReason($e->getMessage());
                 }
+                if (($loaded['openssl_key'] ?? null) === null) {
+                    throw AttestationVerificationFailedException::forReason('packed attestation public key unavailable');
+                }
                 $clientDataHash = hash('sha256', $clientDataJson, true);
                 $verificationData = $authData . $clientDataHash;
                 $algo = OPENSSL_ALGO_SHA256;
@@ -126,6 +129,9 @@ final class CoseOpensslCryptoVerifier implements PasskeyCryptoVerifierInterface
                 $loaded = $this->loader->loadPublicKeyFromRecord($record);
             } catch (UnsupportedCoseAlgorithmException $e) {
                 throw AssertionVerificationFailedException::forReason($e->getMessage());
+            }
+            if (($loaded['openssl_key'] ?? null) === null) {
+                throw AssertionVerificationFailedException::forReason('assertion public key unavailable');
             }
             $clientDataHash = hash('sha256', $clientDataJson, true);
             $verificationData = $authData . $clientDataHash;

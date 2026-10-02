@@ -7,7 +7,7 @@ namespace Quantum\Auth\Contracts;
 use Quantum\Auth\Tokens\OpaqueAccessToken;
 use Quantum\Auth\Tokens\OpaqueRefreshToken;
 
-interface OpaqueTokenRepositoryInterface
+interface OpaqueTokenRepositoryInterface extends RefreshTokenRotationStoreInterface
 {
     public function findAccessToken(string $tokenId): ?OpaqueAccessToken;
 

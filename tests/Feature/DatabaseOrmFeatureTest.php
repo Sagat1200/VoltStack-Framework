@@ -13,8 +13,11 @@ use Quantum\Database\ORM\Attributes\Column;
 use Quantum\Database\ORM\Attributes\Embedded;
 use Quantum\Database\ORM\Attributes\Entity;
 use Quantum\Database\ORM\Attributes\Id;
+use Quantum\Database\ORM\Attributes\JoinTable;
 use Quantum\Database\ORM\Attributes\ManyToOne;
+use Quantum\Database\ORM\Attributes\ManyToMany;
 use Quantum\Database\ORM\Attributes\OneToMany;
+use Quantum\Database\ORM\Attributes\OneToOne;
 use Quantum\Database\ORM\Attributes\PostLoad;
 use Quantum\Database\ORM\Attributes\PostPersist;
 use Quantum\Database\ORM\Attributes\PrePersist;
@@ -381,6 +384,383 @@ final class DatabaseOrmFeatureTest extends TestCase
             self::assertNull($commentBackRef);
             $manager->loadToOne($loadedComments[0], 'post');
             self::assertSame($clearedPost, $loadedComments[0]->post);
+        } finally {
+            $scope->end();
+        }
+    }
+
+    public function test_one_to_one_and_many_to_many_relationships_over_sqlite(): void
+    {
+        $app = $this->makeApp();
+        $scope = $app->make(ScopeManager::class);
+        $scope->begin(Request::create('/database/orm/relationships-v2', 'GET'));
+
+        try {
+            $database = $app->make(DatabaseInterface::class);
+            $database->schema()->create('orm_account_users', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+            }, true);
+            $database->schema()->create('orm_user_profiles', function (TableBlueprint $table): void {
+                $table->id();
+                $table->integer('user_id');
+                $table->string('bio');
+            }, true);
+            $database->schema()->create('orm_students', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+            }, true);
+            $database->schema()->create('orm_courses', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('title');
+            }, true);
+            $database->schema()->create('orm_student_courses', function (TableBlueprint $table): void {
+                $table->integer('student_id');
+                $table->integer('course_id');
+            }, true);
+
+            $registry = $app->make(EntityMetadataRegistry::class);
+
+            $userMeta = $registry->for(OrmAccountUser::class);
+            $profileMeta = $registry->for(OrmUserProfile::class);
+            $studentMeta = $registry->for(OrmStudent::class);
+            $courseMeta = $registry->for(OrmCourse::class);
+
+            self::assertTrue($userMeta->association('profile')->isOneToOne());
+            self::assertTrue($userMeta->association('profile')->isInverseSide());
+            self::assertSame('user', $userMeta->association('profile')->mappedBy);
+            self::assertSame('user_id', $userMeta->association('profile')->targetColumn);
+
+            self::assertTrue($profileMeta->association('user')->isOneToOne());
+            self::assertTrue($profileMeta->association('user')->isOwningSide());
+            self::assertSame('profile', $profileMeta->association('user')->inversedBy);
+            self::assertSame('user_id', $profileMeta->association('user')->sourceColumn);
+
+            self::assertTrue($studentMeta->association('courses')->isManyToMany());
+            self::assertTrue($studentMeta->association('courses')->isOwningSide());
+            self::assertSame('orm_student_courses', $studentMeta->association('courses')->joinTable);
+            self::assertSame('student_id', $studentMeta->association('courses')->joinTableSourceColumn);
+            self::assertSame('course_id', $studentMeta->association('courses')->joinTableTargetColumn);
+
+            self::assertTrue($courseMeta->association('students')->isManyToMany());
+            self::assertTrue($courseMeta->association('students')->isInverseSide());
+            self::assertSame('course_id', $courseMeta->association('students')->joinTableSourceColumn);
+            self::assertSame('student_id', $courseMeta->association('students')->joinTableTargetColumn);
+
+            $manager = $database->entityManager();
+
+            $user = new OrmAccountUser();
+            $user->name = 'Ada';
+
+            $profile = new OrmUserProfile();
+            $profile->bio = 'VoltStack architect';
+            $profile->user = $user;
+            $user->profile = $profile;
+
+            $manager->persist($user);
+            $manager->persist($profile);
+            $manager->flush();
+
+            self::assertIsInt($user->id);
+            self::assertIsInt($profile->id);
+            self::assertSame($user->id, $profile->userId, 'OneToOne owning FK auto-synchronized from PHP reference');
+
+            $profileRow = $database->table('orm_user_profiles')->where('id', $profile->id)->first();
+            self::assertSame((string) $user->id, (string) ($profileRow['user_id'] ?? ''), 'Profile row stores FK to user');
+
+            $profileByUser = $manager->query(OrmUserProfile::class)->where('user', $user)->first();
+            self::assertSame($profile, $profileByUser, 'Owning OneToOne query by association works');
+
+            $manager->clear();
+
+            $loadedUser = $manager->find(OrmAccountUser::class, $user->id);
+            self::assertInstanceOf(OrmAccountUser::class, $loadedUser);
+            $loadedProfile = $manager->loadToOne($loadedUser, 'profile');
+            self::assertInstanceOf(OrmUserProfile::class, $loadedProfile);
+            self::assertSame('VoltStack architect', $loadedProfile->bio);
+            self::assertSame($loadedProfile, $loadedUser->profile, 'Inverse OneToOne load populates property');
+
+            $reloadedProfile = $manager->find(OrmUserProfile::class, $profile->id);
+            self::assertInstanceOf(OrmUserProfile::class, $reloadedProfile);
+            $owner = $manager->loadToOne($reloadedProfile, 'user');
+            self::assertSame($loadedUser, $owner, 'Owning OneToOne load resolves the same managed user');
+            self::assertSame($loadedUser, $reloadedProfile->user);
+
+            $student = new OrmStudent();
+            $student->name = 'Linus';
+
+            $math = new OrmCourse();
+            $math->title = 'Math';
+
+            $history = new OrmCourse();
+            $history->title = 'History';
+
+            $student->courses = [$math, $history];
+
+            $manager->persist($student);
+            $manager->flush();
+
+            self::assertIsInt($student->id);
+            self::assertIsInt($math->id);
+            self::assertIsInt($history->id);
+
+            $membershipRows = $database->table('orm_student_courses')
+                ->where('student_id', $student->id)
+                ->get()
+                ->rows();
+            self::assertCount(2, $membershipRows, 'Owning ManyToMany persists 2 join rows');
+
+            $manager->clear();
+
+            $loadedStudent = $manager->find(OrmStudent::class, $student->id);
+            self::assertInstanceOf(OrmStudent::class, $loadedStudent);
+
+            $loadedCourses = $manager->loadToMany($loadedStudent, 'courses');
+            self::assertCount(2, $loadedCourses);
+            self::assertSame($loadedCourses, $loadedStudent->courses, 'ManyToMany load populates owning collection');
+            usort($loadedCourses, static fn(OrmCourse $a, OrmCourse $b): int => strcmp($a->title, $b->title));
+            self::assertSame(['History', 'Math'], array_map(
+                static fn(OrmCourse $course): string => $course->title,
+                $loadedCourses,
+            ));
+
+            $loadedMath = $manager->find(OrmCourse::class, $math->id);
+            self::assertInstanceOf(OrmCourse::class, $loadedMath);
+            $loadedStudents = $manager->loadToMany($loadedMath, 'students');
+            self::assertCount(1, $loadedStudents);
+            self::assertSame($loadedStudent->id, $loadedStudents[0]->id, 'Inverse ManyToMany resolves owning entity through join table');
+
+            $science = new OrmCourse();
+            $science->title = 'Science';
+            $loadedStudent->courses = [$loadedCourses[0], $science];
+            $manager->flush();
+
+            self::assertIsInt($science->id, 'Cascade persist inserts new ManyToMany target before join rows');
+
+            $membershipRowsAfter = $database->table('orm_student_courses')
+                ->where('student_id', $loadedStudent->id)
+                ->get()
+                ->rows();
+            self::assertCount(2, $membershipRowsAfter, 'Join table stays in sync after remove+add on owning collection');
+
+            $mathMembership = $database->table('orm_student_courses')
+                ->where('student_id', $loadedStudent->id)
+                ->where('course_id', $math->id)
+                ->first();
+            self::assertNull($mathMembership, 'Removed ManyToMany membership deletes join row');
+
+            $scienceMembership = $database->table('orm_student_courses')
+                ->where('student_id', $loadedStudent->id)
+                ->where('course_id', $science->id)
+                ->first();
+            self::assertNotNull($scienceMembership, 'Added ManyToMany membership inserts join row');
+
+            $manager->remove($loadedStudent);
+            $manager->flush();
+
+            $remainingMemberships = $database->table('orm_student_courses')
+                ->where('student_id', $student->id)
+                ->get()
+                ->rows();
+            self::assertCount(0, $remainingMemberships, 'Deleting owning entity removes join-table memberships');
+
+            $courseCount = $database->table('orm_courses')->count();
+            self::assertSame(3, $courseCount, 'Deleting owning entity does not delete target entities without cascade REMOVE');
+        } finally {
+            $scope->end();
+        }
+    }
+
+    public function test_entity_query_with_preloads_batch_loads_supported_associations(): void
+    {
+        $app = $this->makeApp();
+        $scope = $app->make(ScopeManager::class);
+        $scope->begin(Request::create('/database/orm/preloads', 'GET'));
+
+        try {
+            $database = $app->make(DatabaseInterface::class);
+            $database->schema()->create('orm_blog_posts', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('title');
+                $table->boolean('published');
+            }, true);
+            $database->schema()->create('orm_blog_comments', function (TableBlueprint $table): void {
+                $table->id();
+                $table->integer('post_id');
+                $table->string('body');
+            }, true);
+            $database->schema()->create('orm_account_users', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+            }, true);
+            $database->schema()->create('orm_user_profiles', function (TableBlueprint $table): void {
+                $table->id();
+                $table->integer('user_id');
+                $table->string('bio');
+            }, true);
+            $database->schema()->create('orm_students', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+            }, true);
+            $database->schema()->create('orm_courses', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('title');
+            }, true);
+            $database->schema()->create('orm_student_courses', function (TableBlueprint $table): void {
+                $table->integer('student_id');
+                $table->integer('course_id');
+            }, true);
+
+            $em = $database->entityManager();
+
+            $alpha = new OrmBlogPost();
+            $alpha->title = 'Alpha';
+            $alpha->published = true;
+
+            $beta = new OrmBlogPost();
+            $beta->title = 'Beta';
+            $beta->published = true;
+
+            $em->persist($alpha);
+            $em->persist($beta);
+            $em->flush();
+
+            $commentA1 = new OrmBlogComment();
+            $commentA1->body = 'Alpha #1';
+            $commentA1->post = $alpha;
+
+            $commentA2 = new OrmBlogComment();
+            $commentA2->body = 'Alpha #2';
+            $commentA2->post = $alpha;
+
+            $commentB1 = new OrmBlogComment();
+            $commentB1->body = 'Beta #1';
+            $commentB1->post = $beta;
+
+            $em->persist($commentA1);
+            $em->persist($commentA2);
+            $em->persist($commentB1);
+
+            $ada = new OrmAccountUser();
+            $ada->name = 'Ada';
+
+            $adaProfile = new OrmUserProfile();
+            $adaProfile->bio = 'Architect';
+            $adaProfile->user = $ada;
+            $ada->profile = $adaProfile;
+
+            $grace = new OrmAccountUser();
+            $grace->name = 'Grace';
+
+            $graceProfile = new OrmUserProfile();
+            $graceProfile->bio = 'Compiler pioneer';
+            $graceProfile->user = $grace;
+            $grace->profile = $graceProfile;
+
+            $em->persist($ada);
+            $em->persist($adaProfile);
+            $em->persist($grace);
+            $em->persist($graceProfile);
+
+            $math = new OrmCourse();
+            $math->title = 'Math';
+
+            $history = new OrmCourse();
+            $history->title = 'History';
+
+            $science = new OrmCourse();
+            $science->title = 'Science';
+
+            $linus = new OrmStudent();
+            $linus->name = 'Linus';
+            $linus->courses = [$math, $history];
+
+            $margaret = new OrmStudent();
+            $margaret->name = 'Margaret';
+            $margaret->courses = [$history, $science];
+
+            $em->persist($linus);
+            $em->persist($margaret);
+            $em->flush();
+
+            $em->clear();
+
+            $posts = $em->query(OrmBlogPost::class)
+                ->with('comments')
+                ->orderBy('title')
+                ->get();
+            self::assertCount(2, $posts);
+            self::assertSame('Alpha', $posts[0]->title);
+            self::assertSame('Beta', $posts[1]->title);
+            self::assertCount(2, $posts[0]->comments);
+            self::assertCount(1, $posts[1]->comments);
+
+            usort($posts[0]->comments, static fn(OrmBlogComment $a, OrmBlogComment $b): int => strcmp($a->body, $b->body));
+            self::assertSame('Alpha #1', $posts[0]->comments[0]->body);
+            self::assertSame('Alpha #2', $posts[0]->comments[1]->body);
+
+            $comments = $em->query(OrmBlogComment::class)
+                ->with('post')
+                ->orderBy('body')
+                ->get();
+            self::assertCount(3, $comments);
+            self::assertSame('Alpha', $comments[0]->post?->title);
+            self::assertSame('Alpha', $comments[1]->post?->title);
+            self::assertSame('Beta', $comments[2]->post?->title);
+            self::assertSame($comments[0]->post, $comments[1]->post, 'Owning to-one preload reuses the same managed target');
+
+            $loadedAda = $em->query(OrmAccountUser::class)
+                ->with('profile')
+                ->where('name', 'Ada')
+                ->first();
+            self::assertInstanceOf(OrmAccountUser::class, $loadedAda);
+            self::assertInstanceOf(OrmUserProfile::class, $loadedAda->profile);
+            self::assertSame('Architect', $loadedAda->profile->bio);
+
+            $courses = $em->query(OrmCourse::class)
+                ->with('students')
+                ->orderBy('title')
+                ->get();
+            self::assertCount(3, $courses);
+
+            $studentsByCourse = [];
+            foreach ($courses as $course) {
+                $studentsByCourse[$course->title] = array_map(
+                    static fn(OrmStudent $student): string => $student->name,
+                    $course->students,
+                );
+                sort($studentsByCourse[$course->title]);
+            }
+
+            self::assertSame(['Linus', 'Margaret'], $studentsByCourse['History']);
+            self::assertSame(['Linus'], $studentsByCourse['Math']);
+            self::assertSame(['Margaret'], $studentsByCourse['Science']);
+
+            $students = $em->query(OrmStudent::class)
+                ->with('courses')
+                ->orderBy('name')
+                ->get();
+            self::assertCount(2, $students);
+            self::assertCount(2, $students[0]->courses);
+            self::assertCount(2, $students[1]->courses);
+
+            usort($students[0]->courses, static fn(OrmCourse $a, OrmCourse $b): int => strcmp($a->title, $b->title));
+            self::assertSame(['History', 'Math'], array_map(
+                static fn(OrmCourse $course): string => $course->title,
+                $students[0]->courses,
+            ));
+
+            $students[0]->courses = array_values(array_filter(
+                $students[0]->courses,
+                static fn(OrmCourse $course): bool => $course->title !== 'Math',
+            ));
+            $em->flush();
+
+            $remainingMemberships = $database->table('orm_student_courses')
+                ->where('student_id', $students[0]->id)
+                ->get()
+                ->rows();
+            self::assertCount(1, $remainingMemberships, 'Preloaded ManyToMany collection stays flushable after mutation');
         } finally {
             $scope->end();
         }
@@ -1228,4 +1608,74 @@ final class OrmLifecyclePostListener extends AbstractEntityLifecycleListener
             'context' => $context,
         ];
     }
+}
+
+#[Entity]
+#[Table(name: 'orm_account_users')]
+final class OrmAccountUser
+{
+    #[Id]
+    public ?int $id = null;
+
+    #[Column]
+    public string $name;
+
+    #[OneToOne(targetEntity: OrmUserProfile::class, mappedBy: 'user')]
+    public ?OrmUserProfile $profile = null;
+}
+
+#[Entity]
+#[Table(name: 'orm_user_profiles')]
+final class OrmUserProfile
+{
+    #[Id]
+    public ?int $id = null;
+
+    #[Column(name: 'user_id')]
+    public ?int $userId = null;
+
+    #[Column]
+    public string $bio;
+
+    #[OneToOne(targetEntity: OrmAccountUser::class, inversedBy: 'profile')]
+    public ?OrmAccountUser $user = null;
+}
+
+#[Entity]
+#[Table(name: 'orm_students')]
+final class OrmStudent
+{
+    #[Id]
+    public ?int $id = null;
+
+    #[Column]
+    public string $name;
+
+    /** @var list<OrmCourse> */
+    #[ManyToMany(
+        targetEntity: OrmCourse::class,
+        inversedBy: 'students',
+        cascade: [Cascade::PERSIST],
+    )]
+    #[JoinTable(
+        name: 'orm_student_courses',
+        joinColumns: ['student_id'],
+        inverseJoinColumns: ['course_id'],
+    )]
+    public array $courses = [];
+}
+
+#[Entity]
+#[Table(name: 'orm_courses')]
+final class OrmCourse
+{
+    #[Id]
+    public ?int $id = null;
+
+    #[Column]
+    public string $title;
+
+    /** @var list<OrmStudent> */
+    #[ManyToMany(targetEntity: OrmStudent::class, mappedBy: 'courses')]
+    public array $students = [];
 }

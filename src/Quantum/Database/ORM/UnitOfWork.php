@@ -36,7 +36,8 @@ final class UnitOfWork
     private array $keys = [];
 
     /**
-     * Original OneToMany inverse collection snapshots used by OrphanRemoval detection.
+     * Original to-many collection snapshots used by OrphanRemoval and ManyToMany
+     * membership diffing.
      * Shape: spl_object_id → association_name → list<spl_object_id of each collection item>
      *
      * @var array<int, array<string, list<int>>>
@@ -186,8 +187,8 @@ final class UnitOfWork
     }
 
     /**
-     * Capture the current identity of OneToMany inverse-side collection items
-     * for a given managed entity. Used by OrphanRemoval.
+     * Capture the current identity of to-many collection items for a given
+     * managed entity.
      */
     public function snapshotOneToManyCollections(object $entity, EntityMetadata $metadata): void
     {
@@ -195,19 +196,19 @@ final class UnitOfWork
         $this->originalCollections[$oid] = [];
 
         foreach ($metadata->associations() as $assoc) {
-            if (! $assoc->isOneToMany()) {
+            if (! $assoc->isToMany()) {
                 continue;
             }
 
             $this->originalCollections[$oid][$assoc->name] = $this->collectObjectIdsFromCollection(
-                $this->readOneToManyCollection($assoc, $entity),
+                $this->readToManyCollection($assoc, $entity),
             );
         }
     }
 
     /**
-     * Compute {removed, added} for a OneToMany inverse collection compared to
-     * its snapshot. Used by cascade REMOVE and OrphanRemoval.
+     * Compute {removed, added} for a to-many collection compared to its
+     * snapshot.
      *
      * @return array{removed: list<object>, added: list<object>}
      */
@@ -217,7 +218,15 @@ final class UnitOfWork
         $metadata = $this->metadataFor($entity);
         $assoc = $metadata->association($associationName);
 
-        $current = $this->readOneToManyCollection($assoc, $entity);
+        if (! $assoc->isToMany()) {
+            throw new RuntimeException(sprintf(
+                'Association [%s::$%s] is not a to-many collection.',
+                $metadata->className,
+                $associationName,
+            ));
+        }
+
+        $current = $this->readToManyCollection($assoc, $entity);
         $currentIds = $this->collectObjectIdsFromCollection($current);
         $originalIds = $this->originalCollections[$oid][$associationName] ?? [];
 
@@ -254,7 +263,7 @@ final class UnitOfWork
     /**
      * @return iterable<object>
      */
-    private function readOneToManyCollection(EntityAssociationMetadata $assoc, object $entity): iterable
+    private function readToManyCollection(EntityAssociationMetadata $assoc, object $entity): iterable
     {
         $property = $assoc->property;
         $property->setAccessible(true);

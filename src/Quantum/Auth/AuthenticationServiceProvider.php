@@ -10,6 +10,7 @@ use Quantum\Auth\Authenticators\PasswordAuthenticator;
 use Quantum\Auth\Authenticators\SessionAuthenticator;
 use Quantum\Auth\Context\AuthenticationContextAccessor;
 use Quantum\Auth\Contracts\AdaptiveRiskPolicyInterface;
+use Quantum\Auth\Contracts\AssuranceContextResolverInterface;
 use Quantum\Auth\Contracts\AuthenticationManagerInterface;
 use Quantum\Auth\Contracts\AuthenticationOrchestratorInterface;
 use Quantum\Auth\Contracts\AuthenticationSessionRepositoryInterface;
@@ -21,11 +22,15 @@ use Quantum\Auth\Contracts\InventoryReconcilerInterface;
 use Quantum\Auth\Contracts\OidcJwksCacheInterface;
 use Quantum\Auth\Contracts\OidcSignatureVerifierInterface;
 use Quantum\Auth\Contracts\OidcWellKnownClientInterface;
+use Quantum\Auth\Contracts\OperationAssurancePolicyInterface;
 use Quantum\Auth\Contracts\OpaqueTokenRepositoryInterface;
 use Quantum\Auth\Contracts\PasskeyCredentialStoreInterface;
 use Quantum\Auth\Contracts\PasskeyCryptoVerifierInterface;
 use Quantum\Auth\Contracts\PasswordPolicyInterface;
+use Quantum\Auth\Contracts\RefreshTokenRotationStoreInterface;
+use Quantum\Auth\Contracts\RiskAdaptivePolicyInterface;
 use Quantum\Auth\Contracts\SessionRepositoryDriverFactoryInterface;
+use Quantum\Auth\Contracts\ThrottleDistributedStorageInterface;
 use Quantum\Auth\Contracts\TrustedDeviceRepositoryDriverFactoryInterface;
 use Quantum\Auth\Contracts\TrustedDeviceRepositoryInterface;
 use Quantum\Auth\Devices\FileTrustedDeviceRepository;
@@ -49,7 +54,9 @@ use Quantum\Auth\Runtime\AuthenticationPolicyEngine;
 use Quantum\Auth\Runtime\AuthenticationPolicyRuleInterface;
 use Quantum\Auth\Runtime\CompositeAuthenticatorResolver;
 use Quantum\Auth\Runtime\DefaultAuthenticatorResolver;
+use Quantum\Auth\Runtime\DefaultAssuranceContextResolver;
 use Quantum\Auth\Runtime\IdentitySecurityStateRule;
+use Quantum\Auth\Runtime\RequestAttributeOperationAssurancePolicy;
 use Quantum\Auth\Runtime\SessionCountLimitRule;
 use Quantum\Auth\Runtime\TrustedDeviceEnrollmentLimitRule;
 use Quantum\Auth\Runtime\SessionRepositoryDriverFactory;
@@ -355,12 +362,36 @@ final class AuthenticationServiceProvider extends ServiceProvider
                 }
             }
 
+            $assuranceContextResolver = null;
+            $operationAssurancePolicy = null;
+            if ((bool) $config->get('auth.assurance.enabled', false)) {
+                try {
+                    $candidate = $app->make(AssuranceContextResolverInterface::class);
+                    if ($candidate instanceof AssuranceContextResolverInterface) {
+                        $assuranceContextResolver = $candidate;
+                    }
+                } catch (\Throwable) {
+                    $assuranceContextResolver = null;
+                }
+
+                try {
+                    $candidate = $app->make(OperationAssurancePolicyInterface::class);
+                    if ($candidate instanceof OperationAssurancePolicyInterface) {
+                        $operationAssurancePolicy = $candidate;
+                    }
+                } catch (\Throwable) {
+                    $operationAssurancePolicy = null;
+                }
+            }
+
             return new \Quantum\Auth\Runtime\AuthenticationOrchestrator(
                 resolver: $resolver,
                 throttle: $throttle,
                 riskEngine: $riskEngine,
                 nonceStore: $nonceStore,
                 csrfBinder: $csrfBinder,
+                assuranceContextResolver: $assuranceContextResolver,
+                operationAssurancePolicy: $operationAssurancePolicy,
             );
         });
 
@@ -564,6 +595,19 @@ final class AuthenticationServiceProvider extends ServiceProvider
             return null;
         });
 
+        $this->app->scoped(ThrottleDistributedStorageInterface::class, static function (Application $app): ?ThrottleDistributedStorageInterface {
+            $config = $app->make(ConfigRepository::class);
+            if (! (bool) $config->get('auth.throttle.distributed.enabled', false)) {
+                return null;
+            }
+            try {
+                $candidate = $app->make(DistributedThrottleCounterInterface::class);
+                return $candidate instanceof ThrottleDistributedStorageInterface ? $candidate : null;
+            } catch (\Throwable) {
+                return null;
+            }
+        });
+
         $this->app->scoped(AdaptiveRiskPolicyInterface::class, static function (Application $app): ?AdaptiveRiskPolicyInterface {
             $config = $app->make(ConfigRepository::class);
             if (! (bool) $config->get('auth.risk.enabled', false) && ! (bool) $config->get('auth.risk.adaptive.enabled', false)) {
@@ -580,6 +624,52 @@ final class AuthenticationServiceProvider extends ServiceProvider
                     requiredStrengthName: $strengthName !== '' ? $strengthName : 'multi_factor',
                     requiredStrengthValue: max(0, $strengthValue),
                 );
+            } catch (\Throwable) {
+                return null;
+            }
+        });
+
+        $this->app->scoped(RiskAdaptivePolicyInterface::class, static function (Application $app): ?RiskAdaptivePolicyInterface {
+            $config = $app->make(ConfigRepository::class);
+            if (! (bool) $config->get('auth.risk.enabled', false) && ! (bool) $config->get('auth.risk.adaptive.enabled', false)) {
+                return null;
+            }
+            try {
+                $candidate = $app->make(AdaptiveRiskPolicyInterface::class);
+                return $candidate instanceof RiskAdaptivePolicyInterface ? $candidate : null;
+            } catch (\Throwable) {
+                return null;
+            }
+        });
+
+        $this->app->scoped(RefreshTokenRotationStoreInterface::class, static function (Application $app): ?RefreshTokenRotationStoreInterface {
+            try {
+                $candidate = $app->make(OpaqueTokenRepositoryInterface::class);
+                return $candidate instanceof RefreshTokenRotationStoreInterface ? $candidate : null;
+            } catch (\Throwable) {
+                return null;
+            }
+        });
+
+        $this->app->scoped(AssuranceContextResolverInterface::class, static function (Application $app): ?AssuranceContextResolverInterface {
+            $config = $app->make(ConfigRepository::class);
+            if (! (bool) $config->get('auth.assurance.enabled', false)) {
+                return null;
+            }
+            try {
+                return new DefaultAssuranceContextResolver();
+            } catch (\Throwable) {
+                return null;
+            }
+        });
+
+        $this->app->scoped(OperationAssurancePolicyInterface::class, static function (Application $app): ?OperationAssurancePolicyInterface {
+            $config = $app->make(ConfigRepository::class);
+            if (! (bool) $config->get('auth.assurance.enabled', false)) {
+                return null;
+            }
+            try {
+                return new RequestAttributeOperationAssurancePolicy();
             } catch (\Throwable) {
                 return null;
             }

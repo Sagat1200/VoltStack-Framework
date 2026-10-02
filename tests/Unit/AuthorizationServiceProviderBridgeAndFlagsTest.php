@@ -26,6 +26,7 @@ final class AuthorizationServiceProviderBridgeAndFlagsTest extends TestCase
 
         self::assertTrue($config->get('authorization.authority.memoize'));
         self::assertFalse($config->get('authorization.authority.early_gate_enabled'));
+        self::assertFalse($config->get('authorization.authority.evaluate_attribute_conditions'));
         self::assertFalse($config->get('authorization.controllers_security.bridge.enabled'));
     }
 

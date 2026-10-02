@@ -4,10 +4,12 @@ declare(strict_types=1);
 
 namespace Quantum\Authorization;
 
+use Quantum\Authorization\ABAC\AttributeConditionEvaluator;
 use Quantum\Auth\Contracts\AuthenticationManagerInterface;
 use Quantum\Authorization\Ability\AbilityNormalizer;
 use Quantum\Authorization\Ability\AbilityRegistry;
 use Quantum\Authorization\Authority\CachedAuthorityRepository;
+use Quantum\Authorization\Authority\DatabaseAuthorityRepository;
 use Quantum\Authorization\Authority\InMemoryAuthorityRepository;
 use Quantum\Authorization\Authority\RequestScopedAuthorityMemoizationCache;
 use Quantum\Authorization\Bridges\ControllerSecurityPlannerBridge;
@@ -42,6 +44,7 @@ use Quantum\Authorization\Policy\PolicyRegistry;
 use Quantum\Authorization\Principal\PrincipalResolver;
 use Quantum\Authorization\Subject\SubjectResolver;
 use Quantum\Config\ConfigRepository;
+use Quantum\Database\Contracts\DatabaseInterface;
 use Quantum\Metadata\MetadataMergeStrategy;
 use Quantum\Metadata\MetadataValueType;
 use Quantum\Metadata\Schema\MetadataSchema;
@@ -104,14 +107,18 @@ final class AuthorizationServiceProvider extends ServiceProvider
             return new AuthorizationContextFactory($app->make(AuthenticationManagerInterface::class));
         });
         $this->app->scoped(AuthorizationRequestFactory::class);
+        $this->app->scoped(AttributeConditionEvaluator::class);
         $this->app->scoped(ManifestRequirementsEnforcementStage::class, function (Application $app): ManifestRequirementsEnforcementStage {
             $failClosed = $app->config('authorization.fail_closed', true);
             $evaluateConcretely = $app->config('authorization.authority.evaluate_requirements_concretely', false);
+            $evaluateAttributeConditions = $app->config('authorization.authority.evaluate_attribute_conditions', false);
 
             return new ManifestRequirementsEnforcementStage(
                 is_bool($failClosed) ? $failClosed : (bool) $failClosed,
                 $this->resolveAuthorityRepository($app),
                 is_bool($evaluateConcretely) ? $evaluateConcretely : (bool) $evaluateConcretely,
+                is_bool($evaluateAttributeConditions) ? $evaluateAttributeConditions : (bool) $evaluateAttributeConditions,
+                $app->make(AttributeConditionEvaluator::class),
             );
         });
         $this->app->scoped(GateAuthorizationStage::class, function (Application $app): GateAuthorizationStage {
@@ -203,7 +210,11 @@ final class AuthorizationServiceProvider extends ServiceProvider
             function (Application $app): AuthorityRepositoryInterface {
                 $config = $app->config('authorization.authority.grants', []);
                 $seed = is_array($config) ? $config : [];
-                $inner = new InMemoryAuthorityRepository($seed);
+                $driver = strtolower(trim((string) $app->config('authorization.authority.driver', 'memory')));
+                $inner = match ($driver) {
+                    'database', 'db', 'dbal' => $this->makeDatabaseAuthorityRepository($app) ?? new InMemoryAuthorityRepository($seed),
+                    default => new InMemoryAuthorityRepository($seed),
+                };
                 $memoize = $app->config('authorization.authority.memoize', true);
                 if (! $this->booleanOf($memoize)) {
                     return $inner;
@@ -218,6 +229,24 @@ final class AuthorizationServiceProvider extends ServiceProvider
                 }
             },
         );
+    }
+
+    private function makeDatabaseAuthorityRepository(Application $app): ?AuthorityRepositoryInterface
+    {
+        try {
+            /** @var DatabaseInterface $database */
+            $database = $app->make(DatabaseInterface::class);
+            $connection = $app->config('authorization.authority.database.connection');
+            $tables = $app->config('authorization.authority.database.tables', []);
+
+            return new DatabaseAuthorityRepository(
+                $database,
+                is_string($connection) && trim($connection) !== '' ? $connection : null,
+                is_array($tables) ? $tables : [],
+            );
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     private function registerMemoizationBindings(): void
@@ -346,10 +375,20 @@ final class AuthorizationServiceProvider extends ServiceProvider
             ],
             'authority' => [
                 'enabled' => true,
+                'driver' => 'memory',
                 'evaluate_requirements_concretely' => false,
+                'evaluate_attribute_conditions' => false,
                 'grants' => [],
                 'memoize' => true,
                 'early_gate_enabled' => false,
+                'database' => [
+                    'connection' => null,
+                    'tables' => [
+                        'role_grants' => DatabaseAuthorityRepository::DEFAULT_ROLE_GRANTS_TABLE,
+                        'permission_grants' => DatabaseAuthorityRepository::DEFAULT_PERMISSION_GRANTS_TABLE,
+                        'role_permissions' => DatabaseAuthorityRepository::DEFAULT_ROLE_PERMISSIONS_TABLE,
+                    ],
+                ],
             ],
             'controllers_security' => [
                 'bridge' => [

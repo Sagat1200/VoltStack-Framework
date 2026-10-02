@@ -9,8 +9,11 @@ use Quantum\Database\ORM\Attributes\Column;
 use Quantum\Database\ORM\Attributes\Embedded;
 use Quantum\Database\ORM\Attributes\Entity;
 use Quantum\Database\ORM\Attributes\Id;
+use Quantum\Database\ORM\Attributes\JoinTable;
 use Quantum\Database\ORM\Attributes\ManyToOne;
+use Quantum\Database\ORM\Attributes\ManyToMany;
 use Quantum\Database\ORM\Attributes\OneToMany;
+use Quantum\Database\ORM\Attributes\OneToOne;
 use Quantum\Database\ORM\Attributes\PostLoad;
 use Quantum\Database\ORM\Attributes\PostPersist;
 use Quantum\Database\ORM\Attributes\PostRemove;
@@ -102,6 +105,8 @@ final class EntityMetadataRegistry
             if (
                 $property->getAttributes(ManyToOne::class, ReflectionAttribute::IS_INSTANCEOF) !== []
                 || $property->getAttributes(OneToMany::class, ReflectionAttribute::IS_INSTANCEOF) !== []
+                || $property->getAttributes(OneToOne::class, ReflectionAttribute::IS_INSTANCEOF) !== []
+                || $property->getAttributes(ManyToMany::class, ReflectionAttribute::IS_INSTANCEOF) !== []
             ) {
                 $associationProperties[] = $property;
             }
@@ -324,8 +329,11 @@ final class EntityMetadataRegistry
     {
         $manyToOneAttrs = $property->getAttributes(ManyToOne::class, ReflectionAttribute::IS_INSTANCEOF);
         $oneToManyAttrs = $property->getAttributes(OneToMany::class, ReflectionAttribute::IS_INSTANCEOF);
+        $oneToOneAttrs = $property->getAttributes(OneToOne::class, ReflectionAttribute::IS_INSTANCEOF);
+        $manyToManyAttrs = $property->getAttributes(ManyToMany::class, ReflectionAttribute::IS_INSTANCEOF);
+        $joinTableAttrs = $property->getAttributes(JoinTable::class, ReflectionAttribute::IS_INSTANCEOF);
 
-        if ($manyToOneAttrs === [] && $oneToManyAttrs === []) {
+        if ($manyToOneAttrs === [] && $oneToManyAttrs === [] && $oneToOneAttrs === [] && $manyToManyAttrs === []) {
             return null;
         }
 
@@ -362,42 +370,287 @@ final class EntityMetadataRegistry
             );
         }
 
+        if ($oneToOneAttrs !== []) {
+            /** @var OneToOne $attr */
+            $attr = $oneToOneAttrs[0]->newInstance();
+            $target = $attr->targetEntity;
+
+            if (! $this->validateEntityTarget($target, $declaringEntity, $propertyName)) {
+                return null;
+            }
+
+            $targetMetadata = $this->for($target);
+
+            if ($attr->mappedBy !== null && trim($attr->mappedBy) !== '') {
+                $mappedBy = trim($attr->mappedBy);
+
+                $mappedByAssociation = null;
+                if ($targetMetadata->hasAssociation($mappedBy)) {
+                    $mappedByAssociation = $targetMetadata->association($mappedBy);
+                }
+
+                if ($mappedByAssociation !== null && ! $mappedByAssociation->isOneToOne()) {
+                    throw new RuntimeException(sprintf(
+                        'Entity [%s] association [%s::$%s] expects [%s::$%s] to be ONE_TO_ONE, got [%s].',
+                        $declaringEntity,
+                        $declaringEntity,
+                        $propertyName,
+                        $target,
+                        $mappedBy,
+                        $mappedByAssociation->kind,
+                    ));
+                }
+
+                if ($mappedByAssociation === null) {
+                    $targetReflection = new ReflectionClass($target);
+                    if (! $targetReflection->hasProperty($mappedBy)) {
+                        throw new RuntimeException(sprintf(
+                            'Entity [%s] association [%s::$%s] maps to [%s::$%s], but target has no such property.',
+                            $declaringEntity,
+                            $declaringEntity,
+                            $propertyName,
+                            $target,
+                            $mappedBy,
+                        ));
+                    }
+
+                    $mappedProperty = $targetReflection->getProperty($mappedBy);
+                    $mappedOneToOneAttrs = $mappedProperty->getAttributes(OneToOne::class, ReflectionAttribute::IS_INSTANCEOF);
+                    if ($mappedOneToOneAttrs === []) {
+                        throw new RuntimeException(sprintf(
+                            'Entity [%s] association [%s::$%s] expects [%s::$%s] to declare #[OneToOne] on the owning side.',
+                            $declaringEntity,
+                            $declaringEntity,
+                            $propertyName,
+                            $target,
+                            $mappedBy,
+                        ));
+                    }
+
+                    /** @var OneToOne $mappedOneToOne */
+                    $mappedOneToOne = $mappedOneToOneAttrs[0]->newInstance();
+                    $joinColumn = $mappedOneToOne->joinColumn !== null && trim($mappedOneToOne->joinColumn) !== ''
+                        ? trim($mappedOneToOne->joinColumn)
+                        : $this->guessManyToOneJoinColumn($mappedBy);
+                    $targetColumn = $mappedOneToOne->referencedColumn !== null && trim($mappedOneToOne->referencedColumn) !== ''
+                        ? trim($mappedOneToOne->referencedColumn)
+                        : $targetMetadata->identifier->column;
+
+                    return new EntityAssociationMetadata(
+                        name: $propertyName,
+                        kind: EntityAssociationMetadata::KIND_ONE_TO_ONE,
+                        targetEntity: $target,
+                        property: $property,
+                        sourceField: $targetMetadata->identifier->name,
+                        sourceColumn: $targetColumn,
+                        targetField: $mappedBy,
+                        targetColumn: $joinColumn,
+                        mappedBy: $mappedBy,
+                        cascade: $attr->cascade,
+                    );
+                }
+
+                return new EntityAssociationMetadata(
+                    name: $propertyName,
+                    kind: EntityAssociationMetadata::KIND_ONE_TO_ONE,
+                    targetEntity: $target,
+                    property: $property,
+                    sourceField: $mappedByAssociation->targetField,
+                    sourceColumn: $mappedByAssociation->targetColumn,
+                    targetField: $mappedByAssociation->sourceField,
+                    targetColumn: $mappedByAssociation->sourceColumn,
+                    mappedBy: $mappedBy,
+                    cascade: $attr->cascade,
+                );
+            }
+
+            $sourceField = $this->guessManyToOneSourceField($propertyName, new ManyToOne(
+                targetEntity: $attr->targetEntity,
+                inversedBy: $attr->inversedBy,
+                joinColumn: $attr->joinColumn,
+                referencedColumn: $attr->referencedColumn,
+                cascade: $attr->cascade,
+            ));
+            $targetColumn = $attr->referencedColumn !== null && trim($attr->referencedColumn) !== ''
+                ? trim($attr->referencedColumn)
+                : $targetMetadata->identifier->column;
+
+            return new EntityAssociationMetadata(
+                name: $propertyName,
+                kind: EntityAssociationMetadata::KIND_ONE_TO_ONE,
+                targetEntity: $target,
+                property: $property,
+                sourceField: $sourceField,
+                sourceColumn: $attr->joinColumn !== null && trim($attr->joinColumn) !== ''
+                    ? trim($attr->joinColumn)
+                    : $this->guessManyToOneJoinColumn($sourceField),
+                targetField: $targetMetadata->identifier->name,
+                targetColumn: $targetColumn,
+                inversedBy: $attr->inversedBy,
+                cascade: $attr->cascade,
+            );
+        }
+
         /** @var OneToMany $attr */
-        $attr = $oneToManyAttrs[0]->newInstance();
+        if ($oneToManyAttrs !== []) {
+            $attr = $oneToManyAttrs[0]->newInstance();
+            $target = $attr->targetEntity;
+
+            if (! $this->validateEntityTarget($target, $declaringEntity, $propertyName)) {
+                return null;
+            }
+
+            $targetMetadata = $this->for($target);
+            $mappedBy = $attr->mappedBy;
+
+            if (! $targetMetadata->hasAssociation($mappedBy)) {
+                throw new RuntimeException(sprintf(
+                    'Entity [%s] association [%s::$%s] maps to [%s::$%s], but target has no such association.',
+                    $declaringEntity,
+                    $declaringEntity,
+                    $propertyName,
+                    $target,
+                    $mappedBy,
+                ));
+            }
+
+            $mappedByAssociation = $targetMetadata->association($mappedBy);
+
+            return new EntityAssociationMetadata(
+                name: $propertyName,
+                kind: EntityAssociationMetadata::KIND_ONE_TO_MANY,
+                targetEntity: $target,
+                property: $property,
+                sourceField: $mappedByAssociation->targetField,
+                sourceColumn: $mappedByAssociation->targetColumn,
+                targetField: $mappedByAssociation->sourceField,
+                targetColumn: $mappedByAssociation->sourceColumn,
+                mappedBy: $mappedBy,
+                cascade: $attr->cascade,
+                orphanRemoval: $attr->orphanRemoval,
+            );
+        }
+
+        /** @var ManyToMany $attr */
+        $attr = $manyToManyAttrs[0]->newInstance();
         $target = $attr->targetEntity;
 
         if (! $this->validateEntityTarget($target, $declaringEntity, $propertyName)) {
             return null;
         }
 
+        $sourceMetadata = $this->for($declaringEntity);
         $targetMetadata = $this->for($target);
-        $mappedBy = $attr->mappedBy;
 
-        if (! $targetMetadata->hasAssociation($mappedBy)) {
+        if ($attr->mappedBy !== null && trim($attr->mappedBy) !== '') {
+            $mappedBy = trim($attr->mappedBy);
+
+            $mappedByAssociation = null;
+            if ($targetMetadata->hasAssociation($mappedBy)) {
+                $mappedByAssociation = $targetMetadata->association($mappedBy);
+            }
+
+            if ($mappedByAssociation !== null && (! $mappedByAssociation->isManyToMany() || ! $mappedByAssociation->usesJoinTable())) {
+                throw new RuntimeException(sprintf(
+                    'Entity [%s] association [%s::$%s] expects [%s::$%s] to be MANY_TO_MANY owning side with JoinTable metadata.',
+                    $declaringEntity,
+                    $declaringEntity,
+                    $propertyName,
+                    $target,
+                    $mappedBy,
+                ));
+            }
+
+            if ($mappedByAssociation === null) {
+                $targetReflection = new ReflectionClass($target);
+                if (! $targetReflection->hasProperty($mappedBy)) {
+                    throw new RuntimeException(sprintf(
+                        'Entity [%s] association [%s::$%s] maps to [%s::$%s], but target has no such property.',
+                        $declaringEntity,
+                        $declaringEntity,
+                        $propertyName,
+                        $target,
+                        $mappedBy,
+                    ));
+                }
+
+                $mappedProperty = $targetReflection->getProperty($mappedBy);
+                $mappedManyToManyAttrs = $mappedProperty->getAttributes(ManyToMany::class, ReflectionAttribute::IS_INSTANCEOF);
+                $mappedJoinTableAttrs = $mappedProperty->getAttributes(JoinTable::class, ReflectionAttribute::IS_INSTANCEOF);
+
+                if ($mappedManyToManyAttrs === [] || $mappedJoinTableAttrs === []) {
+                    throw new RuntimeException(sprintf(
+                        'Entity [%s] association [%s::$%s] expects [%s::$%s] to declare #[ManyToMany] and #[JoinTable(...)] on the owning side.',
+                        $declaringEntity,
+                        $declaringEntity,
+                        $propertyName,
+                        $target,
+                        $mappedBy,
+                    ));
+                }
+
+                /** @var JoinTable $mappedJoinTable */
+                $mappedJoinTable = $mappedJoinTableAttrs[0]->newInstance();
+
+                return new EntityAssociationMetadata(
+                    name: $propertyName,
+                    kind: EntityAssociationMetadata::KIND_MANY_TO_MANY,
+                    targetEntity: $target,
+                    property: $property,
+                    sourceField: $sourceMetadata->identifier->name,
+                    sourceColumn: $sourceMetadata->identifier->column,
+                    targetField: $targetMetadata->identifier->name,
+                    targetColumn: $targetMetadata->identifier->column,
+                    mappedBy: $mappedBy,
+                    cascade: $attr->cascade,
+                    joinTable: trim($mappedJoinTable->name),
+                    joinTableSourceColumn: $mappedJoinTable->inverseJoinColumns[0] ?? $this->guessJoinTableColumn($declaringEntity),
+                    joinTableTargetColumn: $mappedJoinTable->joinColumns[0] ?? $this->guessJoinTableColumn($target),
+                );
+            }
+
+            return new EntityAssociationMetadata(
+                name: $propertyName,
+                kind: EntityAssociationMetadata::KIND_MANY_TO_MANY,
+                targetEntity: $target,
+                property: $property,
+                sourceField: $sourceMetadata->identifier->name,
+                sourceColumn: $sourceMetadata->identifier->column,
+                targetField: $targetMetadata->identifier->name,
+                targetColumn: $targetMetadata->identifier->column,
+                mappedBy: $mappedBy,
+                cascade: $attr->cascade,
+                joinTable: $mappedByAssociation->joinTable,
+                joinTableSourceColumn: $mappedByAssociation->joinTableTargetColumn,
+                joinTableTargetColumn: $mappedByAssociation->joinTableSourceColumn,
+            );
+        }
+
+        /** @var JoinTable|null $joinTable */
+        $joinTable = $joinTableAttrs !== [] ? $joinTableAttrs[0]->newInstance() : null;
+        if ($joinTable === null) {
             throw new RuntimeException(sprintf(
-                'Entity [%s] association [%s::$%s] maps to [%s::$%s], but target has no such association.',
+                'Entity [%s] MANY_TO_MANY association [%s::$%s] must declare #[JoinTable(...)] on the owning side.',
                 $declaringEntity,
                 $declaringEntity,
                 $propertyName,
-                $target,
-                $mappedBy,
             ));
         }
 
-        $mappedByAssociation = $targetMetadata->association($mappedBy);
-
         return new EntityAssociationMetadata(
             name: $propertyName,
-            kind: EntityAssociationMetadata::KIND_ONE_TO_MANY,
+            kind: EntityAssociationMetadata::KIND_MANY_TO_MANY,
             targetEntity: $target,
             property: $property,
-            sourceField: $mappedByAssociation->targetField,
-            sourceColumn: $mappedByAssociation->targetColumn,
-            targetField: $mappedByAssociation->sourceField,
-            targetColumn: $mappedByAssociation->sourceColumn,
-            mappedBy: $mappedBy,
+            sourceField: $sourceMetadata->identifier->name,
+            sourceColumn: $sourceMetadata->identifier->column,
+            targetField: $targetMetadata->identifier->name,
+            targetColumn: $targetMetadata->identifier->column,
+            inversedBy: $attr->inversedBy,
             cascade: $attr->cascade,
-            orphanRemoval: $attr->orphanRemoval,
+            joinTable: trim($joinTable->name),
+            joinTableSourceColumn: $joinTable->joinColumns[0] ?? $this->guessJoinTableColumn($declaringEntity),
+            joinTableTargetColumn: $joinTable->inverseJoinColumns[0] ?? $this->guessJoinTableColumn($target),
         );
     }
 
@@ -442,6 +695,13 @@ final class EntityMetadataRegistry
     private function guessManyToOneJoinColumn(string $sourceField): string
     {
         return $this->toSnakeCase($sourceField) . '_id';
+    }
+
+    private function guessJoinTableColumn(string $entityClass): string
+    {
+        $reflection = new ReflectionClass($entityClass);
+
+        return $this->toSnakeCase($reflection->getShortName()) . '_id';
     }
 
     private function snakeToCamel(string $value): string

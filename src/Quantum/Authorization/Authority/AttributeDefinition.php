@@ -90,8 +90,8 @@ final readonly class AttributeDefinition
 
         return match ($this->type) {
             self::TYPE_BOOLEAN => is_bool($value),
-            self::TYPE_INTEGER => is_int($value),
-            self::TYPE_FLOAT => is_int($value) || is_float($value),
+            self::TYPE_INTEGER => is_int($value) && $this->withinNumericRange($value),
+            self::TYPE_FLOAT => (is_int($value) || is_float($value)) && $this->withinNumericRange((float) $value),
             self::TYPE_STRING => is_string($value) && ($this->patternMatches($value)),
             self::TYPE_ARRAY => is_array($value),
             self::TYPE_ENUM => in_array((string) $value, $this->enumValues(), true),
@@ -108,6 +108,21 @@ final readonly class AttributeDefinition
         }
 
         return (bool) @preg_match($pattern, $value);
+    }
+
+    private function withinNumericRange(int|float $value): bool
+    {
+        $min = $this->constraints['min'] ?? null;
+        if ((is_int($min) || is_float($min)) && $value < $min) {
+            return false;
+        }
+
+        $max = $this->constraints['max'] ?? null;
+        if ((is_int($max) || is_float($max)) && $value > $max) {
+            return false;
+        }
+
+        return true;
     }
 
     /**

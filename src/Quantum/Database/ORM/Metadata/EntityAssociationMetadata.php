@@ -11,6 +11,8 @@ final class EntityAssociationMetadata
 {
     public const KIND_MANY_TO_ONE = 'many_to_one';
     public const KIND_ONE_TO_MANY = 'one_to_many';
+    public const KIND_ONE_TO_ONE = 'one_to_one';
+    public const KIND_MANY_TO_MANY = 'many_to_many';
 
     /**
      * @param class-string  $targetEntity
@@ -30,17 +32,24 @@ final class EntityAssociationMetadata
         public readonly ?string $inversedBy = null,
         public readonly array $cascade = [],
         public readonly bool $orphanRemoval = false,
+        public readonly ?string $joinTable = null,
+        public readonly ?string $joinTableSourceColumn = null,
+        public readonly ?string $joinTableTargetColumn = null,
     ) {
     }
 
     public function isOwningSide(): bool
     {
-        return $this->kind === self::KIND_MANY_TO_ONE;
+        return $this->kind === self::KIND_MANY_TO_ONE
+            || ($this->kind === self::KIND_ONE_TO_ONE && $this->mappedBy === null)
+            || ($this->kind === self::KIND_MANY_TO_MANY && $this->mappedBy === null);
     }
 
     public function isInverseSide(): bool
     {
-        return $this->kind === self::KIND_ONE_TO_MANY;
+        return $this->kind === self::KIND_ONE_TO_MANY
+            || ($this->kind === self::KIND_ONE_TO_ONE && $this->mappedBy !== null)
+            || ($this->kind === self::KIND_MANY_TO_MANY && $this->mappedBy !== null);
     }
 
     public function isManyToOne(): bool
@@ -53,6 +62,26 @@ final class EntityAssociationMetadata
         return $this->kind === self::KIND_ONE_TO_MANY;
     }
 
+    public function isOneToOne(): bool
+    {
+        return $this->kind === self::KIND_ONE_TO_ONE;
+    }
+
+    public function isManyToMany(): bool
+    {
+        return $this->kind === self::KIND_MANY_TO_MANY;
+    }
+
+    public function isToOne(): bool
+    {
+        return $this->isManyToOne() || $this->isOneToOne();
+    }
+
+    public function isToMany(): bool
+    {
+        return $this->isOneToMany() || $this->isManyToMany();
+    }
+
     public function cascadesPersist(): bool
     {
         return in_array(Cascade::PERSIST, $this->cascade, true);
@@ -61,5 +90,12 @@ final class EntityAssociationMetadata
     public function cascadesRemove(): bool
     {
         return in_array(Cascade::REMOVE, $this->cascade, true);
+    }
+
+    public function usesJoinTable(): bool
+    {
+        return $this->joinTable !== null
+            && $this->joinTableSourceColumn !== null
+            && $this->joinTableTargetColumn !== null;
     }
 }

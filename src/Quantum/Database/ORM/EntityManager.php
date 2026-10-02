@@ -155,6 +155,8 @@ final class EntityManager implements EntityManagerInterface
                 $this->flushUpdate($entity);
             }
 
+            $this->flushManyToManyMembershipChanges();
+
             foreach ($this->unitOfWork->removedEntities() as $entity) {
                 $this->flushDelete($entity);
             }
@@ -163,6 +165,7 @@ final class EntityManager implements EntityManagerInterface
         if (
             $this->unitOfWork->newEntities() === []
             && $this->dirtyManagedEntities() === []
+            && ! $this->hasPendingManyToManyMembershipChanges()
             && $this->unitOfWork->removedEntities() === []
         ) {
             return;
@@ -223,27 +226,87 @@ final class EntityManager implements EntityManagerInterface
         );
     }
 
+    /**
+     * @param list<object> $entities
+     * @param list<string> $associationNames
+     */
+    public function preloadAssociations(array $entities, array $associationNames): void
+    {
+        if ($entities === [] || $associationNames === []) {
+            return;
+        }
+
+        $first = $entities[0];
+        $metadata = $this->metadata->for($first::class);
+
+        foreach ($entities as $entity) {
+            if (! $entity instanceof $metadata->className) {
+                throw new RuntimeException(sprintf(
+                    'Cannot preload associations for mixed entity types; expected [%s], got [%s].',
+                    $metadata->className,
+                    $entity::class,
+                ));
+            }
+        }
+
+        foreach ($associationNames as $associationName) {
+            $this->preloadAssociationBatch(
+                $entities,
+                $metadata,
+                $metadata->association($associationName),
+            );
+        }
+    }
+
     public function loadToOne(object $entity, string $associationName): ?object
     {
         $metadata = $this->metadata->for($entity::class);
         $association = $metadata->association($associationName);
 
-        if (! $association->isOwningSide()) {
+        if (! $association->isToOne()) {
             throw new RuntimeException(sprintf(
-                'Association [%s::$%s] is not the owning side. Use loadToMany() for inverse ONE_TO_MANY associations.',
+                'Association [%s::$%s] is not a to-one relationship.',
                 $metadata->className,
                 $associationName,
             ));
         }
 
-        $fkValue = $this->associationSourceValue($entity, $association);
-        if ($fkValue === null) {
-            $this->assignAssociationValue($entity, $association, null);
+        if ($association->isOwningSide()) {
+            $fkValue = $this->associationSourceValue($entity, $association);
+            if ($fkValue === null) {
+                $this->assignAssociationValue($entity, $association, null);
 
-            return null;
+                return null;
+            }
+
+            $target = $this->find($association->targetEntity, $fkValue);
+            $this->assignAssociationValue($entity, $association, $target);
+
+            return $target;
         }
 
-        $target = $this->find($association->targetEntity, $fkValue);
+        $identifier = $metadata->identifierValue($entity);
+        if ($identifier === null) {
+            throw new RuntimeException(sprintf(
+                'Cannot load inverse to-one association [%s::$%s] on an entity without an identifier.',
+                $metadata->className,
+                $associationName,
+            ));
+        }
+
+        $targetMetadata = $this->metadata->for($association->targetEntity);
+        if ($association->targetColumn === null) {
+            throw new RuntimeException(sprintf(
+                'Association [%s::$%s] has no resolved target column for inverse to-one loading.',
+                $metadata->className,
+                $associationName,
+            ));
+        }
+
+        $row = $this->queries->table($targetMetadata->table)
+            ->where($association->targetColumn, $identifier)
+            ->first();
+        $target = $row !== null ? $this->hydrateManaged($targetMetadata, $row) : null;
         $this->assignAssociationValue($entity, $association, $target);
 
         return $target;
@@ -257,9 +320,9 @@ final class EntityManager implements EntityManagerInterface
         $metadata = $this->metadata->for($entity::class);
         $association = $metadata->association($associationName);
 
-        if (! $association->isInverseSide()) {
+        if (! $association->isToMany()) {
             throw new RuntimeException(sprintf(
-                'Association [%s::$%s] is not the inverse side. Use loadToOne() for owning MANY_TO_ONE associations.',
+                'Association [%s::$%s] is not a to-many relationship.',
                 $metadata->className,
                 $associationName,
             ));
@@ -274,20 +337,271 @@ final class EntityManager implements EntityManagerInterface
             ));
         }
 
+        $results = $association->isManyToMany()
+            ? $this->loadManyToManyCollection($association, $identifier)
+            : $this->loadOneToManyCollection($association, $identifier);
+
+        $this->assignAssociationValue($entity, $association, $results);
+        if ($this->contains($entity)) {
+            $this->unitOfWork->snapshotOneToManyCollections($entity, $metadata);
+        }
+
+        return $results;
+    }
+
+    /**
+     * @param list<object> $entities
+     */
+    private function preloadAssociationBatch(
+        array $entities,
+        EntityMetadata $metadata,
+        EntityAssociationMetadata $association,
+    ): void {
+        if ($entities === []) {
+            return;
+        }
+
+        if ($association->isToOne()) {
+            if ($association->isOwningSide()) {
+                $this->preloadOwningToOneAssociation($entities, $association);
+            } else {
+                $this->preloadInverseOneToOneAssociation($entities, $metadata, $association);
+            }
+
+            return;
+        }
+
+        if ($association->isManyToMany()) {
+            $this->preloadManyToManyAssociation($entities, $metadata, $association);
+
+            return;
+        }
+
+        $this->preloadOneToManyAssociation($entities, $metadata, $association);
+    }
+
+    /**
+     * @param list<object> $entities
+     */
+    private function preloadOwningToOneAssociation(array $entities, EntityAssociationMetadata $association): void
+    {
+        $foreignKeys = [];
+        foreach ($entities as $entity) {
+            $foreignKey = $this->associationSourceValue($entity, $association);
+            if ($foreignKey === null) {
+                $this->assignAssociationValue($entity, $association, null);
+                continue;
+            }
+
+            $foreignKeys[(string) $foreignKey] = $foreignKey;
+        }
+
+        if ($foreignKeys === []) {
+            return;
+        }
+
+        $targetsById = $this->fetchEntitiesByIdentifiers(
+            $this->metadata->for($association->targetEntity),
+            array_values($foreignKeys),
+        );
+
+        foreach ($entities as $entity) {
+            $foreignKey = $this->associationSourceValue($entity, $association);
+            if ($foreignKey === null) {
+                continue;
+            }
+
+            $this->assignAssociationValue(
+                $entity,
+                $association,
+                $targetsById[(string) $foreignKey] ?? null,
+            );
+        }
+    }
+
+    /**
+     * @param list<object> $entities
+     */
+    private function preloadInverseOneToOneAssociation(
+        array $entities,
+        EntityMetadata $metadata,
+        EntityAssociationMetadata $association,
+    ): void {
+        if ($association->targetColumn === null) {
+            throw new RuntimeException(sprintf(
+                'Association [%s::$%s] has no resolved target column for inverse to-one preload.',
+                $metadata->className,
+                $association->name,
+            ));
+        }
+
+        $entitiesById = $this->mapEntitiesByIdentifier($entities, $metadata);
+        if ($entitiesById === []) {
+            return;
+        }
+
         $targetMetadata = $this->metadata->for($association->targetEntity);
         $rows = $this->queries->table($targetMetadata->table)
-            ->where($association->targetColumn, $identifier)
+            ->whereIn($association->targetColumn, array_values(array_map(
+                static fn(string $identifier): string => $identifier,
+                array_keys($entitiesById),
+            )))
             ->get()
             ->rows();
 
-        $results = [];
+        $loadedBySourceId = [];
         foreach ($rows as $row) {
-            $results[] = $this->hydrateManaged($targetMetadata, $row);
+            $sourceId = $row[$association->targetColumn] ?? null;
+            if ($sourceId === null || $sourceId === '') {
+                continue;
+            }
+
+            $target = $this->hydrateManaged($targetMetadata, $row);
+            $loadedBySourceId[(string) $sourceId] = $target;
+
+            if ($association->mappedBy !== null && $targetMetadata->hasAssociation($association->mappedBy)) {
+                $this->assignAssociationValue(
+                    $target,
+                    $targetMetadata->association($association->mappedBy),
+                    $entitiesById[(string) $sourceId] ?? null,
+                );
+            }
         }
 
-        $this->assignAssociationValue($entity, $association, $results);
+        foreach ($entitiesById as $identifier => $entity) {
+            $this->assignAssociationValue($entity, $association, $loadedBySourceId[$identifier] ?? null);
+        }
+    }
 
-        return $results;
+    /**
+     * @param list<object> $entities
+     */
+    private function preloadOneToManyAssociation(
+        array $entities,
+        EntityMetadata $metadata,
+        EntityAssociationMetadata $association,
+    ): void {
+        if ($association->targetColumn === null) {
+            throw new RuntimeException(sprintf(
+                'Association [%s::$%s] has no resolved target column for to-many preload.',
+                $metadata->className,
+                $association->name,
+            ));
+        }
+
+        $entitiesById = $this->mapEntitiesByIdentifier($entities, $metadata);
+        if ($entitiesById === []) {
+            return;
+        }
+
+        $targetMetadata = $this->metadata->for($association->targetEntity);
+        $rows = $this->queries->table($targetMetadata->table)
+            ->whereIn($association->targetColumn, array_values(array_map(
+                static fn(string $identifier): string => $identifier,
+                array_keys($entitiesById),
+            )))
+            ->get()
+            ->rows();
+
+        $grouped = [];
+        foreach ($rows as $row) {
+            $sourceId = $row[$association->targetColumn] ?? null;
+            if ($sourceId === null || $sourceId === '') {
+                continue;
+            }
+
+            $target = $this->hydrateManaged($targetMetadata, $row);
+            $key = (string) $sourceId;
+            $grouped[$key] ??= [];
+            $grouped[$key][] = $target;
+
+            if ($association->mappedBy !== null && $targetMetadata->hasAssociation($association->mappedBy)) {
+                $this->assignAssociationValue(
+                    $target,
+                    $targetMetadata->association($association->mappedBy),
+                    $entitiesById[$key] ?? null,
+                );
+            }
+        }
+
+        foreach ($entitiesById as $identifier => $entity) {
+            $loaded = $grouped[$identifier] ?? [];
+            $this->assignAssociationValue($entity, $association, $loaded);
+            if ($this->contains($entity)) {
+                $this->unitOfWork->snapshotOneToManyCollections($entity, $metadata);
+            }
+        }
+    }
+
+    /**
+     * @param list<object> $entities
+     */
+    private function preloadManyToManyAssociation(
+        array $entities,
+        EntityMetadata $metadata,
+        EntityAssociationMetadata $association,
+    ): void {
+        if (! $association->usesJoinTable()) {
+            throw new RuntimeException(sprintf(
+                'ManyToMany association [%s::$%s] is missing JoinTable metadata.',
+                $metadata->className,
+                $association->name,
+            ));
+        }
+
+        $entitiesById = $this->mapEntitiesByIdentifier($entities, $metadata);
+        if ($entitiesById === []) {
+            return;
+        }
+
+        $membershipRows = $this->queries->table($association->joinTable)
+            ->whereIn($association->joinTableSourceColumn, array_values(array_map(
+                static fn(string $identifier): string => $identifier,
+                array_keys($entitiesById),
+            )))
+            ->get()
+            ->rows();
+
+        $targetIds = [];
+        foreach ($membershipRows as $row) {
+            $targetId = $row[$association->joinTableTargetColumn] ?? null;
+            if ($targetId === null || $targetId === '') {
+                continue;
+            }
+
+            $targetIds[(string) $targetId] = $targetId;
+        }
+
+        $targetsById = $this->fetchEntitiesByIdentifiers(
+            $this->metadata->for($association->targetEntity),
+            array_values($targetIds),
+        );
+
+        $grouped = [];
+        foreach ($membershipRows as $row) {
+            $sourceId = $row[$association->joinTableSourceColumn] ?? null;
+            $targetId = $row[$association->joinTableTargetColumn] ?? null;
+            if ($sourceId === null || $sourceId === '' || $targetId === null || $targetId === '') {
+                continue;
+            }
+
+            $sourceKey = (string) $sourceId;
+            $targetKey = (string) $targetId;
+            if (! isset($targetsById[$targetKey])) {
+                continue;
+            }
+
+            $grouped[$sourceKey] ??= [];
+            $grouped[$sourceKey][] = $targetsById[$targetKey];
+        }
+
+        foreach ($entitiesById as $identifier => $entity) {
+            $loaded = $grouped[$identifier] ?? [];
+            $this->assignAssociationValue($entity, $association, $loaded);
+            if ($this->contains($entity)) {
+                $this->unitOfWork->snapshotOneToManyCollections($entity, $metadata);
+            }
+        }
     }
 
     private function flushInsert(object $entity): void
@@ -415,6 +729,7 @@ final class EntityManager implements EntityManagerInterface
         $key = $this->requireKey($entity);
 
         $this->dispatchLifecycle('preRemove', $entity);
+        $this->deleteManyToManyMembershipsFor($entity, $metadata, $key->identifier);
 
         $this->queries->table($metadata->table)
             ->where($metadata->identifier->column, $key->identifier)
@@ -435,6 +750,7 @@ final class EntityManager implements EntityManagerInterface
 
         foreach ($this->unitOfWork->managedEntities() as $entity) {
             $metadata = $this->unitOfWork->metadataFor($entity);
+            $this->populateManyToOneForeignKeys($entity, $metadata);
             $current = $metadata->extract($entity, includeIdentifier: false);
             $original = $this->unitOfWork->snapshot($entity);
             unset($original[$metadata->identifier->name]);
@@ -456,6 +772,32 @@ final class EntityManager implements EntityManagerInterface
         }
 
         return $key;
+    }
+
+    private function hasPendingManyToManyMembershipChanges(): bool
+    {
+        foreach ($this->unitOfWork->managedEntities() as $entity) {
+            $metadata = $this->unitOfWork->metadataFor($entity);
+            $key = $this->unitOfWork->keyFor($entity);
+            if ($key === null) {
+                continue;
+            }
+
+            foreach ($metadata->associations() as $association) {
+                if (! $association->isManyToMany() || ! $association->isOwningSide() || ! $association->usesJoinTable()) {
+                    continue;
+                }
+
+                if (
+                    $this->currentManyToManyTargetIds($entity, $association)
+                    !== $this->existingManyToManyTargetIds($association, $key->identifier)
+                ) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -588,6 +930,59 @@ final class EntityManager implements EntityManagerInterface
     }
 
     /**
+     * @return list<object>
+     */
+    private function loadOneToManyCollection(EntityAssociationMetadata $association, int|string $identifier): array
+    {
+        $targetMetadata = $this->metadata->for($association->targetEntity);
+        $rows = $this->queries->table($targetMetadata->table)
+            ->where($association->targetColumn, $identifier)
+            ->get()
+            ->rows();
+
+        $results = [];
+        foreach ($rows as $row) {
+            $results[] = $this->hydrateManaged($targetMetadata, $row);
+        }
+
+        return $results;
+    }
+
+    /**
+     * @return list<object>
+     */
+    private function loadManyToManyCollection(EntityAssociationMetadata $association, int|string $identifier): array
+    {
+        if (! $association->usesJoinTable()) {
+            throw new RuntimeException(sprintf(
+                'ManyToMany association [%s] is missing JoinTable metadata.',
+                $association->name,
+            ));
+        }
+
+        $membershipRows = $this->queries->table($association->joinTable)
+            ->where($association->joinTableSourceColumn, $identifier)
+            ->get()
+            ->rows();
+
+        $targetMetadata = $this->metadata->for($association->targetEntity);
+        $results = [];
+        foreach ($membershipRows as $row) {
+            $targetId = $row[$association->joinTableTargetColumn] ?? null;
+            if ($targetId === null || $targetId === '') {
+                continue;
+            }
+
+            $target = $this->find($association->targetEntity, $targetId);
+            if ($target !== null) {
+                $results[] = $target;
+            }
+        }
+
+        return $results;
+    }
+
+    /**
      * Read a single association's target entities regardless of whether it is
      * a MANY_TO_ONE (single object) or ONE_TO_MANY (iterable).
      *
@@ -680,7 +1075,7 @@ final class EntityManager implements EntityManagerInterface
         $metadata = $this->unitOfWork->metadataFor($entity);
 
         foreach ($metadata->associations() as $assoc) {
-            if (! $assoc->isManyToOne()) {
+            if (! ($assoc->isManyToOne() || ($assoc->isOneToOne() && $assoc->isOwningSide()))) {
                 continue;
             }
 
@@ -717,7 +1112,7 @@ final class EntityManager implements EntityManagerInterface
     private function populateManyToOneForeignKeys(object $entity, EntityMetadata $metadata): void
     {
         foreach ($metadata->associations() as $assoc) {
-            if (! $assoc->isManyToOne()) {
+            if (! ($assoc->isManyToOne() || ($assoc->isOneToOne() && $assoc->isOwningSide()))) {
                 continue;
             }
 
@@ -777,6 +1172,144 @@ final class EntityManager implements EntityManagerInterface
         if ($assoc->sourceField !== null && $metadata->hasField($assoc->sourceField)) {
             $metadata->field($assoc->sourceField)->setValue($entity, $value);
         }
+    }
+
+    private function flushManyToManyMembershipChanges(): void
+    {
+        foreach ($this->unitOfWork->managedEntities() as $entity) {
+            $metadata = $this->unitOfWork->metadataFor($entity);
+            $key = $this->unitOfWork->keyFor($entity);
+            if ($key === null) {
+                continue;
+            }
+
+            foreach ($metadata->associations() as $association) {
+                if (! $association->isManyToMany() || ! $association->isOwningSide() || ! $association->usesJoinTable()) {
+                    continue;
+                }
+
+                $currentIds = $this->currentManyToManyTargetIds($entity, $association);
+                $existingIds = $this->existingManyToManyTargetIds($association, $key->identifier);
+
+                foreach (array_diff($existingIds, $currentIds) as $removedId) {
+                    $this->queries->table($association->joinTable)
+                        ->where($association->joinTableSourceColumn, $key->identifier)
+                        ->where($association->joinTableTargetColumn, $removedId)
+                        ->delete();
+                }
+
+                foreach (array_diff($currentIds, $existingIds) as $addedId) {
+                    $this->queries->table($association->joinTable)->insert([
+                        $association->joinTableSourceColumn => $key->identifier,
+                        $association->joinTableTargetColumn => $addedId,
+                    ]);
+                }
+            }
+
+            $this->unitOfWork->snapshotOneToManyCollections($entity, $metadata);
+        }
+    }
+
+    /**
+     * @return list<int|string>
+     */
+    private function currentManyToManyTargetIds(object $entity, EntityAssociationMetadata $association): array
+    {
+        $ids = [];
+        foreach ($this->readAssociationTargets($entity, $association) as $target) {
+            $targetId = $this->metadata->for($target::class)->identifierValue($target);
+            if ($targetId === null) {
+                continue;
+            }
+
+            $ids[] = $targetId;
+        }
+
+        return array_values(array_unique($ids, SORT_REGULAR));
+    }
+
+    /**
+     * @return list<int|string>
+     */
+    private function existingManyToManyTargetIds(EntityAssociationMetadata $association, int|string $sourceId): array
+    {
+        $rows = $this->queries->table($association->joinTable)
+            ->where($association->joinTableSourceColumn, $sourceId)
+            ->get()
+            ->rows();
+
+        $ids = [];
+        foreach ($rows as $row) {
+            $targetId = $row[$association->joinTableTargetColumn] ?? null;
+            if ($targetId === null || $targetId === '') {
+                continue;
+            }
+
+            $ids[] = $targetId;
+        }
+
+        return array_values(array_unique($ids, SORT_REGULAR));
+    }
+
+    private function deleteManyToManyMembershipsFor(object $entity, EntityMetadata $metadata, int|string $identifier): void
+    {
+        foreach ($metadata->associations() as $association) {
+            if (! $association->isManyToMany() || ! $association->usesJoinTable()) {
+                continue;
+            }
+
+            $this->queries->table($association->joinTable)
+                ->where($association->joinTableSourceColumn, $identifier)
+                ->delete();
+        }
+    }
+
+    /**
+     * @param list<object> $entities
+     * @return array<string, object>
+     */
+    private function mapEntitiesByIdentifier(array $entities, EntityMetadata $metadata): array
+    {
+        $mapped = [];
+
+        foreach ($entities as $entity) {
+            $identifier = $metadata->identifierValue($entity);
+            if ($identifier === null) {
+                continue;
+            }
+
+            $mapped[(string) $identifier] = $entity;
+        }
+
+        return $mapped;
+    }
+
+    /**
+     * @param list<int|string> $identifiers
+     * @return array<string, object>
+     */
+    private function fetchEntitiesByIdentifiers(EntityMetadata $metadata, array $identifiers): array
+    {
+        if ($identifiers === []) {
+            return [];
+        }
+
+        $rows = $this->queries->table($metadata->table)
+            ->whereIn($metadata->identifier->column, array_values($identifiers))
+            ->get()
+            ->rows();
+
+        $entities = [];
+        foreach ($rows as $row) {
+            $identifier = $row[$metadata->identifier->column] ?? null;
+            if ($identifier === null || $identifier === '') {
+                continue;
+            }
+
+            $entities[(string) $identifier] = $this->hydrateManaged($metadata, $row);
+        }
+
+        return $entities;
     }
 
     private function associationSourceValue(object $entity, EntityAssociationMetadata $association): int|string|null

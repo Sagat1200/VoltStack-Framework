@@ -163,6 +163,8 @@ final class BloqueCTest extends TestCase
             attributes: [
                 'device_ref' => 'dev_new_evil',
                 'ip_prefix' => '198.51.100',
+                // Fuerza ventana irregular (02:00-05:59 local) de forma determinística.
+                'tz_hint' => 3 - (int) gmdate('G'),
             ],
         );
 
@@ -171,6 +173,7 @@ final class BloqueCTest extends TestCase
         self::assertSame(RiskScore::LEVEL_MEDIUM, $risk->level);
         self::assertContains('new_device_detected', $risk->reasonCodes);
         self::assertContains('ip_prefix_drift', $risk->reasonCodes);
+        self::assertContains('irregular_auth_time_window', $risk->reasonCodes);
     }
 
     public function test_composite_engine_caps_score_at_100_without_overflow(): void

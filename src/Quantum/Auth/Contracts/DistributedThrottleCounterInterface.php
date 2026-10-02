@@ -9,11 +9,6 @@ namespace Quantum\Auth\Contracts;
  *           Implementación por defecto: null/null-implementation cuando throttle.distributed=false.
  *           Obligatoria para ambientes multi-web-node distribuidos; fallback InMemory cuando no.
  */
-interface DistributedThrottleCounterInterface
+interface DistributedThrottleCounterInterface extends ThrottleDistributedStorageInterface
 {
-    public function currentCount(string $bucketKey, ?int $now = null): int;
-
-    public function increment(string $bucketKey, int $windowSeconds, ?int $now = null): int;
-
-    public function reset(string $bucketKey): void;
 }

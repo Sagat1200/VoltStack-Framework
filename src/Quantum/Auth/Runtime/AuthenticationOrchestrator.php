@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace Quantum\Auth\Runtime;
 
 use Quantum\Auth\Contracts\AuthenticationOrchestratorInterface;
+use Quantum\Auth\Contracts\AssuranceContextResolverInterface;
 use Quantum\Auth\Contracts\AbuseProtectionThrottleInterface;
 use Quantum\Auth\Contracts\AuthenticatorResolverInterface;
+use Quantum\Auth\Contracts\OperationAssurancePolicyInterface;
 use Quantum\Auth\Contracts\TransactionNonceStoreInterface;
 use Quantum\Auth\Decisions\AuthenticationDecision;
 use Quantum\Auth\Risk\CompositeRiskSignalEngine;
@@ -19,16 +21,30 @@ final class AuthenticationOrchestrator implements AuthenticationOrchestratorInte
         private readonly ?CompositeRiskSignalEngine $riskEngine = null,
         private readonly ?TransactionNonceStoreInterface $nonceStore = null,
         private readonly ?CsrfChallengeBinder $csrfBinder = null,
+        private readonly ?AssuranceContextResolverInterface $assuranceContextResolver = null,
+        private readonly ?OperationAssurancePolicyInterface $operationAssurancePolicy = null,
     ) {}
 
     public function execute(AuthenticationOperationContext $context): AuthenticationDecision
     {
-        $minAssuranceAttr = $context->request->attributes['min_authentication_assurance'] ?? null;
-        $requiredMinAssurance = is_int($minAssuranceAttr) ? $minAssuranceAttr : (is_numeric($minAssuranceAttr) ? (int)$minAssuranceAttr : null);
+        $requiredMinAssurance = $this->operationAssurancePolicy?->minimumAssuranceFor($context);
+        if ($requiredMinAssurance === null) {
+            $minAssuranceAttr = $context->request->attributes['min_authentication_assurance'] ?? null;
+            $requiredMinAssurance = is_int($minAssuranceAttr) ? $minAssuranceAttr : (is_numeric($minAssuranceAttr) ? (int) $minAssuranceAttr : null);
+        }
         if ($requiredMinAssurance !== null && $requiredMinAssurance > 0) {
-            $currentAssurance = 0;
+            $resolvedAssurance = $this->assuranceContextResolver?->resolve($context);
+            $currentAssurance = is_array($resolvedAssurance) && isset($resolvedAssurance['current_assurance']) && is_numeric($resolvedAssurance['current_assurance'])
+                ? (int) $resolvedAssurance['current_assurance']
+                : 0;
             $meta = [];
-            if ($context->currentContext !== null) {
+            if (is_array($resolvedAssurance)) {
+                $resolvedName = $resolvedAssurance['current_assurance_name'] ?? null;
+                if (is_string($resolvedName) && $resolvedName !== '') {
+                    $meta['current_assurance_name'] = $resolvedName;
+                }
+            }
+            if ($resolvedAssurance === null && $context->currentContext !== null) {
                 try {
                     $strength = $context->currentContext->authenticationStrength();
                     $currentAssurance = $strength->value;
@@ -37,8 +53,8 @@ final class AuthenticationOrchestrator implements AuthenticationOrchestratorInte
                     $currentAssurance = 0;
                 }
                 $assuranceOverride = $context->currentContext->attribute('assurance_value');
-                if (is_int($assuranceOverride)) {
-                    $currentAssurance = $assuranceOverride;
+                if (is_int($assuranceOverride) || is_numeric($assuranceOverride)) {
+                    $currentAssurance = (int) $assuranceOverride;
                     $customName = $context->currentContext->attribute('assurance_name');
                     if (is_string($customName) && $customName !== '') {
                         $meta['current_assurance_name'] = $customName;

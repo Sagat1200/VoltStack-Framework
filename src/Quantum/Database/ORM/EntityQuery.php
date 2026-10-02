@@ -14,6 +14,11 @@ final class EntityQuery
 {
     public SelectQueryBuilder $query;
 
+    /**
+     * @var list<string>
+     */
+    private array $preloadedAssociations = [];
+
     public function __construct(
         private readonly EntityManager $manager,
         private readonly EntityMetadata $metadata,
@@ -29,12 +34,19 @@ final class EntityQuery
         if ($this->metadata->hasAssociation($field)) {
             $association = $this->metadata->association($field);
 
-            if (! $association->isOwningSide()) {
+            if ($association->isToMany()) {
                 throw new RuntimeException(sprintf(
-                    'Cannot query by inverse association [%s::$%s]; query by owning-side field [%s] on target entity instead.',
+                    'Cannot query by to-many association [%s::$%s]; query by the owning-side relation on the target entity instead.',
                     $this->metadata->className,
                     $field,
-                    $association->targetColumn ?? 'identifier',
+                ));
+            }
+
+            if (! $association->isOwningSide()) {
+                throw new RuntimeException(sprintf(
+                    'Cannot query by inverse association [%s::$%s]; query by the owning-side relation on the target entity instead.',
+                    $this->metadata->className,
+                    $field,
                 ));
             }
 
@@ -93,6 +105,22 @@ final class EntityQuery
         if ($this->metadata->hasAssociation($field)) {
             $association = $this->metadata->association($field);
 
+            if ($association->isToMany()) {
+                throw new RuntimeException(sprintf(
+                    'Cannot order by to-many association [%s::$%s].',
+                    $this->metadata->className,
+                    $field,
+                ));
+            }
+
+            if (! $association->isOwningSide()) {
+                throw new RuntimeException(sprintf(
+                    'Cannot order by inverse association [%s::$%s].',
+                    $this->metadata->className,
+                    $field,
+                ));
+            }
+
             if ($association->sourceColumn === null) {
                 throw new RuntimeException(sprintf(
                     'Association [%s::$%s] has no resolved source column for ordering.',
@@ -115,6 +143,30 @@ final class EntityQuery
         }
 
         $this->query->orderBy($this->metadata->field($field)->column, $direction);
+
+        return $this;
+    }
+
+    public function with(string ...$associations): self
+    {
+        foreach ($associations as $association) {
+            $normalized = trim($association);
+            if ($normalized === '') {
+                continue;
+            }
+
+            if (! $this->metadata->hasAssociation($normalized)) {
+                throw new RuntimeException(sprintf(
+                    'Cannot preload unknown association [%s::$%s].',
+                    $this->metadata->className,
+                    $normalized,
+                ));
+            }
+
+            if (! in_array($normalized, $this->preloadedAssociations, true)) {
+                $this->preloadedAssociations[] = $normalized;
+            }
+        }
 
         return $this;
     }
@@ -145,6 +197,8 @@ final class EntityQuery
             $entities[] = $this->manager->hydrateManaged($this->metadata, $row);
         }
 
+        $this->manager->preloadAssociations($entities, $this->preloadedAssociations);
+
         return $entities;
     }
 
@@ -156,7 +210,10 @@ final class EntityQuery
             return null;
         }
 
-        return $this->manager->hydrateManaged($this->metadata, $row);
+        $entity = $this->manager->hydrateManaged($this->metadata, $row);
+        $this->manager->preloadAssociations([$entity], $this->preloadedAssociations);
+
+        return $entity;
     }
 
     public function count(?string $column = null): int

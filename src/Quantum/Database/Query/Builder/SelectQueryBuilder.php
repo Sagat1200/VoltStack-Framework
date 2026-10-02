@@ -83,6 +83,16 @@ final class SelectQueryBuilder
         return $this;
     }
 
+    /**
+     * @param list<mixed> $values
+     */
+    public function whereIn(string $column, array $values): self
+    {
+        $this->predicates[] = new Predicate($column, 'IN', array_values($values));
+
+        return $this;
+    }
+
     public function orderBy(string $column, string $direction = 'asc'): self
     {
         $normalized = strtolower(trim($direction));

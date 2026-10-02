@@ -320,4 +320,92 @@ final class ManifestRequirementsEnforcementStageTest extends TestCase
         // Si evaluate_requirements_concretely=false, la whitelist deja pasar a downstream.
         self::assertCount(0, $stage->evaluate($request));
     }
+
+    public function test_matched_requirement_with_attribute_conditions_allows_only_when_conditions_are_satisfied(): void
+    {
+        $authority = new InMemoryAuthorityRepository([
+            ['principal_id' => 'user-1', 'permissions' => ['approve:invoice']],
+        ]);
+        $stage = new ManifestRequirementsEnforcementStage(
+            failClosed: true,
+            authorityRepository: $authority,
+            evaluateRequirementsConcretely: true,
+            evaluateAttributeConditions: true,
+        );
+        $context = new AuthorizationContext('req-auth', attributes: [
+            'risk' => ['score' => 40],
+            'department' => 'finance',
+            'authorization.metadata.public' => false,
+            'authorization.metadata.requirements' => [
+                ['ability' => 'approve:invoice'],
+            ],
+            'authorization.metadata.matched_requirements' => [
+                [
+                    'ability' => 'approve:invoice',
+                    'condition' => [
+                        ['attribute' => 'risk.score', 'type' => 'integer', 'max' => 50],
+                        ['attribute' => 'department', 'type' => 'enum', 'values' => ['finance']],
+                    ],
+                ],
+            ],
+        ]);
+        $request = new AuthorizationRequest(
+            new Ability('approve:invoice'),
+            new Principal('user-1'),
+            new SubjectDescriptor(SubjectType::Scalar, 'invoice-1', 'string'),
+            $context,
+        );
+
+        $results = $stage->evaluate($request);
+        $allow = $results[0] ?? null;
+
+        self::assertNotNull($allow);
+        self::assertSame(\Quantum\Authorization\Decision\Decision::Allow, $allow->decision());
+        self::assertSame('manifest_requirement_granted_by_authority', $allow->reasonCode());
+        self::assertTrue($allow->metadata()['abac_conditions_evaluated'] ?? false);
+    }
+
+    public function test_attribute_condition_failure_denies_when_runtime_abac_is_enabled(): void
+    {
+        $authority = new InMemoryAuthorityRepository([
+            ['principal_id' => 'user-1', 'permissions' => ['approve:invoice']],
+        ]);
+        $stage = new ManifestRequirementsEnforcementStage(
+            failClosed: true,
+            authorityRepository: $authority,
+            evaluateRequirementsConcretely: true,
+            evaluateAttributeConditions: true,
+        );
+        $context = new AuthorizationContext('req-auth', attributes: [
+            'risk' => ['score' => 90],
+            'authorization.metadata.public' => false,
+            'authorization.metadata.requirements' => [
+                ['ability' => 'approve:invoice'],
+            ],
+            'authorization.metadata.matched_requirements' => [
+                [
+                    'ability' => 'approve:invoice',
+                    'condition' => [
+                        'attribute' => 'risk.score',
+                        'type' => 'integer',
+                        'max' => 50,
+                    ],
+                ],
+            ],
+        ]);
+        $request = new AuthorizationRequest(
+            new Ability('approve:invoice'),
+            new Principal('user-1'),
+            new SubjectDescriptor(SubjectType::Scalar, 'invoice-1', 'string'),
+            $context,
+        );
+
+        $results = $stage->evaluate($request);
+        $deny = $results[0] ?? null;
+
+        self::assertNotNull($deny);
+        self::assertSame(\Quantum\Authorization\Decision\Decision::Deny, $deny->decision());
+        self::assertSame('manifest_requirement_attribute_conditions_not_satisfied', $deny->reasonCode());
+        self::assertSame(['risk.score'], $deny->metadata()['abac_condition_attributes'] ?? null);
+    }
 }

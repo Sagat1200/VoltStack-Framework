@@ -198,6 +198,52 @@ final class AuthorizationManagerTest extends TestCase
         self::assertTrue($decision->isAllowed());
         self::assertSame('explicit_allow', $decision->reasonCode());
     }
+
+    public function test_authorization_manager_applies_route_authorize_when_conditions_end_to_end(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $config = $app->make(ConfigRepository::class);
+        $config->set('authorization.authority.evaluate_requirements_concretely', true);
+        $config->set('authorization.authority.evaluate_attribute_conditions', true);
+        $config->set('authorization.authority.grants', [
+            ['principal_id' => '42', 'permissions' => ['documents.approve']],
+        ]);
+        $manager = $app->make(AuthorizationManagerInterface::class);
+
+        $route = new Route(RouteDefinition::make(
+            ['GET'],
+            '/policies/conditional/{document}',
+            static fn (): string => 'ok',
+        ));
+        $route->authorizeWhen(
+            'documents.approve',
+            'document',
+            'risk.score',
+            'integer',
+            ['max' => 50],
+            'Only low-risk approvals',
+        );
+
+        $allowContext = new AuthorizationContext('req-low-risk', attributes: [
+            'risk' => ['score' => 35],
+            'route_match' => new RouteMatch($route, ['document' => 'doc-1'], 'GET'),
+        ]);
+        $denyContext = new AuthorizationContext('req-high-risk', attributes: [
+            'risk' => ['score' => 90],
+            'route_match' => new RouteMatch($route, ['document' => 'doc-1'], 'GET'),
+        ]);
+
+        $allow = $manager->decide('documents.approve', 'doc-1', $allowContext, new Principal('42'));
+        $deny = $manager->decide('documents.approve', 'doc-1', $denyContext, new Principal('42'));
+
+        self::assertTrue($allow->isAllowed());
+        self::assertSame('manifest_requirement_granted_by_authority', $allow->reasonCode());
+        self::assertTrue($allow->metadata()['abac_conditions_evaluated'] ?? false);
+
+        self::assertTrue($deny->isDenied());
+        self::assertSame('manifest_requirement_attribute_conditions_not_satisfied', $deny->reasonCode());
+        self::assertSame(['risk.score'], $deny->metadata()['abac_condition_attributes'] ?? null);
+    }
 }
 
 final readonly class AuthorizationArticle

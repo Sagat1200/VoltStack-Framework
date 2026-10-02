@@ -5,7 +5,11 @@ declare(strict_types=1);
 namespace VoltStack\Test\Feature;
 
 use PHPUnit\Framework\TestCase;
+use Quantum\Auth\Identity\IdentityIdentifier;
+use Quantum\Auth\Identity\IdentityReference;
 use Quantum\Auth\Support\AuthenticationHttpState;
+use Quantum\Auth\Tokens\BearerTokenService;
+use Quantum\Auth\Tokens\TokenId;
 use Quantum\Config\ConfigRepository;
 use Quantum\Http\Request;
 use Quantum\HttpKernel\HttpKernel;
@@ -170,6 +174,7 @@ final class SkeletonSecuritySmokeTest extends TestCase
             })->name('smoke.opsAdminLogin');
             $router->get('/public', [SecurityDemoController::class, 'public'])->name('smoke.public');
             $router->get('/auth-token', [SecurityDemoController::class, 'authToken'])->name('smoke.authToken');
+            $router->get('/bearer-introspect', [SecurityDemoController::class, 'bearerIntrospect'])->name('smoke.bearerIntrospect');
             $router->get('/admin-mfa', [SecurityDemoController::class, 'adminMfa'])->name('smoke.adminMfa');
             $router->get('/self-service-remote-devices', [SecurityDemoController::class, 'selfServiceRemoteDevices'])->name('smoke.selfServiceRemoteDevices');
             $router->get('/privileged-security-center-export', [SecurityDemoController::class, 'privilegedSecurityCenterExport'])->name('smoke.privilegedSecurityCenterExport');
@@ -293,6 +298,69 @@ final class SkeletonSecuritySmokeTest extends TestCase
         self::assertSame('security/demo/auth-token', $j['endpoint'] ?? null);
         self::assertSame('u-smoke', $j['principal_id'] ?? null);
         self::assertContains('user', (array)($j['roles'] ?? []));
+    }
+
+    public function test_3b_bearer_introspect_projects_opaque_token_metadata_to_body_and_headers(): void
+    {
+        $svc = $this->app->make(BearerTokenService::class);
+        $pair = $svc->issueTokenPair(
+            new IdentityReference(new IdentityIdentifier('opaque-smoke-user'), 'user'),
+            'client-smoke-01',
+            ['dashboard:read', 'reports:export'],
+            null,
+            null,
+            [
+                'roles' => ['user'],
+                'permissions' => ['dashboard:read'],
+                'risk_score' => 88,
+                'risk_level' => 'high',
+                'current_assurance' => 30,
+                'required_min_assurance' => 20,
+                'authentication_assurance_profile' => 'opaque_access_token',
+                'amr' => ['bearer', 'mfa'],
+            ],
+        );
+        $accessToken = $pair['access_token'];
+
+        $r = $this->dispatch('/security/demo/bearer-introspect', [
+            'Authorization' => 'Bearer ' . $accessToken->id->value,
+        ]);
+
+        self::assertSame(200, $r['status'], $r['debugThrowable'] ?? '');
+        $j = $this->json($r);
+        self::assertNotNull($j);
+        self::assertTrue($j['active'] ?? false);
+        self::assertSame('opaque-smoke-user', $j['principal_id'] ?? null);
+        self::assertSame('user', $j['principal_type'] ?? null);
+        self::assertSame('MultiFactor', $j['authentication_strength'] ?? null);
+        self::assertSame('client-smoke-01', $j['client_id'] ?? null);
+        self::assertSame(['dashboard:read', 'reports:export'], $j['scopes'] ?? []);
+        self::assertSame(['user'], $j['roles'] ?? []);
+        self::assertSame(['dashboard:read'], $j['permissions'] ?? []);
+        self::assertSame(88, $j['risk']['score'] ?? null);
+        self::assertSame('high', $j['risk']['level'] ?? null);
+        self::assertSame(30, $j['assurance']['current'] ?? null);
+        self::assertSame(20, $j['assurance']['required_min'] ?? null);
+        self::assertSame('opaque_access_token', $j['assurance']['profile'] ?? null);
+        self::assertSame(['user'], $r['headers']['X-Auth-Principal-Type'] ?? []);
+        self::assertSame(['MultiFactor'], $r['headers']['X-Auth-Authentication-Strength'] ?? []);
+        self::assertSame(['client-smoke-01'], $r['headers']['X-Auth-Bearer-Client'] ?? []);
+        self::assertSame(['dashboard:read reports:export'], $r['headers']['X-Auth-Bearer-Scopes'] ?? []);
+        self::assertSame(['88'], $r['headers']['X-Auth-Risk-Score'] ?? []);
+        self::assertSame(['30'], $r['headers']['X-Auth-Assurance-Current'] ?? []);
+    }
+
+    public function test_3c_bearer_introspect_rejects_unknown_opaque_token(): void
+    {
+        $r = $this->dispatch('/security/demo/bearer-introspect', [
+            'Authorization' => 'Bearer ' . TokenId::generateAccess()->value,
+        ]);
+
+        self::assertSame(401, $r['status'], $r['debugThrowable'] ?? '');
+        $j = $this->json($r);
+        if ($j !== null) {
+            self::assertSame('controller.security.authentication_required', $j['reason_code'] ?? null);
+        }
     }
 
     public function test_4_admin_mfa_fails_with_only_token_strength(): void

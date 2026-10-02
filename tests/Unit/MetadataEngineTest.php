@@ -7,6 +7,7 @@ namespace VoltStack\Test\Unit;
 use PHPUnit\Framework\TestCase;
 use Quantum\Authorization\Attributes\Authorize;
 use Quantum\Authorization\Attributes\PublicAccess;
+use Quantum\Authorization\Attributes\AuthorizeWhen;
 use Quantum\Config\ConfigRepository;
 use Quantum\Metadata\Contracts\MetadataEngineInterface;
 use Quantum\Metadata\Contracts\MetadataProviderInterface;
@@ -251,6 +252,73 @@ final class MetadataEngineTest extends TestCase
             ['ability' => 'documents.route-view', 'subject' => 'document', 'source' => 'route', 'condition' => null],
         ], $bag->get('authorization.requirements'));
     }
+
+    public function test_it_projects_authorize_when_attributes_into_metadata(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $engine = $app->make(MetadataEngineInterface::class);
+
+        $route = new Route(RouteDefinition::make(['GET'], '/meta-authz-when-attr', TestAuthorizationConditionalMetadataController::class));
+        $match = new RouteMatch($route, [], 'GET');
+        $routeSubject = new RouteMatchSubject($match);
+        $classSubject = new ControllerClassSubject(TestAuthorizationConditionalMetadataController::class, $routeSubject);
+        $methodSubject = new ControllerMethodSubject(TestAuthorizationConditionalMetadataController::class, '__invoke', $classSubject);
+
+        $bag = $engine->resolve(new MetadataRequest(
+            subject: $methodSubject,
+            keys: ['authorization.requirements'],
+        ));
+
+        self::assertSame([
+            [
+                'ability' => 'documents.approve',
+                'subject' => 'document',
+                'source' => 'method',
+                'condition' => [
+                    'attribute' => 'risk.score',
+                    'type' => 'integer',
+                    'constraints' => ['max' => 50],
+                    'description' => 'Only low-risk approvals',
+                ],
+            ],
+        ], $bag->get('authorization.requirements'));
+    }
+
+    public function test_it_projects_authorize_when_route_helper_into_metadata_engine(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $engine = $app->make(MetadataEngineInterface::class);
+
+        $route = new Route(RouteDefinition::make(['GET'], '/meta-authz-when-route', fn () => 'ok'));
+        $route->authorizeWhen(
+            'documents.route-approve',
+            'document',
+            'risk.score',
+            'integer',
+            ['max' => 50],
+            'Only low-risk route approvals',
+        );
+        $match = new RouteMatch($route, [], 'GET');
+
+        $bag = $engine->resolve(new MetadataRequest(
+            subject: new RouteMatchSubject($match),
+            keys: ['authorization.requirements'],
+        ));
+
+        self::assertSame([
+            [
+                'ability' => 'documents.route-approve',
+                'subject' => 'document',
+                'source' => 'route',
+                'condition' => [
+                    'attribute' => 'risk.score',
+                    'type' => 'integer',
+                    'constraints' => ['max' => 50],
+                    'description' => 'Only low-risk route approvals',
+                ],
+            ],
+        ], $bag->get('authorization.requirements'));
+    }
 }
 
 #[Meta('custom.class', 'class-value')]
@@ -279,6 +347,22 @@ final class TestAuthorizationMetadataController
 {
     #[PublicAccess]
     #[Authorize('documents.method-view', 'document')]
+    public function __invoke(): string
+    {
+        return 'ok';
+    }
+}
+
+final class TestAuthorizationConditionalMetadataController
+{
+    #[AuthorizeWhen(
+        'documents.approve',
+        'document',
+        attribute: 'risk.score',
+        type: 'integer',
+        constraints: ['max' => 50],
+        description: 'Only low-risk approvals',
+    )]
     public function __invoke(): string
     {
         return 'ok';

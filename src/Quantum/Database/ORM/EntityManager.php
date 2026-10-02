@@ -21,6 +21,11 @@ final class EntityManager implements EntityManagerInterface
      */
     private array $repositories = [];
 
+    /**
+     * @var array<int, true>
+     */
+    private array $partialEntities = [];
+
     public function __construct(
         public readonly EntityMetadataRegistry $metadata,
         private readonly DatabaseQueryManager $queries,
@@ -77,8 +82,31 @@ final class EntityManager implements EntityManagerInterface
         return $entity;
     }
 
+    public function hydratePartial(EntityMetadata $metadata, array $row): object
+    {
+        if (! array_key_exists($metadata->identifier->column, $row)) {
+            throw new RuntimeException(sprintf(
+                'Partial hydration for entity [%s] requires identifier column [%s].',
+                $metadata->className,
+                $metadata->identifier->column,
+            ));
+        }
+
+        $entity = $metadata->hydrate($row);
+        $this->partialEntities[spl_object_id($entity)] = true;
+
+        return $entity;
+    }
+
     public function persist(object $entity): void
     {
+        if ($this->isPartial($entity)) {
+            throw new RuntimeException(sprintf(
+                'Cannot persist partial entity [%s]; call refresh() or load the full entity before persisting changes.',
+                $entity::class,
+            ));
+        }
+
         $metadata = $this->metadata->for($entity::class);
         $identifier = $metadata->identifierValue($entity);
         $key = $identifier !== null ? $metadata->keyFor($identifier) : null;
@@ -102,6 +130,13 @@ final class EntityManager implements EntityManagerInterface
 
     public function remove(object $entity): void
     {
+        if ($this->isPartial($entity)) {
+            throw new RuntimeException(sprintf(
+                'Cannot remove partial entity [%s]; call refresh() or load the full entity before removing it.',
+                $entity::class,
+            ));
+        }
+
         $this->unitOfWork->remove($entity);
     }
 
@@ -135,6 +170,7 @@ final class EntityManager implements EntityManagerInterface
         $metadata->hydrate($row, $entity);
         $this->identityMap->register($key, $entity);
         $this->unitOfWork->registerManaged($entity, $metadata, $key);
+        unset($this->partialEntities[spl_object_id($entity)]);
     }
 
     public function flush(): void
@@ -177,6 +213,7 @@ final class EntityManager implements EntityManagerInterface
     public function clear(): void
     {
         $this->repositories = [];
+        $this->partialEntities = [];
         $this->identityMap->clear();
         $this->unitOfWork->clear();
     }
@@ -184,6 +221,11 @@ final class EntityManager implements EntityManagerInterface
     public function contains(object $entity): bool
     {
         return $this->unitOfWork->contains($entity);
+    }
+
+    public function isPartial(object $entity): bool
+    {
+        return isset($this->partialEntities[spl_object_id($entity)]);
     }
 
     public function state(object $entity): EntityState

@@ -318,6 +318,33 @@ final class Route extends CompiledRoute
         return $this->meta('authorization', $authorization);
     }
 
+    /**
+     * @param array<string, mixed> $constraints
+     */
+    public function authorizeWhen(
+        string $ability,
+        string|array|null $subject = null,
+        string $attribute = '',
+        string $type = 'any',
+        array $constraints = [],
+        ?string $description = null,
+    ): static {
+        return $this->authorize($ability, $subject, [
+            'attribute' => trim($attribute),
+            'type' => trim($type) !== '' ? trim($type) : 'any',
+            'constraints' => $constraints,
+            'description' => $description,
+        ]);
+    }
+
+    /**
+     * @param list<array<string, mixed>> $conditions
+     */
+    public function authorizeWhenAll(string $ability, string|array|null $subject = null, array $conditions = []): static
+    {
+        return $this->authorize($ability, $subject, $conditions);
+    }
+
     public function publicAccess(bool $enabled = true): static
     {
         $authorization = $this->definition()->metadata()['authorization'] ?? [];

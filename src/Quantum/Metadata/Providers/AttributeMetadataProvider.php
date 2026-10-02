@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quantum\Metadata\Providers;
 
 use Quantum\Authorization\Attributes\Authorize;
+use Quantum\Authorization\Attributes\AuthorizeWhen;
 use Quantum\Authorization\Attributes\PublicAccess;
 use Quantum\Controllers\Attributes\Interceptors;
 use Quantum\Controllers\Attributes\ParameterAliases;
@@ -92,6 +93,7 @@ final class AttributeMetadataProvider implements MetadataProviderInterface
             ...$reflection->getAttributes(Interceptors::class, ReflectionAttribute::IS_INSTANCEOF),
             ...$reflection->getAttributes(ParameterAliases::class, ReflectionAttribute::IS_INSTANCEOF),
             ...$reflection->getAttributes(Authorize::class, ReflectionAttribute::IS_INSTANCEOF),
+            ...$reflection->getAttributes(AuthorizeWhen::class, ReflectionAttribute::IS_INSTANCEOF),
             ...$reflection->getAttributes(PublicAccess::class, ReflectionAttribute::IS_INSTANCEOF),
             ...$reflection->getAttributes(Expose::class, ReflectionAttribute::IS_INSTANCEOF),
             ...$reflection->getAttributes(Policies::class, ReflectionAttribute::IS_INSTANCEOF),
@@ -175,6 +177,29 @@ final class AttributeMetadataProvider implements MetadataProviderInterface
                                 'subject' => $instance->subject,
                                 'source' => str_contains($location, '@') ? 'method' : 'class',
                                 'condition' => $instance->condition,
+                            ]],
+                            origin: new MetadataOrigin(
+                                provider: $this->name(),
+                                type: 'attribute',
+                                location: $location,
+                            ),
+                            priority: $this->priority(),
+                        );
+                    }
+                }
+
+                if ($instance instanceof AuthorizeWhen) {
+                    $ability = trim($instance->ability);
+                    $attribute = trim($instance->attribute);
+
+                    if ($ability !== '' && $attribute !== '') {
+                        $fragments[] = new MetadataFragment(
+                            key: 'authorization.requirements',
+                            value: [[
+                                'ability' => $ability,
+                                'subject' => $instance->subject,
+                                'source' => str_contains($location, '@') ? 'method' : 'class',
+                                'condition' => $instance->condition(),
                             ]],
                             origin: new MetadataOrigin(
                                 provider: $this->name(),

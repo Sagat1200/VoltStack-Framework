@@ -25,6 +25,11 @@ final class EntityQuery
      */
     private array $projectionSelections = [];
 
+    /**
+     * @var list<array{name:string,column:string}>
+     */
+    private array $partialSelections = [];
+
     public function __construct(
         private readonly EntityManager $manager,
         private readonly EntityMetadata $metadata,
@@ -155,9 +160,9 @@ final class EntityQuery
 
     public function with(string ...$associations): self
     {
-        if ($this->projectionSelections !== []) {
+        if ($this->projectionSelections !== [] || $this->partialSelections !== []) {
             throw new RuntimeException(sprintf(
-                'Cannot combine [%s::with()] with projection mode on [%s]; use entity hydration or scalar/projection hydration, not both in the same query.',
+                'Cannot combine [%s::with()] with projection or partial hydration mode on [%s]; use one query mode at a time.',
                 self::class,
                 $this->metadata->className,
             ));
@@ -187,9 +192,9 @@ final class EntityQuery
 
     public function select(string ...$fields): self
     {
-        if ($this->preloadedAssociations !== []) {
+        if ($this->preloadedAssociations !== [] || $this->partialSelections !== []) {
             throw new RuntimeException(sprintf(
-                'Cannot combine [%s::select()] with [%s::with()] on [%s]; projection queries do not hydrate entities or preload associations.',
+                'Cannot combine [%s::select()] with [%s::with()] or partial hydration on [%s]; projection queries do not hydrate entities or preload associations.',
                 self::class,
                 self::class,
                 $this->metadata->className,
@@ -217,6 +222,43 @@ final class EntityQuery
         $this->query->select(...array_values(array_map(
             static fn(array $selection): string => $selection['column'],
             $resolved,
+        )));
+
+        return $this;
+    }
+
+    public function partial(string ...$fields): self
+    {
+        if ($this->preloadedAssociations !== [] || $this->projectionSelections !== []) {
+            throw new RuntimeException(sprintf(
+                'Cannot combine [%s::partial()] with preload or projection mode on [%s]; partial hydration is a separate query mode.',
+                self::class,
+                $this->metadata->className,
+            ));
+        }
+
+        $columns = [];
+        foreach ($fields as $field) {
+            $normalized = trim($field);
+            if ($normalized === '') {
+                continue;
+            }
+
+            foreach ($this->resolvePartialSelection($normalized) as $selection) {
+                $columns[$selection['column']] = $selection;
+            }
+        }
+
+        $identifierField = $this->metadata->identifier;
+        $columns[$identifierField->column] ??= [
+            'name' => $identifierField->name,
+            'column' => $identifierField->column,
+        ];
+
+        $this->partialSelections = array_values($columns);
+        $this->query->select(...array_values(array_map(
+            static fn(array $selection): string => $selection['column'],
+            $this->partialSelections,
         )));
 
         return $this;
@@ -269,6 +311,40 @@ final class EntityQuery
         $this->manager->preloadAssociations([$entity], $this->preloadedAssociations);
 
         return $entity;
+    }
+
+    /**
+     * @return list<object>
+     */
+    public function getPartial(): array
+    {
+        if ($this->partialSelections === []) {
+            throw new RuntimeException(sprintf(
+                'Partial hydration for [%s] requires calling partial(...) first.',
+                $this->metadata->className,
+            ));
+        }
+
+        $entities = [];
+        foreach ($this->query->get()->rows() as $row) {
+            $entities[] = $this->manager->hydratePartial($this->metadata, $row);
+        }
+
+        return $entities;
+    }
+
+    public function firstPartial(): ?object
+    {
+        if ($this->partialSelections === []) {
+            throw new RuntimeException(sprintf(
+                'Partial hydration for [%s] requires calling partial(...) first.',
+                $this->metadata->className,
+            ));
+        }
+
+        $row = $this->query->first();
+
+        return $row !== null ? $this->manager->hydratePartial($this->metadata, $row) : null;
     }
 
     /**
@@ -339,13 +415,16 @@ final class EntityQuery
 
     private function assertEntityHydrationAllowed(string $method): void
     {
-        if ($this->projectionSelections === []) {
+        if ($this->projectionSelections === [] && $this->partialSelections === []) {
             return;
         }
 
+        $mode = $this->partialSelections !== [] ? 'a partial-hydration' : 'a projection';
+
         throw new RuntimeException(sprintf(
-            'Cannot hydrate entities via %s() on a projection query for [%s]; use rows(), firstRow(), pluck(), or value() instead.',
+            'Cannot hydrate entities via %s() on %s query for [%s]; use rows()/firstRow()/pluck()/value() for projections or getPartial()/firstPartial() for partial hydration instead.',
             $method,
+            $mode,
             $this->metadata->className,
         ));
     }
@@ -438,6 +517,41 @@ final class EntityQuery
             'column' => $fieldMetadata->column,
             'hydrate' => static fn(mixed $value): mixed => $fieldMetadata->castValue($value),
         ];
+    }
+
+    /**
+     * @return list<array{name:string,column:string}>
+     */
+    private function resolvePartialSelection(string $field): array
+    {
+        if ($field === '') {
+            throw new RuntimeException('Partial field name cannot be empty.');
+        }
+
+        if ($this->metadata->hasAssociation($field)) {
+            throw new RuntimeException(sprintf(
+                'Cannot partially hydrate association [%s::$%s]; partial entity hydration currently supports scalar fields and embedded paths only.',
+                $this->metadata->className,
+                $field,
+            ));
+        }
+
+        $embeddedPath = $this->resolveEmbeddedPath($field);
+        if ($embeddedPath !== null) {
+            [, $innerColumn] = $embeddedPath;
+
+            return [[
+                'name' => $field,
+                'column' => $innerColumn,
+            ]];
+        }
+
+        $fieldMetadata = $this->metadata->field($field);
+
+        return [[
+            'name' => $field,
+            'column' => $fieldMetadata->column,
+        ]];
     }
 
     /**

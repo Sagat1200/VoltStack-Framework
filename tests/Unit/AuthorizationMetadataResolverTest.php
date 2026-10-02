@@ -37,9 +37,9 @@ final class AuthorizationMetadataResolverTest extends TestCase
         self::assertTrue($metadata->public());
         self::assertNotSame('', $metadata->payload()->fingerprint());
         self::assertSame([
-            ['ability' => 'documents.class-view', 'subject' => null, 'source' => 'class'],
-            ['ability' => 'documents.method-view', 'subject' => 'document', 'source' => 'method'],
-            ['ability' => 'documents.route-view', 'subject' => 'document', 'source' => 'route'],
+            ['ability' => 'documents.class-view', 'subject' => null, 'source' => 'class', 'condition' => null],
+            ['ability' => 'documents.method-view', 'subject' => 'document', 'source' => 'method', 'condition' => null],
+            ['ability' => 'documents.route-view', 'subject' => 'document', 'source' => 'route', 'condition' => null],
         ], $metadata->requirementsAsArray());
     }
 
@@ -57,7 +57,63 @@ final class AuthorizationMetadataResolverTest extends TestCase
 
         self::assertTrue($metadata->public());
         self::assertSame([
-            ['ability' => 'documents.route-view', 'subject' => 'document', 'source' => 'route'],
+            ['ability' => 'documents.route-view', 'subject' => 'document', 'source' => 'route', 'condition' => null],
+        ], $metadata->requirementsAsArray());
+    }
+
+    public function test_it_preserves_conditions_declared_in_attributes_and_route_metadata(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $resolver = $app->make(AuthorizationMetadataResolverInterface::class);
+
+        $route = new Route(RouteDefinition::make(
+            ['GET'],
+            '/resolver/conditional/{document}',
+            TestAuthorizationConditionalMetadataResolverController::class,
+        ));
+        $route->authorize('documents.route-approve', 'document', [
+            'attribute' => 'risk.score',
+            'type' => 'integer',
+            'max' => 50,
+        ]);
+        $match = new RouteMatch($route, ['document' => 'doc-1'], 'GET');
+
+        $metadata = $resolver->resolve(
+            $match,
+            new ControllerDefinition(TestAuthorizationConditionalMetadataResolverController::class),
+        );
+
+        self::assertSame([
+            [
+                'ability' => 'documents.class-view',
+                'subject' => null,
+                'source' => 'class',
+                'condition' => [
+                    'attribute' => 'context.department',
+                    'type' => 'enum',
+                    'values' => ['legal'],
+                ],
+            ],
+            [
+                'ability' => 'documents.method-view',
+                'subject' => 'document',
+                'source' => 'method',
+                'condition' => [
+                    'attribute' => 'risk.score',
+                    'type' => 'integer',
+                    'max' => 80,
+                ],
+            ],
+            [
+                'ability' => 'documents.route-approve',
+                'subject' => 'document',
+                'source' => 'route',
+                'condition' => [
+                    'attribute' => 'risk.score',
+                    'type' => 'integer',
+                    'max' => 50,
+                ],
+            ],
         ], $metadata->requirementsAsArray());
     }
 }
@@ -67,6 +123,24 @@ final class TestAuthorizationMetadataResolverController
 {
     #[PublicAccess]
     #[Authorize('documents.method-view', 'document')]
+    public function __invoke(string $document): string
+    {
+        return $document;
+    }
+}
+
+#[Authorize('documents.class-view', null, [
+    'attribute' => 'context.department',
+    'type' => 'enum',
+    'values' => ['legal'],
+])]
+final class TestAuthorizationConditionalMetadataResolverController
+{
+    #[Authorize('documents.method-view', 'document', [
+        'attribute' => 'risk.score',
+        'type' => 'integer',
+        'max' => 80,
+    ])]
     public function __invoke(string $document): string
     {
         return $document;

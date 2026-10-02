@@ -87,6 +87,7 @@ final class RouteMetadataProvider implements MetadataProviderInterface
                         'ability' => $ability,
                         'subject' => $requirement['subject'] ?? null,
                         'source' => 'route',
+                        'condition' => $requirement['condition'] ?? null,
                     ];
                 }
 

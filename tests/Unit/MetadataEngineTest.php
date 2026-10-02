@@ -226,8 +226,8 @@ final class MetadataEngineTest extends TestCase
 
         self::assertTrue($bag->get('authorization.public'));
         self::assertSame([
-            ['ability' => 'documents.class-view', 'subject' => null, 'source' => 'class'],
-            ['ability' => 'documents.method-view', 'subject' => 'document', 'source' => 'method'],
+            ['ability' => 'documents.class-view', 'subject' => null, 'source' => 'class', 'condition' => null],
+            ['ability' => 'documents.method-view', 'subject' => 'document', 'source' => 'method', 'condition' => null],
         ], $bag->get('authorization.requirements'));
     }
 
@@ -248,7 +248,7 @@ final class MetadataEngineTest extends TestCase
 
         self::assertTrue($bag->get('authorization.public'));
         self::assertSame([
-            ['ability' => 'documents.route-view', 'subject' => 'document', 'source' => 'route'],
+            ['ability' => 'documents.route-view', 'subject' => 'document', 'source' => 'route', 'condition' => null],
         ], $bag->get('authorization.requirements'));
     }
 }

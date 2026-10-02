@@ -174,6 +174,7 @@ final class AttributeMetadataProvider implements MetadataProviderInterface
                                 'ability' => $ability,
                                 'subject' => $instance->subject,
                                 'source' => str_contains($location, '@') ? 'method' : 'class',
+                                'condition' => $instance->condition,
                             ]],
                             origin: new MetadataOrigin(
                                 provider: $this->name(),

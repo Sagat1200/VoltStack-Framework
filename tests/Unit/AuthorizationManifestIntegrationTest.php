@@ -80,9 +80,52 @@ final class AuthorizationManifestIntegrationTest extends TestCase
         self::assertNotEmpty($fingerprint);
         self::assertTrue($enriched->context()->attribute('authorization.metadata.public'));
         self::assertSame(
-            [['ability' => 'documents.method-view', 'subject' => 'document', 'source' => 'method']],
+            [[
+                'ability' => 'documents.method-view',
+                'subject' => 'document',
+                'source' => 'method',
+                'condition' => null,
+            ]],
             $enriched->context()->attribute('authorization.metadata.matched_requirements'),
         );
+    }
+
+    public function test_resolver_preserves_conditions_when_payload_is_loaded_from_manifest_store(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $resolver = $app->make(AuthorizationMetadataResolverInterface::class);
+
+        $route = new Route(RouteDefinition::make(
+            ['GET'],
+            '/manifest/conditional/{document}',
+            TestManifestConditionalAuthorizationController::class,
+        ));
+        $route->authorize('documents.route-approve', 'document', [
+            'attribute' => 'risk.score',
+            'type' => 'integer',
+            'max' => 50,
+        ]);
+        $match = new RouteMatch($route, ['document' => 'doc-1'], 'GET');
+
+        $first = $resolver->resolve($match, new ControllerDefinition(TestManifestConditionalAuthorizationController::class));
+        $second = $resolver->resolve($match, new ControllerDefinition(TestManifestConditionalAuthorizationController::class));
+
+        self::assertSame($first->requirementsAsArray(), $second->requirementsAsArray());
+        self::assertSame([
+            [
+                'ability' => 'documents.route-approve',
+                'subject' => 'document',
+                'source' => 'route',
+                'condition' => [
+                    'attribute' => 'risk.score',
+                    'type' => 'integer',
+                    'max' => 50,
+                ],
+            ],
+        ], array_values(array_filter(
+            $second->requirementsAsArray(),
+            static fn (array $requirement): bool => $requirement['source'] === 'route',
+        )));
     }
 }
 
@@ -91,6 +134,14 @@ final class TestManifestAuthorizationController
 {
     #[PublicAccess]
     #[Authorize('documents.method-view', 'document')]
+    public function __invoke(string $document): string
+    {
+        return $document;
+    }
+}
+
+final class TestManifestConditionalAuthorizationController
+{
     public function __invoke(string $document): string
     {
         return $document;

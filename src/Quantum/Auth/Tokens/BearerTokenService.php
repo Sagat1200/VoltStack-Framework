@@ -170,6 +170,75 @@ final class BearerTokenService
     }
 
     /**
+     * Proyección reusable para capas HTTP / ControllerSecurity.
+     *
+     * @return array{
+     *   active:bool,
+     *   found:bool,
+     *   reason_code:?string,
+     *   token_type:?string,
+     *   client_id:?string,
+     *   identifier:?string,
+     *   identity_type:?string,
+     *   scopes:array<int,string>,
+     *   issued_at:?int,
+     *   expires_at:?int,
+     *   family_id:?string,
+     *   refresh_token_id:?string,
+     *   revoked:bool,
+     *   attributes:array<string,mixed>
+     * }
+     */
+    public function describeAccessTokenForSecurityContext(string $accessTokenId, ?int $nowTs = null): array
+    {
+        $token = $this->repository->findAccessToken($accessTokenId);
+        if (! $token instanceof OpaqueAccessToken) {
+            return [
+                'active' => false,
+                'found' => false,
+                'reason_code' => 'access_token_unknown',
+                'token_type' => null,
+                'client_id' => null,
+                'identifier' => null,
+                'identity_type' => null,
+                'scopes' => [],
+                'issued_at' => null,
+                'expires_at' => null,
+                'family_id' => null,
+                'refresh_token_id' => null,
+                'revoked' => false,
+                'attributes' => [],
+            ];
+        }
+
+        $now = $nowTs ?? time();
+        $active = $token->isActive($now);
+        $reasonCode = null;
+        if (! $active) {
+            $reasonCode = $token->revoked ? 'access_token_revoked' : 'access_token_expired';
+        }
+
+        $familyId = is_string($token->attributes['family_id'] ?? null) ? $token->attributes['family_id'] : null;
+
+        return [
+            'active' => $active,
+            'found' => true,
+            'reason_code' => $reasonCode,
+            'token_type' => 'access_token',
+            'client_id' => $token->clientId,
+            'identifier' => $token->reference->identifier->value,
+            'identity_type' => $token->reference->type,
+            'scopes' => $token->scopes,
+            'issued_at' => $token->issuedAt,
+            'expires_at' => $token->expiresAt,
+            'family_id' => $familyId,
+            'refresh_token_id' => $token->refreshTokenId?->value,
+            'revoked' => $token->revoked,
+            'attributes' => $token->attributes,
+        ];
+    }
+
+    /**
      * Introspección de un refresh token: incluye consumo, familia y rotación.
      *
      * @return array{active:bool, token_type:?string, client_id:?string, identifier:?string, identity_type:?string, scopes:array<int,string>, issued_at:?int, expires_at:?int, consumed:bool, consumed_at:?int, family_id:?string, rotated_to:?string, revoked:bool}

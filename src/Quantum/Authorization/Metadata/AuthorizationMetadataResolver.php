@@ -71,6 +71,7 @@ final readonly class AuthorizationMetadataResolver implements AuthorizationMetad
                     ability: $ability,
                     subject: $requirement['subject'] ?? null,
                     source: is_string($requirement['source'] ?? null) ? $requirement['source'] : 'metadata',
+                    condition: $requirement['condition'] ?? null,
                 );
             }
         }

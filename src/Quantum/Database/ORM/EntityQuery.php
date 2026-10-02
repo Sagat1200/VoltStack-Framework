@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quantum\Database\ORM;
 
+use Closure;
 use Quantum\Database\ORM\Metadata\EntityAssociationMetadata;
 use Quantum\Database\ORM\Metadata\EntityMetadata;
 use Quantum\Database\Query\Builder\DatabaseQueryManager;
@@ -18,6 +19,11 @@ final class EntityQuery
      * @var list<string>
      */
     private array $preloadedAssociations = [];
+
+    /**
+     * @var list<array{name:string,column:string,hydrate:Closure}>
+     */
+    private array $projectionSelections = [];
 
     public function __construct(
         private readonly EntityManager $manager,
@@ -149,6 +155,14 @@ final class EntityQuery
 
     public function with(string ...$associations): self
     {
+        if ($this->projectionSelections !== []) {
+            throw new RuntimeException(sprintf(
+                'Cannot combine [%s::with()] with projection mode on [%s]; use entity hydration or scalar/projection hydration, not both in the same query.',
+                self::class,
+                $this->metadata->className,
+            ));
+        }
+
         foreach ($associations as $association) {
             $normalized = trim($association);
             if ($normalized === '') {
@@ -167,6 +181,43 @@ final class EntityQuery
                 $this->preloadedAssociations[] = $normalized;
             }
         }
+
+        return $this;
+    }
+
+    public function select(string ...$fields): self
+    {
+        if ($this->preloadedAssociations !== []) {
+            throw new RuntimeException(sprintf(
+                'Cannot combine [%s::select()] with [%s::with()] on [%s]; projection queries do not hydrate entities or preload associations.',
+                self::class,
+                self::class,
+                $this->metadata->className,
+            ));
+        }
+
+        $resolved = [];
+        foreach ($fields as $field) {
+            $normalized = trim($field);
+            if ($normalized === '') {
+                continue;
+            }
+
+            $resolved[] = $this->resolveProjectionSelection($normalized);
+        }
+
+        if ($resolved === []) {
+            throw new RuntimeException(sprintf(
+                'Projection query for [%s] requires at least one selected field.',
+                $this->metadata->className,
+            ));
+        }
+
+        $this->projectionSelections = $resolved;
+        $this->query->select(...array_values(array_map(
+            static fn(array $selection): string => $selection['column'],
+            $resolved,
+        )));
 
         return $this;
     }
@@ -190,6 +241,8 @@ final class EntityQuery
      */
     public function get(): array
     {
+        $this->assertEntityHydrationAllowed('get');
+
         $rows = $this->query->get()->rows();
         $entities = [];
 
@@ -204,6 +257,8 @@ final class EntityQuery
 
     public function first(): ?object
     {
+        $this->assertEntityHydrationAllowed('first');
+
         $row = $this->query->first();
 
         if ($row === null) {
@@ -216,9 +271,83 @@ final class EntityQuery
         return $entity;
     }
 
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public function rows(): array
+    {
+        if ($this->projectionSelections === []) {
+            throw new RuntimeException(sprintf(
+                'Projection rows() for [%s] requires calling select(...) first.',
+                $this->metadata->className,
+            ));
+        }
+
+        return array_map(
+            fn(array $row): array => $this->hydrateProjectionRow($row),
+            $this->query->get()->rows(),
+        );
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function firstRow(): ?array
+    {
+        if ($this->projectionSelections === []) {
+            throw new RuntimeException(sprintf(
+                'Projection firstRow() for [%s] requires calling select(...) first.',
+                $this->metadata->className,
+            ));
+        }
+
+        $row = $this->query->first();
+
+        return $row !== null ? $this->hydrateProjectionRow($row) : null;
+    }
+
+    /**
+     * @return list<mixed>
+     */
+    public function pluck(string $field): array
+    {
+        $selection = $this->resolveProjectionSelection(trim($field));
+        $rows = $this->queryForSelections([$selection])->get()->rows();
+
+        return array_map(
+            fn(array $row): mixed => ($selection['hydrate'])($row[$selection['column']] ?? null),
+            $rows,
+        );
+    }
+
+    public function value(string $field): mixed
+    {
+        $selection = $this->resolveProjectionSelection(trim($field));
+        $row = $this->queryForSelections([$selection])->first();
+
+        if ($row === null) {
+            return null;
+        }
+
+        return ($selection['hydrate'])($row[$selection['column']] ?? null);
+    }
+
     public function count(?string $column = null): int
     {
         return $this->query->count($column);
+    }
+
+    private function assertEntityHydrationAllowed(string $method): void
+    {
+        if ($this->projectionSelections === []) {
+            return;
+        }
+
+        throw new RuntimeException(sprintf(
+            'Cannot hydrate entities via %s() on a projection query for [%s]; use rows(), firstRow(), pluck(), or value() instead.',
+            $method,
+            $this->metadata->className,
+        ));
     }
 
     private function normalizeAssociationWhereValue(EntityAssociationMetadata $association, mixed $value): int|string|null
@@ -250,6 +379,93 @@ final class EntityQuery
             get_debug_type($value),
             $association->targetEntity,
         ));
+    }
+
+    /**
+     * @return array{name:string,column:string,hydrate:Closure}
+     */
+    private function resolveProjectionSelection(string $field): array
+    {
+        if ($field === '') {
+            throw new RuntimeException('Projection field name cannot be empty.');
+        }
+
+        if ($this->metadata->hasAssociation($field)) {
+            $association = $this->metadata->association($field);
+
+            if ($association->isToMany()) {
+                throw new RuntimeException(sprintf(
+                    'Cannot project to-many association [%s::$%s]; project scalar fields or owning to-one identifiers instead.',
+                    $this->metadata->className,
+                    $field,
+                ));
+            }
+
+            if (! $association->isOwningSide() || $association->sourceColumn === null) {
+                throw new RuntimeException(sprintf(
+                    'Cannot project inverse association [%s::$%s]; only owning to-one associations expose a scalar identifier column in projection mode.',
+                    $this->metadata->className,
+                    $field,
+                ));
+            }
+
+            $targetMetadata = $this->manager->metadata->for($association->targetEntity);
+
+            return [
+                'name' => $field,
+                'column' => $association->sourceColumn,
+                'hydrate' => static fn(mixed $value): mixed => $value === null || $value === ''
+                    ? null
+                    : $targetMetadata->canonicalizeIdentifier($value),
+            ];
+        }
+
+        $embeddedPath = $this->resolveEmbeddedPath($field);
+        if ($embeddedPath !== null) {
+            [$innerField, $innerColumn] = $embeddedPath;
+
+            return [
+                'name' => $field,
+                'column' => $innerColumn,
+                'hydrate' => static fn(mixed $value): mixed => $innerField->castValue($value),
+            ];
+        }
+
+        $fieldMetadata = $this->metadata->field($field);
+
+        return [
+            'name' => $field,
+            'column' => $fieldMetadata->column,
+            'hydrate' => static fn(mixed $value): mixed => $fieldMetadata->castValue($value),
+        ];
+    }
+
+    /**
+     * @param list<array{name:string,column:string,hydrate:Closure}> $selections
+     */
+    private function queryForSelections(array $selections): SelectQueryBuilder
+    {
+        $query = clone $this->query;
+        $query->select(...array_values(array_map(
+            static fn(array $selection): string => $selection['column'],
+            $selections,
+        )));
+
+        return $query;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function hydrateProjectionRow(array $row): array
+    {
+        $projected = [];
+
+        foreach ($this->projectionSelections as $selection) {
+            $projected[$selection['name']] = ($selection['hydrate'])($row[$selection['column']] ?? null);
+        }
+
+        return $projected;
     }
 
     /**

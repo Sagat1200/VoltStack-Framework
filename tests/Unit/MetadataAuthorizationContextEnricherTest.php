@@ -52,8 +52,52 @@ final class MetadataAuthorizationContextEnricherTest extends TestCase
         self::assertNotSame('', (string) $enriched->context()->attribute('authorization.metadata.fingerprint'));
         self::assertCount(3, $enriched->context()->attribute('authorization.metadata.requirements', []));
         self::assertSame([
-            ['ability' => 'documents.method-view', 'subject' => 'document', 'source' => 'method'],
+            ['ability' => 'documents.method-view', 'subject' => 'document', 'source' => 'method', 'condition' => null],
         ], $enriched->context()->attribute('authorization.metadata.matched_requirements'));
+    }
+
+    public function test_it_projects_declared_conditions_into_matched_requirements(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $enricher = new MetadataAuthorizationContextEnricher(
+            $app->make(\Quantum\Authorization\Contracts\AuthorizationMetadataResolverInterface::class),
+        );
+
+        $route = new Route(RouteDefinition::make(
+            ['GET'],
+            '/enricher/conditional/{document}',
+            TestMetadataConditionalEnricherController::class,
+        ));
+        $route->authorize('documents.route-approve', 'document', [
+            'attribute' => 'risk.score',
+            'type' => 'integer',
+            'max' => 50,
+        ]);
+        $request = new AuthorizationRequest(
+            new Ability('documents.route-approve'),
+            new Principal('42'),
+            new SubjectDescriptor(SubjectType::Scalar, 'doc-1', 'string'),
+            new AuthorizationContext('req-conditional', attributes: [
+                'route_match' => new RouteMatch($route, ['document' => 'doc-1'], 'GET'),
+                'controller_definition' => new ControllerDefinition(TestMetadataConditionalEnricherController::class),
+            ]),
+        );
+
+        $enriched = $enricher->enrich($request);
+        $matched = $enriched->context()->attribute('authorization.metadata.matched_requirements');
+
+        self::assertSame([
+            [
+                'ability' => 'documents.route-approve',
+                'subject' => 'document',
+                'source' => 'route',
+                'condition' => [
+                    'attribute' => 'risk.score',
+                    'type' => 'integer',
+                    'max' => 50,
+                ],
+            ],
+        ], $matched);
     }
 }
 
@@ -62,6 +106,14 @@ final class TestMetadataEnricherController
 {
     #[PublicAccess]
     #[Authorize('documents.method-view', 'document')]
+    public function __invoke(string $document): string
+    {
+        return $document;
+    }
+}
+
+final class TestMetadataConditionalEnricherController
+{
     public function __invoke(string $document): string
     {
         return $document;

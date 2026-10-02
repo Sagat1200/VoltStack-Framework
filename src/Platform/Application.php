@@ -962,7 +962,15 @@ HTML;
                     $authManager = null;
                 }
 
-                return new ControllerSecurityContextFactory(max(1, $max), $authManager);
+                $bearerTokenService = null;
+
+                try {
+                    $bearerTokenService = $app->make(\Quantum\Auth\Tokens\BearerTokenService::class);
+                } catch (\Throwable) {
+                    $bearerTokenService = null;
+                }
+
+                return new ControllerSecurityContextFactory(max(1, $max), $authManager, $bearerTokenService);
             });
         }
 

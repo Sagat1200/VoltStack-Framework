@@ -45,7 +45,7 @@ final readonly class AuthorizationMetadataPayload
     }
 
     /**
-     * @return array{public:bool,requirements:list<array{ability:string,subject:mixed,source:string}>,fingerprint:string}
+     * @return array{public:bool,requirements:list<array{ability:string,subject:mixed,source:string,condition:mixed}>,fingerprint:string}
      */
     public function toArray(): array
     {
@@ -56,7 +56,7 @@ final readonly class AuthorizationMetadataPayload
     }
 
     /**
-     * @return array{public:bool,requirements:list<array{ability:string,subject:mixed,source:string}>}
+     * @return array{public:bool,requirements:list<array{ability:string,subject:mixed,source:string,condition:mixed}>}
      */
     private function canonicalData(): array
     {

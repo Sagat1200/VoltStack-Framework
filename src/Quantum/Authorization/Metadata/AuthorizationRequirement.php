@@ -10,6 +10,7 @@ final readonly class AuthorizationRequirement
         private string $ability,
         private mixed $subject = null,
         private string $source = 'metadata',
+        private mixed $condition = null,
     ) {}
 
     public function ability(): string
@@ -27,8 +28,13 @@ final readonly class AuthorizationRequirement
         return $this->source;
     }
 
+    public function condition(): mixed
+    {
+        return $this->condition;
+    }
+
     /**
-     * @return array{ability:string,subject:mixed,source:string}
+     * @return array{ability:string,subject:mixed,source:string,condition:mixed}
      */
     public function toArray(): array
     {
@@ -36,6 +42,7 @@ final readonly class AuthorizationRequirement
             'ability' => $this->ability,
             'subject' => $this->subject,
             'source' => $this->source,
+            'condition' => $this->condition,
         ];
     }
 }

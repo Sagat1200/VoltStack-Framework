@@ -7,7 +7,7 @@ namespace Quantum\Authorization\Metadata;
 final class AuthorizationMetadataPayloadFactory
 {
     /**
-     * @param array{public?:bool,requirements?:list<array{ability?:string,subject?:mixed,source?:string}>,fingerprint?:string} $data
+     * @param array{public?:bool,requirements?:list<array{ability?:string,subject?:mixed,source?:string,condition?:mixed}>,fingerprint?:string} $data
      */
     public static function fromArray(array $data): AuthorizationMetadataPayload
     {
@@ -31,6 +31,7 @@ final class AuthorizationMetadataPayloadFactory
                 ability: $ability,
                 subject: $raw['subject'] ?? null,
                 source: isset($raw['source']) && is_string($raw['source']) ? $raw['source'] : 'metadata',
+                condition: $raw['condition'] ?? null,
             );
         }
 

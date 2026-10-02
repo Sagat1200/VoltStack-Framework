@@ -7,6 +7,8 @@ namespace Quantum\Controllers\Security\Context;
 use Quantum\Auth\Context\AuthenticationContext;
 use Quantum\Auth\Contracts\AuthenticationManagerInterface;
 use Quantum\Auth\Identity\GenericIdentity;
+use Quantum\Auth\Support\AuthenticationAssurance;
+use Quantum\Auth\Tokens\BearerTokenService;
 use Quantum\Controllers\ControllerExecutionContext;
 use Quantum\Controllers\Security\Budget\ControllerSecurityBudget;
 use Quantum\Controllers\Security\Contracts\ControllerSecurityContextFactoryInterface;
@@ -18,6 +20,7 @@ final class ControllerSecurityContextFactory implements ControllerSecurityContex
     public function __construct(
         private readonly int $defaultMaxEvaluations = 64,
         private readonly ?AuthenticationManagerInterface $auth = null,
+        private readonly ?BearerTokenService $bearerTokens = null,
     ) {}
 
     public function create(
@@ -49,41 +52,28 @@ final class ControllerSecurityContextFactory implements ControllerSecurityContex
         if (is_string($authHeader) && $authHeader !== '' && str_starts_with(strtolower($authHeader), 'bearer ')) {
             $token = trim(substr($authHeader, 7));
             if ($token !== '') {
-                $parts = explode('.', $token, 3);
-                $payloadDecoded = null;
-                if (count($parts) === 3) {
-                    try {
-                        $payloadJson = base64_decode(strtr($parts[1], '-_', '+/'), true);
-                        if ($payloadJson !== false) {
-                            $payloadDecoded = json_decode($payloadJson, true, 512, JSON_THROW_ON_ERROR);
-                        }
-                    } catch (\Throwable) {
-                        $payloadDecoded = null;
-                    }
-                }
-
-                if (is_array($payloadDecoded)) {
-                    $sub = $payloadDecoded['sub'] ?? ('api-' . substr(hash('xxh128', $token), 0, 10));
-                    $type = PrincipalType::tryFrom((string)($payloadDecoded['type'] ?? 'api_client')) ?? PrincipalType::ApiClient;
-                    $roles = array_values(array_unique(array_map('strval', (array)($payloadDecoded['roles'] ?? []))));
-                    $permissions = array_values(array_unique(array_map('strval', (array)($payloadDecoded['permissions'] ?? []))));
-                    $mfa = isset($payloadDecoded['amr']) && in_array('mfa', (array)$payloadDecoded['amr'], true);
-                    $authStrength = match (true) {
-                        $mfa => AuthenticationStrength::MultiFactor,
-                        $roles !== [] || isset($payloadDecoded['email']) => AuthenticationStrength::Token,
-                        default => AuthenticationStrength::Password,
-                    };
-                    $extraClaims = $payloadDecoded;
-                    $extraAttributes = ['token_claims' => $payloadDecoded];
-                    $principal = new Principal(
-                        id: is_string($sub) && $sub !== '' ? $sub : ('api-' . substr(hash('xxh128', $token), 0, 10)),
-                        type: $type,
-                        authenticated: true,
-                        claims: array_merge([
+                $jwtClaims = $this->tryDecodeJwtLikeBearerClaims($token);
+                if (is_array($jwtClaims)) {
+                    [
+                        'principal' => $principal,
+                        'authenticationStrength' => $authStrength,
+                        'roles' => $roles,
+                        'permissions' => $permissions,
+                        'extraClaims' => $extraClaims,
+                        'extraAttributes' => $extraAttributes,
+                    ] = $this->securityProjectionFromJwtLikeClaims($jwtClaims, $token);
+                } elseif ($this->bearerTokens !== null) {
+                    $projection = $this->bearerTokens->describeAccessTokenForSecurityContext($token);
+                    if ($projection['active'] === true) {
+                        [
+                            'principal' => $principal,
+                            'authenticationStrength' => $authStrength,
                             'roles' => $roles,
                             'permissions' => $permissions,
-                        ], array_diff_key($extraClaims, array_flip(['roles', 'permissions', 'sub']))),
-                    );
+                            'extraClaims' => $extraClaims,
+                            'extraAttributes' => $extraAttributes,
+                        ] = $this->securityProjectionFromOpaqueAccessToken($projection);
+                    }
                 } else {
                     $principal = new Principal(
                         id: 'token-' . substr(hash('xxh128', $token), 0, 10),
@@ -169,6 +159,170 @@ final class ControllerSecurityContextFactory implements ControllerSecurityContex
             'exec-%s',
             substr(hash('xxh128', $method . '|' . $routePath . '|' . spl_object_id($request)), 0, 16),
         );
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function tryDecodeJwtLikeBearerClaims(string $token): ?array
+    {
+        $parts = explode('.', $token, 3);
+        if (count($parts) !== 3) {
+            return null;
+        }
+
+        try {
+            $payloadJson = base64_decode(strtr($parts[1], '-_', '+/'), true);
+            if ($payloadJson === false) {
+                return null;
+            }
+
+            $decoded = json_decode($payloadJson, true, 512, JSON_THROW_ON_ERROR);
+            return is_array($decoded) ? $decoded : null;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $payloadDecoded
+     * @return array{
+     *   principal:Principal,
+     *   authenticationStrength:AuthenticationStrength,
+     *   roles:array<int,string>,
+     *   permissions:array<int,string>,
+     *   extraClaims:array<string,mixed>,
+     *   extraAttributes:array<string,mixed>
+     * }
+     */
+    private function securityProjectionFromJwtLikeClaims(array $payloadDecoded, string $token): array
+    {
+        $sub = $payloadDecoded['sub'] ?? ('api-' . substr(hash('xxh128', $token), 0, 10));
+        $type = PrincipalType::tryFrom((string) ($payloadDecoded['type'] ?? 'api_client')) ?? PrincipalType::ApiClient;
+        $roles = array_values(array_unique(array_map('strval', (array) ($payloadDecoded['roles'] ?? []))));
+        $permissions = array_values(array_unique(array_map('strval', (array) ($payloadDecoded['permissions'] ?? []))));
+        $mfa = isset($payloadDecoded['amr']) && in_array('mfa', (array) $payloadDecoded['amr'], true);
+        $authStrength = match (true) {
+            $mfa => AuthenticationStrength::MultiFactor,
+            $roles !== [] || isset($payloadDecoded['email']) => AuthenticationStrength::Token,
+            default => AuthenticationStrength::Password,
+        };
+        $extraClaims = $payloadDecoded;
+        $extraAttributes = ['token_claims' => $payloadDecoded];
+        $principal = new Principal(
+            id: is_string($sub) && $sub !== '' ? $sub : ('api-' . substr(hash('xxh128', $token), 0, 10)),
+            type: $type,
+            authenticated: true,
+            claims: array_merge([
+                'roles' => $roles,
+                'permissions' => $permissions,
+            ], array_diff_key($extraClaims, array_flip(['roles', 'permissions', 'sub']))),
+        );
+
+        return [
+            'principal' => $principal,
+            'authenticationStrength' => $authStrength,
+            'roles' => $roles,
+            'permissions' => $permissions,
+            'extraClaims' => $extraClaims,
+            'extraAttributes' => $extraAttributes,
+        ];
+    }
+
+    /**
+     * @param array{
+     *   active:bool,
+     *   found:bool,
+     *   reason_code:?string,
+     *   token_type:?string,
+     *   client_id:?string,
+     *   identifier:?string,
+     *   identity_type:?string,
+     *   scopes:array<int,string>,
+     *   issued_at:?int,
+     *   expires_at:?int,
+     *   family_id:?string,
+     *   refresh_token_id:?string,
+     *   revoked:bool,
+     *   attributes:array<string,mixed>
+     * } $projection
+     * @return array{
+     *   principal:Principal,
+     *   authenticationStrength:AuthenticationStrength,
+     *   roles:array<int,string>,
+     *   permissions:array<int,string>,
+     *   extraClaims:array<string,mixed>,
+     *   extraAttributes:array<string,mixed>
+     * }
+     */
+    private function securityProjectionFromOpaqueAccessToken(array $projection): array
+    {
+        $tokenAttributes = $projection['attributes'];
+        $roles = array_values(array_unique(array_map('strval', (array) ($tokenAttributes['roles'] ?? []))));
+        $permissions = array_values(array_unique(array_map('strval', (array) ($tokenAttributes['permissions'] ?? []))));
+        $amr = array_values(array_filter(
+            array_map(static fn (mixed $entry): string => trim((string) $entry), (array) ($tokenAttributes['amr'] ?? [])),
+            static fn (string $entry): bool => $entry !== '',
+        ));
+
+        $authStrength = AuthenticationAssurance::resolveExplicitStrength(
+            $tokenAttributes['authentication_strength']
+                ?? $tokenAttributes['authentication_strength_name']
+                ?? $tokenAttributes['authentication_strength_value']
+                ?? null,
+        );
+        if ($authStrength === null) {
+            $authStrength = in_array('hwk', $amr, true) || in_array('hardware_backed', $amr, true)
+                ? AuthenticationStrength::HardwareBacked
+                : (in_array('mfa', $amr, true) ? AuthenticationStrength::MultiFactor : AuthenticationStrength::Token);
+        }
+
+        $extraClaims = array_filter([
+            'roles' => $roles,
+            'permissions' => $permissions,
+            'scopes' => $projection['scopes'],
+            'client_id' => $projection['client_id'],
+            'family_id' => $projection['family_id'],
+            'email' => is_string($tokenAttributes['email'] ?? null) ? $tokenAttributes['email'] : null,
+            'name' => is_string($tokenAttributes['name'] ?? null) ? $tokenAttributes['name'] : null,
+            'display_name' => is_string($tokenAttributes['display_name'] ?? null) ? $tokenAttributes['display_name'] : null,
+            'username' => is_string($tokenAttributes['username'] ?? null) ? $tokenAttributes['username'] : null,
+        ], static fn (mixed $value): bool => $value !== null && $value !== []);
+
+        $extraAttributes = array_filter([
+            'auth_bearer_token_type' => $projection['token_type'],
+            'auth_bearer_client_id' => $projection['client_id'],
+            'auth_bearer_scopes' => $projection['scopes'],
+            'auth_bearer_family_id' => $projection['family_id'],
+            'auth_bearer_refresh_token_id' => $projection['refresh_token_id'],
+            'auth_bearer_issued_at' => $projection['issued_at'],
+            'auth_bearer_expires_at' => $projection['expires_at'],
+            'auth_bearer_reason_code' => $projection['reason_code'],
+            'auth_bearer_active' => $projection['active'],
+            'auth_bearer_revoked' => $projection['revoked'],
+            'auth_risk_score' => $tokenAttributes['risk_score'] ?? null,
+            'auth_risk_level' => $tokenAttributes['risk_level'] ?? null,
+            'auth_required_min_assurance' => $tokenAttributes['required_min_assurance'] ?? null,
+            'auth_current_assurance' => $tokenAttributes['current_assurance'] ?? null,
+            'auth_assurance_profile' => $tokenAttributes['authentication_assurance_profile'] ?? null,
+            'amr' => $amr !== [] ? $amr : null,
+        ], static fn (mixed $value): bool => $value !== null && $value !== []);
+
+        $principal = new Principal(
+            id: is_string($projection['identifier']) && $projection['identifier'] !== '' ? $projection['identifier'] : 'token-subject',
+            type: PrincipalType::tryFrom((string) ($projection['identity_type'] ?? 'user')) ?? PrincipalType::User,
+            authenticated: true,
+            claims: $extraClaims,
+        );
+
+        return [
+            'principal' => $principal,
+            'authenticationStrength' => $authStrength,
+            'roles' => $roles,
+            'permissions' => $permissions,
+            'extraClaims' => $extraClaims,
+            'extraAttributes' => $extraAttributes,
+        ];
     }
 
     private function principalFromAuthenticationContext(AuthenticationContext $context): Principal

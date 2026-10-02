@@ -12,6 +12,10 @@ use Quantum\Auth\Identity\GenericIdentity;
 use Quantum\Auth\Identity\IdentityIdentifier;
 use Quantum\Auth\Identity\IdentityReference;
 use Quantum\Auth\Sessions\AuthenticationSessionSummary;
+use Quantum\Auth\Tokens\BearerTokenService;
+use Quantum\Auth\Tokens\InMemoryOpaqueTokenRepository;
+use Quantum\Auth\Tokens\OpaqueAccessToken;
+use Quantum\Auth\Tokens\TokenId;
 use Quantum\Controllers\Security\Context\ControllerSecurityContext;
 use Quantum\Controllers\Security\Context\ControllerSecurityContextFactory;
 use Quantum\Controllers\Security\Context\Principal;
@@ -133,6 +137,78 @@ final class ControllerSecurityContextFactoryTest extends TestCase
         self::assertTrue($ctx->principal->authenticated());
         self::assertSame(AuthenticationStrength::Token, $ctx->authenticationStrength);
         self::assertSame(PrincipalType::ApiClient, $ctx->principal->type());
+    }
+
+    public function test_factory_can_introspect_opaque_bearer_token_with_service_and_project_security_metadata(): void
+    {
+        $repository = new InMemoryOpaqueTokenRepository();
+        $accessId = TokenId::generateAccess();
+        $refreshId = TokenId::generateRefresh();
+        $repository->saveAccessToken(new OpaqueAccessToken(
+            id: $accessId,
+            reference: new IdentityReference(new IdentityIdentifier('opaque-user-01'), 'user'),
+            issuedAt: 1_700_000_000,
+            expiresAt: time() + 3600,
+            clientId: 'client-web-01',
+            scopes: ['dashboard:read', 'reports:export'],
+            refreshTokenId: $refreshId,
+            attributes: [
+                'family_id' => 'fam_ops_01',
+                'roles' => ['ops'],
+                'permissions' => ['reports:export'],
+                'email' => 'ops@example.test',
+                'amr' => ['bearer', 'mfa'],
+                'risk_score' => 85,
+                'risk_level' => 'high',
+                'authentication_assurance_profile' => 'token_authenticated',
+            ],
+            revoked: false,
+        ));
+
+        $factory = new ControllerSecurityContextFactory(
+            bearerTokens: new BearerTokenService($repository),
+        );
+
+        $req = Request::create('/t', 'GET', [], [], [], [], [], [
+            'Authorization' => 'Bearer ' . $accessId->value,
+        ]);
+        $ctx = $factory->create($req, $this->buildExecCtx($req));
+        $claims = $ctx->principal->claims();
+        $attributes = $ctx->attributes->attributes;
+
+        self::assertTrue($ctx->principal->authenticated());
+        self::assertSame(PrincipalType::User, $ctx->principal->type());
+        self::assertSame('opaque-user-01', $ctx->principal->id());
+        self::assertSame(AuthenticationStrength::MultiFactor, $ctx->authenticationStrength);
+        self::assertSame(['ops'], $claims['roles'] ?? []);
+        self::assertSame(['reports:export'], $claims['permissions'] ?? []);
+        self::assertSame('ops@example.test', $claims['email'] ?? null);
+        self::assertSame(['dashboard:read', 'reports:export'], $claims['scopes'] ?? []);
+        self::assertSame('client-web-01', $claims['client_id'] ?? null);
+        self::assertSame('fam_ops_01', $claims['family_id'] ?? null);
+        self::assertSame('client-web-01', $attributes['auth_bearer_client_id'] ?? null);
+        self::assertSame(['dashboard:read', 'reports:export'], $attributes['auth_bearer_scopes'] ?? []);
+        self::assertSame('fam_ops_01', $attributes['auth_bearer_family_id'] ?? null);
+        self::assertSame($refreshId->value, $attributes['auth_bearer_refresh_token_id'] ?? null);
+        self::assertSame(85, $attributes['auth_risk_score'] ?? null);
+        self::assertSame('high', $attributes['auth_risk_level'] ?? null);
+        self::assertSame(['bearer', 'mfa'], $attributes['amr'] ?? []);
+    }
+
+    public function test_factory_with_service_does_not_auto_authenticate_unknown_opaque_bearer(): void
+    {
+        $factory = new ControllerSecurityContextFactory(
+            bearerTokens: new BearerTokenService(new InMemoryOpaqueTokenRepository()),
+        );
+
+        $req = Request::create('/t', 'GET', [], [], [], [], [], [
+            'Authorization' => 'Bearer atk_unknown_opaque_token',
+        ]);
+        $ctx = $factory->create($req, $this->buildExecCtx($req));
+
+        self::assertFalse($ctx->principal->authenticated());
+        self::assertSame(PrincipalType::Anonymous, $ctx->principal->type());
+        self::assertSame(AuthenticationStrength::Anonymous, $ctx->authenticationStrength);
     }
 
     public function test_factory_can_derive_principal_from_quantum_auth_context_when_no_bearer_token_exists(): void

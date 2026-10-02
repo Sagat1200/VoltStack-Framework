@@ -52,7 +52,7 @@ final readonly class AuthorizationMetadata
     }
 
     /**
-     * @return list<array{ability:string,subject:mixed,source:string}>
+     * @return list<array{ability:string,subject:mixed,source:string,condition:mixed}>
      */
     public function requirementsAsArray(): array
     {

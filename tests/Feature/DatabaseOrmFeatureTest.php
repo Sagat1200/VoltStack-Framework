@@ -36,6 +36,7 @@ use Quantum\Database\ORM\Metadata\EntityMetadataRegistry;
 use Quantum\Database\ORM\Model;
 use Quantum\Database\Schema\Builder\TableBlueprint;
 use Quantum\Http\Request;
+use RuntimeException;
 use VoltStack\Framework\Application;
 use VoltStack\Runtime\Context\ScopeManager;
 
@@ -761,6 +762,129 @@ final class DatabaseOrmFeatureTest extends TestCase
                 ->get()
                 ->rows();
             self::assertCount(1, $remainingMemberships, 'Preloaded ManyToMany collection stays flushable after mutation');
+        } finally {
+            $scope->end();
+        }
+    }
+
+    public function test_entity_query_select_rows_firstrow_pluck_and_value_support_projection_mode(): void
+    {
+        $app = $this->makeApp();
+        $scope = $app->make(ScopeManager::class);
+        $scope->begin(Request::create('/database/orm/projections', 'GET'));
+
+        try {
+            $database = $app->make(DatabaseInterface::class);
+            $database->schema()->create('orm_events', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+                $table->string('status');
+                $table->timestamp('occurred_at');
+                $table->string('payload');
+            }, true);
+            $database->schema()->create('orm_products', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('sku');
+                $table->integer('price_amount')->nullable();
+                $table->string('price_currency', 3)->nullable();
+                $table->string('dim_width')->nullable();
+                $table->string('dim_height')->nullable();
+                $table->string('dim_depth')->nullable();
+            }, true);
+            $database->schema()->create('orm_blog_posts', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('title');
+                $table->boolean('published');
+            }, true);
+            $database->schema()->create('orm_blog_comments', function (TableBlueprint $table): void {
+                $table->id();
+                $table->integer('post_id');
+                $table->string('body');
+            }, true);
+
+            $em = $database->entityManager();
+
+            $event = new OrmEvent();
+            $event->name = 'Launch';
+            $event->status = OrmEventStatus::Published;
+            $event->occurredAt = new DateTimeImmutable('2026-10-02T10:15:00+00:00');
+            $event->payload = ['channel' => 'web', 'attempts' => 3];
+            $em->persist($event);
+
+            $product = new OrmProduct();
+            $product->sku = 'CHAIR-001';
+            $product->price = new OrmMoney();
+            $product->price->amount = 2599;
+            $product->price->currency = 'USD';
+            $product->dimensions = new OrmDimensions();
+            $product->dimensions->width = '44';
+            $product->dimensions->height = '91';
+            $product->dimensions->depth = '52';
+            $em->persist($product);
+
+            $post = new OrmBlogPost();
+            $post->title = 'Alpha';
+            $post->published = true;
+            $em->persist($post);
+            $em->flush();
+
+            $commentA = new OrmBlogComment();
+            $commentA->body = 'Alpha #1';
+            $commentA->post = $post;
+
+            $commentB = new OrmBlogComment();
+            $commentB->body = 'Alpha #2';
+            $commentB->post = $post;
+
+            $em->persist($commentA);
+            $em->persist($commentB);
+            $em->flush();
+            $em->clear();
+
+            $eventRows = $em->query(OrmEvent::class)
+                ->select('name', 'status', 'occurredAt', 'payload')
+                ->rows();
+            self::assertCount(1, $eventRows);
+            self::assertSame('Launch', $eventRows[0]['name']);
+            self::assertSame(OrmEventStatus::Published, $eventRows[0]['status']);
+            self::assertInstanceOf(DateTimeImmutable::class, $eventRows[0]['occurredAt']);
+            self::assertSame('2026-10-02T10:15:00+00:00', $eventRows[0]['occurredAt']->format(DATE_ATOM));
+            self::assertSame(['channel' => 'web', 'attempts' => 3], $eventRows[0]['payload']);
+
+            $productRow = $em->query(OrmProduct::class)
+                ->select('sku', 'price.amount', 'price.currency', 'dimensions.depth')
+                ->where('sku', 'CHAIR-001')
+                ->firstRow();
+            self::assertNotNull($productRow);
+            self::assertSame('CHAIR-001', $productRow['sku']);
+            self::assertSame(2599, $productRow['price.amount']);
+            self::assertSame('USD', $productRow['price.currency']);
+            self::assertSame('52', $productRow['dimensions.depth']);
+
+            $commentRows = $em->query(OrmBlogComment::class)
+                ->select('body', 'post')
+                ->orderBy('body')
+                ->rows();
+            self::assertCount(2, $commentRows);
+            self::assertSame('Alpha #1', $commentRows[0]['body']);
+            self::assertSame($post->id, $commentRows[0]['post']);
+            self::assertSame($post->id, $commentRows[1]['post']);
+
+            self::assertSame(['Alpha #1', 'Alpha #2'], $em->query(OrmBlogComment::class)
+                ->orderBy('body')
+                ->pluck('body'));
+            self::assertSame($post->id, $em->query(OrmBlogComment::class)
+                ->where('body', 'Alpha #1')
+                ->value('post'));
+
+            try {
+                $em->query(OrmEvent::class)
+                    ->select('name')
+                    ->get();
+                self::fail('Projection queries must not hydrate partial entities via get().');
+            } catch (RuntimeException $exception) {
+                self::assertStringContainsString('use rows(), firstRow(), pluck(), or value()', $exception->getMessage());
+            }
         } finally {
             $scope->end();
         }

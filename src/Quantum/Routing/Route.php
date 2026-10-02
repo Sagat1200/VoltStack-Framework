@@ -293,7 +293,7 @@ final class Route extends CompiledRoute
         return $this->meta('auth', $value);
     }
 
-    public function authorize(string $ability, string|array|null $subject = null): static
+    public function authorize(string $ability, string|array|null $subject = null, mixed $condition = null): static
     {
         $authorization = $this->definition()->metadata()['authorization'] ?? [];
 
@@ -310,6 +310,7 @@ final class Route extends CompiledRoute
         $requirements[] = [
             'ability' => trim($ability),
             'subject' => $subject,
+            'condition' => $condition,
         ];
 
         $authorization['requirements'] = $requirements;

@@ -202,6 +202,31 @@ final class Bloque3BearerV2Test extends TestCase
         $this->assertFalse($introAccess['active']);
     }
 
+    public function test_b3_09_revoke_access_token_pair_revokes_access_and_linked_refresh(): void
+    {
+        $repo = new InMemoryOpaqueTokenRepository();
+        $svc = new BearerTokenService($repo);
+        $issued = $svc->issueTokenPair(self::makeIdentityRef('u9'), 'c9', ['read'], 'FAM9', 9000);
+
+        $accessId = $issued['access_token']->id->value;
+        $refreshId = $issued['refresh_token']->id->value;
+
+        $result = $svc->revokeAccessTokenPair($accessId);
+        $this->assertSame('revoked', $result['status']);
+        $this->assertTrue($result['access_token_revoked']);
+        $this->assertTrue($result['refresh_token_revoked']);
+        $this->assertSame('FAM9', $result['family_id']);
+        $this->assertSame($refreshId, $result['refresh_token_id']);
+
+        $access = $svc->describeAccessTokenForSecurityContext($accessId, 9001);
+        $this->assertFalse($access['active']);
+        $this->assertSame('access_token_revoked', $access['reason_code']);
+
+        $refresh = $svc->introspectRefreshToken($refreshId, 9001);
+        $this->assertFalse($refresh['active']);
+        $this->assertTrue($refresh['revoked']);
+    }
+
     private static function rmDirRecursive(string $dir): void
     {
         if (! is_dir($dir)) {

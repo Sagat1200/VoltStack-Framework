@@ -989,6 +989,125 @@ final class DatabaseOrmFeatureTest extends TestCase
         }
     }
 
+    public function test_entity_query_partial_managed_hydration_tracks_only_loaded_fields_and_upgrades_on_find(): void
+    {
+        $app = $this->makeApp();
+        $scope = $app->make(ScopeManager::class);
+        $scope->begin(Request::create('/database/orm/partial-managed-hydration', 'GET'));
+
+        try {
+            $database = $app->make(DatabaseInterface::class);
+            $database->schema()->create('orm_events', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+                $table->string('status');
+                $table->timestamp('occurred_at');
+                $table->string('payload');
+            }, true);
+            $database->schema()->create('orm_products', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('sku');
+                $table->integer('price_amount')->nullable();
+                $table->string('price_currency', 3)->nullable();
+                $table->string('dim_width')->nullable();
+                $table->string('dim_height')->nullable();
+                $table->string('dim_depth')->nullable();
+            }, true);
+
+            $em = $database->entityManager();
+
+            $event = new OrmEvent();
+            $event->name = 'Launch';
+            $event->status = OrmEventStatus::Published;
+            $event->occurredAt = new DateTimeImmutable('2026-10-02T12:00:00+00:00');
+            $event->payload = ['channel' => 'queue', 'ok' => true];
+            $em->persist($event);
+
+            $product = new OrmProduct();
+            $product->sku = 'DESK-001';
+            $product->price = new OrmMoney();
+            $product->price->amount = 15999;
+            $product->price->currency = 'USD';
+            $product->dimensions = new OrmDimensions();
+            $product->dimensions->width = '120';
+            $product->dimensions->height = '75';
+            $product->dimensions->depth = '60';
+            $em->persist($product);
+            $em->flush();
+            $em->clear();
+
+            $managedPartialEvent = $em->query(OrmEvent::class)
+                ->partialManaged('name', 'status')
+                ->firstPartialManaged();
+            self::assertInstanceOf(OrmEvent::class, $managedPartialEvent);
+            self::assertSame(EntityState::Managed, $em->state($managedPartialEvent));
+            self::assertTrue($em->contains($managedPartialEvent));
+            self::assertSame('Launch', $managedPartialEvent->name);
+            self::assertSame(OrmEventStatus::Published, $managedPartialEvent->status);
+            self::assertFalse($this->isPropertyInitialized($managedPartialEvent, 'occurredAt'));
+
+            $managedPartialEvent->name = 'Launch Updated';
+            $em->flush();
+
+            $rawEvent = $database->table('orm_events')
+                ->where('id', $managedPartialEvent->id)
+                ->first();
+            self::assertNotNull($rawEvent);
+            self::assertSame('Launch Updated', $rawEvent['name'] ?? null);
+            self::assertSame('published', $rawEvent['status'] ?? null);
+            self::assertSame('2026-10-02T12:00:00+00:00', $rawEvent['occurred_at'] ?? null);
+            self::assertIsString($rawEvent['payload'] ?? null);
+            self::assertStringContainsString('"channel":"queue"', $rawEvent['payload'] ?? '');
+
+            try {
+                $em->remove($managedPartialEvent);
+                self::fail('Managed partial entities must not be removed directly.');
+            } catch (RuntimeException $exception) {
+                self::assertStringContainsString('Cannot remove managed partial entity', $exception->getMessage());
+            }
+
+            $foundEvent = $em->find(OrmEvent::class, $managedPartialEvent->id);
+            self::assertSame($managedPartialEvent, $foundEvent, 'find() upgrades the existing managed partial instance');
+            self::assertTrue($this->isPropertyInitialized($managedPartialEvent, 'occurredAt'));
+            self::assertSame('2026-10-02T12:00:00+00:00', $managedPartialEvent->occurredAt->format(DATE_ATOM));
+            self::assertSame(['channel' => 'queue', 'ok' => true], $managedPartialEvent->payload);
+
+            $em->clear();
+
+            $managedPartialProduct = $em->query(OrmProduct::class)
+                ->partialManaged('sku', 'price.amount')
+                ->where('sku', 'DESK-001')
+                ->firstPartialManaged();
+            self::assertInstanceOf(OrmProduct::class, $managedPartialProduct);
+            self::assertSame(EntityState::Managed, $em->state($managedPartialProduct));
+            self::assertInstanceOf(OrmMoney::class, $managedPartialProduct->price);
+            self::assertTrue($this->isPropertyInitialized($managedPartialProduct->price, 'amount'));
+            self::assertFalse($this->isPropertyInitialized($managedPartialProduct->price, 'currency'));
+
+            $managedPartialProduct->price->amount = 16999;
+            $em->flush();
+
+            $rawProduct = $database->table('orm_products')
+                ->where('id', $managedPartialProduct->id)
+                ->first();
+            self::assertNotNull($rawProduct);
+            self::assertSame(16999, $rawProduct['price_amount'] ?? null);
+            self::assertSame('USD', $rawProduct['price_currency'] ?? null);
+            self::assertSame('120', $rawProduct['dim_width'] ?? null);
+
+            try {
+                $em->query(OrmEvent::class)
+                    ->partialManaged('name')
+                    ->get();
+                self::fail('Managed partial queries must not hydrate full entities via get().');
+            } catch (RuntimeException $exception) {
+                self::assertStringContainsString('getPartialManaged()/firstPartialManaged()', $exception->getMessage());
+            }
+        } finally {
+            $scope->end();
+        }
+    }
+
     private function makeApp(): Application
     {
         $app = new Application($this->basePath);

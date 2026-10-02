@@ -42,6 +42,10 @@ final class EntityManager implements EntityManagerInterface
         $managed = $this->identityMap->get($key);
 
         if ($managed !== null) {
+            if ($this->unitOfWork->isPartialManaged($managed)) {
+                $this->refresh($managed);
+            }
+
             return $managed;
         }
 
@@ -98,6 +102,54 @@ final class EntityManager implements EntityManagerInterface
         return $entity;
     }
 
+    /**
+     * @param list<string> $loadedFields
+     */
+    public function hydrateManagedPartial(EntityMetadata $metadata, array $row, array $loadedFields): object
+    {
+        if (! array_key_exists($metadata->identifier->column, $row)) {
+            throw new RuntimeException(sprintf(
+                'Managed partial hydration for entity [%s] requires identifier column [%s].',
+                $metadata->className,
+                $metadata->identifier->column,
+            ));
+        }
+
+        $key = $metadata->keyFor($row[$metadata->identifier->column]);
+        $managed = $this->identityMap->get($key);
+
+        if ($managed !== null) {
+            if (! $this->unitOfWork->contains($managed)) {
+                throw new RuntimeException(sprintf(
+                    'Identity map returned entity [%s] with identifier [%s] that is not tracked by UnitOfWork.',
+                    $metadata->className,
+                    (string) $key->identifier,
+                ));
+            }
+
+            if ($this->unitOfWork->isPartialManaged($managed)) {
+                $metadata->hydrate($row, $managed);
+                $this->unitOfWork->registerManagedPartial(
+                    $managed,
+                    $metadata,
+                    $key,
+                    array_values(array_unique(array_merge(
+                        $this->unitOfWork->partialManagedFields($managed),
+                        $loadedFields,
+                    ))),
+                );
+            }
+
+            return $managed;
+        }
+
+        $entity = $metadata->hydrate($row);
+        $this->identityMap->register($key, $entity);
+        $this->unitOfWork->registerManagedPartial($entity, $metadata, $key, $loadedFields);
+
+        return $entity;
+    }
+
     public function persist(object $entity): void
     {
         if ($this->isPartial($entity)) {
@@ -133,6 +185,13 @@ final class EntityManager implements EntityManagerInterface
         if ($this->isPartial($entity)) {
             throw new RuntimeException(sprintf(
                 'Cannot remove partial entity [%s]; call refresh() or load the full entity before removing it.',
+                $entity::class,
+            ));
+        }
+
+        if ($this->unitOfWork->isPartialManaged($entity)) {
+            throw new RuntimeException(sprintf(
+                'Cannot remove managed partial entity [%s]; call refresh() to load the full entity before removing it.',
                 $entity::class,
             ));
         }
@@ -688,13 +747,23 @@ final class EntityManager implements EntityManagerInterface
         $this->populateManyToOneForeignKeys($entity, $metadata);
 
         $changes = [];
-        $current = $metadata->extract($entity, includeIdentifier: false);
+        $current = $this->trackedCurrentValues($entity, $metadata);
         $original = $this->unitOfWork->snapshot($entity);
         unset($original[$metadata->identifier->name]);
 
-        $allFields = array_unique(array_merge(array_keys($current), array_keys($original)));
+        $allFields = $this->unitOfWork->isPartialManaged($entity)
+            ? array_values(array_unique(array_merge(
+                $this->unitOfWork->partialManagedFields($entity),
+                array_keys($current),
+                array_keys($original),
+            )))
+            : array_values(array_unique(array_merge(array_keys($current), array_keys($original))));
 
         foreach ($allFields as $field) {
+            if ($field === $metadata->identifier->name) {
+                continue;
+            }
+
             $currentHasKey = array_key_exists($field, $current);
             $originalHasKey = array_key_exists($field, $original);
             $currentValue = $currentHasKey ? $current[$field] : null;
@@ -733,7 +802,7 @@ final class EntityManager implements EntityManagerInterface
         }
 
         if ($changes === []) {
-            $this->unitOfWork->synchronize($entity, $key);
+            $this->synchronizeTrackingState($entity, $key);
 
             return;
         }
@@ -757,7 +826,7 @@ final class EntityManager implements EntityManagerInterface
             ->where($metadata->identifier->column, $key->identifier)
             ->update($changes);
 
-        $this->unitOfWork->synchronize($entity, $key);
+        $this->synchronizeTrackingState($entity, $key);
 
         $this->dispatchLifecycle('postUpdate', $entity, [
             'changes' => $changes,
@@ -792,6 +861,17 @@ final class EntityManager implements EntityManagerInterface
 
         foreach ($this->unitOfWork->managedEntities() as $entity) {
             $metadata = $this->unitOfWork->metadataFor($entity);
+            if ($this->unitOfWork->isPartialManaged($entity)) {
+                $current = $this->trackedCurrentValues($entity, $metadata);
+                $original = $this->unitOfWork->snapshot($entity);
+
+                if ($current !== $original) {
+                    $dirty[] = $entity;
+                }
+
+                continue;
+            }
+
             $this->populateManyToOneForeignKeys($entity, $metadata);
             $current = $metadata->extract($entity, includeIdentifier: false);
             $original = $this->unitOfWork->snapshot($entity);
@@ -819,6 +899,10 @@ final class EntityManager implements EntityManagerInterface
     private function hasPendingManyToManyMembershipChanges(): bool
     {
         foreach ($this->unitOfWork->managedEntities() as $entity) {
+            if ($this->unitOfWork->isPartialManaged($entity)) {
+                continue;
+            }
+
             $metadata = $this->unitOfWork->metadataFor($entity);
             $key = $this->unitOfWork->keyFor($entity);
             if ($key === null) {
@@ -949,6 +1033,10 @@ final class EntityManager implements EntityManagerInterface
     private function collectOrphansForRemoval(): void
     {
         foreach ($this->unitOfWork->managedEntities() as $entity) {
+            if ($this->unitOfWork->isPartialManaged($entity)) {
+                continue;
+            }
+
             $metadata = $this->metadata->for($entity::class);
 
             foreach ($metadata->associations() as $assoc) {
@@ -1219,6 +1307,10 @@ final class EntityManager implements EntityManagerInterface
     private function flushManyToManyMembershipChanges(): void
     {
         foreach ($this->unitOfWork->managedEntities() as $entity) {
+            if ($this->unitOfWork->isPartialManaged($entity)) {
+                continue;
+            }
+
             $metadata = $this->unitOfWork->metadataFor($entity);
             $key = $this->unitOfWork->keyFor($entity);
             if ($key === null) {
@@ -1250,6 +1342,34 @@ final class EntityManager implements EntityManagerInterface
 
             $this->unitOfWork->snapshotOneToManyCollections($entity, $metadata);
         }
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function trackedCurrentValues(object $entity, EntityMetadata $metadata): array
+    {
+        $current = $metadata->extract($entity, includeIdentifier: false);
+
+        if (! $this->unitOfWork->isPartialManaged($entity)) {
+            return $current;
+        }
+
+        $allowed = array_fill_keys($this->unitOfWork->partialManagedFields($entity), true);
+        unset($allowed[$metadata->identifier->name]);
+
+        return array_intersect_key($current, $allowed);
+    }
+
+    private function synchronizeTrackingState(object $entity, EntityKey $key): void
+    {
+        if ($this->unitOfWork->isPartialManaged($entity)) {
+            $this->unitOfWork->synchronizePartial($entity, $key, $this->unitOfWork->partialManagedFields($entity));
+
+            return;
+        }
+
+        $this->unitOfWork->synchronize($entity, $key);
     }
 
     /**

@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Quantum\Routing;
 
+use Quantum\Authorization\ABAC\Condition;
+use Quantum\Routing\CompiledRoute;
+
 final class Route extends CompiledRoute
 {
     private const CONTEXT_HTTP = 'http';
@@ -310,7 +313,7 @@ final class Route extends CompiledRoute
         $requirements[] = [
             'ability' => trim($ability),
             'subject' => $subject,
-            'condition' => $condition,
+            'condition' => $this->normalizeAuthorizationCondition($condition),
         ];
 
         $authorization['requirements'] = $requirements;
@@ -553,5 +556,26 @@ final class Route extends CompiledRoute
         }
 
         return $this->namePrefix . '.' . ltrim($normalizedName, '.');
+    }
+
+    private function normalizeAuthorizationCondition(mixed $condition): mixed
+    {
+        if ($condition instanceof Condition) {
+            return $condition->toArray();
+        }
+
+        if (! is_array($condition)) {
+            return $condition;
+        }
+
+        $normalized = [];
+
+        foreach ($condition as $key => $entry) {
+            $normalized[$key] = $entry instanceof Condition
+                ? $entry->toArray()
+                : $entry;
+        }
+
+        return $normalized;
     }
 }

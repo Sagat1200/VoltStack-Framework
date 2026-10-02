@@ -175,6 +175,7 @@ final class SkeletonSecuritySmokeTest extends TestCase
             $router->get('/public', [SecurityDemoController::class, 'public'])->name('smoke.public');
             $router->get('/auth-token', [SecurityDemoController::class, 'authToken'])->name('smoke.authToken');
             $router->get('/bearer-introspect', [SecurityDemoController::class, 'bearerIntrospect'])->name('smoke.bearerIntrospect');
+            $router->post('/bearer-revoke', [SecurityDemoController::class, 'bearerRevoke'])->name('smoke.bearerRevoke');
             $router->get('/admin-mfa', [SecurityDemoController::class, 'adminMfa'])->name('smoke.adminMfa');
             $router->get('/self-service-remote-devices', [SecurityDemoController::class, 'selfServiceRemoteDevices'])->name('smoke.selfServiceRemoteDevices');
             $router->get('/privileged-security-center-export', [SecurityDemoController::class, 'privilegedSecurityCenterExport'])->name('smoke.privilegedSecurityCenterExport');
@@ -210,7 +211,7 @@ final class SkeletonSecuritySmokeTest extends TestCase
      * @param array<string,string> $cookies
      * @return array{status:int,content:string,headers:array<string,string[]>,debugThrowable:?string}
      */
-    private function dispatch(string $path, array $headers = [], array $cookies = []): array
+    private function dispatch(string $path, array $headers = [], array $cookies = [], string $method = 'GET'): array
     {
         $server = [];
         foreach ($headers as $name => $value) {
@@ -225,7 +226,7 @@ final class SkeletonSecuritySmokeTest extends TestCase
         $kernel = $this->app->make(HttpKernel::class);
         $throwableStr = null;
         try {
-            $response = $kernel->handle(Request::create($path, 'GET', cookies: $cookies, server: $server));
+            $response = $kernel->handle(Request::create($path, strtoupper($method), cookies: $cookies, server: $server));
         } catch (\Throwable $t) {
             $throwableStr = $t::class . ': ' . $t->getMessage() . PHP_EOL . 'File=' . $t->getFile() . '@' . $t->getLine() . PHP_EOL . $t->getTraceAsString();
             $response = new \Quantum\Http\Response(500, [
@@ -361,6 +362,51 @@ final class SkeletonSecuritySmokeTest extends TestCase
         if ($j !== null) {
             self::assertSame('controller.security.authentication_required', $j['reason_code'] ?? null);
         }
+    }
+
+    public function test_3d_bearer_revoke_revokes_current_access_and_linked_refresh_token(): void
+    {
+        $svc = $this->app->make(BearerTokenService::class);
+        $pair = $svc->issueTokenPair(
+            new IdentityReference(new IdentityIdentifier('opaque-revoke-user'), 'user'),
+            'client-revoke-01',
+            ['dashboard:read'],
+            null,
+            null,
+            [
+                'roles' => ['user'],
+                'permissions' => ['dashboard:read'],
+            ],
+        );
+        $accessToken = $pair['access_token'];
+        $refreshToken = $pair['refresh_token'];
+
+        $revoke = $this->dispatch('/security/demo/bearer-revoke', [
+            'Authorization' => 'Bearer ' . $accessToken->id->value,
+        ], method: 'POST');
+
+        self::assertSame(200, $revoke['status'], $revoke['debugThrowable'] ?? '');
+        $payload = $this->json($revoke);
+        self::assertNotNull($payload);
+        self::assertSame('security/demo/bearer-revoke', $payload['endpoint'] ?? null);
+        self::assertSame('revoked', $payload['status'] ?? null);
+        self::assertTrue($payload['access_token_revoked'] ?? false);
+        self::assertTrue($payload['refresh_token_revoked'] ?? false);
+        self::assertSame(['revoked'], $revoke['headers']['X-Auth-Bearer-Revoke-Status'] ?? []);
+        self::assertSame(['true'], $revoke['headers']['X-Auth-Bearer-Revoked'] ?? []);
+
+        $after = $svc->describeAccessTokenForSecurityContext($accessToken->id->value);
+        self::assertFalse($after['active']);
+        self::assertSame('access_token_revoked', $after['reason_code']);
+
+        $afterRefresh = $svc->introspectRefreshToken($refreshToken->id->value);
+        self::assertFalse($afterRefresh['active']);
+        self::assertTrue($afterRefresh['revoked']);
+
+        $denied = $this->dispatch('/security/demo/bearer-introspect', [
+            'Authorization' => 'Bearer ' . $accessToken->id->value,
+        ]);
+        self::assertSame(401, $denied['status'], $denied['debugThrowable'] ?? '');
     }
 
     public function test_4_admin_mfa_fails_with_only_token_strength(): void

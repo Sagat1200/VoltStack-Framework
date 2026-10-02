@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
+use Quantum\Authorization\ABAC\Condition;
 use Quantum\Authorization\Attributes\Authorize;
 use Quantum\Authorization\Attributes\PublicAccess;
 use Quantum\Authorization\Attributes\AuthorizeWhen;
@@ -315,6 +316,46 @@ final class MetadataEngineTest extends TestCase
                     'type' => 'integer',
                     'constraints' => ['max' => 50],
                     'description' => 'Only low-risk route approvals',
+                ],
+            ],
+        ], $bag->get('authorization.requirements'));
+    }
+
+    public function test_it_projects_authorize_when_all_with_condition_objects_into_metadata_engine(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $engine = $app->make(MetadataEngineInterface::class);
+
+        $route = new Route(RouteDefinition::make(['GET'], '/meta-authz-when-route-all', fn () => 'ok'));
+        $route->authorizeWhenAll('documents.route-review', 'document', [
+            Condition::max('risk.score', 50, 'Low risk'),
+            Condition::enum('department', ['legal', 'finance'], 'Allowed departments'),
+        ]);
+        $match = new RouteMatch($route, [], 'GET');
+
+        $bag = $engine->resolve(new MetadataRequest(
+            subject: new RouteMatchSubject($match),
+            keys: ['authorization.requirements'],
+        ));
+
+        self::assertSame([
+            [
+                'ability' => 'documents.route-review',
+                'subject' => 'document',
+                'source' => 'route',
+                'condition' => [
+                    [
+                        'attribute' => 'risk.score',
+                        'type' => 'integer',
+                        'constraints' => ['max' => 50],
+                        'description' => 'Low risk',
+                    ],
+                    [
+                        'attribute' => 'department',
+                        'type' => 'enum',
+                        'constraints' => ['values' => ['legal', 'finance']],
+                        'description' => 'Allowed departments',
+                    ],
                 ],
             ],
         ], $bag->get('authorization.requirements'));

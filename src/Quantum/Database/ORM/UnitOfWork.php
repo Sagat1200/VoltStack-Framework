@@ -44,6 +44,14 @@ final class UnitOfWork
      */
     private array $originalCollections = [];
 
+    /**
+     * Loaded field names for entities that are managed but only partially hydrated.
+     * Shape: spl_object_id -> list<field path names loaded into the entity>.
+     *
+     * @var array<int, list<string>>
+     */
+    private array $partialManagedFields = [];
+
     public function registerManaged(object $entity, EntityMetadata $metadata, EntityKey $key): void
     {
         $oid = spl_object_id($entity);
@@ -53,7 +61,24 @@ final class UnitOfWork
         $this->states[$oid] = EntityState::Managed;
         $this->snapshots[$oid] = $metadata->extract($entity);
         $this->keys[$oid] = $key;
+        unset($this->partialManagedFields[$oid]);
         $this->snapshotOneToManyCollections($entity, $metadata);
+    }
+
+    /**
+     * @param list<string> $loadedFields
+     */
+    public function registerManagedPartial(object $entity, EntityMetadata $metadata, EntityKey $key, array $loadedFields): void
+    {
+        $oid = spl_object_id($entity);
+
+        $this->entities[$oid] = $entity;
+        $this->metadata[$oid] = $metadata;
+        $this->states[$oid] = EntityState::Managed;
+        $this->snapshots[$oid] = $this->extractLoadedFieldsSnapshot($entity, $metadata, $loadedFields);
+        $this->keys[$oid] = $key;
+        $this->partialManagedFields[$oid] = array_values(array_unique($loadedFields));
+        $this->originalCollections[$oid] = [];
     }
 
     public function persist(object $entity, EntityMetadata $metadata, ?EntityKey $key): void
@@ -104,6 +129,7 @@ final class UnitOfWork
             $this->snapshots[$oid],
             $this->keys[$oid],
             $this->originalCollections[$oid],
+            $this->partialManagedFields[$oid],
         );
     }
 
@@ -173,7 +199,36 @@ final class UnitOfWork
         $this->states[$oid] = EntityState::Managed;
         $this->snapshots[$oid] = $metadata->extract($entity);
         $this->keys[$oid] = $key;
+        unset($this->partialManagedFields[$oid]);
         $this->snapshotOneToManyCollections($entity, $metadata);
+    }
+
+    /**
+     * @param list<string> $loadedFields
+     */
+    public function synchronizePartial(object $entity, EntityKey $key, array $loadedFields): void
+    {
+        $oid = spl_object_id($entity);
+        $metadata = $this->metadataFor($entity);
+
+        $this->states[$oid] = EntityState::Managed;
+        $this->snapshots[$oid] = $this->extractLoadedFieldsSnapshot($entity, $metadata, $loadedFields);
+        $this->keys[$oid] = $key;
+        $this->partialManagedFields[$oid] = array_values(array_unique($loadedFields));
+        $this->originalCollections[$oid] = [];
+    }
+
+    public function isPartialManaged(object $entity): bool
+    {
+        return isset($this->partialManagedFields[spl_object_id($entity)]);
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function partialManagedFields(object $entity): array
+    {
+        return $this->partialManagedFields[spl_object_id($entity)] ?? [];
     }
 
     public function clear(): void
@@ -184,6 +239,7 @@ final class UnitOfWork
         $this->snapshots = [];
         $this->keys = [];
         $this->originalCollections = [];
+        $this->partialManagedFields = [];
     }
 
     /**
@@ -314,5 +370,17 @@ final class UnitOfWork
         }
 
         return $entities;
+    }
+
+    /**
+     * @param list<string> $loadedFields
+     * @return array<string, mixed>
+     */
+    private function extractLoadedFieldsSnapshot(object $entity, EntityMetadata $metadata, array $loadedFields): array
+    {
+        $values = $metadata->extract($entity);
+        $allowed = array_fill_keys($loadedFields, true);
+
+        return array_intersect_key($values, $allowed);
     }
 }

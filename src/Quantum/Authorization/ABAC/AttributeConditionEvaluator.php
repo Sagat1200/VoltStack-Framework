@@ -62,6 +62,12 @@ final class AttributeConditionEvaluator
      */
     private function normalizeDefinitions(mixed $condition): array
     {
+        if ($condition instanceof Condition) {
+            $definition = $this->definitionFromArray($condition->toArray());
+
+            return $definition instanceof AttributeDefinition ? [$definition] : [];
+        }
+
         if (! is_array($condition) || $condition === []) {
             return [];
         }
@@ -75,6 +81,15 @@ final class AttributeConditionEvaluator
         $definitions = [];
 
         foreach ($condition as $entry) {
+            if ($entry instanceof Condition) {
+                $definition = $this->definitionFromArray($entry->toArray());
+                if ($definition instanceof AttributeDefinition) {
+                    $definitions[] = $definition;
+                }
+
+                continue;
+            }
+
             if (! is_array($entry)) {
                 continue;
             }

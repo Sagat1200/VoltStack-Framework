@@ -30,6 +30,11 @@ final class EntityQuery
      */
     private array $partialSelections = [];
 
+    /**
+     * @var list<array{name:string,column:string}>
+     */
+    private array $managedPartialSelections = [];
+
     public function __construct(
         private readonly EntityManager $manager,
         private readonly EntityMetadata $metadata,
@@ -160,7 +165,7 @@ final class EntityQuery
 
     public function with(string ...$associations): self
     {
-        if ($this->projectionSelections !== [] || $this->partialSelections !== []) {
+        if ($this->projectionSelections !== [] || $this->partialSelections !== [] || $this->managedPartialSelections !== []) {
             throw new RuntimeException(sprintf(
                 'Cannot combine [%s::with()] with projection or partial hydration mode on [%s]; use one query mode at a time.',
                 self::class,
@@ -192,7 +197,7 @@ final class EntityQuery
 
     public function select(string ...$fields): self
     {
-        if ($this->preloadedAssociations !== [] || $this->partialSelections !== []) {
+        if ($this->preloadedAssociations !== [] || $this->partialSelections !== [] || $this->managedPartialSelections !== []) {
             throw new RuntimeException(sprintf(
                 'Cannot combine [%s::select()] with [%s::with()] or partial hydration on [%s]; projection queries do not hydrate entities or preload associations.',
                 self::class,
@@ -229,7 +234,7 @@ final class EntityQuery
 
     public function partial(string ...$fields): self
     {
-        if ($this->preloadedAssociations !== [] || $this->projectionSelections !== []) {
+        if ($this->preloadedAssociations !== [] || $this->projectionSelections !== [] || $this->managedPartialSelections !== []) {
             throw new RuntimeException(sprintf(
                 'Cannot combine [%s::partial()] with preload or projection mode on [%s]; partial hydration is a separate query mode.',
                 self::class,
@@ -259,6 +264,43 @@ final class EntityQuery
         $this->query->select(...array_values(array_map(
             static fn(array $selection): string => $selection['column'],
             $this->partialSelections,
+        )));
+
+        return $this;
+    }
+
+    public function partialManaged(string ...$fields): self
+    {
+        if ($this->preloadedAssociations !== [] || $this->projectionSelections !== [] || $this->partialSelections !== []) {
+            throw new RuntimeException(sprintf(
+                'Cannot combine [%s::partialManaged()] with preload, projection, or detached partial mode on [%s]; managed partial hydration is a separate query mode.',
+                self::class,
+                $this->metadata->className,
+            ));
+        }
+
+        $columns = [];
+        foreach ($fields as $field) {
+            $normalized = trim($field);
+            if ($normalized === '') {
+                continue;
+            }
+
+            foreach ($this->resolvePartialSelection($normalized) as $selection) {
+                $columns[$selection['column']] = $selection;
+            }
+        }
+
+        $identifierField = $this->metadata->identifier;
+        $columns[$identifierField->column] ??= [
+            'name' => $identifierField->name,
+            'column' => $identifierField->column,
+        ];
+
+        $this->managedPartialSelections = array_values($columns);
+        $this->query->select(...array_values(array_map(
+            static fn(array $selection): string => $selection['column'],
+            $this->managedPartialSelections,
         )));
 
         return $this;
@@ -348,6 +390,53 @@ final class EntityQuery
     }
 
     /**
+     * @return list<object>
+     */
+    public function getPartialManaged(): array
+    {
+        if ($this->managedPartialSelections === []) {
+            throw new RuntimeException(sprintf(
+                'Managed partial hydration for [%s] requires calling partialManaged(...) first.',
+                $this->metadata->className,
+            ));
+        }
+
+        $loadedFields = array_values(array_map(
+            static fn(array $selection): string => $selection['name'],
+            $this->managedPartialSelections,
+        ));
+
+        $entities = [];
+        foreach ($this->query->get()->rows() as $row) {
+            $entities[] = $this->manager->hydrateManagedPartial($this->metadata, $row, $loadedFields);
+        }
+
+        return $entities;
+    }
+
+    public function firstPartialManaged(): ?object
+    {
+        if ($this->managedPartialSelections === []) {
+            throw new RuntimeException(sprintf(
+                'Managed partial hydration for [%s] requires calling partialManaged(...) first.',
+                $this->metadata->className,
+            ));
+        }
+
+        $row = $this->query->first();
+        if ($row === null) {
+            return null;
+        }
+
+        $loadedFields = array_values(array_map(
+            static fn(array $selection): string => $selection['name'],
+            $this->managedPartialSelections,
+        ));
+
+        return $this->manager->hydrateManagedPartial($this->metadata, $row, $loadedFields);
+    }
+
+    /**
      * @return list<array<string, mixed>>
      */
     public function rows(): array
@@ -415,14 +504,18 @@ final class EntityQuery
 
     private function assertEntityHydrationAllowed(string $method): void
     {
-        if ($this->projectionSelections === [] && $this->partialSelections === []) {
+        if ($this->projectionSelections === [] && $this->partialSelections === [] && $this->managedPartialSelections === []) {
             return;
         }
 
-        $mode = $this->partialSelections !== [] ? 'a partial-hydration' : 'a projection';
+        $mode = match (true) {
+            $this->projectionSelections !== [] => 'a projection',
+            $this->managedPartialSelections !== [] => 'a managed-partial-hydration',
+            default => 'a partial-hydration',
+        };
 
         throw new RuntimeException(sprintf(
-            'Cannot hydrate entities via %s() on %s query for [%s]; use rows()/firstRow()/pluck()/value() for projections or getPartial()/firstPartial() for partial hydration instead.',
+            'Cannot hydrate entities via %s() on %s query for [%s]; use rows()/firstRow()/pluck()/value() for projections, getPartial()/firstPartial() for detached partial hydration, or getPartialManaged()/firstPartialManaged() for managed partial hydration instead.',
             $method,
             $mode,
             $this->metadata->className,

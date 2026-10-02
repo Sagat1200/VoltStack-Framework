@@ -272,4 +272,60 @@ final class BearerTokenService
             'revoked' => $token->revoked,
         ];
     }
+
+    /**
+     * Revoca el access token actual y, si existe, el refresh token vinculado.
+     *
+     * @return array{
+     *   status:string,
+     *   access_token_revoked:bool,
+     *   refresh_token_revoked:bool,
+     *   family_id:?string,
+     *   refresh_token_id:?string,
+     *   reason_code:?string
+     * }
+     */
+    public function revokeAccessTokenPair(string $accessTokenId): array
+    {
+        $token = $this->repository->findAccessToken($accessTokenId);
+        if (! $token instanceof OpaqueAccessToken) {
+            return [
+                'status' => 'not_found',
+                'access_token_revoked' => false,
+                'refresh_token_revoked' => false,
+                'family_id' => null,
+                'refresh_token_id' => null,
+                'reason_code' => 'access_token_unknown',
+            ];
+        }
+
+        $familyId = is_string($token->attributes['family_id'] ?? null) ? $token->attributes['family_id'] : null;
+        $refreshTokenId = $token->refreshTokenId?->value;
+
+        if ($token->revoked) {
+            return [
+                'status' => 'already_revoked',
+                'access_token_revoked' => false,
+                'refresh_token_revoked' => false,
+                'family_id' => $familyId,
+                'refresh_token_id' => $refreshTokenId,
+                'reason_code' => 'access_token_already_revoked',
+            ];
+        }
+
+        $accessRevoked = $this->repository->revokeAccessToken($accessTokenId);
+        $refreshRevoked = false;
+        if (is_string($refreshTokenId) && $refreshTokenId !== '') {
+            $refreshRevoked = $this->repository->revokeRefreshToken($refreshTokenId);
+        }
+
+        return [
+            'status' => $accessRevoked ? 'revoked' : 'unchanged',
+            'access_token_revoked' => $accessRevoked,
+            'refresh_token_revoked' => $refreshRevoked,
+            'family_id' => $familyId,
+            'refresh_token_id' => $refreshTokenId,
+            'reason_code' => $accessRevoked ? null : 'access_token_revoke_noop',
+        ];
+    }
 }

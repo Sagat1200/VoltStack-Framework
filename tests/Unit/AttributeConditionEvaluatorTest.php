@@ -6,6 +6,7 @@ namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
 use Quantum\Authorization\ABAC\AttributeConditionEvaluator;
+use Quantum\Authorization\ABAC\Condition;
 use Quantum\Authorization\Ability\Ability;
 use Quantum\Authorization\Context\AuthorizationContext;
 use Quantum\Authorization\Core\AuthorizationRequest;
@@ -77,6 +78,21 @@ final class AttributeConditionEvaluatorTest extends TestCase
         self::assertFalse($evaluator->evaluate($request, [
             'type' => 'integer',
             'max' => 50,
+        ]));
+    }
+
+    public function test_it_accepts_condition_objects_and_condition_lists(): void
+    {
+        $evaluator = new AttributeConditionEvaluator();
+        $request = $this->makeRequest([
+            'risk' => ['score' => 40],
+            'department' => 'legal',
+        ]);
+
+        self::assertTrue($evaluator->evaluate($request, Condition::max('risk.score', 50)));
+        self::assertTrue($evaluator->evaluate($request, [
+            Condition::max('risk.score', 50),
+            Condition::enum('department', ['legal', 'finance']),
         ]));
     }
 

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
+use Quantum\Authorization\ABAC\Condition;
 use Quantum\Authorization\Contracts\AuthorizationManagerInterface;
 use Quantum\Authorization\Contracts\PrincipalInterface;
 use Quantum\Authorization\Context\AuthorizationContext;
@@ -243,6 +244,49 @@ final class AuthorizationManagerTest extends TestCase
         self::assertTrue($deny->isDenied());
         self::assertSame('manifest_requirement_attribute_conditions_not_satisfied', $deny->reasonCode());
         self::assertSame(['risk.score'], $deny->metadata()['abac_condition_attributes'] ?? null);
+    }
+
+    public function test_authorization_manager_applies_condition_objects_from_authorize_when_all(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $config = $app->make(ConfigRepository::class);
+        $config->set('authorization.authority.evaluate_requirements_concretely', true);
+        $config->set('authorization.authority.evaluate_attribute_conditions', true);
+        $config->set('authorization.authority.grants', [
+            ['principal_id' => '42', 'permissions' => ['documents.review']],
+        ]);
+        $manager = $app->make(AuthorizationManagerInterface::class);
+
+        $route = new Route(RouteDefinition::make(
+            ['GET'],
+            '/policies/conditional-all/{document}',
+            static fn (): string => 'ok',
+        ));
+        $route->authorizeWhenAll('documents.review', 'document', [
+            Condition::max('risk.score', 50, 'Low risk'),
+            Condition::enum('department', ['legal', 'finance'], 'Allowed departments'),
+        ]);
+
+        $allowContext = new AuthorizationContext('req-allow-all', attributes: [
+            'risk' => ['score' => 35],
+            'department' => 'legal',
+            'route_match' => new RouteMatch($route, ['document' => 'doc-1'], 'GET'),
+        ]);
+        $denyContext = new AuthorizationContext('req-deny-all', attributes: [
+            'risk' => ['score' => 35],
+            'department' => 'sales',
+            'route_match' => new RouteMatch($route, ['document' => 'doc-1'], 'GET'),
+        ]);
+
+        $allow = $manager->decide('documents.review', 'doc-1', $allowContext, new Principal('42'));
+        $deny = $manager->decide('documents.review', 'doc-1', $denyContext, new Principal('42'));
+
+        self::assertTrue($allow->isAllowed());
+        self::assertSame('manifest_requirement_granted_by_authority', $allow->reasonCode());
+
+        self::assertTrue($deny->isDenied());
+        self::assertSame('manifest_requirement_attribute_conditions_not_satisfied', $deny->reasonCode());
+        self::assertSame(['risk.score', 'department'], $deny->metadata()['abac_condition_attributes'] ?? null);
     }
 }
 

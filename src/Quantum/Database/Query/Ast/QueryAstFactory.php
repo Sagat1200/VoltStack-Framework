@@ -6,9 +6,11 @@ namespace Quantum\Database\Query\Ast;
 
 use Quantum\Database\Query\Model\DeleteQuery;
 use Quantum\Database\Query\Model\InsertQuery;
+use Quantum\Database\Query\Model\Join;
 use Quantum\Database\Query\Model\Ordering;
 use Quantum\Database\Query\Model\Predicate;
 use Quantum\Database\Query\Model\SelectQuery;
+use Quantum\Database\Query\Model\TableReference;
 use Quantum\Database\Query\Model\UpdateQuery;
 use Quantum\Database\Query\QueryInterface;
 use RuntimeException;
@@ -29,8 +31,9 @@ final class QueryAstFactory
     public function select(SelectQuery $query): SelectQueryNode
     {
         return new SelectQueryNode(
-            from: new TableNode($query->from->name),
+            from: $this->table($query->from),
             columns: $query->columns,
+            joins: array_map($this->join(...), $query->joins),
             predicates: array_map($this->predicate(...), $query->predicates),
             orderings: array_map($this->ordering(...), $query->orderings),
             limit: $query->limit,
@@ -43,7 +46,7 @@ final class QueryAstFactory
     public function insert(InsertQuery $query): InsertQueryNode
     {
         return new InsertQueryNode(
-            into: new TableNode($query->into->name),
+            into: $this->table($query->into),
             values: $query->values,
             metadata: $query->metadata(),
         );
@@ -52,7 +55,7 @@ final class QueryAstFactory
     public function update(UpdateQuery $query): UpdateQueryNode
     {
         return new UpdateQueryNode(
-            table: new TableNode($query->table->name),
+            table: $this->table($query->table),
             values: $query->values,
             predicates: array_map($this->predicate(...), $query->predicates),
             metadata: $query->metadata(),
@@ -62,9 +65,25 @@ final class QueryAstFactory
     public function delete(DeleteQuery $query): DeleteQueryNode
     {
         return new DeleteQueryNode(
-            from: new TableNode($query->from->name),
+            from: $this->table($query->from),
             predicates: array_map($this->predicate(...), $query->predicates),
             metadata: $query->metadata(),
+        );
+    }
+
+    private function table(TableReference $table): TableNode
+    {
+        return new TableNode($table->name, $table->alias);
+    }
+
+    private function join(Join $join): JoinNode
+    {
+        return new JoinNode(
+            type: $join->type,
+            table: $this->table($join->table),
+            leftColumn: $join->leftColumn,
+            operator: $join->operator,
+            rightColumn: $join->rightColumn,
         );
     }
 

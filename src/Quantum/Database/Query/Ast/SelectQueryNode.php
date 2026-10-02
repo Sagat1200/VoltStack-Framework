@@ -10,12 +10,14 @@ final readonly class SelectQueryNode
 {
     /**
      * @param list<string> $columns
+     * @param list<JoinNode> $joins
      * @param list<PredicateNode> $predicates
      * @param list<OrderingNode> $orderings
      */
     public function __construct(
         public TableNode $from,
         public array $columns,
+        public array $joins,
         public array $predicates,
         public array $orderings,
         public ?int $limit,

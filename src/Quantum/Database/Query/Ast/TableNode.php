@@ -8,6 +8,7 @@ final readonly class TableNode
 {
     public function __construct(
         public string $name,
+        public ?string $alias = null,
     ) {
     }
 }

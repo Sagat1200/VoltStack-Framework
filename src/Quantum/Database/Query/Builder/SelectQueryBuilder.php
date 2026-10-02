@@ -9,6 +9,7 @@ use Quantum\Database\Query\Compiler\CompiledQuery;
 use Quantum\Database\Query\DatabaseQueryRunner;
 use Quantum\Database\Query\Model\DeleteQuery;
 use Quantum\Database\Query\Model\InsertQuery;
+use Quantum\Database\Query\Model\Join;
 use Quantum\Database\Query\Model\Ordering;
 use Quantum\Database\Query\Model\Predicate;
 use Quantum\Database\Query\Model\SelectQuery;
@@ -30,6 +31,11 @@ final class SelectQueryBuilder
     private array $predicates = [];
 
     /**
+     * @var list<Join>
+     */
+    private array $joins = [];
+
+    /**
      * @var list<Ordering>
      */
     private array $orderings = [];
@@ -39,6 +45,8 @@ final class SelectQueryBuilder
     private ?int $offset = null;
 
     private bool $distinct = false;
+
+    private ?string $alias = null;
 
     public function __construct(
         private readonly string $table,
@@ -58,6 +66,14 @@ final class SelectQueryBuilder
     public function select(string ...$columns): self
     {
         $this->columns = $columns !== [] ? array_values($columns) : ['*'];
+
+        return $this;
+    }
+
+    public function as(string $alias): self
+    {
+        $normalized = trim($alias);
+        $this->alias = $normalized !== '' ? $normalized : null;
 
         return $this;
     }
@@ -93,6 +109,16 @@ final class SelectQueryBuilder
         return $this;
     }
 
+    public function join(string $table, string $leftColumn, mixed $operatorOrRightColumn, ?string $rightColumn = null, ?string $alias = null): self
+    {
+        return $this->addJoin('INNER', $table, $leftColumn, $operatorOrRightColumn, $rightColumn, $alias);
+    }
+
+    public function leftJoin(string $table, string $leftColumn, mixed $operatorOrRightColumn, ?string $rightColumn = null, ?string $alias = null): self
+    {
+        return $this->addJoin('LEFT', $table, $leftColumn, $operatorOrRightColumn, $rightColumn, $alias);
+    }
+
     public function orderBy(string $column, string $direction = 'asc'): self
     {
         $normalized = strtolower(trim($direction));
@@ -123,8 +149,9 @@ final class SelectQueryBuilder
     public function first(): ?array
     {
         $query = new SelectQuery(
-            from: new TableReference($this->table),
+            from: new TableReference($this->table, $this->alias),
             columns: $this->columns,
+            joins: $this->joins,
             predicates: $this->predicates,
             orderings: $this->orderings,
             limit: 1,
@@ -143,7 +170,10 @@ final class SelectQueryBuilder
             $this->runner,
             $this->compiler,
             $this->connectionName,
-        ))->wherePredicates($this->predicates);
+        ))
+            ->as($this->alias ?? '')
+            ->joins($this->joins)
+            ->wherePredicates($this->predicates);
 
         if ($column !== null && $column !== '' && $column !== '*') {
             $builder->where($column, '!=', null);
@@ -159,6 +189,18 @@ final class SelectQueryBuilder
     {
         foreach ($predicates as $predicate) {
             $this->predicates[] = $predicate;
+        }
+
+        return $this;
+    }
+
+    /**
+     * @param list<Join> $joins
+     */
+    private function joins(array $joins): self
+    {
+        foreach ($joins as $join) {
+            $this->joins[] = $join;
         }
 
         return $this;
@@ -201,8 +243,9 @@ final class SelectQueryBuilder
     public function toSelectQuery(): SelectQuery
     {
         return new SelectQuery(
-            from: new TableReference($this->table),
+            from: new TableReference($this->table, $this->alias),
             columns: $this->columns,
+            joins: $this->joins,
             predicates: $this->predicates,
             orderings: $this->orderings,
             limit: $this->limit,
@@ -220,5 +263,38 @@ final class SelectQueryBuilder
     private function metadata(): QueryMetadata
     {
         return new QueryMetadata(connectionName: $this->connectionName);
+    }
+
+    private function addJoin(string $type, string $table, string $leftColumn, mixed $operatorOrRightColumn, ?string $rightColumn, ?string $alias): self
+    {
+        $normalizedTable = trim($table);
+        if ($normalizedTable === '') {
+            throw new \RuntimeException('Join table name cannot be empty.');
+        }
+
+        if ($rightColumn === null) {
+            $operator = '=';
+            $rightColumn = is_string($operatorOrRightColumn) ? trim($operatorOrRightColumn) : '';
+        } else {
+            $operator = is_string($operatorOrRightColumn) ? trim($operatorOrRightColumn) : '=';
+        }
+
+        $normalizedLeft = trim($leftColumn);
+        $normalizedRight = trim($rightColumn);
+        $normalizedAlias = $alias !== null ? trim($alias) : null;
+
+        if ($normalizedLeft === '' || $normalizedRight === '') {
+            throw new \RuntimeException('Join columns cannot be empty.');
+        }
+
+        $this->joins[] = new Join(
+            type: $type,
+            table: new TableReference($normalizedTable, $normalizedAlias !== '' ? $normalizedAlias : null),
+            leftColumn: $normalizedLeft,
+            operator: $operator !== '' ? $operator : '=',
+            rightColumn: $normalizedRight,
+        );
+
+        return $this;
     }
 }

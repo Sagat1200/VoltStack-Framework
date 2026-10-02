@@ -13,9 +13,11 @@ use Quantum\Database\Execution\DatabaseResultType;
 use Quantum\Database\Execution\RuntimeBindingSet;
 use Quantum\Database\Query\Ast\DeleteQueryNode;
 use Quantum\Database\Query\Ast\InsertQueryNode;
+use Quantum\Database\Query\Ast\JoinNode;
 use Quantum\Database\Query\Ast\PredicateNode;
 use Quantum\Database\Query\Ast\QueryAstFactory;
 use Quantum\Database\Query\Ast\SelectQueryNode;
+use Quantum\Database\Query\Ast\TableNode;
 use Quantum\Database\Query\Ast\UpdateQueryNode;
 use Quantum\Database\Query\QueryInterface;
 use RuntimeException;
@@ -55,12 +57,13 @@ final class SqlCompiler implements QueryCompilerInterface
         $bindings = [];
         $columns = $query->columns === ['*']
             ? '*'
-            : implode(', ', array_map(fn(string $column): string => $this->quoteIdentifierPath($dialect, $column), $query->columns));
+            : implode(', ', array_map(fn(string $column): string => $this->compileSelectColumn($dialect, $column), $query->columns));
 
         $sql = 'SELECT ';
         $sql .= $query->distinct ? 'DISTINCT ' : '';
         $sql .= $columns;
-        $sql .= ' FROM ' . $this->quoteIdentifierPath($dialect, $query->from->name);
+        $sql .= ' FROM ' . $this->compileTableReference($query->from, $dialect);
+        $sql .= $this->compileJoins($query->joins, $dialect);
         $sql .= $this->compileWhere($query->predicates, $dialect, $bindings);
         $sql .= $this->compileOrderBy($query->orderings, $dialect);
 
@@ -234,5 +237,49 @@ final class SqlCompiler implements QueryCompilerInterface
             fn(string $segment): string => $segment === '*' ? '*' : $dialect->quoteIdentifier($segment),
             explode('.', $identifier),
         ));
+    }
+
+    /**
+     * @param list<JoinNode> $joins
+     */
+    private function compileJoins(array $joins, DialectInterface $dialect): string
+    {
+        if ($joins === []) {
+            return '';
+        }
+
+        return implode('', array_map(
+            fn(JoinNode $join): string => sprintf(
+                ' %s JOIN %s ON %s %s %s',
+                strtoupper(trim($join->type)),
+                $this->compileTableReference($join->table, $dialect),
+                $this->quoteIdentifierPath($dialect, $join->leftColumn),
+                trim($join->operator),
+                $this->quoteIdentifierPath($dialect, $join->rightColumn),
+            ),
+            $joins,
+        ));
+    }
+
+    private function compileTableReference(TableNode $table, DialectInterface $dialect): string
+    {
+        $sql = $this->quoteIdentifierPath($dialect, $table->name);
+
+        if ($table->alias !== null && $table->alias !== '') {
+            $sql .= ' AS ' . $dialect->quoteIdentifier($table->alias);
+        }
+
+        return $sql;
+    }
+
+    private function compileSelectColumn(DialectInterface $dialect, string $column): string
+    {
+        if (preg_match('/^(.+?)\s+AS\s+([A-Za-z_][A-Za-z0-9_]*)$/i', trim($column), $matches) === 1) {
+            return $this->quoteIdentifierPath($dialect, trim($matches[1]))
+                . ' AS '
+                . $dialect->quoteIdentifier($matches[2]);
+        }
+
+        return $this->quoteIdentifierPath($dialect, $column);
     }
 }

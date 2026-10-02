@@ -12,12 +12,14 @@ final readonly class SelectQuery implements QueryInterface
 {
     /**
      * @param list<string> $columns
+     * @param list<Join> $joins
      * @param list<Predicate> $predicates
      * @param list<Ordering> $orderings
      */
     public function __construct(
         public TableReference $from,
         public array $columns = ['*'],
+        public array $joins = [],
         public array $predicates = [],
         public array $orderings = [],
         public ?int $limit = null,

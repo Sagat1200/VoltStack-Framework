@@ -101,6 +101,32 @@ final class DatabaseQueryCompilerTest extends TestCase
         self::assertInstanceOf(DatabaseQueryManager::class, $manager);
     }
 
+    public function test_it_compiles_select_queries_with_inner_and_left_joins_and_aliases(): void
+    {
+        $app = new Application($this->basePath);
+        $app->make(ConfigRepository::class)->set('database.default', 'default');
+        $app->make(ConfigRepository::class)->set('database.connections.default', [
+            'driver' => 'sqlite',
+            'database' => $this->basePath . DIRECTORY_SEPARATOR . 'database.sqlite',
+        ]);
+
+        $compiled = $app->make(DatabaseQueryManager::class)
+            ->table('users')
+            ->as('u')
+            ->select('u.name', 'p.title', 'c.name')
+            ->join('posts', 'p.user_id', 'u.id', alias: 'p')
+            ->leftJoin('categories', 'c.id', 'p.category_id', alias: 'c')
+            ->where('u.active', true)
+            ->orderBy('p.title')
+            ->compile();
+
+        self::assertSame(
+            'SELECT "u"."name", "p"."title", "c"."name" FROM "users" AS "u" INNER JOIN "posts" AS "p" ON "p"."user_id" = "u"."id" LEFT JOIN "categories" AS "c" ON "c"."id" = "p"."category_id" WHERE "u"."active" = ? ORDER BY "p"."title" ASC',
+            $compiled->command->sql,
+        );
+        self::assertSame([1], $compiled->bindings->normalized());
+    }
+
     private function deleteDirectory(string $path): void
     {
         if (! is_dir($path)) {

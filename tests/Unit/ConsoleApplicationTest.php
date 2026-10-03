@@ -17,6 +17,7 @@ use Quantum\Console\Commands\MakeViewCommand;
 use Quantum\Console\Commands\RouteCacheCommand;
 use Quantum\Console\Commands\RouteClearCommand;
 use Quantum\Console\Commands\RouteListCommand;
+use Quantum\Console\Commands\RuntimeSmokeCheckCommand;
 use Quantum\Console\Commands\RuntimeStatusCommand;
 use Quantum\Console\Commands\ServeCommand;
 use Quantum\Console\Commands\ViewCacheCommand;
@@ -51,6 +52,7 @@ final class ConsoleApplicationTest extends TestCase
         self::assertStringContainsString('make:layout', $output->stdout());
         self::assertStringContainsString('bootstrap:release-check', $output->stdout());
         self::assertStringContainsString('bootstrap:status', $output->stdout());
+        self::assertStringContainsString('runtime:smoke-check', $output->stdout());
         self::assertStringContainsString('runtime:status', $output->stdout());
         self::assertStringContainsString('[aliases: routes]', $output->stdout());
     }
@@ -163,6 +165,24 @@ final class ConsoleApplicationTest extends TestCase
         self::assertStringContainsString('--json', $output->stdout());
     }
 
+    public function test_it_renders_help_for_runtime_smoke_check_command(): void
+    {
+        $output = new Output();
+        $application = $this->application($output);
+
+        $exitCode = $application->run([
+            'volt',
+            'help',
+            'runtime:smoke-check',
+        ]);
+
+        self::assertSame(0, $exitCode);
+        self::assertStringContainsString('Command: runtime:smoke-check', $output->stdout());
+        self::assertStringContainsString('Usage: php volt runtime:smoke-check [--driver=frankenphp] [--profile=release] [--requests=/,GET:/health] [--budget-total-ms=50] [--budget-request-ms=25] [--emit-telemetry] [--json]', $output->stdout());
+        self::assertStringContainsString('--requests=', $output->stdout());
+        self::assertStringContainsString('--budget-request-ms=', $output->stdout());
+    }
+
     public function test_it_renders_help_for_bootstrap_release_check_command(): void
     {
         $output = new Output();
@@ -256,6 +276,7 @@ final class ConsoleApplicationTest extends TestCase
                 new ViewClearCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new BootstrapReleaseCheckCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new BootstrapStatusCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
+                new RuntimeSmokeCheckCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new RuntimeStatusCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
             ],
             $output,

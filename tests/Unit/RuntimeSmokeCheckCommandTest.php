@@ -142,6 +142,9 @@ PHP
         self::assertSame('frankenphp', $decoded['report']['driver'] ?? null);
         self::assertSame(2, $decoded['report']['request_count'] ?? null);
         self::assertSame(200, $decoded['report']['requests'][0]['status_code'] ?? null);
+        self::assertSame(50, $decoded['report']['budget']['total_budget_ms'] ?? null);
+        self::assertSame(25, $decoded['report']['budget']['request_budget_ms'] ?? null);
+        self::assertSame('adapter-default', $decoded['report']['budget_baseline']['source'] ?? null);
         self::assertSame(true, $decoded['report']['reuse_guard']['passed'] ?? null);
         self::assertSame(false, $decoded['report']['reuse_guard']['active_generation_observed'] ?? null);
         self::assertSame([], $decoded['report']['violations'] ?? null);
@@ -216,6 +219,7 @@ PHP
         $telemetry = file_get_contents($this->telemetryPath);
         self::assertIsString($telemetry);
         self::assertStringContainsString('"type":"runtime_smoke"', $telemetry);
+        self::assertStringContainsString('"budget_source":"adapter-default"', $telemetry);
         self::assertStringContainsString('"reuse_guard_passed":true', $telemetry);
     }
 

@@ -70,6 +70,14 @@ declare(strict_types=1);
 
 return [
     'driver' => 'frankenphp',
+    'budgets' => [
+        'drivers' => [
+            'frankenphp' => [
+                'total_ms' => 80,
+                'request_ms' => 30,
+            ],
+        ],
+    ],
 ];
 PHP
         );
@@ -166,12 +174,16 @@ PHP
         self::assertStringContainsString('Max requests: 4', $output->stdout());
         self::assertStringContainsString('Persistent: yes', $output->stdout());
         self::assertStringContainsString('Concurrent: no', $output->stdout());
+        self::assertStringContainsString('Recommended total budget: 80.000 ms', $output->stdout());
+        self::assertStringContainsString('Recommended request budget: 30.000 ms', $output->stdout());
+        self::assertStringContainsString('Budget source: config', $output->stdout());
         self::assertStringContainsString('Supported drivers: frankenphp', $output->stdout());
         self::assertStringContainsString('Telemetry: emitted', $output->stdout());
 
         $telemetry = file_get_contents($this->telemetryPath);
         self::assertIsString($telemetry);
         self::assertStringContainsString('"type":"runtime_status"', $telemetry);
+        self::assertStringContainsString('"budget_source":"config"', $telemetry);
     }
 
     public function test_bootstrap_status_command_can_render_stable_json_output(): void
@@ -268,6 +280,9 @@ PHP
         self::assertSame('frankenphp', $decoded['report']['driver'] ?? null);
         self::assertSame(3, $decoded['report']['max_requests'] ?? null);
         self::assertSame(true, $decoded['report']['persistent'] ?? null);
+        self::assertSame(80, $decoded['report']['recommended_budget']['total_budget_ms'] ?? null);
+        self::assertSame(30, $decoded['report']['recommended_budget']['request_budget_ms'] ?? null);
+        self::assertSame('config', $decoded['report']['recommended_budget']['source'] ?? null);
     }
 
     public function test_bootstrap_status_command_strict_mode_fails_when_no_active_generation_exists(): void

@@ -107,6 +107,10 @@ final class RuntimeSmokeCheckCommand extends Command
                     ? sprintf('%.3f ms', $report->budget()->requestMaximumMs())
                     : '-'
             ));
+            $output->writeln(sprintf(
+                '  Budget baseline source: %s',
+                $report->budgetBaseline()->source()
+            ));
 
             if ($report->requests() !== []) {
                 $output->writeln('  Request results:');

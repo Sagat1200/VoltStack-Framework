@@ -18,6 +18,7 @@ use Quantum\Console\Commands\MakeViewCommand;
 use Quantum\Console\Commands\RouteCacheCommand;
 use Quantum\Console\Commands\RouteClearCommand;
 use Quantum\Console\Commands\RouteListCommand;
+use Quantum\Console\Commands\RuntimeBudgetCalibrateCommand;
 use Quantum\Console\Commands\RuntimeSmokeCheckCommand;
 use Quantum\Console\Commands\RuntimeStatusCommand;
 use Quantum\Console\Commands\ServeCommand;
@@ -54,6 +55,7 @@ final class ConsoleApplicationTest extends TestCase
         self::assertStringContainsString('bootstrap:release-check', $output->stdout());
         self::assertStringContainsString('bootstrap:benchmark', $output->stdout());
         self::assertStringContainsString('bootstrap:status', $output->stdout());
+        self::assertStringContainsString('runtime:budget-calibrate', $output->stdout());
         self::assertStringContainsString('runtime:smoke-check', $output->stdout());
         self::assertStringContainsString('runtime:status', $output->stdout());
         self::assertStringContainsString('[aliases: routes]', $output->stdout());
@@ -186,6 +188,25 @@ final class ConsoleApplicationTest extends TestCase
         self::assertStringContainsString('--budget-request-ms=', $output->stdout());
     }
 
+    public function test_it_renders_help_for_runtime_budget_calibrate_command(): void
+    {
+        $output = new Output();
+        $application = $this->application($output);
+
+        $exitCode = $application->run([
+            'volt',
+            'help',
+            'runtime:budget-calibrate',
+        ]);
+
+        self::assertSame(0, $exitCode);
+        self::assertStringContainsString('Command: runtime:budget-calibrate', $output->stdout());
+        self::assertStringContainsString('Usage: php volt runtime:budget-calibrate [--driver=frankenphp] [--profile=release] [--artifact-dir=storage/framework/bootstrap] [--requests=/,GET:/health] [--warmup=2] [--iterations=10] [--multiplier=1.25] [--emit-telemetry] [--json]', $output->stdout());
+        self::assertStringContainsString('--warmup=', $output->stdout());
+        self::assertStringContainsString('--iterations=', $output->stdout());
+        self::assertStringContainsString('--multiplier=', $output->stdout());
+    }
+
     public function test_it_renders_help_for_bootstrap_release_check_command(): void
     {
         $output = new Output();
@@ -298,6 +319,7 @@ final class ConsoleApplicationTest extends TestCase
                 new BootstrapBenchmarkCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new BootstrapReleaseCheckCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new BootstrapStatusCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
+                new RuntimeBudgetCalibrateCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new RuntimeSmokeCheckCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new RuntimeStatusCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
             ],

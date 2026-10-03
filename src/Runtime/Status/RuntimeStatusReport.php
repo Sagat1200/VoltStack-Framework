@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace VoltStack\Runtime\Status;
 
+use VoltStack\Runtime\Budget\RuntimeBudgetBaseline;
+
 final readonly class RuntimeStatusReport
 {
     /**
@@ -18,6 +20,7 @@ final readonly class RuntimeStatusReport
         private bool $streaming,
         private bool $drainControl,
         private bool $nativeHttp,
+        private RuntimeBudgetBaseline $recommendedBudget,
         private array $supportedDrivers = [],
         private array $alerts = [],
     ) {
@@ -58,6 +61,11 @@ final readonly class RuntimeStatusReport
         return $this->nativeHttp;
     }
 
+    public function recommendedBudget(): RuntimeBudgetBaseline
+    {
+        return $this->recommendedBudget;
+    }
+
     /**
      * @return list<string>
      */
@@ -93,6 +101,7 @@ final readonly class RuntimeStatusReport
             'streaming' => $this->streaming,
             'drain_control' => $this->drainControl,
             'native_http' => $this->nativeHttp,
+            'recommended_budget' => $this->recommendedBudget->toArray(),
             'supported_drivers' => $this->supportedDrivers,
             'alerts' => $this->alerts,
         ];

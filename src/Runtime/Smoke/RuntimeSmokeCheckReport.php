@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace VoltStack\Runtime\Smoke;
 
+use VoltStack\Runtime\Budget\RuntimeBudgetBaseline;
 use VoltStack\Runtime\Budget\RuntimeBudgetReport;
 
 final readonly class RuntimeSmokeCheckReport
@@ -16,6 +17,7 @@ final readonly class RuntimeSmokeCheckReport
         private string $profile,
         private array $requests,
         private RuntimeBudgetReport $budget,
+        private RuntimeBudgetBaseline $budgetBaseline,
         private RuntimeBootstrapReuseReport $reuse,
     ) {
     }
@@ -41,6 +43,11 @@ final readonly class RuntimeSmokeCheckReport
     public function budget(): RuntimeBudgetReport
     {
         return $this->budget;
+    }
+
+    public function budgetBaseline(): RuntimeBudgetBaseline
+    {
+        return $this->budgetBaseline;
     }
 
     public function reuse(): RuntimeBootstrapReuseReport
@@ -101,6 +108,7 @@ final readonly class RuntimeSmokeCheckReport
                 $this->requests,
             ),
             'budget' => $this->budget->toArray(),
+            'budget_baseline' => $this->budgetBaseline->toArray(),
             'reuse_guard' => $this->reuse->toArray(),
             'violations' => $this->violations(),
         ];

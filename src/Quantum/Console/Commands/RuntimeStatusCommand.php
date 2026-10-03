@@ -72,6 +72,22 @@ final class RuntimeStatusCommand extends Command
             $output->writeln(sprintf('  Streaming: %s', $report->streaming() ? 'yes' : 'no'));
             $output->writeln(sprintf('  Drain control: %s', $report->drainControl() ? 'yes' : 'no'));
             $output->writeln(sprintf('  Native HTTP: %s', $report->nativeHttp() ? 'yes' : 'no'));
+            $output->writeln(sprintf(
+                '  Recommended total budget: %s',
+                $report->recommendedBudget()->totalMaximumMs() !== null
+                    ? sprintf('%.3f ms', $report->recommendedBudget()->totalMaximumMs())
+                    : '-'
+            ));
+            $output->writeln(sprintf(
+                '  Recommended request budget: %s',
+                $report->recommendedBudget()->requestMaximumMs() !== null
+                    ? sprintf('%.3f ms', $report->recommendedBudget()->requestMaximumMs())
+                    : '-'
+            ));
+            $output->writeln(sprintf(
+                '  Budget source: %s',
+                $report->recommendedBudget()->source()
+            ));
             $output->writeln(sprintf('  Supported drivers: %s', implode(', ', $report->supportedDrivers())));
 
             if ($report->alerts() !== []) {

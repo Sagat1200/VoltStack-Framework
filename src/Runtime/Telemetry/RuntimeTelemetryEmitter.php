@@ -27,6 +27,7 @@ final class RuntimeTelemetryEmitter
                 'healthy' => $report->healthy(),
                 'persistent' => $report->persistent(),
                 'concurrent' => $report->concurrent(),
+                'budget_source' => $report->recommendedBudget()->source(),
             ],
             alerts: array_map(
                 static fn(string $message): array => ['message' => $message],

@@ -6,6 +6,8 @@ namespace VoltStack\Runtime\Status;
 
 use InvalidArgumentException;
 use VoltStack\Framework\Application;
+use VoltStack\Runtime\Budget\RuntimeBudgetBaseline;
+use VoltStack\Runtime\Budget\RuntimeBudgetBaselineResolver;
 use VoltStack\Runtime\RuntimeManagerServer;
 
 final class RuntimeStatusInspector
@@ -20,6 +22,7 @@ final class RuntimeStatusInspector
         try {
             $adapter = $manager->adapter($driver);
             $capabilities = $adapter->capabilities();
+            $recommendedBudget = (new RuntimeBudgetBaselineResolver())->resolve($app, $driver, $capabilities);
         } catch (InvalidArgumentException) {
             return new RuntimeStatusReport(
                 driver: $driver === '' ? 'unknown' : $driver,
@@ -29,6 +32,12 @@ final class RuntimeStatusInspector
                 streaming: false,
                 drainControl: false,
                 nativeHttp: false,
+                recommendedBudget: new RuntimeBudgetBaseline(
+                    driver: $driver === '' ? 'unknown' : $driver,
+                    totalMaximumMs: null,
+                    requestMaximumMs: null,
+                    source: 'unavailable',
+                ),
                 supportedDrivers: $manager->drivers(),
                 alerts: ['El driver runtime solicitado no esta registrado.'],
             );
@@ -46,6 +55,7 @@ final class RuntimeStatusInspector
             streaming: $capabilities->streaming(),
             drainControl: $capabilities->drainControl(),
             nativeHttp: $capabilities->nativeHttp(),
+            recommendedBudget: $recommendedBudget,
             supportedDrivers: $manager->drivers(),
             alerts: $alerts,
         );

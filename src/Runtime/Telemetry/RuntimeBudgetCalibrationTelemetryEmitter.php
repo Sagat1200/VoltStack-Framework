@@ -6,18 +6,18 @@ namespace VoltStack\Runtime\Telemetry;
 
 use Quantum\Telemetry\Contracts\TelemetryManagerInterface;
 use Quantum\Telemetry\TelemetrySignal;
-use VoltStack\Runtime\Smoke\RuntimeSmokeCheckReport;
+use VoltStack\Runtime\Budget\RuntimeBudgetCalibrationReport;
 
-final class RuntimeSmokeTelemetryEmitter
+final class RuntimeBudgetCalibrationTelemetryEmitter
 {
     public function __construct(private readonly TelemetryManagerInterface $telemetry)
     {
     }
 
-    public function emit(RuntimeSmokeCheckReport $report): void
+    public function emit(RuntimeBudgetCalibrationReport $report): void
     {
         $this->telemetry->emit(new TelemetrySignal(
-            name: 'runtime_smoke',
+            name: 'runtime_budget_calibration',
             type: 'event',
             source: 'runtime',
             occurredAt: date('c'),
@@ -26,13 +26,15 @@ final class RuntimeSmokeTelemetryEmitter
                 'driver' => $report->driver(),
                 'profile' => $report->profile(),
                 'passed' => $report->passed(),
-                'request_count' => count($report->requests()),
-                'budget_source' => $report->budgetBaseline()->source(),
-                'reuse_guard_passed' => $report->reuse()->passed(),
+                'measured_iterations' => $report->measuredIterations(),
+                'failed_iterations' => $report->failedIterations(),
             ],
             alerts: array_map(
-                static fn(string $message): array => ['message' => $message],
-                $report->violations(),
+                static fn(array $failure): array => [
+                    'iteration' => $failure['iteration'],
+                    'violations' => $failure['violations'],
+                ],
+                $report->failures(),
             ),
         ));
     }

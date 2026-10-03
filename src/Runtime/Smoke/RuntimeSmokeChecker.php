@@ -9,6 +9,7 @@ use Quantum\Bootstrap\Status\BootstrapStatusInspector;
 use Quantum\Http\Request;
 use RuntimeException;
 use VoltStack\Framework\Application;
+use VoltStack\Runtime\Budget\RuntimeBudgetBaselineResolver;
 use VoltStack\Runtime\Budget\RuntimeBudget;
 use VoltStack\Runtime\Budget\RuntimeBudgetEvaluator;
 use VoltStack\Runtime\RequestRunner;
@@ -29,12 +30,23 @@ final class RuntimeSmokeChecker
         array $requestDefinitions = [],
         ?RuntimeBudget $budget = null,
         ?string $artifactDirectory = null,
+        bool $useBudgetBaseline = true,
     ): RuntimeSmokeCheckReport {
         $app = $this->bootstrapCurrentApplication();
         $driver = $this->resolveDriver($app, $driver);
         $requests = $this->normalizeRequests($requestDefinitions !== []
             ? $requestDefinitions
             : $this->configuredRequests($app));
+        $baseline = (new RuntimeBudgetBaselineResolver())->resolve($app, $driver);
+        $effectiveBudget = $useBudgetBaseline
+            ? RuntimeBudget::fromValues(
+                totalMaximumMs: $budget?->totalMaximumMs() ?? $baseline->totalMaximumMs(),
+                requestMaximumMs: $budget?->requestMaximumMs() ?? $baseline->requestMaximumMs(),
+            )
+            : RuntimeBudget::fromValues(
+                totalMaximumMs: $budget?->totalMaximumMs(),
+                requestMaximumMs: $budget?->requestMaximumMs(),
+            );
         $inspector = new BootstrapStatusInspector($this->basePath);
         $statusBefore = $inspector->inspect($app, $artifactDirectory);
 
@@ -52,7 +64,7 @@ final class RuntimeSmokeChecker
 
         $budgetReport = (new RuntimeBudgetEvaluator())->evaluate(
             $reports,
-            $budget ?? RuntimeBudget::fromValues(),
+            $effectiveBudget,
         );
         $statusAfter = $inspector->inspect($app, $artifactDirectory);
         $reuse = new RuntimeBootstrapReuseReport(
@@ -70,6 +82,7 @@ final class RuntimeSmokeChecker
             profile: $profile,
             requests: $reports,
             budget: $budgetReport,
+            budgetBaseline: $baseline,
             reuse: $reuse,
         );
     }

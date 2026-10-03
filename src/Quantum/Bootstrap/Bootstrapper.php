@@ -7,6 +7,7 @@ namespace Quantum\Bootstrap;
 use Quantum\Bootstrap\ApplicationPlan;
 use Quantum\Bootstrap\Context\BootstrapContext;
 use Quantum\Config\ConfigRepository;
+use Quantum\Bootstrap\Graph\ProviderDependencySorter;
 use VoltStack\Framework\Application;
 use VoltStack\Framework\ServiceProvider;
 
@@ -51,7 +52,13 @@ final class Bootstrapper
             $config->set('app.env', $environment);
         }
 
-        foreach ($plan->providers() as $provider) {
+        $orderedProviders = (new ProviderDependencySorter())->sort(
+            $plan->providers(),
+            $environment,
+            $context?->profile() ?? $plan->profile(),
+        );
+
+        foreach ($orderedProviders as $provider) {
             $this->app->register($provider);
         }
 

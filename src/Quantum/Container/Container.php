@@ -4,11 +4,7 @@ declare(strict_types=1);
 
 namespace Quantum\Container;
 
-use Closure;
 use Quantum\Container\Contracts\ContainerInterface;
-use Quantum\Container\Exceptions\BindingResolutionException;
-use ReflectionClass;
-use ReflectionNamedType;
 use ReflectionParameter;
 
 class Container implements ContainerInterface
@@ -32,6 +28,14 @@ class Container implements ContainerInterface
      * @var array<string, string>
      */
     protected array $aliases = [];
+
+    protected ?AliasResolver $aliasResolver = null;
+
+    protected ?ConcreteResolver $concreteResolver = null;
+
+    protected ?ClassBuilder $classBuilder = null;
+
+    protected ?ParameterResolver $parameterResolver = null;
 
     public function bind(string $abstract, mixed $concrete = null, bool $shared = false): void
     {
@@ -126,90 +130,54 @@ class Container implements ContainerInterface
 
     protected function resolve(mixed $concrete, array $parameters = []): mixed
     {
-        if ($concrete instanceof Closure) {
-            return $concrete($this, $parameters);
-        }
-
-        if (is_string($concrete)) {
-            return $this->build($concrete, $parameters);
-        }
-
-        if (is_object($concrete)) {
-            return $concrete;
-        }
-
-        throw new BindingResolutionException('Unable to resolve the given binding.');
+        return $this->concreteResolver()->resolve(
+            $concrete,
+            $parameters,
+            $this,
+            fn(string $className, array $runtimeParameters): object => $this->build($className, $runtimeParameters),
+        );
     }
 
     protected function build(string $concrete, array $parameters = []): object
     {
-        if (! class_exists($concrete)) {
-            throw new BindingResolutionException(sprintf('Target class [%s] does not exist.', $concrete));
-        }
-
-        $reflector = new ReflectionClass($concrete);
-
-        if (! $reflector->isInstantiable()) {
-            throw new BindingResolutionException(sprintf('Target [%s] is not instantiable.', $concrete));
-        }
-
-        $constructor = $reflector->getConstructor();
-
-        if ($constructor === null) {
-            return new $concrete();
-        }
-
-        $dependencies = [];
-
-        foreach ($constructor->getParameters() as $parameter) {
-            $dependencies[] = $this->resolveParameter($parameter, $parameters);
-        }
-
-        return $reflector->newInstanceArgs($dependencies);
+        return $this->classBuilder()->build(
+            $concrete,
+            $parameters,
+            fn(ReflectionParameter $parameter, array $runtimeParameters): mixed => $this->resolveParameter($parameter, $runtimeParameters),
+        );
     }
 
     protected function resolveParameter(ReflectionParameter $parameter, array $parameters): mixed
     {
-        if (array_key_exists($parameter->getName(), $parameters)) {
-            return $parameters[$parameter->getName()];
-        }
-
-        $type = $parameter->getType();
-
-        if ($type instanceof ReflectionNamedType && ! $type->isBuiltin()) {
-            $typeName = $type->getName();
-
-            if (array_key_exists($typeName, $parameters)) {
-                return $parameters[$typeName];
-            }
-
-            return $this->make($typeName);
-        }
-
-        if ($parameter->isDefaultValueAvailable()) {
-            return $parameter->getDefaultValue();
-        }
-
-        throw new BindingResolutionException(sprintf(
-            'Unable to resolve dependency [%s] in class [%s].',
-            $parameter->getName(),
-            (string) $parameter->getDeclaringClass()?->getName(),
-        ));
+        return $this->parameterResolver()->resolve(
+            $parameter,
+            $parameters,
+            fn(string $abstract): mixed => $this->make($abstract),
+        );
     }
 
     protected function normalize(string $abstract): string
     {
-        $seen = [];
+        return $this->aliasResolver()->normalize($abstract, $this->aliases);
+    }
 
-        while (isset($this->aliases[$abstract])) {
-            if (isset($seen[$abstract])) {
-                throw new BindingResolutionException(sprintf('Circular alias detected for [%s].', $abstract));
-            }
+    protected function aliasResolver(): AliasResolver
+    {
+        return $this->aliasResolver ??= new AliasResolver();
+    }
 
-            $seen[$abstract] = true;
-            $abstract = $this->aliases[$abstract];
-        }
+    protected function concreteResolver(): ConcreteResolver
+    {
+        return $this->concreteResolver ??= new ConcreteResolver();
+    }
 
-        return $abstract;
+    protected function classBuilder(): ClassBuilder
+    {
+        return $this->classBuilder ??= new ClassBuilder();
+    }
+
+    protected function parameterResolver(): ParameterResolver
+    {
+        return $this->parameterResolver ??= new ParameterResolver();
     }
 }

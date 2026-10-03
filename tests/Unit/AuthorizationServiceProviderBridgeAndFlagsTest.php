@@ -12,6 +12,7 @@ use Quantum\Authorization\Bridges\ControllerSecurityPlannerBridge;
 use Quantum\Authorization\Contracts\AuthorityMemoizationCacheInterface;
 use Quantum\Authorization\Contracts\AuthorityRepositoryInterface;
 use Quantum\Authorization\Contracts\AuthorizationManagerInterface;
+use Quantum\Authorization\Contracts\TenantScopeResolverInterface;
 use Quantum\Authorization\Core\AuthorizationManager;
 use Quantum\Config\ConfigRepository;
 use VoltStack\Framework\Application;
@@ -27,6 +28,8 @@ final class AuthorizationServiceProviderBridgeAndFlagsTest extends TestCase
         self::assertTrue($config->get('authorization.authority.memoize'));
         self::assertFalse($config->get('authorization.authority.early_gate_enabled'));
         self::assertFalse($config->get('authorization.authority.evaluate_attribute_conditions'));
+        self::assertFalse($config->get('authorization.authority.scope_resolution.enabled'));
+        self::assertSame('tenant:', $config->get('authorization.authority.scope_resolution.tenant_scope_prefix'));
         self::assertFalse($config->get('authorization.controllers_security.bridge.enabled'));
     }
 
@@ -117,6 +120,18 @@ final class AuthorizationServiceProviderBridgeAndFlagsTest extends TestCase
 
         self::assertInstanceOf(AuthorityRepositoryInterface::class, $authorityProp->getValue($manager));
         self::assertTrue($gateProp->getValue($manager));
+    }
+
+    public function test_scope_resolution_enabled_registers_tenant_scope_resolver(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        /** @var ConfigRepository $config */
+        $config = $app->make(ConfigRepository::class);
+        $config->set('authorization.authority.scope_resolution.enabled', true);
+
+        $resolver = $app->make(TenantScopeResolverInterface::class);
+
+        self::assertInstanceOf(TenantScopeResolverInterface::class, $resolver);
     }
 
     public function test_manager_explain_and_explain_plan_methods_are_available_on_interface_resolved_via_container(): void

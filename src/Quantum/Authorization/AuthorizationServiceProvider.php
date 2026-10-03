@@ -25,7 +25,9 @@ use Quantum\Authorization\Contracts\AuthorizationPlannerInterface;
 use Quantum\Authorization\Contracts\AuthorizationRequestEnricherInterface;
 use Quantum\Authorization\Contracts\PrincipalResolverInterface;
 use Quantum\Authorization\Contracts\SubjectResolverInterface;
+use Quantum\Authorization\Contracts\TenantScopeResolverInterface;
 use Quantum\Authorization\Context\AuthorizationContextFactory;
+use Quantum\Authorization\Context\TenantScopeResolver;
 use Quantum\Authorization\Core\AuthorizationManager;
 use Quantum\Authorization\Core\AuthorizationPlanner;
 use Quantum\Authorization\Core\AuthorizationRequestFactory;
@@ -104,8 +106,15 @@ final class AuthorizationServiceProvider extends ServiceProvider
             ),
         );
         $this->app->scoped(AuthorizationContextFactoryInterface::class, function (Application $app): AuthorizationContextFactoryInterface {
-            return new AuthorizationContextFactory($app->make(AuthenticationManagerInterface::class));
+            return new AuthorizationContextFactory(
+                $app->make(AuthenticationManagerInterface::class),
+                $this->resolveTenantScopeResolver($app),
+            );
         });
+        $this->app->scoped(
+            TenantScopeResolverInterface::class,
+            fn(Application $app): ?TenantScopeResolverInterface => $this->makeTenantScopeResolver($app),
+        );
         $this->app->scoped(AuthorizationRequestFactory::class);
         $this->app->scoped(AttributeConditionEvaluator::class);
         $this->app->scoped(ManifestRequirementsEnforcementStage::class, function (Application $app): ManifestRequirementsEnforcementStage {
@@ -119,6 +128,7 @@ final class AuthorizationServiceProvider extends ServiceProvider
                 is_bool($evaluateConcretely) ? $evaluateConcretely : (bool) $evaluateConcretely,
                 is_bool($evaluateAttributeConditions) ? $evaluateAttributeConditions : (bool) $evaluateAttributeConditions,
                 $app->make(AttributeConditionEvaluator::class),
+                $this->resolveTenantScopeResolver($app),
             );
         });
         $this->app->scoped(GateAuthorizationStage::class, function (Application $app): GateAuthorizationStage {
@@ -164,6 +174,7 @@ final class AuthorizationServiceProvider extends ServiceProvider
                 planner: $app->make(AuthorizationPlannerInterface::class),
                 authority: $this->resolveAuthorityRepository($app),
                 authorityEarlyGateEnabled: $this->booleanOf($app->config('authorization.authority.early_gate_enabled', false)),
+                tenantScopeResolver: $this->resolveTenantScopeResolver($app),
             );
         });
         $this->app->scoped(
@@ -255,6 +266,36 @@ final class AuthorizationServiceProvider extends ServiceProvider
             AuthorityMemoizationCacheInterface::class,
             static fn (): AuthorityMemoizationCacheInterface => new RequestScopedAuthorityMemoizationCache(),
         );
+    }
+
+    private function makeTenantScopeResolver(Application $app): ?TenantScopeResolverInterface
+    {
+        $enabled = $app->config('authorization.authority.scope_resolution.enabled', false);
+
+        if (! $this->booleanOf($enabled)) {
+            return null;
+        }
+
+        $scopeKeys = $app->config('authorization.authority.scope_resolution.scope_attribute_keys', ['authorization.scope', 'scope']);
+        $tenantKeys = $app->config('authorization.authority.scope_resolution.tenant_attribute_keys', ['tenant.id', 'tenant_id']);
+        $prefix = $app->config('authorization.authority.scope_resolution.tenant_scope_prefix', 'tenant:');
+        $derive = $app->config('authorization.authority.scope_resolution.derive_from_tenant_id', true);
+
+        return new TenantScopeResolver(
+            is_array($scopeKeys) ? array_values(array_filter($scopeKeys, static fn (mixed $key): bool => is_string($key) && trim($key) !== '')) : ['authorization.scope', 'scope'],
+            is_array($tenantKeys) ? array_values(array_filter($tenantKeys, static fn (mixed $key): bool => is_string($key) && trim($key) !== '')) : ['tenant.id', 'tenant_id'],
+            $this->booleanOf($derive),
+            is_string($prefix) ? $prefix : 'tenant:',
+        );
+    }
+
+    private function resolveTenantScopeResolver(Application $app): ?TenantScopeResolverInterface
+    {
+        try {
+            return $app->make(TenantScopeResolverInterface::class);
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     private function registerControllersSecurityBridgeBinding(): void
@@ -381,6 +422,13 @@ final class AuthorizationServiceProvider extends ServiceProvider
                 'grants' => [],
                 'memoize' => true,
                 'early_gate_enabled' => false,
+                'scope_resolution' => [
+                    'enabled' => false,
+                    'scope_attribute_keys' => ['authorization.scope', 'scope'],
+                    'tenant_attribute_keys' => ['tenant.id', 'tenant_id'],
+                    'derive_from_tenant_id' => true,
+                    'tenant_scope_prefix' => 'tenant:',
+                ],
                 'database' => [
                     'connection' => null,
                     'tables' => [

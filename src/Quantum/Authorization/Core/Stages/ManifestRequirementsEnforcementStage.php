@@ -10,6 +10,7 @@ use Quantum\Authorization\Authority\Permission;
 use Quantum\Authorization\Authority\Scope;
 use Quantum\Authorization\Contracts\AuthorityRepositoryInterface;
 use Quantum\Authorization\Contracts\AuthorizationEvaluationStageInterface;
+use Quantum\Authorization\Contracts\TenantScopeResolverInterface;
 use Quantum\Authorization\Core\AuthorizationRequest;
 use Quantum\Authorization\Decision\DecisionResult;
 
@@ -21,6 +22,7 @@ final class ManifestRequirementsEnforcementStage implements AuthorizationEvaluat
         private readonly bool $evaluateRequirementsConcretely = false,
         private readonly bool $evaluateAttributeConditions = false,
         private readonly ?AttributeConditionEvaluator $attributeConditionEvaluator = null,
+        private readonly ?TenantScopeResolverInterface $tenantScopeResolver = null,
     ) {}
 
     public function name(): string
@@ -35,7 +37,10 @@ final class ManifestRequirementsEnforcementStage implements AuthorizationEvaluat
         $requirements = $context->attribute('authorization.metadata.requirements');
         $matched = $context->attribute('authorization.metadata.matched_requirements');
         $fingerprint = $context->attribute('authorization.metadata.fingerprint');
-        $scope = $context->attribute('scope') ?? $context->attribute('tenant.id') ?? Scope::GLOBAL;
+        $scope = $this->tenantScopeResolver?->resolveScope($context)
+            ?? $context->attribute('scope')
+            ?? $context->attribute('tenant.id')
+            ?? Scope::GLOBAL;
         $principalId = $request->principal()->id();
 
         $metadata = [];

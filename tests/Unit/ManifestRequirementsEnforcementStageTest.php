@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use Quantum\Authorization\Ability\Ability;
 use Quantum\Authorization\Authority\InMemoryAuthorityRepository;
 use Quantum\Authorization\Context\AuthorizationContext;
+use Quantum\Authorization\Context\TenantScopeResolver;
 use Quantum\Authorization\Core\AuthorizationRequest;
 use Quantum\Authorization\Core\Stages\ManifestRequirementsEnforcementStage;
 use Quantum\Authorization\Decision\Decision;
@@ -407,5 +408,43 @@ final class ManifestRequirementsEnforcementStageTest extends TestCase
         self::assertSame(\Quantum\Authorization\Decision\Decision::Deny, $deny->decision());
         self::assertSame('manifest_requirement_attribute_conditions_not_satisfied', $deny->reasonCode());
         self::assertSame(['risk.score'], $deny->metadata()['abac_condition_attributes'] ?? null);
+    }
+
+    public function test_scope_can_be_derived_from_tenant_id_when_resolver_is_enabled(): void
+    {
+        $authority = new InMemoryAuthorityRepository([
+            ['principal_id' => 'user-1', 'scope' => 'tenant:acme', 'permissions' => ['approve:invoice']],
+        ]);
+        $stage = new ManifestRequirementsEnforcementStage(
+            failClosed: true,
+            authorityRepository: $authority,
+            evaluateRequirementsConcretely: true,
+            evaluateAttributeConditions: false,
+            attributeConditionEvaluator: null,
+            tenantScopeResolver: new TenantScopeResolver(),
+        );
+        $context = new AuthorizationContext('req-auth', attributes: [
+            'tenant.id' => 'acme',
+            'authorization.metadata.public' => false,
+            'authorization.metadata.requirements' => [
+                ['ability' => 'approve:invoice'],
+            ],
+            'authorization.metadata.matched_requirements' => [
+                ['ability' => 'approve:invoice'],
+            ],
+        ]);
+        $request = new AuthorizationRequest(
+            new Ability('approve:invoice'),
+            new Principal('user-1'),
+            new SubjectDescriptor(SubjectType::Scalar, 'invoice-1', 'string'),
+            $context,
+        );
+
+        $results = $stage->evaluate($request);
+        $allow = $results[0] ?? null;
+
+        self::assertNotNull($allow);
+        self::assertSame(\Quantum\Authorization\Decision\Decision::Allow, $allow->decision());
+        self::assertSame('tenant:acme', $allow->metadata()['scope'] ?? null);
     }
 }

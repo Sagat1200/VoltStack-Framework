@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use Quantum\Auth\Identity\IdentityIdentifier;
 use Quantum\Auth\Identity\IdentityReference;
 use Quantum\Auth\Support\AuthenticationHttpState;
+use Quantum\Auth\Controllers\BearerTokenOperationsController;
 use Quantum\Auth\Tokens\BearerTokenService;
 use Quantum\Auth\Tokens\TokenId;
 use Quantum\Config\ConfigRepository;
@@ -15,12 +16,12 @@ use Quantum\Http\Request;
 use Quantum\HttpKernel\HttpKernel;
 use Quantum\Routing\Router;
 use VoltStack\Framework\Application;
-use App\Controllers\SecurityDemoController;
 use Quantum\Controllers\Security\Contracts\ControllerSecurityPolicyRegistryInterface;
 use Quantum\Controllers\Security\Decision\SecurityDecision;
 use Quantum\Controllers\Security\Decision\SecurityDecisionEffect;
 use Quantum\Controllers\Security\Decision\SecurityEvaluationRequest;
 use Quantum\Controllers\Security\Contracts\ControllerSecurityPolicyInterface;
+use App\Controllers\SecurityDemoController;
 
 final class SkeletonSecuritySmokeTest extends TestCase
 {
@@ -174,13 +175,18 @@ final class SkeletonSecuritySmokeTest extends TestCase
             })->name('smoke.opsAdminLogin');
             $router->get('/public', [SecurityDemoController::class, 'public'])->name('smoke.public');
             $router->get('/auth-token', [SecurityDemoController::class, 'authToken'])->name('smoke.authToken');
-            $router->get('/bearer-introspect', [SecurityDemoController::class, 'bearerIntrospect'])->name('smoke.bearerIntrospect');
-            $router->post('/bearer-revoke', [SecurityDemoController::class, 'bearerRevoke'])->name('smoke.bearerRevoke');
+            $router->get('/bearer-introspect', [BearerTokenOperationsController::class, 'introspect'])->name('smoke.bearerIntrospect');
+            $router->post('/bearer-revoke', [BearerTokenOperationsController::class, 'revoke'])->name('smoke.bearerRevoke');
             $router->get('/admin-mfa', [SecurityDemoController::class, 'adminMfa'])->name('smoke.adminMfa');
             $router->get('/self-service-remote-devices', [SecurityDemoController::class, 'selfServiceRemoteDevices'])->name('smoke.selfServiceRemoteDevices');
             $router->get('/privileged-security-center-export', [SecurityDemoController::class, 'privilegedSecurityCenterExport'])->name('smoke.privilegedSecurityCenterExport');
             $router->get('/tenant-scoped', [SecurityDemoController::class, 'tenantScoped'])->name('smoke.tenantScoped');
             $router->get('/gdpr-exposed', [SecurityDemoController::class, 'gdprExposed'])->name('smoke.gdprExposed');
+        });
+
+        $router->group(['prefix' => '/auth/tokens'], function () use ($router): void {
+            $router->get('/introspect', [BearerTokenOperationsController::class, 'introspect'])->name('smoke.authTokensIntrospect');
+            $router->post('/revoke', [BearerTokenOperationsController::class, 'revoke'])->name('smoke.authTokensRevoke');
         });
     }
 
@@ -323,13 +329,14 @@ final class SkeletonSecuritySmokeTest extends TestCase
         );
         $accessToken = $pair['access_token'];
 
-        $r = $this->dispatch('/security/demo/bearer-introspect', [
+        $r = $this->dispatch('/auth/tokens/introspect', [
             'Authorization' => 'Bearer ' . $accessToken->id->value,
         ]);
 
         self::assertSame(200, $r['status'], $r['debugThrowable'] ?? '');
         $j = $this->json($r);
         self::assertNotNull($j);
+        self::assertSame('auth/tokens/introspect', $j['endpoint'] ?? null);
         self::assertTrue($j['active'] ?? false);
         self::assertSame('opaque-smoke-user', $j['principal_id'] ?? null);
         self::assertSame('user', $j['principal_type'] ?? null);
@@ -353,7 +360,7 @@ final class SkeletonSecuritySmokeTest extends TestCase
 
     public function test_3c_bearer_introspect_rejects_unknown_opaque_token(): void
     {
-        $r = $this->dispatch('/security/demo/bearer-introspect', [
+        $r = $this->dispatch('/auth/tokens/introspect', [
             'Authorization' => 'Bearer ' . TokenId::generateAccess()->value,
         ]);
 
@@ -381,14 +388,14 @@ final class SkeletonSecuritySmokeTest extends TestCase
         $accessToken = $pair['access_token'];
         $refreshToken = $pair['refresh_token'];
 
-        $revoke = $this->dispatch('/security/demo/bearer-revoke', [
+        $revoke = $this->dispatch('/auth/tokens/revoke', [
             'Authorization' => 'Bearer ' . $accessToken->id->value,
         ], method: 'POST');
 
         self::assertSame(200, $revoke['status'], $revoke['debugThrowable'] ?? '');
         $payload = $this->json($revoke);
         self::assertNotNull($payload);
-        self::assertSame('security/demo/bearer-revoke', $payload['endpoint'] ?? null);
+        self::assertSame('auth/tokens/revoke', $payload['endpoint'] ?? null);
         self::assertSame('revoked', $payload['status'] ?? null);
         self::assertTrue($payload['access_token_revoked'] ?? false);
         self::assertTrue($payload['refresh_token_revoked'] ?? false);
@@ -403,10 +410,36 @@ final class SkeletonSecuritySmokeTest extends TestCase
         self::assertFalse($afterRefresh['active']);
         self::assertTrue($afterRefresh['revoked']);
 
-        $denied = $this->dispatch('/security/demo/bearer-introspect', [
+        $denied = $this->dispatch('/auth/tokens/introspect', [
             'Authorization' => 'Bearer ' . $accessToken->id->value,
         ]);
         self::assertSame(401, $denied['status'], $denied['debugThrowable'] ?? '');
+    }
+
+    public function test_3e_demo_bearer_alias_still_points_to_same_framework_operation(): void
+    {
+        $svc = $this->app->make(BearerTokenService::class);
+        $pair = $svc->issueTokenPair(
+            new IdentityReference(new IdentityIdentifier('opaque-demo-alias-user'), 'user'),
+            'client-demo-alias-01',
+            ['dashboard:read'],
+            null,
+            null,
+            [
+                'roles' => ['user'],
+                'permissions' => ['dashboard:read'],
+            ],
+        );
+
+        $response = $this->dispatch('/security/demo/bearer-introspect', [
+            'Authorization' => 'Bearer ' . $pair['access_token']->id->value,
+        ]);
+
+        self::assertSame(200, $response['status'], $response['debugThrowable'] ?? '');
+        $payload = $this->json($response);
+        self::assertNotNull($payload);
+        self::assertSame('security/demo/bearer-introspect', $payload['endpoint'] ?? null);
+        self::assertSame('client-demo-alias-01', $payload['client_id'] ?? null);
     }
 
     public function test_4_admin_mfa_fails_with_only_token_strength(): void

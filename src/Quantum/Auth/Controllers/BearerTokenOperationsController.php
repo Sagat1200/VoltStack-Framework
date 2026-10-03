@@ -7,6 +7,7 @@ namespace Quantum\Auth\Controllers;
 use Quantum\Auth\Tokens\BearerTokenService;
 use Quantum\Controllers\Controller;
 use Quantum\Controllers\Security\Attributes\AuthenticationRequired;
+use Quantum\Controllers\Security\Attributes\Policies;
 use Quantum\Controllers\Security\Context\AuthenticationStrength;
 use Quantum\Http\Request;
 use Quantum\Http\Response;
@@ -18,6 +19,7 @@ final class BearerTokenOperationsController extends Controller
     ) {}
 
     #[AuthenticationRequired(minimumStrength: AuthenticationStrength::Token)]
+    #[Policies(['role:user || permission:dashboard:read'])]
     public function introspect(Request $request): Response
     {
         $security = $this->security();
@@ -29,6 +31,7 @@ final class BearerTokenOperationsController extends Controller
         $tokenAttributes = is_array($projection['attributes'] ?? null) ? $projection['attributes'] : [];
 
         $payload = [
+            'endpoint' => $this->responseEndpoint($request),
             'active' => $projection['active'],
             'token_type' => $projection['token_type'],
             'principal_id' => $principal?->id(),
@@ -57,6 +60,7 @@ final class BearerTokenOperationsController extends Controller
     }
 
     #[AuthenticationRequired(minimumStrength: AuthenticationStrength::Token)]
+    #[Policies(['role:user || permission:dashboard:read'])]
     public function revoke(Request $request): Response
     {
         $principal = $this->security()?->principal ?? null;
@@ -73,6 +77,7 @@ final class BearerTokenOperationsController extends Controller
             ];
 
         $payload = [
+            'endpoint' => $this->responseEndpoint($request),
             'status' => $result['status'],
             'principal_id' => $principal?->id(),
             'access_token_revoked' => $result['access_token_revoked'],
@@ -104,8 +109,14 @@ final class BearerTokenOperationsController extends Controller
             : '';
     }
 
+    private function responseEndpoint(Request $request): string
+    {
+        return ltrim($request->path(), '/');
+    }
+
     /**
      * @return array{
+     *   endpoint:string,
      *   active:bool,
      *   found:bool,
      *   reason_code:?string,

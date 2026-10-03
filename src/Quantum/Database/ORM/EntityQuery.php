@@ -13,6 +13,8 @@ use RuntimeException;
 
 final class EntityQuery
 {
+    private const ROOT_ALIAS = 't0';
+
     public SelectQueryBuilder $query;
 
     /**
@@ -21,7 +23,7 @@ final class EntityQuery
     private array $preloadedAssociations = [];
 
     /**
-     * @var list<array{name:string,column:string,hydrate:Closure}>
+     * @var list<array{name:string,select:string,resultKey:string,hydrate:Closure}>
      */
     private array $projectionSelections = [];
 
@@ -35,6 +37,11 @@ final class EntityQuery
      */
     private array $managedPartialSelections = [];
 
+    /**
+     * @var array<string, array{alias:string,type:string,association:EntityAssociationMetadata,targetMetadata:EntityMetadata}>
+     */
+    private array $joinedAssociations = [];
+
     public function __construct(
         private readonly EntityManager $manager,
         private readonly EntityMetadata $metadata,
@@ -46,6 +53,21 @@ final class EntityQuery
     public function where(string $field, mixed $operatorOrValue, mixed $value = null): self
     {
         $argc = func_num_args();
+
+        $joinedField = $this->resolveJoinedFieldPath($field);
+        if ($joinedField !== null) {
+            [$targetField, $targetColumn] = $joinedField;
+            $targetValue = $argc === 2 ? $operatorOrValue : $value;
+            $normalized = $targetField->databaseValueFrom($targetValue);
+
+            if ($argc === 2) {
+                $this->query->where($targetColumn, $normalized);
+            } else {
+                $this->query->where($targetColumn, $operatorOrValue, $normalized);
+            }
+
+            return $this;
+        }
 
         if ($this->metadata->hasAssociation($field)) {
             $association = $this->metadata->association($field);
@@ -78,6 +100,8 @@ final class EntityQuery
                 ));
             }
 
+            $column = $this->qualifyRootColumn($column);
+
             if ($argc === 2) {
                 $this->query->where($column, $normalized);
             } else {
@@ -92,6 +116,7 @@ final class EntityQuery
             [$innerField, $innerColumn] = $embeddedPath;
             $targetValue = $argc === 2 ? $operatorOrValue : $value;
             $normalized = $innerField->databaseValueFrom($targetValue);
+            $innerColumn = $this->qualifyRootColumn($innerColumn);
 
             if ($argc === 2) {
                 $this->query->where($innerColumn, $normalized);
@@ -103,7 +128,7 @@ final class EntityQuery
         }
 
         $fieldMetadata = $this->metadata->field($field);
-        $column = $fieldMetadata->column;
+        $column = $this->qualifyRootColumn($fieldMetadata->column);
 
         if ($argc === 2) {
             $this->query->where($column, $fieldMetadata->databaseValueFrom($operatorOrValue));
@@ -118,6 +143,14 @@ final class EntityQuery
 
     public function orderBy(string $field, string $direction = 'asc'): self
     {
+        $joinedField = $this->resolveJoinedFieldPath($field);
+        if ($joinedField !== null) {
+            [, $targetColumn] = $joinedField;
+            $this->query->orderBy($targetColumn, $direction);
+
+            return $this;
+        }
+
         if ($this->metadata->hasAssociation($field)) {
             $association = $this->metadata->association($field);
 
@@ -145,7 +178,7 @@ final class EntityQuery
                 ));
             }
 
-            $this->query->orderBy($association->sourceColumn, $direction);
+            $this->query->orderBy($this->qualifyRootColumn($association->sourceColumn), $direction);
 
             return $this;
         }
@@ -153,14 +186,24 @@ final class EntityQuery
         $embeddedPath = $this->resolveEmbeddedPath($field);
         if ($embeddedPath !== null) {
             [, $innerColumn] = $embeddedPath;
-            $this->query->orderBy($innerColumn, $direction);
+            $this->query->orderBy($this->qualifyRootColumn($innerColumn), $direction);
 
             return $this;
         }
 
-        $this->query->orderBy($this->metadata->field($field)->column, $direction);
+        $this->query->orderBy($this->qualifyRootColumn($this->metadata->field($field)->column), $direction);
 
         return $this;
+    }
+
+    public function join(string $association, ?string $alias = null): self
+    {
+        return $this->addAssociationJoin('inner', $association, $alias);
+    }
+
+    public function leftJoin(string $association, ?string $alias = null): self
+    {
+        return $this->addAssociationJoin('left', $association, $alias);
     }
 
     public function with(string ...$associations): self
@@ -225,7 +268,7 @@ final class EntityQuery
 
         $this->projectionSelections = $resolved;
         $this->query->select(...array_values(array_map(
-            static fn(array $selection): string => $selection['column'],
+            static fn(array $selection): string => $selection['select'],
             $resolved,
         )));
 
@@ -234,9 +277,9 @@ final class EntityQuery
 
     public function partial(string ...$fields): self
     {
-        if ($this->preloadedAssociations !== [] || $this->projectionSelections !== [] || $this->managedPartialSelections !== []) {
+        if ($this->preloadedAssociations !== [] || $this->projectionSelections !== [] || $this->managedPartialSelections !== [] || $this->joinedAssociations !== []) {
             throw new RuntimeException(sprintf(
-                'Cannot combine [%s::partial()] with preload or projection mode on [%s]; partial hydration is a separate query mode.',
+                'Cannot combine [%s::partial()] with preload, projection, or joined-association mode on [%s]; partial hydration is a separate query mode.',
                 self::class,
                 $this->metadata->className,
             ));
@@ -271,9 +314,9 @@ final class EntityQuery
 
     public function partialManaged(string ...$fields): self
     {
-        if ($this->preloadedAssociations !== [] || $this->projectionSelections !== [] || $this->partialSelections !== []) {
+        if ($this->preloadedAssociations !== [] || $this->projectionSelections !== [] || $this->partialSelections !== [] || $this->joinedAssociations !== []) {
             throw new RuntimeException(sprintf(
-                'Cannot combine [%s::partialManaged()] with preload, projection, or detached partial mode on [%s]; managed partial hydration is a separate query mode.',
+                'Cannot combine [%s::partialManaged()] with preload, projection, detached partial mode, or joined-association mode on [%s]; managed partial hydration is a separate query mode.',
                 self::class,
                 $this->metadata->className,
             ));
@@ -480,7 +523,7 @@ final class EntityQuery
         $rows = $this->queryForSelections([$selection])->get()->rows();
 
         return array_map(
-            fn(array $row): mixed => ($selection['hydrate'])($row[$selection['column']] ?? null),
+            fn(array $row): mixed => ($selection['hydrate'])($row[$selection['resultKey']] ?? null),
             $rows,
         );
     }
@@ -494,7 +537,7 @@ final class EntityQuery
             return null;
         }
 
-        return ($selection['hydrate'])($row[$selection['column']] ?? null);
+        return ($selection['hydrate'])($row[$selection['resultKey']] ?? null);
     }
 
     public function count(?string $column = null): int
@@ -554,12 +597,25 @@ final class EntityQuery
     }
 
     /**
-     * @return array{name:string,column:string,hydrate:Closure}
+     * @return array{name:string,select:string,resultKey:string,hydrate:Closure}
      */
     private function resolveProjectionSelection(string $field): array
     {
         if ($field === '') {
             throw new RuntimeException('Projection field name cannot be empty.');
+        }
+
+        $joinedField = $this->resolveJoinedFieldPath($field);
+        if ($joinedField !== null) {
+            [$targetField, $targetColumn] = $joinedField;
+            $resultKey = $this->projectionResultKey($field);
+
+            return [
+                'name' => $field,
+                'select' => $targetColumn . ' AS ' . $resultKey,
+                'resultKey' => $resultKey,
+                'hydrate' => static fn(mixed $value): mixed => $targetField->castValue($value),
+            ];
         }
 
         if ($this->metadata->hasAssociation($field)) {
@@ -582,10 +638,12 @@ final class EntityQuery
             }
 
             $targetMetadata = $this->manager->metadata->for($association->targetEntity);
+            $resultKey = $this->projectionResultKey($field);
 
             return [
                 'name' => $field,
-                'column' => $association->sourceColumn,
+                'select' => $this->qualifyRootColumn($association->sourceColumn) . ' AS ' . $resultKey,
+                'resultKey' => $resultKey,
                 'hydrate' => static fn(mixed $value): mixed => $value === null || $value === ''
                     ? null
                     : $targetMetadata->canonicalizeIdentifier($value),
@@ -595,19 +653,23 @@ final class EntityQuery
         $embeddedPath = $this->resolveEmbeddedPath($field);
         if ($embeddedPath !== null) {
             [$innerField, $innerColumn] = $embeddedPath;
+            $resultKey = $this->projectionResultKey($field);
 
             return [
                 'name' => $field,
-                'column' => $innerColumn,
+                'select' => $this->qualifyRootColumn($innerColumn) . ' AS ' . $resultKey,
+                'resultKey' => $resultKey,
                 'hydrate' => static fn(mixed $value): mixed => $innerField->castValue($value),
             ];
         }
 
         $fieldMetadata = $this->metadata->field($field);
+        $resultKey = $this->projectionResultKey($field);
 
         return [
             'name' => $field,
-            'column' => $fieldMetadata->column,
+            'select' => $this->qualifyRootColumn($fieldMetadata->column) . ' AS ' . $resultKey,
+            'resultKey' => $resultKey,
             'hydrate' => static fn(mixed $value): mixed => $fieldMetadata->castValue($value),
         ];
     }
@@ -648,13 +710,13 @@ final class EntityQuery
     }
 
     /**
-     * @param list<array{name:string,column:string,hydrate:Closure}> $selections
+     * @param list<array{name:string,select:string,resultKey:string,hydrate:Closure}> $selections
      */
     private function queryForSelections(array $selections): SelectQueryBuilder
     {
         $query = clone $this->query;
         $query->select(...array_values(array_map(
-            static fn(array $selection): string => $selection['column'],
+            static fn(array $selection): string => $selection['select'],
             $selections,
         )));
 
@@ -669,10 +731,200 @@ final class EntityQuery
         $projected = [];
 
         foreach ($this->projectionSelections as $selection) {
-            $projected[$selection['name']] = ($selection['hydrate'])($row[$selection['column']] ?? null);
+            $projected[$selection['name']] = ($selection['hydrate'])($row[$selection['resultKey']] ?? null);
         }
 
         return $projected;
+    }
+
+    private function addAssociationJoin(string $type, string $associationName, ?string $alias): self
+    {
+        $normalizedAssociation = trim($associationName);
+        if ($normalizedAssociation === '') {
+            throw new RuntimeException('Join association name cannot be empty.');
+        }
+
+        if ($this->projectionSelections !== [] || $this->partialSelections !== [] || $this->managedPartialSelections !== []) {
+            throw new RuntimeException(sprintf(
+                'Call join methods before select()/partial()/partialManaged() on [%s].',
+                $this->metadata->className,
+            ));
+        }
+
+        if (! $this->metadata->hasAssociation($normalizedAssociation)) {
+            throw new RuntimeException(sprintf(
+                'Cannot join unknown association [%s::$%s].',
+                $this->metadata->className,
+                $normalizedAssociation,
+            ));
+        }
+
+        $association = $this->metadata->association($normalizedAssociation);
+        if (! $association->isToOne()) {
+            throw new RuntimeException(sprintf(
+                'Join support currently only covers to-one associations; [%s::$%s] is to-many.',
+                $this->metadata->className,
+                $normalizedAssociation,
+            ));
+        }
+
+        if (isset($this->joinedAssociations[$normalizedAssociation])) {
+            return $this;
+        }
+
+        $targetMetadata = $this->manager->metadata->for($association->targetEntity);
+        $joinAlias = trim($alias ?? $normalizedAssociation);
+        if ($joinAlias === '') {
+            throw new RuntimeException('Join alias cannot be empty.');
+        }
+
+        $this->ensureRootAlias();
+        [$leftColumn, $rightColumn] = $this->associationJoinColumns($association, $targetMetadata, $joinAlias);
+
+        if (strtolower($type) === 'left') {
+            $this->query->leftJoin($targetMetadata->table, $leftColumn, $rightColumn, alias: $joinAlias);
+        } else {
+            $this->query->join($targetMetadata->table, $leftColumn, $rightColumn, alias: $joinAlias);
+        }
+
+        $this->joinedAssociations[$normalizedAssociation] = [
+            'alias' => $joinAlias,
+            'type' => strtolower($type),
+            'association' => $association,
+            'targetMetadata' => $targetMetadata,
+        ];
+
+        return $this;
+    }
+
+    private function ensureRootAlias(): void
+    {
+        if ($this->joinedAssociations !== []) {
+            return;
+        }
+
+        $this->query->as(self::ROOT_ALIAS);
+        $this->query->select(self::ROOT_ALIAS . '.*');
+    }
+
+    /**
+     * @return array{0:string,1:string}
+     */
+    private function associationJoinColumns(EntityAssociationMetadata $association, EntityMetadata $targetMetadata, string $joinAlias): array
+    {
+        if ($association->isOwningSide()) {
+            if ($association->sourceColumn === null || $association->targetColumn === null) {
+                throw new RuntimeException(sprintf(
+                    'Association [%s::$%s] is missing join column metadata for join translation.',
+                    $this->metadata->className,
+                    $association->name,
+                ));
+            }
+
+            return [
+                $joinAlias . '.' . $association->targetColumn,
+                self::ROOT_ALIAS . '.' . $association->sourceColumn,
+            ];
+        }
+
+        if ($association->targetColumn === null) {
+            throw new RuntimeException(sprintf(
+                'Inverse association [%s::$%s] is missing target column metadata for join translation.',
+                $this->metadata->className,
+                $association->name,
+            ));
+        }
+
+        return [
+            $joinAlias . '.' . $association->targetColumn,
+            self::ROOT_ALIAS . '.' . $this->metadata->identifier->column,
+        ];
+    }
+
+    private function qualifyRootColumn(string $column): string
+    {
+        if ($this->joinedAssociations === []) {
+            return $column;
+        }
+
+        return self::ROOT_ALIAS . '.' . $column;
+    }
+
+    /**
+     * @return array{0:\Quantum\Database\ORM\Metadata\EntityFieldMetadata,1:string}|null
+     */
+    private function resolveJoinedFieldPath(string $field): ?array
+    {
+        if (! str_contains($field, '.')) {
+            return null;
+        }
+
+        [$associationName, $targetFieldPath] = explode('.', $field, 2);
+        if ($this->metadata->hasAssociation($associationName) && ! isset($this->joinedAssociations[$associationName])) {
+            throw new RuntimeException(sprintf(
+                'Joined field path [%s] requires calling join(%s) or leftJoin(%s) first on [%s].',
+                $field,
+                var_export($associationName, true),
+                var_export($associationName, true),
+                $this->metadata->className,
+            ));
+        }
+
+        if (! isset($this->joinedAssociations[$associationName])) {
+            return null;
+        }
+
+        $join = $this->joinedAssociations[$associationName];
+        $targetMetadata = $join['targetMetadata'];
+        $qualifiedAlias = $join['alias'];
+
+        $embeddedPath = $this->resolveEmbeddedPathForMetadata($targetMetadata, $targetFieldPath);
+        if ($embeddedPath !== null) {
+            [$innerField, $innerColumn] = $embeddedPath;
+
+            return [$innerField, $qualifiedAlias . '.' . $innerColumn];
+        }
+
+        if (! $targetMetadata->hasField($targetFieldPath)) {
+            throw new RuntimeException(sprintf(
+                'Joined field path [%s] is not mapped on target entity [%s].',
+                $field,
+                $targetMetadata->className,
+            ));
+        }
+
+        $targetField = $targetMetadata->field($targetFieldPath);
+
+        return [$targetField, $qualifiedAlias . '.' . $targetField->column];
+    }
+
+    /**
+     * @return array{0:\Quantum\Database\ORM\Metadata\EntityEmbeddedFieldMetadata,1:string}|null
+     */
+    private function resolveEmbeddedPathForMetadata(EntityMetadata $metadata, string $field): ?array
+    {
+        if (! str_contains($field, '.')) {
+            return null;
+        }
+
+        [$embeddedName, $innerName] = explode('.', $field, 2);
+        if (! $metadata->hasEmbedded($embeddedName)) {
+            return null;
+        }
+
+        $embedded = $metadata->embedded($embeddedName);
+        if (! $embedded->hasInnerField($innerName)) {
+            return null;
+        }
+
+        $innerField = $embedded->innerField($innerName);
+
+        return [$innerField, $innerField->column];
+    }
+
+    private function projectionResultKey(string $field): string
+    {
+        return '__orm_' . preg_replace('/[^A-Za-z0-9_]+/', '_', $field);
     }
 
     /**

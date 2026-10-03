@@ -12,6 +12,7 @@ use Quantum\Authorization\Authority\Permission;
 use Quantum\Authorization\Authority\RequestScopedAuthorityMemoizationCache;
 use Quantum\Authorization\Authority\Role;
 use Quantum\Authorization\Authority\Scope;
+use Quantum\Authorization\Context\TenantScopeResolver;
 use Quantum\Authorization\Contracts\AuthorityRepositoryInterface;
 use Quantum\Authorization\Contracts\AuthorizationManagerInterface;
 use Quantum\Authorization\Contracts\PrincipalInterface;
@@ -162,10 +163,37 @@ final class AuthorizationManagerAuthorityEarlyGateTest extends TestCase
         self::assertTrue($decision2->isAllowed());
     }
 
+    public function test_scope_can_be_derived_automatically_from_tenant_id_when_resolver_is_enabled(): void
+    {
+        $authority = new InMemoryAuthorityRepository([
+            ['principal_id' => 'u_1', 'scope' => 'tenant:acme', 'permissions' => ['posts.tenantOnly']],
+        ]);
+        $calls = 0;
+        $fallback = \Quantum\Authorization\Decision\DecisionResult::deny('planner', 'deny');
+        $manager = $this->makeManagerWithFallbackPlanner(
+            $authority,
+            true,
+            $fallback,
+            $calls,
+            new TenantScopeResolver(),
+        );
+
+        $allowed = $manager->check(
+            'posts.tenantOnly',
+            null,
+            AuthorizationContext::empty()->withAttributes(['tenant.id' => 'acme']),
+            new Principal('u_1'),
+        );
+
+        self::assertTrue($allowed);
+        self::assertSame(0, $calls);
+    }
+
     private function makeManagerWithNullPlannerSpy(
         ?AuthorityRepositoryInterface $authority,
         bool $earlyGateEnabled,
         int &$expectedPlannerCalls,
+        ?TenantScopeResolver $tenantScopeResolver = null,
     ): mixed {
         $expectedPlannerCalls = 0;
         $key = 'authz_nullplanner_' . bin2hex(random_bytes(4));
@@ -183,7 +211,7 @@ final class AuthorizationManagerAuthorityEarlyGateTest extends TestCase
         };
         $app = new Application(sys_get_temp_dir());
         $factory = $app->make(AuthorizationRequestFactory::class);
-        $innerManager = new AuthorizationManager($factory, $planner, $authority, $earlyGateEnabled);
+        $innerManager = new AuthorizationManager($factory, $planner, $authority, $earlyGateEnabled, $tenantScopeResolver);
         register_shutdown_function(static function () use ($key): void { unset($GLOBALS[$key], $GLOBALS[$key . '_refholder']); });
 
         return new class($innerManager, $key, $expectedPlannerCalls) implements \Quantum\Authorization\Contracts\AuthorizationManagerInterface {
@@ -247,6 +275,7 @@ final class AuthorizationManagerAuthorityEarlyGateTest extends TestCase
         bool $earlyGateEnabled,
         \Quantum\Authorization\Decision\DecisionResult $fallback,
         int &$plannerCalls,
+        ?TenantScopeResolver $tenantScopeResolver = null,
     ): mixed {
         $plannerCalls = 0;
         $key = 'authz_fallback_' . bin2hex(random_bytes(4));
@@ -270,7 +299,7 @@ final class AuthorizationManagerAuthorityEarlyGateTest extends TestCase
         };
         $app = new Application(sys_get_temp_dir());
         $factory = $app->make(AuthorizationRequestFactory::class);
-        $innerManager = new AuthorizationManager($factory, $planner, $authority, $earlyGateEnabled);
+        $innerManager = new AuthorizationManager($factory, $planner, $authority, $earlyGateEnabled, $tenantScopeResolver);
         register_shutdown_function(static function () use ($key): void { unset($GLOBALS[$key], $GLOBALS[$key . '_refholder']); });
 
         return new class($innerManager, $key, $plannerCalls) implements \Quantum\Authorization\Contracts\AuthorizationManagerInterface {

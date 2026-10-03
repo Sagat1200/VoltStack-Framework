@@ -10,6 +10,7 @@ use Quantum\Authorization\Authority\Scope;
 use Quantum\Authorization\Contracts\AuthorizationPlannerInterface;
 use Quantum\Authorization\Contracts\AuthorityRepositoryInterface;
 use Quantum\Authorization\Contracts\AuthorizationManagerInterface;
+use Quantum\Authorization\Contracts\TenantScopeResolverInterface;
 use Quantum\Authorization\Context\AuthorizationContext;
 use Quantum\Authorization\Decision\AuthorizationDecisionPlan;
 use Quantum\Authorization\Decision\DecisionResult;
@@ -25,6 +26,7 @@ final class AuthorizationManager implements AuthorizationManagerInterface
         private readonly AuthorizationPlannerInterface $planner,
         private readonly ?AuthorityRepositoryInterface $authority = null,
         private readonly bool $authorityEarlyGateEnabled = false,
+        private readonly ?TenantScopeResolverInterface $tenantScopeResolver = null,
     ) {}
 
     public function for(mixed $principal): BoundAuthorization
@@ -206,6 +208,10 @@ final class AuthorizationManager implements AuthorizationManagerInterface
 
     private function resolveScopeFromContext(?AuthorizationContext $context): Scope
     {
+        if ($this->tenantScopeResolver instanceof TenantScopeResolverInterface) {
+            return $this->tenantScopeResolver->resolveScope($context);
+        }
+
         if ($context === null) {
             return new Scope(Scope::GLOBAL);
         }

@@ -6,17 +6,19 @@ namespace Quantum\Authorization\Context;
 
 use Quantum\Auth\Contracts\AuthenticationManagerInterface;
 use Quantum\Authorization\Contracts\AuthorizationContextFactoryInterface;
+use Quantum\Authorization\Contracts\TenantScopeResolverInterface;
 
 final class AuthorizationContextFactory implements AuthorizationContextFactoryInterface
 {
     public function __construct(
         private readonly ?AuthenticationManagerInterface $auth = null,
+        private readonly ?TenantScopeResolverInterface $tenantScopeResolver = null,
     ) {}
 
     public function create(?AuthorizationContext $context = null): AuthorizationContext
     {
         if ($context instanceof AuthorizationContext) {
-            return $context;
+            return $this->tenantScopeResolver?->normalize($context) ?? $context;
         }
 
         $authContext = null;
@@ -31,7 +33,7 @@ final class AuthorizationContextFactory implements AuthorizationContextFactoryIn
             return AuthorizationContext::empty();
         }
 
-        return new AuthorizationContext(
+        $context = new AuthorizationContext(
             requestId: $authContext->requestId,
             tenantId: is_string($authContext->attribute('tenant_id')) ? $authContext->attribute('tenant_id') : null,
             channel: is_string($authContext->attribute('channel')) ? $authContext->attribute('channel') : $authContext->method,
@@ -42,5 +44,7 @@ final class AuthorizationContextFactory implements AuthorizationContextFactoryIn
                 'device_reference' => $authContext->deviceReference(),
             ] + $authContext->attributes,
         );
+
+        return $this->tenantScopeResolver?->normalize($context) ?? $context;
     }
 }

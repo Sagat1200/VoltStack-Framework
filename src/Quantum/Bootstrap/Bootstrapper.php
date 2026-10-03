@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Quantum\Bootstrap;
 
+use Quantum\Bootstrap\ApplicationPlan;
+use Quantum\Bootstrap\Context\BootstrapContext;
 use Quantum\Config\ConfigRepository;
 use VoltStack\Framework\Application;
 use VoltStack\Framework\ServiceProvider;
@@ -23,6 +25,33 @@ final class Bootstrapper
         $this->loadConfiguration();
 
         foreach ($providers as $provider) {
+            $this->app->register($provider);
+        }
+
+        $this->app->boot();
+
+        return $this->app;
+    }
+
+    public function bootstrapPlan(ApplicationPlan $plan, ?BootstrapContext $context = null): Application
+    {
+        $this->app->registerBaseBindings();
+        $this->app->instance(ApplicationPlan::class, $plan);
+
+        if ($context !== null) {
+            $this->app->instance(BootstrapContext::class, $context);
+        }
+
+        $this->loadConfiguration($plan->configDirectory());
+
+        $environment = $context?->environment() ?? $plan->environment();
+        if ($environment !== null) {
+            /** @var ConfigRepository $config */
+            $config = $this->app->make(ConfigRepository::class);
+            $config->set('app.env', $environment);
+        }
+
+        foreach ($plan->providers() as $provider) {
             $this->app->register($provider);
         }
 

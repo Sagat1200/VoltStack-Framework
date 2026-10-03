@@ -767,6 +767,128 @@ final class DatabaseOrmFeatureTest extends TestCase
         }
     }
 
+    public function test_entity_query_can_join_to_one_associations_via_metadata_for_filters_and_projections(): void
+    {
+        $app = $this->makeApp();
+        $scope = $app->make(ScopeManager::class);
+        $scope->begin(Request::create('/database/orm/joined-query', 'GET'));
+
+        try {
+            $database = $app->make(DatabaseInterface::class);
+            $database->schema()->create('orm_blog_posts', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('title');
+                $table->boolean('published');
+            }, true);
+            $database->schema()->create('orm_blog_comments', function (TableBlueprint $table): void {
+                $table->id();
+                $table->integer('post_id');
+                $table->string('body');
+            }, true);
+            $database->schema()->create('orm_account_users', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+            }, true);
+            $database->schema()->create('orm_user_profiles', function (TableBlueprint $table): void {
+                $table->id();
+                $table->integer('user_id')->nullable();
+                $table->string('bio');
+            }, true);
+
+            $em = $database->entityManager();
+
+            $alpha = new OrmBlogPost();
+            $alpha->title = 'Alpha';
+            $alpha->published = true;
+
+            $beta = new OrmBlogPost();
+            $beta->title = 'Beta';
+            $beta->published = true;
+
+            $em->persist($alpha);
+            $em->persist($beta);
+            $em->flush();
+
+            $commentA = new OrmBlogComment();
+            $commentA->body = 'Alpha comment';
+            $commentA->post = $alpha;
+
+            $commentB = new OrmBlogComment();
+            $commentB->body = 'Beta comment';
+            $commentB->post = $beta;
+
+            $em->persist($commentA);
+            $em->persist($commentB);
+
+            $ada = new OrmAccountUser();
+            $ada->name = 'Ada';
+
+            $grace = new OrmAccountUser();
+            $grace->name = 'Grace';
+
+            $em->persist($ada);
+            $em->persist($grace);
+            $em->flush();
+
+            $profile = new OrmUserProfile();
+            $profile->bio = 'Platform engineer';
+            $profile->user = $ada;
+            $em->persist($profile);
+            $em->flush();
+            $em->clear();
+
+            $commentRows = $em->query(OrmBlogComment::class)
+                ->join('post', 'p')
+                ->select('body', 'post.title')
+                ->orderBy('post.title')
+                ->rows();
+            self::assertSame([
+                ['body' => 'Alpha comment', 'post.title' => 'Alpha'],
+                ['body' => 'Beta comment', 'post.title' => 'Beta'],
+            ], $commentRows);
+
+            self::assertSame('Alpha', $em->query(OrmBlogComment::class)
+                ->join('post', 'p')
+                ->where('body', 'Alpha comment')
+                ->value('post.title'));
+
+            $filteredComments = $em->query(OrmBlogComment::class)
+                ->join('post', 'p')
+                ->where('post.title', 'Alpha')
+                ->get();
+            self::assertCount(1, $filteredComments);
+            self::assertSame('Alpha comment', $filteredComments[0]->body);
+
+            $userRows = $em->query(OrmAccountUser::class)
+                ->leftJoin('profile', 'pr')
+                ->select('name', 'profile.bio')
+                ->orderBy('name')
+                ->rows();
+            self::assertSame([
+                ['name' => 'Ada', 'profile.bio' => 'Platform engineer'],
+                ['name' => 'Grace', 'profile.bio' => null],
+            ], $userRows);
+
+            $filteredUsers = $em->query(OrmAccountUser::class)
+                ->leftJoin('profile', 'pr')
+                ->where('profile.bio', 'Platform engineer')
+                ->get();
+            self::assertCount(1, $filteredUsers);
+            self::assertSame('Ada', $filteredUsers[0]->name);
+
+            try {
+                $em->query(OrmBlogPost::class)
+                    ->join('comments')
+                    ->get();
+                self::fail('Joining to-many associations must be rejected in V1.');
+            } catch (RuntimeException $exception) {
+                self::assertStringContainsString('only covers to-one associations', $exception->getMessage());
+            }
+        } finally {
+            $scope->end();
+        }
+    }
+
     public function test_entity_query_select_rows_firstrow_pluck_and_value_support_projection_mode(): void
     {
         $app = $this->makeApp();

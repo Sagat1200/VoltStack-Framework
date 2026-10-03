@@ -20,11 +20,6 @@ class Container implements ContainerInterface
     protected array $instances = [];
 
     /**
-     * @var array<string, mixed>
-     */
-    protected array $scopedInstances = [];
-
-    /**
      * @var array<string, string>
      */
     protected array $aliases = [];
@@ -36,6 +31,8 @@ class Container implements ContainerInterface
     protected ?ClassBuilder $classBuilder = null;
 
     protected ?ParameterResolver $parameterResolver = null;
+
+    protected ?ScopeStack $scopeStack = null;
 
     public function bind(string $abstract, mixed $concrete = null, bool $shared = false): void
     {
@@ -69,7 +66,7 @@ class Container implements ContainerInterface
     public function scopedInstance(string $abstract, mixed $instance): void
     {
         $abstract = $this->normalize($abstract);
-        $this->scopedInstances[$abstract] = $instance;
+        $this->scopeStack()->current()->put($abstract, $instance);
     }
 
     public function alias(string $abstract, string $alias): void
@@ -82,7 +79,7 @@ class Container implements ContainerInterface
         $abstract = $this->normalize($abstract);
 
         return array_key_exists($abstract, $this->instances)
-            || array_key_exists($abstract, $this->scopedInstances)
+            || $this->scopeStack()->current()->has($abstract)
             || array_key_exists($abstract, $this->bindings)
             || class_exists($abstract);
     }
@@ -95,8 +92,8 @@ class Container implements ContainerInterface
             return $this->instances[$abstract];
         }
 
-        if (array_key_exists($abstract, $this->scopedInstances)) {
-            return $this->scopedInstances[$abstract];
+        if ($this->scopeStack()->current()->has($abstract)) {
+            return $this->scopeStack()->current()->get($abstract);
         }
 
         $binding = $this->bindings[$abstract] ?? null;
@@ -109,7 +106,7 @@ class Container implements ContainerInterface
         }
 
         if ($binding?->scoped) {
-            $this->scopedInstances[$abstract] = $object;
+            $this->scopeStack()->current()->put($abstract, $object);
         }
 
         return $object;
@@ -117,7 +114,7 @@ class Container implements ContainerInterface
 
     public function flushScope(): void
     {
-        $this->scopedInstances = [];
+        $this->scopeStack()->flushCurrent();
     }
 
     public function resolved(string $abstract): bool
@@ -125,7 +122,27 @@ class Container implements ContainerInterface
         $abstract = $this->normalize($abstract);
 
         return array_key_exists($abstract, $this->instances)
-            || array_key_exists($abstract, $this->scopedInstances);
+            || $this->scopeStack()->current()->has($abstract);
+    }
+
+    public function enterScope(string $name = 'scope'): string
+    {
+        return $this->scopeStack()->enter($name)->id();
+    }
+
+    public function leaveScope(): void
+    {
+        $this->scopeStack()->leave();
+    }
+
+    public function hasActiveScope(): bool
+    {
+        return $this->scopeStack()->hasActiveScope();
+    }
+
+    public function currentScopeId(): string
+    {
+        return $this->scopeStack()->current()->id();
     }
 
     protected function resolve(mixed $concrete, array $parameters = []): mixed
@@ -179,5 +196,10 @@ class Container implements ContainerInterface
     protected function parameterResolver(): ParameterResolver
     {
         return $this->parameterResolver ??= new ParameterResolver();
+    }
+
+    protected function scopeStack(): ScopeStack
+    {
+        return $this->scopeStack ??= new ScopeStack();
     }
 }

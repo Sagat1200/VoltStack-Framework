@@ -7,6 +7,7 @@ namespace VoltStack\Test\Unit;
 use InvalidArgumentException;
 use PHPUnit\Framework\TestCase;
 use Quantum\Container\Binding;
+use Quantum\Container\ScopeKind;
 
 final class BindingTest extends TestCase
 {
@@ -15,6 +16,7 @@ final class BindingTest extends TestCase
         $transient = Binding::transient('transient.service', 'transient.service');
         $singleton = Binding::singleton('singleton.service', 'singleton.service');
         $scoped = Binding::scoped('scoped.service', 'scoped.service');
+        $requestScoped = Binding::scoped('request.service', 'request.service', ScopeKind::Request);
 
         self::assertSame('transient', $transient->lifetime());
         self::assertFalse($transient->storesResolvedInstance());
@@ -24,6 +26,11 @@ final class BindingTest extends TestCase
 
         self::assertSame('scoped', $scoped->lifetime());
         self::assertTrue($scoped->storesResolvedInstance());
+        self::assertNull($scoped->scopeKindName());
+
+        self::assertSame('scoped', $requestScoped->lifetime());
+        self::assertTrue($requestScoped->storesResolvedInstance());
+        self::assertSame('request', $requestScoped->scopeKindName());
     }
 
     public function test_binding_cannot_be_shared_and_scoped_at_the_same_time(): void

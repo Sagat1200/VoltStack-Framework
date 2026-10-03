@@ -57,6 +57,18 @@ class Container implements ContainerInterface
         $this->bindings[$abstract] = Binding::scoped($abstract, $concrete);
     }
 
+    public function scopedFor(string $abstract, mixed $concrete = null, ScopeKind|string $scopeKind = ScopeKind::Request): void
+    {
+        $abstract = $this->normalize($abstract);
+        $concrete ??= $abstract;
+
+        if (is_string($scopeKind)) {
+            $scopeKind = ScopeKind::fromName($scopeKind);
+        }
+
+        $this->bindings[$abstract] = Binding::scoped($abstract, $concrete, $scopeKind);
+    }
+
     public function instance(string $abstract, mixed $instance): void
     {
         $abstract = $this->normalize($abstract);
@@ -92,11 +104,13 @@ class Container implements ContainerInterface
             return $this->instances[$abstract];
         }
 
-        if ($this->scopeStack()->current()->has($abstract)) {
-            return $this->scopeStack()->current()->get($abstract);
+        $binding = $this->bindings[$abstract] ?? null;
+        $scopeFrame = $binding?->scoped ? $this->scopeFrameForScopedBinding($binding) : $this->scopeStack()->current();
+
+        if ($scopeFrame->has($abstract)) {
+            return $scopeFrame->get($abstract);
         }
 
-        $binding = $this->bindings[$abstract] ?? null;
         $concrete = $binding?->concrete ?? $abstract;
 
         $object = $this->resolve($concrete, $parameters);
@@ -106,7 +120,7 @@ class Container implements ContainerInterface
         }
 
         if ($binding?->scoped) {
-            $this->scopeStack()->current()->put($abstract, $object);
+            $scopeFrame->put($abstract, $object);
         }
 
         return $object;
@@ -120,9 +134,11 @@ class Container implements ContainerInterface
     public function resolved(string $abstract): bool
     {
         $abstract = $this->normalize($abstract);
+        $binding = $this->bindings[$abstract] ?? null;
+        $scopeFrame = $binding?->scoped ? $this->scopeFrameForScopedBinding($binding, false) : $this->scopeStack()->current();
 
         return array_key_exists($abstract, $this->instances)
-            || $this->scopeStack()->current()->has($abstract);
+            || ($scopeFrame?->has($abstract) ?? false);
     }
 
     public function enterScope(string $name = 'scope'): string
@@ -221,5 +237,28 @@ class Container implements ContainerInterface
     protected function scopeStack(): ScopeStack
     {
         return $this->scopeStack ??= new ScopeStack();
+    }
+
+    protected function scopeFrameForScopedBinding(Binding $binding, bool $requireActiveFrame = true): ?ScopeFrame
+    {
+        if ($binding->scopeKind === null) {
+            return $this->scopeStack()->current();
+        }
+
+        $frame = $this->scopeStack()->findClosestByKind($binding->scopeKind);
+
+        if ($frame !== null) {
+            return $frame;
+        }
+
+        if (! $requireActiveFrame) {
+            return null;
+        }
+
+        throw new \Quantum\Container\Exceptions\BindingResolutionException(sprintf(
+            'Scoped binding [%s] requires an active [%s] scope.',
+            $binding->abstract,
+            $binding->scopeKindName() ?? 'scope',
+        ));
     }
 }

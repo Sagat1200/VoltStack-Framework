@@ -6,6 +6,7 @@ namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
 use Quantum\Container\Container;
+use Quantum\Container\Exceptions\BindingResolutionException;
 
 final class ExplicitScopeContainerTest extends TestCase
 {
@@ -102,5 +103,40 @@ final class ExplicitScopeContainerTest extends TestCase
 
         self::assertSame('scope', $container->currentScopeKind());
         self::assertSame('custom-segment', $container->currentScopeName());
+    }
+
+    public function test_request_scoped_bindings_are_reused_inside_nested_tenant_scopes(): void
+    {
+        $container = new Container();
+        $sequence = 0;
+
+        $container->scopedFor('request.service', function () use (&$sequence): object {
+            return (object) ['id' => ++$sequence];
+        }, 'request');
+
+        $container->enterScope('request');
+        $requestService = $container->make('request.service');
+
+        $container->enterScope('tenant');
+        $tenantService = $container->make('request.service');
+
+        self::assertSame($requestService, $tenantService);
+        self::assertSame(1, $tenantService->id);
+
+        $container->leaveScope();
+        self::assertSame($requestService, $container->make('request.service'));
+
+        $container->leaveScope();
+    }
+
+    public function test_request_scoped_bindings_require_an_active_request_scope(): void
+    {
+        $container = new Container();
+        $container->scopedFor('request.service', static fn(): object => new \stdClass(), 'request');
+
+        $this->expectException(BindingResolutionException::class);
+        $this->expectExceptionMessage('requires an active [request] scope');
+
+        $container->make('request.service');
     }
 }

@@ -220,7 +220,7 @@ class Application extends Container
         }
 
         if (! isset($this->bindings[Request::class])) {
-            $this->scoped(Request::class, function (): Request {
+            $this->scopedFor(Request::class, function (): Request {
                 $context = RuntimeContext::current();
 
                 if ($context === null) {
@@ -232,7 +232,7 @@ class Application extends Container
         }
 
         if (! isset($this->bindings[RuntimeContext::class])) {
-            $this->scoped(RuntimeContext::class, function (): RuntimeContext {
+            $this->scopedFor(RuntimeContext::class, function (): RuntimeContext {
                 $context = RuntimeContext::current();
 
                 if ($context === null) {

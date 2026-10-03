@@ -86,6 +86,19 @@ final class ScopeStack
         return $this->current()->name();
     }
 
+    public function findClosestByKind(ScopeKind $kind): ?ScopeFrame
+    {
+        for ($index = count($this->frames) - 1; $index >= 0; $index--) {
+            $frame = $this->frames[$index];
+
+            if ($frame->kind() === $kind) {
+                return $frame;
+            }
+        }
+
+        return null;
+    }
+
     private function newId(): string
     {
         return bin2hex(random_bytes(8));

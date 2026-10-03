@@ -7,12 +7,14 @@ namespace Quantum\Bootstrap;
 use Quantum\Bootstrap\Context\BootstrapContext;
 use Quantum\Bootstrap\Manifest\BootstrapBuildArtifact;
 use Quantum\Bootstrap\Phase\BootstrapState;
+use Quantum\Bootstrap\Telemetry\BootstrapPhaseProfile;
 use VoltStack\Framework\Application;
 
 final readonly class BootstrapResult
 {
     /**
      * @param list<class-string> $warmedBy
+     * @param list<BootstrapPhaseProfile> $phaseProfiles
      */
     public function __construct(
         private Application $app,
@@ -23,6 +25,7 @@ final readonly class BootstrapResult
         private bool $ready,
         private array $warmedBy = [],
         private ?BootstrapBuildArtifact $artifact = null,
+        private array $phaseProfiles = [],
     ) {
     }
 
@@ -77,5 +80,13 @@ final readonly class BootstrapResult
     public function manifestPath(): ?string
     {
         return $this->artifact?->manifestPath();
+    }
+
+    /**
+     * @return list<BootstrapPhaseProfile>
+     */
+    public function phaseProfiles(): array
+    {
+        return $this->phaseProfiles;
     }
 }

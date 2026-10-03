@@ -88,6 +88,7 @@ final readonly class BootstrapStatusReport
     {
         return [
             'environment' => $this->environment,
+            'healthy' => $this->healthy(),
             'booted' => $this->booted,
             'provider_count' => $this->providerCount,
             'artifact_directory' => $this->artifactDirectory,

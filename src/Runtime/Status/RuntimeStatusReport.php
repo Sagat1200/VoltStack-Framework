@@ -86,6 +86,7 @@ final readonly class RuntimeStatusReport
     {
         return [
             'driver' => $this->driver,
+            'healthy' => $this->healthy(),
             'max_requests' => $this->maxRequests,
             'persistent' => $this->persistent,
             'concurrent' => $this->concurrent,

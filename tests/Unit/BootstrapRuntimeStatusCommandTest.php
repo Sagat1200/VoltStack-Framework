@@ -174,6 +174,67 @@ PHP
         self::assertStringContainsString('"type":"runtime_status"', $telemetry);
     }
 
+    public function test_bootstrap_status_command_can_render_stable_json_output(): void
+    {
+        $plan = ApplicationBuilder::create($this->basePath)
+            ->withEnvironment('testing')
+            ->withProfile('worker')
+            ->withArtifactDirectory($this->artifactDirectory)
+            ->build();
+
+        $store = new BootstrapManifestStore(
+            manifest: new BuildManifest($this->artifactDirectory),
+            storageRoot: $this->artifactDirectory,
+        );
+        $artifact = $store->publish($plan);
+        $store->activateGeneration($artifact->generationId());
+
+        $command = new BootstrapStatusCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'bootstrap:status',
+                '--json',
+            ]),
+            $output,
+        );
+
+        self::assertSame(0, $exitCode);
+        $decoded = json_decode(trim($output->stdout()), true);
+        self::assertIsArray($decoded);
+        self::assertSame('bootstrap:status', $decoded['command'] ?? null);
+        self::assertSame(true, $decoded['report']['healthy'] ?? null);
+        self::assertSame($artifact->generationId(), $decoded['report']['generation_id'] ?? null);
+        self::assertSame(1, $decoded['report']['schema_version'] ?? null);
+    }
+
+    public function test_runtime_status_command_can_render_stable_json_output(): void
+    {
+        $command = new RuntimeStatusCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'runtime:status',
+                '--driver=frankenphp',
+                '--max-requests=3',
+                '--json',
+            ]),
+            $output,
+        );
+
+        self::assertSame(0, $exitCode);
+        $decoded = json_decode(trim($output->stdout()), true);
+        self::assertIsArray($decoded);
+        self::assertSame('runtime:status', $decoded['command'] ?? null);
+        self::assertSame('frankenphp', $decoded['report']['driver'] ?? null);
+        self::assertSame(3, $decoded['report']['max_requests'] ?? null);
+        self::assertSame(true, $decoded['report']['persistent'] ?? null);
+    }
+
     public function test_bootstrap_status_command_strict_mode_fails_when_no_active_generation_exists(): void
     {
         $command = new BootstrapStatusCommand($this->basePath);

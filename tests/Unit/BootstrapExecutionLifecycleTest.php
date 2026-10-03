@@ -13,6 +13,8 @@ use Quantum\Bootstrap\Contracts\BootstrapperInterface;
 use Quantum\Exceptions\Enums\WorkerDisposition;
 use Quantum\Http\Request;
 use Quantum\Http\Response;
+use Quantum\Telemetry\Contracts\TelemetryExporterInterface;
+use Quantum\Telemetry\Engine\InMemoryTelemetryExporter;
 use RuntimeException;
 use VoltStack\Framework\Application;
 use VoltStack\Framework\Contracts\Kernel as KernelContract;
@@ -65,6 +67,7 @@ PHP
             ->withBootstrapConfiguration(BootstrapConfiguration::fromSections(
                 operational: [
                     'warmers' => [TestBootstrapWarmer::class],
+                    'emit_phase_telemetry' => true,
                 ],
             ))
             ->build();
@@ -89,6 +92,26 @@ PHP
         self::assertSame(1, TestBootstrapWarmer::$calls);
         self::assertTrue($app->isBooted());
         self::assertSame('warmed', $app->make('bootstrap.warmer.status'));
+        self::assertCount(7, $result->phaseProfiles());
+
+        $phaseNames = array_map(
+            static fn(\Quantum\Bootstrap\Telemetry\BootstrapPhaseProfile $profile): string => $profile->phase()->value,
+            $result->phaseProfiles(),
+        );
+
+        self::assertSame(
+            ['DISCOVERING', 'REGISTERING', 'CONFIGURING', 'COMPILING', 'BOOTING', 'WARMING', 'READY'],
+            $phaseNames,
+        );
+
+        $exporter = $app->make(TelemetryExporterInterface::class);
+        self::assertInstanceOf(InMemoryTelemetryExporter::class, $exporter);
+
+        $signals = $exporter->signals();
+        self::assertCount(8, $signals);
+        self::assertSame('bootstrap_phase', $signals[0]->name);
+        self::assertSame('bootstrap_profile', $signals[7]->name);
+        self::assertSame($signals[0]->traceId, $signals[7]->traceId);
     }
 
     public function test_request_runner_resets_worker_and_clears_reset_request(): void

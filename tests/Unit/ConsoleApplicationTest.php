@@ -155,9 +155,10 @@ final class ConsoleApplicationTest extends TestCase
 
         self::assertSame(0, $exitCode);
         self::assertStringContainsString('Command: runtime:status', $output->stdout());
-        self::assertStringContainsString('Usage: php volt runtime:status [--driver=frankenphp] [--max-requests=1] [--emit-telemetry] [--strict]', $output->stdout());
+        self::assertStringContainsString('Usage: php volt runtime:status [--driver=frankenphp] [--max-requests=1] [--emit-telemetry] [--strict] [--json]', $output->stdout());
         self::assertStringContainsString('--driver=', $output->stdout());
         self::assertStringContainsString('--max-requests=', $output->stdout());
+        self::assertStringContainsString('--json', $output->stdout());
     }
 
     public function test_it_resolves_help_for_aliases(): void

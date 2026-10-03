@@ -26,7 +26,7 @@ final class RuntimeSmokeCheckCommand extends Command
 
     public function usage(): string
     {
-        return 'runtime:smoke-check [--driver=frankenphp] [--profile=release] [--requests=/,GET:/health] [--budget-total-ms=50] [--budget-request-ms=25] [--emit-telemetry] [--json]';
+        return 'runtime:smoke-check [--driver=frankenphp] [--profile=release] [--artifact-dir=storage/framework/bootstrap] [--requests=/,GET:/health] [--budget-total-ms=50] [--budget-request-ms=25] [--emit-telemetry] [--json]';
     }
 
     public function category(): string
@@ -39,6 +39,7 @@ final class RuntimeSmokeCheckCommand extends Command
         return [
             '--driver=' => 'Driver runtime a validar durante el smoke-check.',
             '--profile=' => 'Profile operativo asociado al smoke-check.',
+            '--artifact-dir=' => 'Directorio bootstrap a inspeccionar para garantizar no build por request.',
             '--requests=' => 'Lista separada por comas con requests tipo / o METHOD:/path.',
             '--budget-total-ms=' => 'Budget total maximo permitido para el smoke-check runtime.',
             '--budget-request-ms=' => 'Budget maximo permitido por request.',
@@ -51,6 +52,7 @@ final class RuntimeSmokeCheckCommand extends Command
     {
         $driver = is_string($input->option('driver')) ? $input->option('driver') : null;
         $profile = is_string($input->option('profile')) ? $input->option('profile') : 'release';
+        $artifactDirectory = is_string($input->option('artifact-dir')) ? $input->option('artifact-dir') : null;
         $budget = RuntimeBudget::fromValues(
             totalMaximumMs: $this->floatOption($input, 'budget-total-ms'),
             requestMaximumMs: $this->floatOption($input, 'budget-request-ms'),
@@ -61,6 +63,7 @@ final class RuntimeSmokeCheckCommand extends Command
             profile: $profile,
             requestDefinitions: $this->parseRequests($input),
             budget: $budget,
+            artifactDirectory: $artifactDirectory,
         );
 
         if ($input->hasOption('emit-telemetry')) {
@@ -84,6 +87,14 @@ final class RuntimeSmokeCheckCommand extends Command
             $output->writeln(sprintf('  Profile: %s', $report->profile()));
             $output->writeln(sprintf('  Requests: %d', count($report->requests())));
             $output->writeln(sprintf('  Total duration: %.3f ms', $report->budget()->totalDurationMs()));
+            $output->writeln(sprintf(
+                '  Bootstrap reuse guard: %s',
+                $report->reuse()->passed() ? 'passed' : 'failed'
+            ));
+            $output->writeln(sprintf(
+                '  Bootstrap artifact dir: %s',
+                $report->reuse()->artifactDirectory()
+            ));
             $output->writeln(sprintf(
                 '  Total budget: %s',
                 $report->budget()->totalMaximumMs() !== null

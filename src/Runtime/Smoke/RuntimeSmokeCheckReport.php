@@ -16,6 +16,7 @@ final readonly class RuntimeSmokeCheckReport
         private string $profile,
         private array $requests,
         private RuntimeBudgetReport $budget,
+        private RuntimeBootstrapReuseReport $reuse,
     ) {
     }
 
@@ -42,9 +43,14 @@ final readonly class RuntimeSmokeCheckReport
         return $this->budget;
     }
 
+    public function reuse(): RuntimeBootstrapReuseReport
+    {
+        return $this->reuse;
+    }
+
     public function passed(): bool
     {
-        return $this->budget->passed() && $this->requestViolations() === [];
+        return $this->budget->passed() && $this->requestViolations() === [] && $this->reuse->passed();
     }
 
     /**
@@ -77,7 +83,7 @@ final readonly class RuntimeSmokeCheckReport
      */
     public function violations(): array
     {
-        return [...$this->requestViolations(), ...$this->budget->violations()];
+        return [...$this->requestViolations(), ...$this->budget->violations(), ...$this->reuse->violations()];
     }
 
     /**
@@ -95,6 +101,7 @@ final readonly class RuntimeSmokeCheckReport
                 $this->requests,
             ),
             'budget' => $this->budget->toArray(),
+            'reuse_guard' => $this->reuse->toArray(),
             'violations' => $this->violations(),
         ];
     }

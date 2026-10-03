@@ -27,6 +27,7 @@ final class RuntimeSmokeTelemetryEmitter
                 'profile' => $report->profile(),
                 'passed' => $report->passed(),
                 'request_count' => count($report->requests()),
+                'reuse_guard_passed' => $report->reuse()->passed(),
             ],
             alerts: array_map(
                 static fn(string $message): array => ['message' => $message],

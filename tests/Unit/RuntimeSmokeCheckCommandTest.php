@@ -142,6 +142,8 @@ PHP
         self::assertSame('frankenphp', $decoded['report']['driver'] ?? null);
         self::assertSame(2, $decoded['report']['request_count'] ?? null);
         self::assertSame(200, $decoded['report']['requests'][0]['status_code'] ?? null);
+        self::assertSame(true, $decoded['report']['reuse_guard']['passed'] ?? null);
+        self::assertSame(false, $decoded['report']['reuse_guard']['active_generation_observed'] ?? null);
         self::assertSame([], $decoded['report']['violations'] ?? null);
     }
 
@@ -214,6 +216,134 @@ PHP
         $telemetry = file_get_contents($this->telemetryPath);
         self::assertIsString($telemetry);
         self::assertStringContainsString('"type":"runtime_smoke"', $telemetry);
+        self::assertStringContainsString('"reuse_guard_passed":true', $telemetry);
+    }
+
+    public function test_runtime_smoke_check_command_fails_when_a_request_materializes_a_new_bootstrap_generation(): void
+    {
+        $basePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-runtime-smoke-check-rebuild-' . uniqid('', true);
+        $telemetryPath = $basePath . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'telemetry' . DIRECTORY_SEPARATOR . 'runtime-smoke.jsonl';
+
+        mkdir($basePath . DIRECTORY_SEPARATOR . 'bootstrap', 0777, true);
+        mkdir($basePath . DIRECTORY_SEPARATOR . 'config', 0777, true);
+
+        file_put_contents(
+            $basePath . DIRECTORY_SEPARATOR . 'config' . DIRECTORY_SEPARATOR . 'app.php',
+            <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+return [
+    'name' => 'VoltStack Runtime Smoke Rebuild Guard',
+    'env' => 'testing',
+    'providers' => [],
+];
+PHP
+        );
+
+        file_put_contents(
+            $basePath . DIRECTORY_SEPARATOR . 'config' . DIRECTORY_SEPARATOR . 'runtime.php',
+            <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+return [
+    'driver' => 'frankenphp',
+];
+PHP
+        );
+
+        file_put_contents(
+            $basePath . DIRECTORY_SEPARATOR . 'config' . DIRECTORY_SEPARATOR . 'telemetry.php',
+            <<<PHP
+<?php
+
+declare(strict_types=1);
+
+return [
+    'exporter' => 'jsonl',
+    'jsonl_path' => {$this->exportValue($telemetryPath)},
+];
+PHP
+        );
+
+        $escapedBasePath = $this->exportValue($basePath);
+
+        file_put_contents(
+            $basePath . DIRECTORY_SEPARATOR . 'bootstrap' . DIRECTORY_SEPARATOR . 'app.php',
+            <<<PHP
+<?php
+
+declare(strict_types=1);
+
+use Quantum\Bootstrap\ApplicationBuilder;
+use Quantum\Bootstrap\Bootstrapper;
+use Quantum\Bootstrap\Manifest\BootstrapManifestStore;
+use Quantum\Compilation\BuildManifest;
+use Quantum\Http\Request;
+use Quantum\Http\Response;
+use VoltStack\Framework\Application;
+use VoltStack\Framework\Contracts\Kernel as KernelContract;
+
+\$app = new Application({$escapedBasePath});
+\$app->instance(KernelContract::class, new class({$escapedBasePath}) implements KernelContract {
+    public function __construct(private string \$basePath)
+    {
+    }
+
+    public function handle(Request \$request): Response
+    {
+        \$artifactDir = \$this->basePath . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'bootstrap';
+        \$store = new BootstrapManifestStore(new BuildManifest(\$artifactDir), \$artifactDir);
+        \$plan = ApplicationBuilder::create(\$this->basePath)->withEnvironment('testing')->withProfile('mutated')->build();
+        \$artifact = \$store->publish(\$plan);
+        \$store->activateGeneration(\$artifact->generationId());
+
+        return new Response('mutated');
+    }
+
+    public function setMiddlewares(array \$middlewares): void
+    {
+    }
+
+    public function pushMiddleware(callable|string|\\Quantum\\HttpKernel\\Contracts\\MiddlewareInterface \$middleware): void
+    {
+    }
+});
+\$bootstrapper = new Bootstrapper(\$app);
+\$bootstrapper->loadConfiguration();
+\$app->boot();
+
+return \$app;
+PHP
+        );
+
+        try {
+            $command = new RuntimeSmokeCheckCommand($basePath);
+            $output = new Output();
+
+            $exitCode = $command->handle(
+                Input::fromArgv([
+                    'volt',
+                    'runtime:smoke-check',
+                    '--requests=GET:/mutates',
+                    '--json',
+                ]),
+                $output,
+            );
+
+            self::assertSame(1, $exitCode);
+
+            $decoded = json_decode(trim($output->stdout()), true);
+            self::assertIsArray($decoded);
+            self::assertSame(false, $decoded['report']['passed'] ?? null);
+            self::assertSame(false, $decoded['report']['reuse_guard']['passed'] ?? null);
+            self::assertNotEmpty($decoded['report']['reuse_guard']['violations'] ?? []);
+        } finally {
+            $this->deleteDirectory($basePath);
+        }
     }
 
     private function exportValue(string $value): string

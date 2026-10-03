@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace VoltStack\Runtime\Smoke;
 
 use InvalidArgumentException;
+use Quantum\Bootstrap\Status\BootstrapStatusInspector;
 use Quantum\Http\Request;
 use RuntimeException;
 use VoltStack\Framework\Application;
@@ -27,12 +28,15 @@ final class RuntimeSmokeChecker
         string $profile = 'release',
         array $requestDefinitions = [],
         ?RuntimeBudget $budget = null,
+        ?string $artifactDirectory = null,
     ): RuntimeSmokeCheckReport {
         $app = $this->bootstrapCurrentApplication();
         $driver = $this->resolveDriver($app, $driver);
         $requests = $this->normalizeRequests($requestDefinitions !== []
             ? $requestDefinitions
             : $this->configuredRequests($app));
+        $inspector = new BootstrapStatusInspector($this->basePath);
+        $statusBefore = $inspector->inspect($app, $artifactDirectory);
 
         /** @var RequestRunner $runner */
         $runner = $app->make(RequestRunner::class);
@@ -50,12 +54,23 @@ final class RuntimeSmokeChecker
             $reports,
             $budget ?? RuntimeBudget::fromValues(),
         );
+        $statusAfter = $inspector->inspect($app, $artifactDirectory);
+        $reuse = new RuntimeBootstrapReuseReport(
+            artifactDirectory: $statusAfter->artifactDirectory(),
+            appInstanceId: spl_object_id($app),
+            requestRunnerInstanceId: spl_object_id($runner),
+            generationIdBefore: $statusBefore->generationId(),
+            generationIdAfter: $statusAfter->generationId(),
+            fingerprintBefore: $statusBefore->fingerprint(),
+            fingerprintAfter: $statusAfter->fingerprint(),
+        );
 
         return new RuntimeSmokeCheckReport(
             driver: $driver,
             profile: $profile,
             requests: $reports,
             budget: $budgetReport,
+            reuse: $reuse,
         );
     }
 

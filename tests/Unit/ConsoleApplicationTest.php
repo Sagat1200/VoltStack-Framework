@@ -180,7 +180,8 @@ final class ConsoleApplicationTest extends TestCase
 
         self::assertSame(0, $exitCode);
         self::assertStringContainsString('Command: runtime:smoke-check', $output->stdout());
-        self::assertStringContainsString('Usage: php volt runtime:smoke-check [--driver=frankenphp] [--profile=release] [--requests=/,GET:/health] [--budget-total-ms=50] [--budget-request-ms=25] [--emit-telemetry] [--json]', $output->stdout());
+        self::assertStringContainsString('Usage: php volt runtime:smoke-check [--driver=frankenphp] [--profile=release] [--artifact-dir=storage/framework/bootstrap] [--requests=/,GET:/health] [--budget-total-ms=50] [--budget-request-ms=25] [--emit-telemetry] [--json]', $output->stdout());
+        self::assertStringContainsString('--artifact-dir=', $output->stdout());
         self::assertStringContainsString('--requests=', $output->stdout());
         self::assertStringContainsString('--budget-request-ms=', $output->stdout());
     }

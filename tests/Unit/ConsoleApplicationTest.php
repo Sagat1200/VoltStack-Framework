@@ -7,6 +7,7 @@ namespace VoltStack\Test\Unit;
 use PHPUnit\Framework\TestCase;
 use Quantum\Console\Commands\BootstrapReleaseCheckCommand;
 use Quantum\Console\Commands\BootstrapStatusCommand;
+use Quantum\Console\Commands\BootstrapBenchmarkCommand;
 use Quantum\Console\Commands\CacheClearCommand;
 use Quantum\Console\Commands\MakeActionCommand;
 use Quantum\Console\Commands\MakeComponentCommand;
@@ -51,6 +52,7 @@ final class ConsoleApplicationTest extends TestCase
         self::assertStringContainsString('make:controller', $output->stdout());
         self::assertStringContainsString('make:layout', $output->stdout());
         self::assertStringContainsString('bootstrap:release-check', $output->stdout());
+        self::assertStringContainsString('bootstrap:benchmark', $output->stdout());
         self::assertStringContainsString('bootstrap:status', $output->stdout());
         self::assertStringContainsString('runtime:smoke-check', $output->stdout());
         self::assertStringContainsString('runtime:status', $output->stdout());
@@ -201,6 +203,24 @@ final class ConsoleApplicationTest extends TestCase
         self::assertStringContainsString('--budget-total-ms=', $output->stdout());
     }
 
+    public function test_it_renders_help_for_bootstrap_benchmark_command(): void
+    {
+        $output = new Output();
+        $application = $this->application($output);
+
+        $exitCode = $application->run([
+            'volt',
+            'help',
+            'bootstrap:benchmark',
+        ]);
+
+        self::assertSame(0, $exitCode);
+        self::assertStringContainsString('Command: bootstrap:benchmark', $output->stdout());
+        self::assertStringContainsString('Usage: php volt bootstrap:benchmark [--profile=release] [--artifact-dir=storage/framework/bootstrap/benchmark] [--budget-total-ms=250] [--phase-budgets=DISCOVERING:25,BOOTING:50] [--emit-telemetry] [--json]', $output->stdout());
+        self::assertStringContainsString('--artifact-dir=', $output->stdout());
+        self::assertStringContainsString('--phase-budgets=', $output->stdout());
+    }
+
     public function test_it_resolves_help_for_aliases(): void
     {
         $output = new Output();
@@ -274,6 +294,7 @@ final class ConsoleApplicationTest extends TestCase
                 new CacheClearCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new ViewCacheCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new ViewClearCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
+                new BootstrapBenchmarkCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new BootstrapReleaseCheckCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new BootstrapStatusCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new RuntimeSmokeCheckCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),

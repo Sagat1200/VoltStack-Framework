@@ -17,6 +17,9 @@ final class ScopeFrame
     public function __construct(
         private readonly string $id,
         private readonly string $name = 'scope',
+        private readonly ScopeKind $kind = ScopeKind::Generic,
+        private readonly ?string $parentId = null,
+        private readonly int $depth = 0,
     ) {
     }
 
@@ -28,6 +31,21 @@ final class ScopeFrame
     public function name(): string
     {
         return $this->name;
+    }
+
+    public function kind(): ScopeKind
+    {
+        return $this->kind;
+    }
+
+    public function parentId(): ?string
+    {
+        return $this->parentId;
+    }
+
+    public function depth(): int
+    {
+        return $this->depth;
     }
 
     public function has(string $abstract): bool

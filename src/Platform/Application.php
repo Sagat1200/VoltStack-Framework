@@ -833,7 +833,7 @@ class Application extends Container
                         header('Content-Type: text/html; charset=UTF-8', true, 500);
                         header('X-Volt-Error-Code: ' . $errorCode, true);
                         $debugHtml = $debugMode
-                            ? '<div style="margin-top:20px; padding:14px; background:#0b1220; border:1px solid #334155; border-radius:8px;">'
+                            ? '<div style="margin-block-start:20px; padding:14px; background:#0b1220; border:1px solid #334155; border-radius:8px;">'
                             . '<p style="margin:0 0 8px 0;"><strong style="color:#fca5a5;">FATAL SHUTDOWN:</strong> <code style="color:#f87171;">' . $errClass . '</code></p>'
                             . '<p style="margin:0 0 8px 0;"><strong>Message:</strong> <code>' . $escapedMessage . '</code></p>'
                             . '<p style="margin:0 0 8px 0;"><strong>Location:</strong> <code>' . $escapedFile . ':' . $escapedLine . '</code></p>'
@@ -841,7 +841,7 @@ class Application extends Container
                             : '';
                         echo <<<HTML
 <!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta name="volt-document" content="reload"><title>Server Error</title>
-<style>body{font-family:Arial,sans-serif;background:#0f172a;color:#e2e8f0;padding:40px;}main{max-width:720px;margin:0 auto;background:#111827;border:1px solid #334155;border-radius:12px;padding:32px;}h1{margin-top:0;}code{background:#1e293b;padding:2px 6px;border-radius:4px;}</style>
+<style>body{font-family:Arial,sans-serif;background:#0f172a;color:#e2e8f0;padding:40px;}main{max-inline-size:720px;margin:0 auto;background:#111827;border:1px solid #334155;border-radius:12px;padding:32px;}h1{margin-block-start:0;}code{background:#1e293b;padding:2px 6px;border-radius:4px;}</style>
 </head><body data-volt-document="reload"><main><h1>Server Error</h1><p>{$msgNoLeak}</p>{$debugHtml}</main></body></html>
 HTML;
                     });

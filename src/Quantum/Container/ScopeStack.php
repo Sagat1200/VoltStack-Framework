@@ -16,7 +16,13 @@ final class ScopeStack
 
     public function __construct()
     {
-        $this->frames[] = new ScopeFrame($this->newId(), 'root');
+        $this->frames[] = new ScopeFrame(
+            id: $this->newId(),
+            name: 'root',
+            kind: ScopeKind::Root,
+            parentId: null,
+            depth: 0,
+        );
     }
 
     public function current(): ScopeFrame
@@ -26,7 +32,14 @@ final class ScopeStack
 
     public function enter(string $name = 'scope'): ScopeFrame
     {
-        $frame = new ScopeFrame($this->newId(), $name);
+        $current = $this->current();
+        $frame = new ScopeFrame(
+            id: $this->newId(),
+            name: $name,
+            kind: ScopeKind::fromName($name),
+            parentId: $current->id(),
+            depth: $current->depth() + 1,
+        );
         $this->frames[] = $frame;
 
         return $frame;
@@ -61,6 +74,16 @@ final class ScopeStack
     public function depth(): int
     {
         return count($this->frames);
+    }
+
+    public function currentKind(): ScopeKind
+    {
+        return $this->current()->kind();
+    }
+
+    public function currentName(): string
+    {
+        return $this->current()->name();
     }
 
     private function newId(): string

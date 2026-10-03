@@ -24,12 +24,17 @@ final class ScopeManagerCompatibilityTest extends TestCase
 
         self::assertTrue($app->hasActiveScope());
         self::assertNotSame($rootScopeId, $app->currentScopeId());
+        self::assertSame('request', $app->currentScopeKind());
+        self::assertSame(1, $app->currentScopeDepth());
+        self::assertSame($rootScopeId, $app->currentScopeParentId());
         self::assertSame($context->requestId(), RuntimeContext::current()?->requestId());
 
         $scopeManager->end();
 
         self::assertFalse($app->hasActiveScope());
         self::assertNull(RuntimeContext::current());
+        self::assertSame('root', $app->currentScopeKind());
+        self::assertSame(0, $app->currentScopeDepth());
         self::assertSame($rootScopeId, $app->currentScopeId());
     }
 }

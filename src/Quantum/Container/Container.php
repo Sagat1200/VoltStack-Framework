@@ -145,6 +145,26 @@ class Container implements ContainerInterface
         return $this->scopeStack()->current()->id();
     }
 
+    public function currentScopeName(): string
+    {
+        return $this->scopeStack()->currentName();
+    }
+
+    public function currentScopeKind(): string
+    {
+        return $this->scopeStack()->currentKind()->value;
+    }
+
+    public function currentScopeParentId(): ?string
+    {
+        return $this->scopeStack()->current()->parentId();
+    }
+
+    public function currentScopeDepth(): int
+    {
+        return $this->scopeStack()->current()->depth();
+    }
+
     protected function resolve(mixed $concrete, array $parameters = []): mixed
     {
         return $this->concreteResolver()->resolve(

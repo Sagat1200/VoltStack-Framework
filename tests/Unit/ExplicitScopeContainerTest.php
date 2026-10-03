@@ -59,4 +59,48 @@ final class ExplicitScopeContainerTest extends TestCase
 
         self::assertSame($root, $container->make('scoped.service'));
     }
+
+    public function test_scope_metadata_tracks_kind_depth_and_parent_relationships(): void
+    {
+        $container = new Container();
+
+        self::assertSame('root', $container->currentScopeKind());
+        self::assertSame('root', $container->currentScopeName());
+        self::assertSame(0, $container->currentScopeDepth());
+        self::assertNull($container->currentScopeParentId());
+
+        $rootId = $container->currentScopeId();
+
+        $container->enterScope('request');
+
+        self::assertSame('request', $container->currentScopeKind());
+        self::assertSame('request', $container->currentScopeName());
+        self::assertSame(1, $container->currentScopeDepth());
+        self::assertSame($rootId, $container->currentScopeParentId());
+
+        $requestId = $container->currentScopeId();
+        $container->enterScope('tenant');
+
+        self::assertSame('tenant', $container->currentScopeKind());
+        self::assertSame('tenant', $container->currentScopeName());
+        self::assertSame(2, $container->currentScopeDepth());
+        self::assertSame($requestId, $container->currentScopeParentId());
+
+        $container->leaveScope();
+        self::assertSame('request', $container->currentScopeKind());
+
+        $container->leaveScope();
+        self::assertSame('root', $container->currentScopeKind());
+        self::assertSame($rootId, $container->currentScopeId());
+    }
+
+    public function test_unknown_scope_names_are_classified_as_generic_scope_kind(): void
+    {
+        $container = new Container();
+
+        $container->enterScope('custom-segment');
+
+        self::assertSame('scope', $container->currentScopeKind());
+        self::assertSame('custom-segment', $container->currentScopeName());
+    }
 }

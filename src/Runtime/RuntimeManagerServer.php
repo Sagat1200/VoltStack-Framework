@@ -39,6 +39,14 @@ final class RuntimeManagerServer
         return $this;
     }
 
+    /**
+     * @return list<string>
+     */
+    public function drivers(): array
+    {
+        return array_values(array_keys($this->adapters));
+    }
+
     public function run(ApplicationPlan $plan, RuntimeConfiguration $configuration): int
     {
         $adapter = $this->adapter($configuration->driver());

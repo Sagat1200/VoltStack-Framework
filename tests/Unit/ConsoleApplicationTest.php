@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
+use Quantum\Console\Commands\BootstrapStatusCommand;
 use Quantum\Console\Commands\CacheClearCommand;
 use Quantum\Console\Commands\MakeActionCommand;
 use Quantum\Console\Commands\MakeComponentCommand;
@@ -15,6 +16,7 @@ use Quantum\Console\Commands\MakeViewCommand;
 use Quantum\Console\Commands\RouteCacheCommand;
 use Quantum\Console\Commands\RouteClearCommand;
 use Quantum\Console\Commands\RouteListCommand;
+use Quantum\Console\Commands\RuntimeStatusCommand;
 use Quantum\Console\Commands\ServeCommand;
 use Quantum\Console\Commands\ViewCacheCommand;
 use Quantum\Console\Commands\ViewClearCommand;
@@ -40,11 +42,14 @@ final class ConsoleApplicationTest extends TestCase
         self::assertStringContainsString('Routing:', $output->stdout());
         self::assertStringContainsString('Generators:', $output->stdout());
         self::assertStringContainsString('Cache:', $output->stdout());
+        self::assertStringContainsString('Runtime:', $output->stdout());
         self::assertStringContainsString('serve', $output->stdout());
         self::assertStringContainsString('route:cache', $output->stdout());
         self::assertStringContainsString('route:clear', $output->stdout());
         self::assertStringContainsString('make:controller', $output->stdout());
         self::assertStringContainsString('make:layout', $output->stdout());
+        self::assertStringContainsString('bootstrap:status', $output->stdout());
+        self::assertStringContainsString('runtime:status', $output->stdout());
         self::assertStringContainsString('[aliases: routes]', $output->stdout());
     }
 
@@ -137,6 +142,24 @@ final class ConsoleApplicationTest extends TestCase
         self::assertStringContainsString('--dry-run', $output->stdout());
     }
 
+    public function test_it_renders_help_for_runtime_status_command(): void
+    {
+        $output = new Output();
+        $application = $this->application($output);
+
+        $exitCode = $application->run([
+            'volt',
+            'help',
+            'runtime:status',
+        ]);
+
+        self::assertSame(0, $exitCode);
+        self::assertStringContainsString('Command: runtime:status', $output->stdout());
+        self::assertStringContainsString('Usage: php volt runtime:status [--driver=frankenphp] [--max-requests=1] [--emit-telemetry] [--strict]', $output->stdout());
+        self::assertStringContainsString('--driver=', $output->stdout());
+        self::assertStringContainsString('--max-requests=', $output->stdout());
+    }
+
     public function test_it_resolves_help_for_aliases(): void
     {
         $output = new Output();
@@ -210,6 +233,8 @@ final class ConsoleApplicationTest extends TestCase
                 new CacheClearCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new ViewCacheCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new ViewClearCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
+                new BootstrapStatusCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
+                new RuntimeStatusCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
             ],
             $output,
         );

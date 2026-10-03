@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
+use Quantum\Console\Commands\BootstrapReleaseCheckCommand;
 use Quantum\Console\Commands\BootstrapStatusCommand;
 use Quantum\Console\Commands\CacheClearCommand;
 use Quantum\Console\Commands\MakeActionCommand;
@@ -48,6 +49,7 @@ final class ConsoleApplicationTest extends TestCase
         self::assertStringContainsString('route:clear', $output->stdout());
         self::assertStringContainsString('make:controller', $output->stdout());
         self::assertStringContainsString('make:layout', $output->stdout());
+        self::assertStringContainsString('bootstrap:release-check', $output->stdout());
         self::assertStringContainsString('bootstrap:status', $output->stdout());
         self::assertStringContainsString('runtime:status', $output->stdout());
         self::assertStringContainsString('[aliases: routes]', $output->stdout());
@@ -161,6 +163,24 @@ final class ConsoleApplicationTest extends TestCase
         self::assertStringContainsString('--json', $output->stdout());
     }
 
+    public function test_it_renders_help_for_bootstrap_release_check_command(): void
+    {
+        $output = new Output();
+        $application = $this->application($output);
+
+        $exitCode = $application->run([
+            'volt',
+            'help',
+            'bootstrap:release-check',
+        ]);
+
+        self::assertSame(0, $exitCode);
+        self::assertStringContainsString('Command: bootstrap:release-check', $output->stdout());
+        self::assertStringContainsString('Usage: php volt bootstrap:release-check [--profile=release] [--artifact-dir=storage/framework/bootstrap] [--budget-total-ms=250] [--phase-budgets=DISCOVERING:25,BOOTING:50] [--emit-telemetry] [--json]', $output->stdout());
+        self::assertStringContainsString('--phase-budgets=', $output->stdout());
+        self::assertStringContainsString('--budget-total-ms=', $output->stdout());
+    }
+
     public function test_it_resolves_help_for_aliases(): void
     {
         $output = new Output();
@@ -234,6 +254,7 @@ final class ConsoleApplicationTest extends TestCase
                 new CacheClearCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new ViewCacheCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new ViewClearCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
+                new BootstrapReleaseCheckCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new BootstrapStatusCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new RuntimeStatusCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
             ],

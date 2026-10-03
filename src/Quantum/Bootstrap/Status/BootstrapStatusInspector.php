@@ -72,10 +72,22 @@ final class BootstrapStatusInspector
     {
         $artifactDirectory = trim((string) $artifactDirectory);
 
-        if ($artifactDirectory !== '') {
-            return $artifactDirectory;
+        if ($artifactDirectory === '') {
+            return $this->basePath . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'bootstrap';
         }
 
-        return $this->basePath . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'bootstrap';
+        $normalized = str_replace(['/', '\\'], DIRECTORY_SEPARATOR, $artifactDirectory);
+
+        if ($this->isAbsolutePath($normalized)) {
+            return rtrim($normalized, '\\/');
+        }
+
+        return rtrim($this->basePath . DIRECTORY_SEPARATOR . ltrim($normalized, '\\/'), '\\/');
+    }
+
+    private function isAbsolutePath(string $path): bool
+    {
+        return preg_match('/^[A-Za-z]:\\\\/', $path) === 1
+            || str_starts_with($path, DIRECTORY_SEPARATOR);
     }
 }

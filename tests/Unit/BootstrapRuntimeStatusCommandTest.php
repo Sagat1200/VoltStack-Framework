@@ -210,6 +210,41 @@ PHP
         self::assertSame(1, $decoded['report']['schema_version'] ?? null);
     }
 
+    public function test_bootstrap_status_command_resolves_relative_artifact_directory_against_base_path(): void
+    {
+        $plan = ApplicationBuilder::create($this->basePath)
+            ->withEnvironment('testing')
+            ->withProfile('worker')
+            ->withArtifactDirectory($this->artifactDirectory)
+            ->build();
+
+        $store = new BootstrapManifestStore(
+            manifest: new BuildManifest($this->artifactDirectory),
+            storageRoot: $this->artifactDirectory,
+        );
+        $artifact = $store->publish($plan);
+        $store->activateGeneration($artifact->generationId());
+
+        $command = new BootstrapStatusCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'bootstrap:status',
+                '--artifact-dir=storage/framework/bootstrap',
+                '--json',
+            ]),
+            $output,
+        );
+
+        self::assertSame(0, $exitCode);
+        $decoded = json_decode(trim($output->stdout()), true);
+        self::assertIsArray($decoded);
+        self::assertSame($this->artifactDirectory, $decoded['report']['artifact_directory'] ?? null);
+        self::assertSame($artifact->generationId(), $decoded['report']['generation_id'] ?? null);
+    }
+
     public function test_runtime_status_command_can_render_stable_json_output(): void
     {
         $command = new RuntimeStatusCommand($this->basePath);

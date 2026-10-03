@@ -10,6 +10,7 @@ use Quantum\Console\Commands\AuthDevicesReconcileCommand;
 use Quantum\Console\Commands\AuthSecurityCenterRevokeDeviceCommand;
 use Quantum\Console\Commands\AuthSecurityCenterReportCommand;
 use Quantum\Console\Commands\AuthSessionsCleanupCommand;
+use Quantum\Console\Commands\BootstrapReleaseCheckCommand;
 use Quantum\Console\Commands\BootstrapStatusCommand;
 use Quantum\Console\Commands\ControllerCompileClearCommand;
 use Quantum\Console\Commands\ControllerCompileCommand;
@@ -82,6 +83,7 @@ final class ConsoleApplication
             $this->add(new ControllerCompileCommand($basePath));
             $this->add(new ControllerCompileClearCommand($basePath));
             $this->add(new ControllerCompileWarmupCommand($basePath));
+            $this->add(new BootstrapReleaseCheckCommand($basePath));
             $this->add(new BootstrapStatusCommand($basePath));
             $this->add(new RuntimeStatusCommand($basePath));
             $this->registerConfiguredCommands();

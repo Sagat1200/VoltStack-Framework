@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quantum\Bootstrap;
 
+use Quantum\Bootstrap\Config\BootstrapConfiguration;
 use VoltStack\Framework\ServiceProvider;
 
 final readonly class ApplicationPlan
@@ -23,6 +24,7 @@ final readonly class ApplicationPlan
         private bool $discoveryEnabled = true,
         private array $discoveryAllowPackages = [],
         private array $discoveryDenyPackages = [],
+        private ?BootstrapConfiguration $bootstrapConfiguration = null,
     ) {
     }
 
@@ -80,6 +82,11 @@ final readonly class ApplicationPlan
         return $this->discoveryDenyPackages;
     }
 
+    public function bootstrapConfiguration(): BootstrapConfiguration
+    {
+        return $this->bootstrapConfiguration ?? BootstrapConfiguration::empty();
+    }
+
     /**
      * @return array{
      *     base_path: string,
@@ -92,6 +99,11 @@ final readonly class ApplicationPlan
      *         enabled: bool,
      *         allow_packages: list<string>,
      *         deny_packages: list<string>
+     *     },
+     *     bootstrap_configuration: array{
+     *         structural: array<string, mixed>,
+     *         operational: array<string, mixed>,
+     *         secrets: array<string, mixed>
      *     }
      * }
      */
@@ -109,6 +121,7 @@ final readonly class ApplicationPlan
                 'allow_packages' => $this->discoveryAllowPackages,
                 'deny_packages' => $this->discoveryDenyPackages,
             ],
+            'bootstrap_configuration' => $this->bootstrapConfiguration()->toManifestPayload(),
         ];
     }
 }

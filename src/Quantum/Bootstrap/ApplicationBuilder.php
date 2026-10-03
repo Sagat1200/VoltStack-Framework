@@ -6,6 +6,7 @@ namespace Quantum\Bootstrap;
 
 use InvalidArgumentException;
 use LogicException;
+use Quantum\Bootstrap\Config\BootstrapConfiguration;
 use VoltStack\Framework\ServiceProvider;
 
 final class ApplicationBuilder
@@ -34,6 +35,8 @@ final class ApplicationBuilder
      * @var list<string>
      */
     private array $discoveryDenyPackages = [];
+
+    private ?BootstrapConfiguration $bootstrapConfiguration = null;
 
     private bool $sealed = false;
 
@@ -127,6 +130,14 @@ final class ApplicationBuilder
         return $this;
     }
 
+    public function withBootstrapConfiguration(BootstrapConfiguration $configuration): self
+    {
+        $this->assertNotSealed();
+        $this->bootstrapConfiguration = $configuration;
+
+        return $this;
+    }
+
     public function build(): ApplicationPlan
     {
         if ($this->builtPlan !== null) {
@@ -146,6 +157,7 @@ final class ApplicationBuilder
             discoveryEnabled: $this->discoveryEnabled,
             discoveryAllowPackages: $this->discoveryAllowPackages,
             discoveryDenyPackages: $this->discoveryDenyPackages,
+            bootstrapConfiguration: $this->bootstrapConfiguration,
         );
     }
 

@@ -9,6 +9,9 @@ use PHPUnit\Framework\TestCase;
 use Quantum\Bootstrap\ApplicationBuilder;
 use Quantum\Bootstrap\ApplicationPlan;
 use Quantum\Bootstrap\Bootstrapper;
+use Quantum\Bootstrap\Config\BootstrapConfiguration;
+use Quantum\Bootstrap\Config\EnvReference;
+use Quantum\Bootstrap\Config\SecretReference;
 use Quantum\Bootstrap\Context\BootstrapContext;
 use Quantum\Bootstrap\Context\BuildContext;
 use VoltStack\Framework\Application;
@@ -97,6 +100,11 @@ PHP
             ->withProviders([TestPlanServiceProvider::class])
             ->withEnvironment('testing')
             ->withProfile('console')
+            ->withBootstrapConfiguration(BootstrapConfiguration::fromSections(
+                structural: ['runtime' => ['driver' => 'frankenphp']],
+                operational: ['app_env' => new EnvReference('APP_ENV', 'testing')],
+                secrets: ['app_key' => new SecretReference('APP_KEY')],
+            ))
             ->build();
 
         $context = BootstrapContext::forConsole(
@@ -117,6 +125,8 @@ PHP
         self::assertSame('booted', $app->make('test.plan.provider.state'));
         self::assertSame($plan, $app->make(ApplicationPlan::class));
         self::assertSame($context, $app->make(BootstrapContext::class));
+        self::assertSame('frankenphp', $app->config('bootstrap.structural.runtime.driver'));
+        self::assertSame('secret', $app->config('bootstrap.secrets.app_key.type'));
     }
 
     public function test_build_and_bootstrap_context_named_constructors_capture_minimum_contract(): void

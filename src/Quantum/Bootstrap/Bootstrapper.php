@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quantum\Bootstrap;
 
 use Quantum\Bootstrap\ApplicationPlan;
+use Quantum\Bootstrap\Config\BootstrapConfiguration;
 use Quantum\Bootstrap\Context\BootstrapContext;
 use Quantum\Config\ConfigRepository;
 use Quantum\Bootstrap\Graph\ProviderDependencySorter;
@@ -38,6 +39,7 @@ final class Bootstrapper
     {
         $this->app->registerBaseBindings();
         $this->app->instance(ApplicationPlan::class, $plan);
+        $this->app->instance(BootstrapConfiguration::class, $plan->bootstrapConfiguration());
 
         if ($context !== null) {
             $this->app->instance(BootstrapContext::class, $context);
@@ -45,10 +47,12 @@ final class Bootstrapper
 
         $this->loadConfiguration($plan->configDirectory());
 
+        /** @var ConfigRepository $config */
+        $config = $this->app->make(ConfigRepository::class);
+        $config->set('bootstrap', $plan->bootstrapConfiguration()->toManifestPayload());
+
         $environment = $context?->environment() ?? $plan->environment();
         if ($environment !== null) {
-            /** @var ConfigRepository $config */
-            $config = $this->app->make(ConfigRepository::class);
             $config->set('app.env', $environment);
         }
 

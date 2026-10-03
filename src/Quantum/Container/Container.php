@@ -38,7 +38,9 @@ class Container implements ContainerInterface
         $abstract = $this->normalize($abstract);
         $concrete ??= $abstract;
 
-        $this->bindings[$abstract] = new Binding($concrete, $shared);
+        $this->bindings[$abstract] = $shared
+            ? Binding::singleton($abstract, $concrete)
+            : Binding::transient($abstract, $concrete);
     }
 
     public function singleton(string $abstract, mixed $concrete = null): void
@@ -51,7 +53,7 @@ class Container implements ContainerInterface
         $abstract = $this->normalize($abstract);
         $concrete ??= $abstract;
 
-        $this->bindings[$abstract] = new Binding($concrete, false, true);
+        $this->bindings[$abstract] = Binding::scoped($abstract, $concrete);
     }
 
     public function instance(string $abstract, mixed $instance): void
@@ -75,9 +77,9 @@ class Container implements ContainerInterface
     {
         $abstract = $this->normalize($abstract);
 
-        return isset($this->instances[$abstract])
-            || isset($this->scopedInstances[$abstract])
-            || isset($this->bindings[$abstract])
+        return array_key_exists($abstract, $this->instances)
+            || array_key_exists($abstract, $this->scopedInstances)
+            || array_key_exists($abstract, $this->bindings)
             || class_exists($abstract);
     }
 
@@ -197,7 +199,14 @@ class Container implements ContainerInterface
 
     protected function normalize(string $abstract): string
     {
+        $seen = [];
+
         while (isset($this->aliases[$abstract])) {
+            if (isset($seen[$abstract])) {
+                throw new BindingResolutionException(sprintf('Circular alias detected for [%s].', $abstract));
+            }
+
+            $seen[$abstract] = true;
             $abstract = $this->aliases[$abstract];
         }
 

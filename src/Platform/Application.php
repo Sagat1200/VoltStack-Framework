@@ -116,10 +116,13 @@ use VoltStack\Framework\Exceptions\ExceptionHandler;
 use VoltStack\Runtime\Component\ComponentManager;
 use VoltStack\Runtime\Component\InlinePageLoader;
 use VoltStack\Runtime\Context\RuntimeContext;
+use VoltStack\Runtime\Contracts\WorkerFactoryInterface;
 use VoltStack\Runtime\Context\ScopeManager;
 use VoltStack\Runtime\Context\WorkerLifecycle;
 use VoltStack\Runtime\RequestRunner;
 use VoltStack\Runtime\Reset\ResetManager;
+use VoltStack\Runtime\RuntimeManagerServer;
+use VoltStack\Runtime\WorkerFactory;
 use VoltStack\Runtime\Hydration\Dehydrator;
 use VoltStack\Runtime\Hydration\Hydrator;
 use VoltStack\Runtime\Protocol\Checksum;
@@ -715,6 +718,14 @@ class Application extends Container
 
         if (! isset($this->bindings[RequestRunner::class])) {
             $this->singleton(RequestRunner::class);
+        }
+
+        if (! isset($this->bindings[WorkerFactoryInterface::class])) {
+            $this->singleton(WorkerFactoryInterface::class, fn(Application $app) => new WorkerFactory($app));
+        }
+
+        if (! isset($this->bindings[RuntimeManagerServer::class])) {
+            $this->singleton(RuntimeManagerServer::class, fn(Application $app) => RuntimeManagerServer::createDefault($app));
         }
 
         if (! isset($this->bindings[QuantumExceptionHandlerInterface::class])) {

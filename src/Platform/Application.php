@@ -12,6 +12,8 @@ use Quantum\Database\Integration\DatabaseServiceProvider;
 use Quantum\Auth\Exceptions\AuthExceptionMapper;
 use Quantum\Cache\CacheManager;
 use Quantum\Cache\Repository as CacheRepository;
+use Quantum\Bootstrap\Bootstrapper;
+use Quantum\Bootstrap\Contracts\BootstrapperInterface;
 use Quantum\Compilation\ArtifactStore;
 use Quantum\Compilation\BuildManifest;
 use Quantum\Compilation\CompiledControllerFactory;
@@ -116,6 +118,8 @@ use VoltStack\Runtime\Component\InlinePageLoader;
 use VoltStack\Runtime\Context\RuntimeContext;
 use VoltStack\Runtime\Context\ScopeManager;
 use VoltStack\Runtime\Context\WorkerLifecycle;
+use VoltStack\Runtime\RequestRunner;
+use VoltStack\Runtime\Reset\ResetManager;
 use VoltStack\Runtime\Hydration\Dehydrator;
 use VoltStack\Runtime\Hydration\Hydrator;
 use VoltStack\Runtime\Protocol\Checksum;
@@ -206,6 +210,10 @@ class Application extends Container
 
         if (! isset($this->instances[ConfigRepository::class])) {
             $this->instance(ConfigRepository::class, new ConfigRepository());
+        }
+
+        if (! isset($this->bindings[BootstrapperInterface::class])) {
+            $this->singleton(BootstrapperInterface::class, fn(Application $app) => new Bootstrapper($app));
         }
 
         if (! isset($this->bindings[Request::class])) {
@@ -699,6 +707,14 @@ class Application extends Container
 
         if (! isset($this->bindings[WorkerLifecycle::class])) {
             $this->singleton(WorkerLifecycle::class);
+        }
+
+        if (! isset($this->bindings[ResetManager::class])) {
+            $this->singleton(ResetManager::class);
+        }
+
+        if (! isset($this->bindings[RequestRunner::class])) {
+            $this->singleton(RequestRunner::class);
         }
 
         if (! isset($this->bindings[QuantumExceptionHandlerInterface::class])) {

@@ -39,4 +39,13 @@ final class WorkerLifecycle
     {
         return $this->lastDisposition;
     }
+
+    public function clearResetRequest(): void
+    {
+        $this->reset = false;
+
+        if ($this->lastDisposition === WorkerDisposition::Reset->value) {
+            $this->lastDisposition = null;
+        }
+    }
 }

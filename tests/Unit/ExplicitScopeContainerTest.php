@@ -192,4 +192,22 @@ final class ExplicitScopeContainerTest extends TestCase
 
         $container->make('worker.service');
     }
+
+    public function test_worker_scoped_bindings_fall_back_to_the_root_owner_frame_when_no_worker_scope_is_active(): void
+    {
+        $container = new Container();
+        $sequence = 0;
+
+        $container->scopedFor('worker.service', function () use (&$sequence): object {
+            return (object) ['id' => ++$sequence];
+        }, 'worker');
+
+        $rootOwned = $container->make('worker.service');
+
+        $container->enterScope('request');
+        self::assertSame($rootOwned, $container->make('worker.service'));
+
+        $container->enterScope('tenant');
+        self::assertSame($rootOwned, $container->make('worker.service'));
+    }
 }

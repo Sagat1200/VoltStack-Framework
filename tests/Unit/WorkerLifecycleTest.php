@@ -43,6 +43,20 @@ final class WorkerLifecycleTest extends TestCase
         self::assertSame('terminate', $app->make(WorkerLifecycle::class)->lastDisposition());
     }
 
+    public function test_it_is_reused_across_request_scopes_as_a_worker_owned_binding(): void
+    {
+        $app = new Application($this->basePath);
+        $rootLifecycle = $app->make(WorkerLifecycle::class);
+
+        $app->enterScope('request');
+        $requestLifecycle = $app->make(WorkerLifecycle::class);
+
+        self::assertSame($rootLifecycle, $requestLifecycle);
+
+        $app->enterScope('tenant');
+        self::assertSame($rootLifecycle, $app->make(WorkerLifecycle::class));
+    }
+
     private function deleteDirectory(string $path): void
     {
         if (! is_dir($path)) {

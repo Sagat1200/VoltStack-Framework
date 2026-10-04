@@ -30,6 +30,11 @@ final class ScopeStack
         return $this->frames[array_key_last($this->frames)];
     }
 
+    public function root(): ScopeFrame
+    {
+        return $this->frames[0];
+    }
+
     public function enter(string $name = 'scope'): ScopeFrame
     {
         $current = $this->current();
@@ -49,7 +54,7 @@ final class ScopeStack
     {
         if (count($this->frames) === 1) {
             $root = $this->current();
-            $root->flush();
+            $root->flush(true);
 
             return $root;
         }
@@ -63,7 +68,8 @@ final class ScopeStack
 
     public function flushCurrent(): void
     {
-        $this->current()->flush();
+        $current = $this->current();
+        $current->flush($current->kind() === ScopeKind::Root);
     }
 
     public function hasActiveScope(): bool

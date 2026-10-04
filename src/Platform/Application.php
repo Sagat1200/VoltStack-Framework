@@ -709,7 +709,7 @@ class Application extends Container
         }
 
         if (! isset($this->bindings[WorkerLifecycle::class])) {
-            $this->singleton(WorkerLifecycle::class);
+            $this->scopedFor(WorkerLifecycle::class, WorkerLifecycle::class, 'worker');
         }
 
         if (! isset($this->bindings[ResetManager::class])) {

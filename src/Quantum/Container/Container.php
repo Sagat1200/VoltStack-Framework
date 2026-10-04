@@ -136,7 +136,7 @@ class Container implements ContainerInterface
         }
 
         if ($binding?->scoped) {
-            $scopeFrame->put($abstract, $object);
+            $scopeFrame->put($abstract, $object, $binding->scopeKind);
         }
 
         return $object;
@@ -265,6 +265,10 @@ class Container implements ContainerInterface
 
         if ($frame !== null) {
             return $frame;
+        }
+
+        if ($binding->scopeKind === ScopeKind::Worker) {
+            return $this->scopeStack()->root();
         }
 
         if (! $requireActiveFrame) {

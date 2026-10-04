@@ -10,7 +10,7 @@ namespace Quantum\Container;
 final class ScopeFrame
 {
     /**
-     * @var array<string, mixed>
+     * @var array<string, array{instance: mixed, owner: ?ScopeKind}>
      */
     private array $instances = [];
 
@@ -55,16 +55,28 @@ final class ScopeFrame
 
     public function get(string $abstract): mixed
     {
-        return $this->instances[$abstract];
+        return $this->instances[$abstract]['instance'];
     }
 
-    public function put(string $abstract, mixed $instance): void
+    public function put(string $abstract, mixed $instance, ?ScopeKind $owner = null): void
     {
-        $this->instances[$abstract] = $instance;
+        $this->instances[$abstract] = [
+            'instance' => $instance,
+            'owner' => $owner,
+        ];
     }
 
-    public function flush(): void
+    public function flush(bool $preserveWorkerOwnedEntries = false): void
     {
+        if ($preserveWorkerOwnedEntries) {
+            $this->instances = array_filter(
+                $this->instances,
+                static fn(array $entry): bool => $entry['owner'] === ScopeKind::Worker,
+            );
+
+            return;
+        }
+
         $this->instances = [];
     }
 }

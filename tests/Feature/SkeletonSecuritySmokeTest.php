@@ -187,6 +187,16 @@ final class SkeletonSecuritySmokeTest extends TestCase
         $router->group(['prefix' => '/auth/tokens'], function () use ($router): void {
             $router->get('/introspect', [BearerTokenOperationsController::class, 'introspect'])->name('smoke.authTokensIntrospect');
             $router->post('/revoke', [BearerTokenOperationsController::class, 'revoke'])->name('smoke.authTokensRevoke');
+            $router->get('/protected-operation', [BearerTokenOperationsController::class, 'protectedOperation'])
+                ->meta([
+                    'operation_name' => 'auth.tokens.protected_operation',
+                    'required_strength' => 'MultiFactor',
+                    'required_min_assurance' => 20,
+                    'risk_step_up_threshold' => 75,
+                    'risk_elevated_min_assurance' => 40,
+                    'risk_deny_threshold' => 95,
+                ])
+                ->name('smoke.authTokensProtectedOperation');
         });
     }
 
@@ -440,6 +450,149 @@ final class SkeletonSecuritySmokeTest extends TestCase
         self::assertNotNull($payload);
         self::assertSame('security/demo/bearer-introspect', $payload['endpoint'] ?? null);
         self::assertSame('client-demo-alias-01', $payload['client_id'] ?? null);
+    }
+
+    public function test_3f_protected_operation_requires_step_up_for_token_strength_bearer(): void
+    {
+        $svc = $this->app->make(BearerTokenService::class);
+        $pair = $svc->issueTokenPair(
+            new IdentityReference(new IdentityIdentifier('opaque-step-up-user'), 'user'),
+            'client-step-up-01',
+            ['dashboard:read'],
+            null,
+            null,
+            [
+                'roles' => ['user'],
+                'permissions' => ['dashboard:read'],
+                'risk_score' => 40,
+                'risk_level' => 'medium',
+                'current_assurance' => 10,
+                'required_min_assurance' => 20,
+                'authentication_assurance_profile' => 'opaque_access_token',
+                'amr' => ['bearer'],
+            ],
+        );
+
+        $response = $this->dispatch('/auth/tokens/protected-operation', [
+            'Authorization' => 'Bearer ' . $pair['access_token']->id->value,
+            'Accept' => 'application/json',
+        ]);
+
+        self::assertSame(403, $response['status'], $response['debugThrowable'] ?? '');
+        $payload = $this->json($response);
+        self::assertNotNull($payload);
+        self::assertSame('auth.step_up_required', $payload['reason_code'] ?? null);
+        self::assertSame(['required'], $response['headers']['X-Auth-Step-Up'] ?? []);
+        self::assertSame(['MultiFactor'], $response['headers']['X-Auth-Required-Strength'] ?? []);
+    }
+
+    public function test_3g_protected_operation_returns_423_when_risk_elevates_required_assurance(): void
+    {
+        $svc = $this->app->make(BearerTokenService::class);
+        $pair = $svc->issueTokenPair(
+            new IdentityReference(new IdentityIdentifier('opaque-assurance-user'), 'user'),
+            'client-assurance-01',
+            ['dashboard:read'],
+            null,
+            null,
+            [
+                'roles' => ['user'],
+                'permissions' => ['dashboard:read'],
+                'risk_score' => 80,
+                'risk_level' => 'high',
+                'current_assurance' => 20,
+                'required_min_assurance' => 20,
+                'authentication_assurance_profile' => 'opaque_access_token',
+                'amr' => ['bearer', 'mfa'],
+            ],
+        );
+
+        $response = $this->dispatch('/auth/tokens/protected-operation', [
+            'Authorization' => 'Bearer ' . $pair['access_token']->id->value,
+            'Accept' => 'application/json',
+        ]);
+
+        self::assertSame(423, $response['status'], $response['debugThrowable'] ?? '');
+        $payload = $this->json($response);
+        self::assertNotNull($payload);
+        self::assertSame('auth.assurance_insufficient', $payload['reason_code'] ?? null);
+        self::assertSame('40', $payload['required_min_assurance'] ?? null);
+        self::assertSame('20', $payload['current_assurance'] ?? null);
+        self::assertSame(['true'], $response['headers']['X-Auth-Assurance-Insufficient'] ?? []);
+        self::assertSame(['40'], $response['headers']['X-Auth-Assurance-Required-Min'] ?? []);
+    }
+
+    public function test_3h_protected_operation_denies_when_risk_score_crosses_deny_threshold(): void
+    {
+        $svc = $this->app->make(BearerTokenService::class);
+        $pair = $svc->issueTokenPair(
+            new IdentityReference(new IdentityIdentifier('opaque-risk-deny-user'), 'user'),
+            'client-risk-deny-01',
+            ['dashboard:read'],
+            null,
+            null,
+            [
+                'roles' => ['user'],
+                'permissions' => ['dashboard:read'],
+                'risk_score' => 96,
+                'risk_level' => 'critical',
+                'current_assurance' => 60,
+                'required_min_assurance' => 20,
+                'authentication_assurance_profile' => 'opaque_access_token',
+                'amr' => ['bearer', 'mfa'],
+            ],
+        );
+
+        $response = $this->dispatch('/auth/tokens/protected-operation', [
+            'Authorization' => 'Bearer ' . $pair['access_token']->id->value,
+            'Accept' => 'application/json',
+        ]);
+
+        self::assertSame(403, $response['status'], $response['debugThrowable'] ?? '');
+        $payload = $this->json($response);
+        self::assertNotNull($payload);
+        self::assertSame('auth.risk_denied', $payload['reason_code'] ?? null);
+        self::assertSame(['true'], $response['headers']['X-Auth-Risk-Denied'] ?? []);
+        self::assertSame(['96'], $response['headers']['X-Auth-Risk-Score'] ?? []);
+        self::assertSame(['95'], $response['headers']['X-Auth-Risk-Deny-Threshold'] ?? []);
+    }
+
+    public function test_3i_protected_operation_passes_with_mfa_and_sufficient_assurance_under_risk(): void
+    {
+        $svc = $this->app->make(BearerTokenService::class);
+        $pair = $svc->issueTokenPair(
+            new IdentityReference(new IdentityIdentifier('opaque-protected-pass-user'), 'user'),
+            'client-protected-pass-01',
+            ['dashboard:read', 'reports:export'],
+            null,
+            null,
+            [
+                'roles' => ['user'],
+                'permissions' => ['dashboard:read'],
+                'risk_score' => 80,
+                'risk_level' => 'high',
+                'current_assurance' => 50,
+                'required_min_assurance' => 20,
+                'authentication_assurance_profile' => 'opaque_access_token',
+                'amr' => ['bearer', 'mfa'],
+            ],
+        );
+
+        $response = $this->dispatch('/auth/tokens/protected-operation', [
+            'Authorization' => 'Bearer ' . $pair['access_token']->id->value,
+            'Accept' => 'application/json',
+        ]);
+
+        self::assertSame(200, $response['status'], $response['debugThrowable'] ?? '');
+        $payload = $this->json($response);
+        self::assertNotNull($payload);
+        self::assertSame('auth/tokens/protected-operation', $payload['endpoint'] ?? null);
+        self::assertSame('passed', $payload['operation']['decision'] ?? null);
+        self::assertSame('MultiFactor', $payload['operation']['required_strength'] ?? null);
+        self::assertSame(40, $payload['operation']['required_min_assurance'] ?? null);
+        self::assertSame(['passed'], $response['headers']['X-Auth-Operation-Decision'] ?? []);
+        self::assertSame(['MultiFactor'], $response['headers']['X-Auth-Required-Strength'] ?? []);
+        self::assertSame(['40'], $response['headers']['X-Auth-Assurance-Required-Min'] ?? []);
     }
 
     public function test_4_admin_mfa_fails_with_only_token_strength(): void

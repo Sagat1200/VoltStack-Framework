@@ -166,6 +166,58 @@ PHP
         $app->configWriter()->set('controller_security.authorization.max_policy_evaluations', 10);
     }
 
+    public function test_tenant_scope_inherits_parent_effective_snapshot_and_keeps_its_own_overrides(): void
+    {
+        $app = new Application($this->basePath);
+        $config = $app->make(ConfigRepository::class);
+        $bridge = $app->make(ConfigBridge::class);
+        $writer = $app->make(ConfigurationOverrideWriter::class);
+
+        $config->set('controller_security.authorization.max_policy_evaluations', 13);
+        $app->enterRequestScope();
+
+        try {
+            $writer->set('controller_security.authorization.max_policy_evaluations', 21);
+            $config->set('controller_security.authorization.max_policy_evaluations', 55);
+
+            $app->enterTenantScope();
+
+            try {
+                self::assertSame(
+                    21,
+                    $bridge->scoped('controller_security.authorization.max_policy_evaluations'),
+                    'Tenant scope must inherit the effective snapshot frozen by its parent scope.',
+                );
+
+                $writer->set('controller_security.authorization.max_policy_evaluations', 34);
+
+                self::assertSame(34, $bridge->scoped('controller_security.authorization.max_policy_evaluations'));
+            } finally {
+                $app->leaveScope();
+            }
+
+            self::assertSame(
+                21,
+                $bridge->scoped('controller_security.authorization.max_policy_evaluations'),
+                'Tenant overrides must not leak back into the parent request scope.',
+            );
+        } finally {
+            $app->leaveScope();
+        }
+
+        $app->enterRequestScope();
+
+        try {
+            self::assertSame(
+                55,
+                $bridge->scoped('controller_security.authorization.max_policy_evaluations'),
+                'A new top-level request must still start from the latest global snapshot.',
+            );
+        } finally {
+            $app->leaveScope();
+        }
+    }
+
     private function deleteDirectory(string $path): void
     {
         if (! is_dir($path)) {

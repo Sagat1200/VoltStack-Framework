@@ -7,12 +7,14 @@ namespace VoltStack\Test\Unit;
 use PHPUnit\Framework\TestCase;
 use Quantum\Authorization\Ability\Ability;
 use Quantum\Authorization\Context\AuthorizationContext;
+use Quantum\Authorization\Context\TenantScopeResolver;
 use Quantum\Authorization\Core\AuthorizationRequest;
 use Quantum\Authorization\Metadata\MetadataAuthorizationContextEnricher;
 use Quantum\Authorization\Principal\Principal;
 use Quantum\Authorization\Subject\SubjectDescriptor;
 use Quantum\Authorization\Subject\SubjectType;
 use Quantum\Controllers\ControllerDefinition;
+use Quantum\Http\Request;
 use Quantum\Routing\Route;
 use Quantum\Routing\RouteDefinition;
 use Quantum\Routing\RouteMatch;
@@ -98,6 +100,41 @@ final class MetadataAuthorizationContextEnricherTest extends TestCase
                 ],
             ],
         ], $matched);
+    }
+
+    public function test_it_normalizes_tenant_and_scope_from_request_before_projecting_metadata(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $enricher = new MetadataAuthorizationContextEnricher(
+            $app->make(\Quantum\Authorization\Contracts\AuthorizationMetadataResolverInterface::class),
+            new TenantScopeResolver(),
+        );
+
+        $route = new Route(RouteDefinition::make(
+            ['GET'],
+            '/enricher/tenant/{document}',
+            TestMetadataConditionalEnricherController::class,
+        ));
+        $route->authorize('documents.route-approve', 'document');
+        $request = new AuthorizationRequest(
+            new Ability('documents.route-approve'),
+            new Principal('42'),
+            new SubjectDescriptor(SubjectType::Scalar, 'doc-1', 'string'),
+            new AuthorizationContext('req-tenant', attributes: [
+                'request' => Request::create('/enricher/tenant/doc-1', 'GET', [], [], [], [], [], [
+                    'X-Tenant-Id' => 'acme-corp',
+                ]),
+                'route_match' => new RouteMatch($route, ['document' => 'doc-1'], 'GET'),
+                'controller_definition' => new ControllerDefinition(TestMetadataConditionalEnricherController::class),
+            ]),
+        );
+
+        $enriched = $enricher->enrich($request);
+
+        self::assertSame('acme-corp', $enriched->context()->attribute('tenant.id'));
+        self::assertSame('acme-corp', $enriched->context()->attribute('tenant_id'));
+        self::assertSame('tenant:acme-corp', (string) $enriched->context()->attribute('authorization.scope'));
+        self::assertSame('tenant:acme-corp', $enriched->context()->attribute('scope'));
     }
 }
 

@@ -6,6 +6,7 @@ namespace Quantum\Authorization\Metadata;
 
 use Quantum\Authorization\Contracts\AuthorizationMetadataResolverInterface;
 use Quantum\Authorization\Contracts\AuthorizationRequestEnricherInterface;
+use Quantum\Authorization\Contracts\TenantScopeResolverInterface;
 use Quantum\Authorization\Core\AuthorizationRequest;
 use Quantum\Controllers\ControllerDefinition;
 use Quantum\Routing\RouteMatch;
@@ -14,11 +15,12 @@ final readonly class MetadataAuthorizationContextEnricher implements Authorizati
 {
     public function __construct(
         private AuthorizationMetadataResolverInterface $metadata,
+        private ?TenantScopeResolverInterface $tenantScopeResolver = null,
     ) {}
 
     public function enrich(AuthorizationRequest $request): AuthorizationRequest
     {
-        $context = $request->context();
+        $context = $this->tenantScopeResolver?->normalize($request->context()) ?? $request->context();
         $match = $context->attribute('route_match');
 
         if (! $match instanceof RouteMatch) {

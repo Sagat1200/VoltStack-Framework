@@ -5,7 +5,9 @@ declare(strict_types=1);
 namespace Quantum\Cache;
 
 use DateInterval;
+use DateTimeImmutable;
 use DateTimeInterface;
+use Quantum\Cache\Contracts\ClockInterface;
 use Quantum\Cache\Contracts\InspectableStoreInterface;
 use Quantum\Cache\Contracts\MarshallerInterface;
 use Quantum\Cache\Contracts\StoreInterface;
@@ -23,6 +25,7 @@ final class Repository
         private readonly ?VersionAuthorityInterface $versionAuthority = null,
         private readonly ?string $versionScope = null,
         private readonly array $tagNames = [],
+        private readonly ?ClockInterface $clock = null,
     ) {}
 
     public function lookup(string $key): Lookup
@@ -64,7 +67,20 @@ final class Repository
 
     public function putReceipt(string $key, mixed $value, DateInterval|DateTimeInterface|int|null $ttl = null): WriteReceipt
     {
-        return $this->receiptFor($this->put($key, $value, $ttl));
+        $effectiveTtl = $ttl ?? $this->defaultTtl;
+        $normalizedKey = $this->normalizeKey($key);
+        $result = $this->put($key, $value, $ttl);
+        $metadata = $this->metadataFor($normalizedKey);
+
+        return $this->receiptFor(
+            operation: 'put',
+            result: $result,
+            writeId: $metadata?->writeId,
+            details: $this->operationDetails($key, [
+                'ttl' => $this->describeTtl($effectiveTtl),
+                'expired_immediately' => $result && $metadata === null && $this->isImmediateExpiration($effectiveTtl),
+            ]),
+        );
     }
 
     public function forever(string $key, mixed $value): bool
@@ -74,7 +90,18 @@ final class Repository
 
     public function foreverReceipt(string $key, mixed $value): WriteReceipt
     {
-        return $this->receiptFor($this->forever($key, $value));
+        $normalizedKey = $this->normalizeKey($key);
+        $result = $this->forever($key, $value);
+        $metadata = $this->metadataFor($normalizedKey);
+
+        return $this->receiptFor(
+            operation: 'forever',
+            result: $result,
+            writeId: $metadata?->writeId,
+            details: $this->operationDetails($key, [
+                'ttl' => ['mode' => 'forever'],
+            ]),
+        );
     }
 
     public function has(string $key): bool
@@ -89,7 +116,11 @@ final class Repository
 
     public function forgetReceipt(string $key): WriteReceipt
     {
-        return $this->receiptFor($this->forget($key));
+        return $this->receiptFor(
+            operation: 'forget',
+            result: $this->forget($key),
+            details: $this->operationDetails($key),
+        );
     }
 
     public function flush(): bool
@@ -114,20 +145,52 @@ final class Repository
 
     public function clearReceipt(): WriteReceipt
     {
-        return $this->receiptFor($this->clear());
+        return $this->receiptFor(
+            operation: 'clear',
+            result: $this->clear(),
+            details: $this->operationDetails(null, [
+                'mode' => $this->tagNames !== []
+                    ? 'tag_invalidation'
+                    : ($this->versionScope !== null && trim($this->versionScope) !== '' ? 'namespace_rotation' : 'store_flush'),
+            ]),
+        );
+    }
+
+    public function context(): CacheContext
+    {
+        return CacheContext::from(
+            keyPrefix: $this->keyPrefix,
+            versionScope: $this->versionScope,
+            tags: $this->tagNames,
+            defaultTtl: $this->defaultTtl,
+        );
+    }
+
+    public function withContext(CacheContext $context): self
+    {
+        $current = $this->context();
+        $context = CacheContext::from(
+            keyPrefix: $context->keyPrefix,
+            versionScope: $context->versionScope,
+            tags: $context->tags,
+            defaultTtl: $context->defaultTtl,
+        );
+
+        return new self(
+            $this->store,
+            $this->composePrefix($current->keyPrefix, $context->keyPrefix),
+            $context->defaultTtl ?? $this->defaultTtl,
+            $this->marshaller,
+            $this->versionAuthority,
+            $context->versionScope ?? $this->versionScope,
+            $this->mergeTags($context->tags),
+            $this->clock,
+        );
     }
 
     public function tags(array|string $tags): self
     {
-        return new self(
-            $this->store,
-            $this->keyPrefix,
-            $this->defaultTtl,
-            $this->marshaller,
-            $this->versionAuthority,
-            $this->versionScope,
-            $this->mergeTags($tags),
-        );
+        return $this->withContext(CacheContext::from(tags: $tags));
     }
 
     public function dependencies(array|string $dependencies): self
@@ -150,7 +213,13 @@ final class Repository
 
     public function invalidateTagsReceipt(array|string $tags): WriteReceipt
     {
-        return $this->receiptFor($this->invalidateTags($tags));
+        return $this->receiptFor(
+            operation: 'invalidate_tags',
+            result: $this->invalidateTags($tags),
+            details: $this->operationDetails(null, [
+                'tags' => $this->normalizeTags($tags),
+            ]),
+        );
     }
 
     public function invalidateDependencies(array|string $dependencies): bool
@@ -160,7 +229,13 @@ final class Repository
 
     public function invalidateDependenciesReceipt(array|string $dependencies): WriteReceipt
     {
-        return $this->invalidateTagsReceipt($dependencies);
+        return $this->receiptFor(
+            operation: 'invalidate_dependencies',
+            result: $this->invalidateDependencies($dependencies),
+            details: $this->operationDetails(null, [
+                'dependencies' => $this->normalizeTags($dependencies),
+            ]),
+        );
     }
 
     public function pull(string $key, mixed $default = null): mixed
@@ -210,11 +285,16 @@ final class Repository
         return $value;
     }
 
-    private function receiptFor(bool $result): WriteReceipt
+    /**
+     * @param array<string, mixed> $details
+     */
+    private function receiptFor(string $operation, bool $result, ?string $writeId = null, array $details = []): WriteReceipt
     {
         return new WriteReceipt(
             operationId: bin2hex(random_bytes(8)),
             effect: $result ? Effect::Applied : Effect::Rejected,
+            writeId: $writeId,
+            details: ['operation' => $operation, ...$details],
         );
     }
 
@@ -231,12 +311,17 @@ final class Repository
         }
 
         $expiresAt = $payload['expires_at'];
+        $observedAtMs = $this->cacheClock()->nowUnixMilliseconds();
+        $freshUntilMs = is_int($expiresAt) ? $expiresAt * 1000 : null;
 
         return new EntryMetadata(
             writeId: sha1($key . ':' . $payload['created_at_ms']),
             createdAtMs: $payload['created_at_ms'],
-            freshUntilMs: is_int($expiresAt) ? $expiresAt * 1000 : null,
-            hardUntilMs: is_int($expiresAt) ? $expiresAt * 1000 : null,
+            freshUntilMs: $freshUntilMs,
+            hardUntilMs: $freshUntilMs,
+            observedAtMs: $observedAtMs,
+            ageMs: max(0, $observedAtMs - $payload['created_at_ms']),
+            ttlRemainingMs: $freshUntilMs === null ? null : max(0, $freshUntilMs - $observedAtMs),
             versions: $this->versionMetadata(),
             sourceLevel: $this->store->sourceLevel(),
         );
@@ -244,7 +329,7 @@ final class Repository
 
     private function normalizeKey(string $key): string
     {
-        $prefix = trim($this->keyPrefix);
+        $prefix = CacheContext::normalizePrefix($this->keyPrefix);
 
         if ($prefix === '') {
             return $this->withTagVersionPrefix($this->withVersionPrefix($key));
@@ -335,7 +420,7 @@ final class Repository
      */
     private function mergeTags(array|string $tags): array
     {
-        $merged = array_merge($this->tagNames, $this->normalizeTags($tags));
+        $merged = array_merge(CacheContext::normalizeTags($this->tagNames), $this->normalizeTags($tags));
         $merged = array_values(array_unique($merged));
         sort($merged, SORT_STRING);
 
@@ -347,23 +432,7 @@ final class Repository
      */
     private function normalizeTags(array|string $tags): array
     {
-        $values = is_array($tags) ? $tags : [$tags];
-        $normalized = [];
-
-        foreach ($values as $tag) {
-            $name = trim((string) $tag);
-
-            if ($name === '') {
-                continue;
-            }
-
-            $normalized[] = $name;
-        }
-
-        $normalized = array_values(array_unique($normalized));
-        sort($normalized, SORT_STRING);
-
-        return $normalized;
+        return CacheContext::normalizeTags($tags);
     }
 
     /**
@@ -393,5 +462,79 @@ final class Repository
         }
 
         return $this->versionAuthority->currentVersion($this->tagScopeFor($tag));
+    }
+
+    private function cacheClock(): ClockInterface
+    {
+        return $this->clock ?? new SystemClock();
+    }
+
+    private function isImmediateExpiration(DateInterval|DateTimeInterface|int|null $ttl): bool
+    {
+        $expiresAt = $this->expirationTimestamp($ttl);
+
+        return $expiresAt !== null && $expiresAt <= $this->cacheClock()->nowUnixSeconds();
+    }
+
+    private function expirationTimestamp(DateInterval|DateTimeInterface|int|null $ttl): ?int
+    {
+        if ($ttl === null) {
+            return null;
+        }
+
+        if ($ttl instanceof DateInterval) {
+            return (new DateTimeImmutable('@' . $this->cacheClock()->nowUnixSeconds()))->add($ttl)->getTimestamp();
+        }
+
+        if ($ttl instanceof DateTimeInterface) {
+            return $ttl->getTimestamp();
+        }
+
+        return $this->cacheClock()->nowUnixSeconds() + $ttl;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function describeTtl(DateInterval|DateTimeInterface|int|null $ttl): array
+    {
+        if ($ttl === null) {
+            return ['mode' => 'forever'];
+        }
+
+        $expiresAt = $this->expirationTimestamp($ttl);
+        $remainingSeconds = $expiresAt === null ? null : $expiresAt - $this->cacheClock()->nowUnixSeconds();
+
+        return [
+            'mode' => $ttl instanceof DateTimeInterface ? 'absolute' : 'relative',
+            'expires_at' => $expiresAt,
+            'remaining_seconds' => $remainingSeconds,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $extra
+     * @return array<string, mixed>
+     */
+    private function operationDetails(?string $key, array $extra = []): array
+    {
+        $details = [
+            'source' => $this->store instanceof InspectableStoreInterface ? $this->store->sourceLevel() : 'store',
+            'scope' => $this->versionScope,
+            'tags' => $this->tagNames,
+            'context' => $this->context()->toArray(),
+        ];
+
+        if ($key !== null) {
+            $details['key'] = $key;
+            $details['normalized_key'] = $this->normalizeKey($key);
+        }
+
+        return [...$details, ...$extra];
+    }
+
+    private function composePrefix(string $base, string $extra): string
+    {
+        return CacheContext::normalizePrefix([$base, $extra]);
     }
 }

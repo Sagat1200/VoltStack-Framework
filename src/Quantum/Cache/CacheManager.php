@@ -42,9 +42,12 @@ final class CacheManager
             return $this->storeRepositories[$name];
         }
 
+        $clock = $this->app->make(ClockInterface::class);
+
         return $this->storeRepositories[$name] = new Repository(
             $this->resolveStore($name),
             marshaller: $this->app->make(MarshallerInterface::class),
+            clock: $clock,
         );
     }
 
@@ -65,6 +68,7 @@ final class CacheManager
         $storeName = (string) ($config['store'] ?? $this->config('default', 'file'));
         $prefix = (string) ($config['prefix'] ?? $name);
         $defaultTtl = $this->normalizePoolDefaultTtl($config['default_ttl'] ?? null);
+        $clock = $this->app->make(ClockInterface::class);
 
         return $this->poolRepositories[$name] = new Repository(
             $this->resolveStore($storeName),
@@ -73,6 +77,7 @@ final class CacheManager
             $this->app->make(MarshallerInterface::class),
             $this->app->make(VersionAuthorityInterface::class),
             $name,
+            clock: $clock,
         );
     }
 

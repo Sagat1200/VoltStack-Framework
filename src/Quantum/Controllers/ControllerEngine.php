@@ -8,6 +8,7 @@ use Quantum\Compilation\CompiledControllerFactory;
 use Quantum\Compilation\Contracts\CompiledControllerFactoryInterface;
 use Quantum\Authorization\Attributes\Authorize;
 use Quantum\Authorization\Attributes\PublicAccess;
+use Quantum\Authorization\Context\AuthorizationContext;
 use Quantum\Authorization\Contracts\AuthorizationContextFactoryInterface;
 use Quantum\Authorization\Contracts\AuthorizationManagerInterface;
 use Quantum\Authorization\Contracts\AuthorizationMetadataResolverInterface;
@@ -31,6 +32,7 @@ use Quantum\Controllers\Security\Attributes\TenantRequired;
 use Quantum\Controllers\Security\Contracts\ControllerSecurityManagerInterface;
 use Quantum\Controllers\Security\ControllerTarget;
 use Quantum\Controllers\Security\Decision\SecurityEvaluationRequest;
+use Quantum\Controllers\Security\Context\ControllerSecurityContext;
 use Quantum\Controllers\Security\Exceptions\ControllerExposureViolationException;
 use Quantum\Http\Request;
 use Quantum\Http\Response;
@@ -291,6 +293,8 @@ final class ControllerEngine
                     $resolved->method(),
                     $resolved->instance()::class,
                     $arguments,
+                    $request,
+                    $securityContext,
                 );
             }
 
@@ -682,8 +686,25 @@ final class ControllerEngine
         string $method,
         string $controllerClass,
         array $arguments,
+        Request $request,
+        ?ControllerSecurityContext $securityContext = null,
     ): void {
         $argumentMap = $this->resolvedArgumentMap($controllerClass, $method, $arguments);
+        $baseContext = $this->authorizationContextFactory?->create() ?? AuthorizationContext::empty();
+        $runtimeAttributes = [
+            'route_match' => $match,
+            'controller_definition' => $definition,
+            'resolved_arguments' => $argumentMap,
+            'request' => $request,
+        ];
+        $tenantId = $this->resolveAuthorizationTenantId($request, $securityContext);
+        if ($tenantId !== null) {
+            $runtimeAttributes['tenant.id'] = $tenantId;
+            $runtimeAttributes['tenant_id'] = $tenantId;
+        }
+        if ($securityContext !== null) {
+            $runtimeAttributes['controller.security.context'] = $securityContext;
+        }
 
         foreach ($metadata['requirements'] ?? [] as $requirement) {
             $subject = $this->resolveAuthorizationSubject(
@@ -692,12 +713,11 @@ final class ControllerEngine
                 $controllerClass,
                 $argumentMap,
             );
-            $context = $this->authorizationContextFactory?->create()?->mergeAttributes([
-                'route_match' => $match,
-                'controller_definition' => $definition,
-                'resolved_arguments' => $argumentMap,
+            $context = $baseContext->mergeAttributes([
+                ...$runtimeAttributes,
                 'authorization.requirement' => $requirement,
             ]);
+            $context = $this->authorizationContextFactory?->create($context) ?? $context;
 
             $this->authorizationManager?->authorize(
                 $requirement['ability'],
@@ -766,6 +786,32 @@ final class ControllerEngine
         }
 
         return $normalized;
+    }
+
+    private function resolveAuthorizationTenantId(
+        Request $request,
+        ?ControllerSecurityContext $securityContext = null,
+    ): ?string {
+        $fromSecurity = $securityContext?->tenant?->id;
+
+        if (is_string($fromSecurity) && trim($fromSecurity) !== '') {
+            return trim($fromSecurity);
+        }
+
+        foreach (['X-Tenant-Id', 'HTTP_X_TENANT_ID'] as $serverKey) {
+            $value = $request->server($serverKey, null);
+            if (is_string($value) && trim($value) !== '') {
+                return trim($value);
+            }
+        }
+
+        $header = $request->header('X-Tenant-Id', null);
+
+        if (is_string($header) && trim($header) !== '') {
+            return trim($header);
+        }
+
+        return null;
     }
 
     /**

@@ -15,6 +15,9 @@ use Quantum\Authorization\Decision\Decision;
 use Quantum\Authorization\Principal\Principal;
 use Quantum\Authorization\Subject\SubjectDescriptor;
 use Quantum\Authorization\Subject\SubjectType;
+use Quantum\Routing\Route;
+use Quantum\Routing\RouteDefinition;
+use Quantum\Routing\RouteMatch;
 
 final class ManifestRequirementsEnforcementStageTest extends TestCase
 {
@@ -425,6 +428,45 @@ final class ManifestRequirementsEnforcementStageTest extends TestCase
         );
         $context = new AuthorizationContext('req-auth', attributes: [
             'tenant.id' => 'acme',
+            'authorization.metadata.public' => false,
+            'authorization.metadata.requirements' => [
+                ['ability' => 'approve:invoice'],
+            ],
+            'authorization.metadata.matched_requirements' => [
+                ['ability' => 'approve:invoice'],
+            ],
+        ]);
+        $request = new AuthorizationRequest(
+            new Ability('approve:invoice'),
+            new Principal('user-1'),
+            new SubjectDescriptor(SubjectType::Scalar, 'invoice-1', 'string'),
+            $context,
+        );
+
+        $results = $stage->evaluate($request);
+        $allow = $results[0] ?? null;
+
+        self::assertNotNull($allow);
+        self::assertSame(\Quantum\Authorization\Decision\Decision::Allow, $allow->decision());
+        self::assertSame('tenant:acme', $allow->metadata()['scope'] ?? null);
+    }
+
+    public function test_scope_can_be_derived_from_route_match_tenant_parameter_when_resolver_is_enabled(): void
+    {
+        $authority = new InMemoryAuthorityRepository([
+            ['principal_id' => 'user-1', 'scope' => 'tenant:acme', 'permissions' => ['approve:invoice']],
+        ]);
+        $stage = new ManifestRequirementsEnforcementStage(
+            failClosed: true,
+            authorityRepository: $authority,
+            evaluateRequirementsConcretely: true,
+            evaluateAttributeConditions: false,
+            attributeConditionEvaluator: null,
+            tenantScopeResolver: new TenantScopeResolver(),
+        );
+        $route = new Route(RouteDefinition::make(['GET'], '/tenants/{tenant}/invoices/{invoice}', static fn (): string => 'ok'));
+        $context = new AuthorizationContext('req-auth', attributes: [
+            'route_match' => new RouteMatch($route, ['tenant' => 'acme', 'invoice' => 'invoice-1'], 'GET'),
             'authorization.metadata.public' => false,
             'authorization.metadata.requirements' => [
                 ['ability' => 'approve:invoice'],

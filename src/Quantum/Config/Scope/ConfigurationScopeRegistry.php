@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quantum\Config\Scope;
 
 use Quantum\Config\ConfigRepository;
+use Quantum\Config\ConfigSnapshot;
 use RuntimeException;
 use VoltStack\Framework\Application;
 
@@ -40,7 +41,7 @@ final class ConfigurationScopeRegistry
                 id: $id,
                 kind: $kind,
                 parentId: $this->app->currentScopeParentId(),
-                baseSnapshot: $this->repository->snapshot(),
+                baseSnapshot: $this->resolveBaseSnapshot($this->app->currentScopeParentId()),
             );
         }
 
@@ -71,5 +72,14 @@ final class ConfigurationScopeRegistry
     public function flush(): void
     {
         $this->scopes = [];
+    }
+
+    private function resolveBaseSnapshot(?string $parentScopeId): ConfigSnapshot
+    {
+        if ($parentScopeId !== null && isset($this->scopes[$parentScopeId])) {
+            return $this->scopes[$parentScopeId]->snapshot();
+        }
+
+        return $this->repository->snapshot();
     }
 }

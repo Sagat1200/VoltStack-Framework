@@ -876,13 +876,237 @@ final class DatabaseOrmFeatureTest extends TestCase
             self::assertCount(1, $filteredUsers);
             self::assertSame('Ada', $filteredUsers[0]->name);
 
+        } finally {
+            $scope->end();
+        }
+    }
+
+    public function test_entity_query_joined_to_one_associations_are_hydrated_on_entity_results(): void
+    {
+        $app = $this->makeApp();
+        $scope = $app->make(ScopeManager::class);
+        $scope->begin(Request::create('/database/orm/joined-hydration', 'GET'));
+
+        try {
+            $database = $app->make(DatabaseInterface::class);
+            $database->schema()->create('orm_blog_posts', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('title');
+                $table->boolean('published');
+            }, true);
+            $database->schema()->create('orm_blog_comments', function (TableBlueprint $table): void {
+                $table->id();
+                $table->integer('post_id');
+                $table->string('body');
+            }, true);
+            $database->schema()->create('orm_account_users', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+            }, true);
+            $database->schema()->create('orm_user_profiles', function (TableBlueprint $table): void {
+                $table->id();
+                $table->integer('user_id')->nullable();
+                $table->string('bio');
+            }, true);
+
+            $em = $database->entityManager();
+
+            $post = new OrmBlogPost();
+            $post->title = 'Joined post';
+            $post->published = true;
+            $em->persist($post);
+            $em->flush();
+
+            $comment = new OrmBlogComment();
+            $comment->body = 'Joined comment';
+            $comment->post = $post;
+            $em->persist($comment);
+
+            $ada = new OrmAccountUser();
+            $ada->name = 'Ada';
+
+            $grace = new OrmAccountUser();
+            $grace->name = 'Grace';
+
+            $em->persist($ada);
+            $em->persist($grace);
+            $em->flush();
+
+            $profile = new OrmUserProfile();
+            $profile->bio = 'Joined profile';
+            $profile->user = $ada;
+            $em->persist($profile);
+            $em->flush();
+            $em->clear();
+
+            $loadedComment = $em->query(OrmBlogComment::class)
+                ->join('post', 'p')
+                ->where('body', 'Joined comment')
+                ->first();
+            self::assertInstanceOf(OrmBlogComment::class, $loadedComment);
+            self::assertInstanceOf(OrmBlogPost::class, $loadedComment->post);
+            self::assertSame('Joined post', $loadedComment->post->title);
+            self::assertSame($loadedComment->post, $em->find(OrmBlogPost::class, $loadedComment->postId));
+
+            $profiles = $em->query(OrmUserProfile::class)
+                ->join('user', 'u')
+                ->get();
+            self::assertCount(1, $profiles);
+            self::assertInstanceOf(OrmAccountUser::class, $profiles[0]->user);
+            self::assertSame('Ada', $profiles[0]->user->name);
+            self::assertSame($profiles[0], $profiles[0]->user->profile);
+
+            $users = $em->query(OrmAccountUser::class)
+                ->leftJoin('profile', 'pr')
+                ->orderBy('name')
+                ->get();
+            self::assertCount(2, $users);
+            self::assertSame('Joined profile', $users[0]->profile?->bio);
+            self::assertNull($users[1]->profile);
+        } finally {
+            $scope->end();
+        }
+    }
+
+    public function test_entity_query_can_join_to_many_associations_with_root_deduplication_and_collection_hydration(): void
+    {
+        $app = $this->makeApp();
+        $scope = $app->make(ScopeManager::class);
+        $scope->begin(Request::create('/database/orm/joined-to-many', 'GET'));
+
+        try {
+            $database = $app->make(DatabaseInterface::class);
+            $database->schema()->create('orm_blog_posts', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('title');
+                $table->boolean('published');
+            }, true);
+            $database->schema()->create('orm_blog_comments', function (TableBlueprint $table): void {
+                $table->id();
+                $table->integer('post_id');
+                $table->string('body');
+            }, true);
+            $database->schema()->create('orm_students', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+            }, true);
+            $database->schema()->create('orm_courses', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('title');
+            }, true);
+            $database->schema()->create('orm_student_courses', function (TableBlueprint $table): void {
+                $table->integer('student_id');
+                $table->integer('course_id');
+            }, true);
+
+            $em = $database->entityManager();
+
+            $alpha = new OrmBlogPost();
+            $alpha->title = 'Alpha';
+            $alpha->published = true;
+
+            $beta = new OrmBlogPost();
+            $beta->title = 'Beta';
+            $beta->published = true;
+
+            $gamma = new OrmBlogPost();
+            $gamma->title = 'Gamma';
+            $gamma->published = true;
+
+            $em->persist($alpha);
+            $em->persist($beta);
+            $em->persist($gamma);
+            $em->flush();
+
+            $alpha1 = new OrmBlogComment();
+            $alpha1->body = 'Alpha #1';
+            $alpha1->post = $alpha;
+
+            $alpha2 = new OrmBlogComment();
+            $alpha2->body = 'Alpha #2';
+            $alpha2->post = $alpha;
+
+            $beta1 = new OrmBlogComment();
+            $beta1->body = 'Beta #1';
+            $beta1->post = $beta;
+
+            $em->persist($alpha1);
+            $em->persist($alpha2);
+            $em->persist($beta1);
+
+            $math = new OrmCourse();
+            $math->title = 'Math';
+
+            $history = new OrmCourse();
+            $history->title = 'History';
+
+            $science = new OrmCourse();
+            $science->title = 'Science';
+
+            $linus = new OrmStudent();
+            $linus->name = 'Linus';
+            $linus->courses = [$math, $history];
+
+            $margaret = new OrmStudent();
+            $margaret->name = 'Margaret';
+            $margaret->courses = [$history];
+
+            $ada = new OrmStudent();
+            $ada->name = 'Ada';
+            $ada->courses = [];
+
+            $em->persist($linus);
+            $em->persist($margaret);
+            $em->persist($ada);
+            $em->flush();
+            $em->clear();
+
+            $commentRows = $em->query(OrmBlogPost::class)
+                ->join('comments', 'c')
+                ->select('title', 'comments.body')
+                ->orderBy('comments.body')
+                ->rows();
+            self::assertSame([
+                ['title' => 'Alpha', 'comments.body' => 'Alpha #1'],
+                ['title' => 'Alpha', 'comments.body' => 'Alpha #2'],
+                ['title' => 'Beta', 'comments.body' => 'Beta #1'],
+            ], $commentRows);
+
+            $posts = $em->query(OrmBlogPost::class)
+                ->leftJoin('comments', 'c')
+                ->orderBy('title')
+                ->get();
+            self::assertCount(3, $posts);
+            self::assertSame('Alpha', $posts[0]->title);
+            self::assertCount(2, $posts[0]->comments);
+            self::assertSame($posts[0], $posts[0]->comments[0]->post);
+            self::assertSame($posts[0], $posts[0]->comments[1]->post);
+            self::assertCount(1, $posts[1]->comments);
+            self::assertSame([], $posts[2]->comments);
+            self::assertSame(3, $em->query(OrmBlogPost::class)->leftJoin('comments', 'c')->count());
+
+            $students = $em->query(OrmStudent::class)
+                ->leftJoin('courses', 'co')
+                ->orderBy('name')
+                ->get();
+            self::assertCount(3, $students);
+            self::assertSame('Ada', $students[0]->name);
+            self::assertSame([], $students[0]->courses);
+            self::assertCount(2, $students[1]->courses);
+            usort($students[1]->courses, static fn(OrmCourse $a, OrmCourse $b): int => strcmp($a->title, $b->title));
+            self::assertSame(['History', 'Math'], array_map(
+                static fn(OrmCourse $course): string => $course->title,
+                $students[1]->courses,
+            ));
+            self::assertCount(1, $students[2]->courses);
+
             try {
                 $em->query(OrmBlogPost::class)
-                    ->join('comments')
-                    ->get();
-                self::fail('Joining to-many associations must be rejected in V1.');
+                    ->join('comments', 'c')
+                    ->first();
+                self::fail('first() must be rejected for joined to-many associations.');
             } catch (RuntimeException $exception) {
-                self::assertStringContainsString('only covers to-one associations', $exception->getMessage());
+                self::assertStringContainsString('joined to-many associations', $exception->getMessage());
             }
         } finally {
             $scope->end();

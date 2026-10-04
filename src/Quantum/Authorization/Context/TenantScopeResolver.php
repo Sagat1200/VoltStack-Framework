@@ -6,16 +6,23 @@ namespace Quantum\Authorization\Context;
 
 use Quantum\Authorization\Authority\Scope;
 use Quantum\Authorization\Contracts\TenantScopeResolverInterface;
+use Quantum\Controllers\Security\Context\ControllerSecurityContext;
+use Quantum\Http\Request;
+use Quantum\Routing\RouteMatch;
 
 final readonly class TenantScopeResolver implements TenantScopeResolverInterface
 {
     /**
      * @param list<string> $scopeAttributeKeys
      * @param list<string> $tenantAttributeKeys
+     * @param list<string> $routeParameterKeys
+     * @param list<string> $requestHeaderKeys
      */
     public function __construct(
         private array $scopeAttributeKeys = ['authorization.scope', 'scope'],
         private array $tenantAttributeKeys = ['tenant.id', 'tenant_id'],
+        private array $routeParameterKeys = ['tenant', 'tenant_id', 'tenantId'],
+        private array $requestHeaderKeys = ['X-Tenant-Id'],
         private bool $deriveFromTenantId = true,
         private string $tenantScopePrefix = 'tenant:',
     ) {}
@@ -118,6 +125,57 @@ final readonly class TenantScopeResolver implements TenantScopeResolverInterface
             $value = $context->attribute($key);
             if (is_string($value) && trim($value) !== '') {
                 return trim($value);
+            }
+        }
+
+        $securityContext = $context->attribute('controller.security.context');
+        if ($securityContext instanceof ControllerSecurityContext) {
+            $tenantId = $securityContext->tenant?->id;
+            if (is_string($tenantId) && trim($tenantId) !== '') {
+                return trim($tenantId);
+            }
+        }
+
+        $request = $context->attribute('request');
+        if ($request instanceof Request) {
+            foreach ($this->requestHeaderKeys as $headerKey) {
+                $headerValue = $request->header($headerKey, null);
+                if (is_string($headerValue) && trim($headerValue) !== '') {
+                    return trim($headerValue);
+                }
+
+                $serverValue = $request->server($headerKey, null);
+                if (is_string($serverValue) && trim($serverValue) !== '') {
+                    return trim($serverValue);
+                }
+            }
+
+            foreach ($this->routeParameterKeys as $parameterKey) {
+                $parameterValue = $request->routeParameter($parameterKey, null);
+                if (is_string($parameterValue) && trim($parameterValue) !== '') {
+                    return trim($parameterValue);
+                }
+            }
+        }
+
+        $routeMatch = $context->attribute('route_match');
+        if ($routeMatch instanceof RouteMatch) {
+            $parameters = $routeMatch->parameters();
+            foreach ($this->routeParameterKeys as $parameterKey) {
+                $parameterValue = $parameters[$parameterKey] ?? null;
+                if (is_string($parameterValue) && trim($parameterValue) !== '') {
+                    return trim($parameterValue);
+                }
+            }
+        }
+
+        $resolvedArguments = $context->attribute('resolved_arguments');
+        if (is_array($resolvedArguments)) {
+            foreach ($this->routeParameterKeys as $parameterKey) {
+                $parameterValue = $resolvedArguments[$parameterKey] ?? null;
+                if (is_string($parameterValue) && trim($parameterValue) !== '') {
+                    return trim($parameterValue);
+                }
             }
         }
 

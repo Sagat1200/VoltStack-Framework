@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
+use Quantum\Cache\CacheContext;
 use Quantum\Cache\Contracts\ClockInterface;
 use Quantum\Cache\Effect;
 use Quantum\Cache\FileStore;
@@ -49,6 +50,22 @@ final class CacheRepositoryBaselineTest extends TestCase
         self::assertFalse($repository->has('greeting'));
         self::assertSame('fallback', $repository->get('greeting', 'fallback'));
         self::assertSame(HitState::Miss, $repository->lookup('greeting')->state);
+    }
+
+    public function test_lookup_metadata_exposes_age_and_remaining_ttl(): void
+    {
+        $clock = $this->clockAt(1_700_000_000);
+        $repository = new Repository(new MemoryStore($clock), clock: $clock);
+
+        self::assertTrue($repository->put('profile', ['name' => 'Volt'], 10));
+
+        $clock->advanceSeconds(3);
+        $lookup = $repository->lookup('profile');
+
+        self::assertSame(HitState::Fresh, $lookup->state);
+        self::assertSame(3_000, $lookup->metadata?->ageMs);
+        self::assertSame(7_000, $lookup->metadata?->ttlRemainingMs);
+        self::assertSame(1_700_000_003_000, $lookup->metadata?->observedAtMs);
     }
 
     public function test_null_store_discards_writes_but_stays_operational(): void
@@ -184,6 +201,105 @@ final class CacheRepositoryBaselineTest extends TestCase
         self::assertSame(Effect::Applied, $forever->effect);
         self::assertSame(Effect::Applied, $forget->effect);
         self::assertNotSame('', $put->operationId);
+        self::assertSame('put', $put->details['operation'] ?? null);
+        self::assertSame('foo', $put->details['key'] ?? null);
+        self::assertNotNull($put->writeId);
+        self::assertSame('forever', $forever->details['ttl']['mode'] ?? null);
+    }
+
+    public function test_put_receipt_reports_immediate_expiration_for_non_positive_ttl(): void
+    {
+        $clock = $this->clockAt(1_700_000_000);
+        $repository = new Repository(new MemoryStore($clock), clock: $clock);
+
+        $zero = $repository->putReceipt('ephemeral-zero', 'gone', 0);
+        $negative = $repository->putReceipt('ephemeral-negative', 'gone', -5);
+
+        self::assertSame(Effect::Applied, $zero->effect);
+        self::assertSame(Effect::Applied, $negative->effect);
+        self::assertTrue($zero->details['expired_immediately'] ?? false);
+        self::assertTrue($negative->details['expired_immediately'] ?? false);
+        self::assertNull($zero->writeId);
+        self::assertSame('fallback', $repository->get('ephemeral-zero', 'fallback'));
+        self::assertSame('fallback', $repository->get('ephemeral-negative', 'fallback'));
+    }
+
+    public function test_tagged_put_receipt_includes_scope_tags_and_normalized_key(): void
+    {
+        $authority = new LocalVersionAuthority();
+        $clock = $this->clockAt(1_700_000_000);
+        $repository = new Repository(
+            new MemoryStore($clock),
+            'catalog',
+            60,
+            null,
+            $authority,
+            'catalog',
+            ['featured'],
+            $clock,
+        );
+
+        $receipt = $repository->putReceipt('product:42', ['name' => 'A'], 30);
+
+        self::assertSame(Effect::Applied, $receipt->effect);
+        self::assertSame('catalog', $receipt->details['scope'] ?? null);
+        self::assertSame(['featured'], $receipt->details['tags'] ?? null);
+        self::assertStringContainsString('tag[featured=v1]', (string) ($receipt->details['normalized_key'] ?? ''));
+        self::assertSame('relative', $receipt->details['ttl']['mode'] ?? null);
+        self::assertSame(30, $receipt->details['ttl']['remaining_seconds'] ?? null);
+        self::assertNotNull($receipt->writeId);
+    }
+
+    public function test_cache_context_normalizes_prefix_scope_and_tags(): void
+    {
+        $context = CacheContext::from(
+            keyPrefix: ' tenant/42\\catalog::pages ',
+            versionScope: ' tenant:42 ',
+            tags: [' featured ', 'seasonal', 'featured'],
+            defaultTtl: 15,
+        );
+
+        self::assertSame('tenant:42:catalog:pages', $context->keyPrefix);
+        self::assertSame('tenant:42', $context->versionScope);
+        self::assertSame(['featured', 'seasonal'], $context->tags);
+        self::assertSame(15, $context->defaultTtl);
+    }
+
+    public function test_repository_with_context_composes_prefix_scope_tags_and_default_ttl(): void
+    {
+        $authority = new LocalVersionAuthority();
+        $clock = $this->clockAt(1_700_000_000);
+        $repository = new Repository(
+            new MemoryStore($clock),
+            'catalog',
+            60,
+            null,
+            $authority,
+            'catalog',
+            [],
+            $clock,
+        );
+
+        $scoped = $repository->withContext(CacheContext::from(
+            keyPrefix: ['tenant', '42', 'feed'],
+            versionScope: 'tenant:42',
+            tags: ['featured'],
+            defaultTtl: 5,
+        ));
+
+        $receipt = $scoped->putReceipt('page.home', ['ok' => true]);
+
+        self::assertSame('catalog:tenant:42:feed', $scoped->context()->keyPrefix);
+        self::assertSame('tenant:42', $scoped->context()->versionScope);
+        self::assertSame(['featured'], $scoped->context()->tags);
+        self::assertSame(5, $scoped->context()->defaultTtl);
+        self::assertSame('catalog:tenant:42:feed', $receipt->details['context']['key_prefix'] ?? null);
+        self::assertSame('tenant:42', $receipt->details['context']['version_scope'] ?? null);
+        self::assertStringContainsString('catalog:tenant:42:feed:page.home', (string) ($receipt->details['normalized_key'] ?? ''));
+
+        $clock->advanceSeconds(6);
+
+        self::assertSame('missing', $scoped->get('page.home', 'missing'));
     }
 
     public function test_pull_returns_value_and_removes_the_key(): void

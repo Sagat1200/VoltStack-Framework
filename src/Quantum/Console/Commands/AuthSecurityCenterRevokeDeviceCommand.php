@@ -256,7 +256,27 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             );
         }
 
-        $app = $this->bootstrapApplication();
+        return $this->runInCommandRuntime(function (Application $app) use (
+            $actorIdentity,
+            $actorSessionPublicId,
+            $actorType,
+            $auditLogPath,
+            $auditLogSource,
+            $correlationId,
+            $defaultRejectionResourceCoverage,
+            $deviceReference,
+            $dryRun,
+            $eventTimestamp,
+            $identity,
+            $includePublicIds,
+            $input,
+            $json,
+            $now,
+            $operationId,
+            $output,
+            $scope,
+            $type,
+        ): int {
         $sessions = $app->make(AuthenticationSessionRepositoryInterface::class);
         $trustedDevices = $app->make(TrustedDeviceRepositoryInterface::class);
         $operationalContext = $this->operationalContext($app);
@@ -660,6 +680,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         }
 
         return 0;
+        });
     }
 
     private function resolveNow(Input $input): ?int

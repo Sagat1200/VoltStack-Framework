@@ -78,9 +78,6 @@ final class AuthSecurityCenterReportCommand extends Command
 
     public function handle(Input $input, Output $output): int
     {
-        $app = $this->bootstrapApplication();
-        $sessions = $app->make(AuthenticationSessionRepositoryInterface::class);
-        $trustedDevices = $app->make(TrustedDeviceRepositoryInterface::class);
         $now = $this->resolveNow($input);
         $identity = $this->resolveIdentityFilter($input);
         $type = $this->resolveTypeFilter($input);
@@ -92,6 +89,24 @@ final class AuthSecurityCenterReportCommand extends Command
         $generatedAt = $now ?? time();
         $correlationId = $this->resolveCorrelationId($input, 'security-center-report');
         $operationId = $this->createOperationId('security-center-report');
+
+        return $this->runInCommandRuntime(function (Application $app) use (
+            $auditLogSource,
+            $correlationId,
+            $exportLogPath,
+            $generatedAt,
+            $identity,
+            $includeManagementActors,
+            $includePublicIds,
+            $input,
+            $json,
+            $now,
+            $operationId,
+            $output,
+            $type,
+        ): int {
+        $sessions = $app->make(AuthenticationSessionRepositoryInterface::class);
+        $trustedDevices = $app->make(TrustedDeviceRepositoryInterface::class);
         $operationalContext = $this->operationalContext($app);
 
         $activeSessions = array_values(array_filter(
@@ -648,6 +663,7 @@ final class AuthSecurityCenterReportCommand extends Command
         }
 
         return 0;
+        });
     }
 
     private function resolveNow(Input $input): ?int

@@ -42,15 +42,13 @@ final class AuthSessionsCleanupCommand extends Command
 
     public function handle(Input $input, Output $output): int
     {
-        $app = $this->bootstrapApplication();
-        $repository = $app->make(AuthenticationSessionRepositoryInterface::class);
-        $trustedDevices = $app->make(TrustedDeviceRepositoryInterface::class);
         $now = $this->resolveNow($input);
-        $expired = $repository->purgeExpired($now);
-        $expiredTrustedDevices = $trustedDevices->purgeExpired($now);
-        $tombstones = $repository->purgeRecoveryReasons($now);
-
-        if ($input->hasOption('verbose')) {
+        [$driver, $trustedDeviceDriver, $retention, $expired, $expiredTrustedDevices, $tombstones] = $this->runInCommandRuntime(function ($app) use ($now) {
+            $repository = $app->make(AuthenticationSessionRepositoryInterface::class);
+            $trustedDevices = $app->make(TrustedDeviceRepositoryInterface::class);
+            $expired = $repository->purgeExpired($now);
+            $expiredTrustedDevices = $trustedDevices->purgeExpired($now);
+            $tombstones = $repository->purgeRecoveryReasons($now);
             $driver = (string) $app->config('auth.session.driver', 'memory');
             $trustedDeviceDriver = $app->config('auth.trusted_devices.driver', $driver);
             $trustedDeviceDriver = is_string($trustedDeviceDriver) && trim($trustedDeviceDriver) !== ''
@@ -59,6 +57,10 @@ final class AuthSessionsCleanupCommand extends Command
             $retention = $app->config('auth.session.cleanup.tombstone_retention', 604800);
             $retention = is_numeric($retention) ? (int) $retention : 604800;
 
+            return [$driver, $trustedDeviceDriver, $retention, $expired, $expiredTrustedDevices, $tombstones];
+        });
+
+        if ($input->hasOption('verbose')) {
             $output->writeln(sprintf('Driver activo: %s', $driver));
             $output->writeln(sprintf('Driver trusted devices: %s', $trustedDeviceDriver));
             $output->writeln(sprintf('Retention tombstones: %d segundos', max(0, $retention)));

@@ -210,6 +210,51 @@ final class RuntimeRequestIsolationTest extends TestCase
         $scopeManager->end();
     }
 
+    public function test_tenant_configuration_overrides_are_isolated_from_parent_request_and_future_requests(): void
+    {
+        $app = new Application($this->basePath);
+        $app->make(ConfigRepository::class)->set('controller_security.authorization.max_policy_evaluations', 16);
+        $scopeManager = $app->make(ScopeManager::class);
+
+        $scopeManager->begin(Request::create('/config/request'));
+        $requestWriter = $app->make(ConfigurationOverrideWriter::class);
+        $requestWriter->set('controller_security.authorization.max_policy_evaluations', 24);
+
+        self::assertSame(24, $app->configBridge()->scoped('controller_security.authorization.max_policy_evaluations'));
+
+        $app->enterTenantScope();
+
+        try {
+            self::assertSame(
+                24,
+                $app->configBridge()->scoped('controller_security.authorization.max_policy_evaluations'),
+            );
+
+            $tenantWriter = $app->make(ConfigurationOverrideWriter::class);
+            $tenantWriter->set('controller_security.authorization.max_policy_evaluations', 48);
+
+            self::assertSame(48, $app->configBridge()->scoped('controller_security.authorization.max_policy_evaluations'));
+        } finally {
+            $app->leaveScope();
+        }
+
+        self::assertSame(
+            24,
+            $app->configBridge()->scoped('controller_security.authorization.max_policy_evaluations'),
+        );
+
+        $scopeManager->end();
+
+        $scopeManager->begin(Request::create('/config/next'));
+
+        self::assertSame(
+            16,
+            $app->configBridge()->scoped('controller_security.authorization.max_policy_evaluations'),
+        );
+
+        $scopeManager->end();
+    }
+
     private function buildExecutionContext(Request $request): ControllerExecutionContext
     {
         $match = new RouteMatch(

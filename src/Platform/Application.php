@@ -24,6 +24,8 @@ use Quantum\Config\Bridge\ConfigAccessRegistry;
 use Quantum\Config\Bridge\ConfigBridge;
 use Quantum\Config\Bridge\FrameworkConfigAccessProfile;
 use Quantum\Config\Diagnostics\ConfigRedactor;
+use Quantum\Config\Publication\ConfigManifestStore;
+use Quantum\Config\Publication\ConfigSnapshotCodec;
 use Quantum\Config\Reference\ConfigReferenceResolver;
 use Quantum\Config\Reference\EnvSecretValueResolver;
 use Quantum\Config\Reference\SecretValueResolverInterface;
@@ -263,6 +265,18 @@ class Application extends Container
 
         if (! isset($this->bindings[ConfigRedactor::class])) {
             $this->singleton(ConfigRedactor::class, fn() => new ConfigRedactor());
+        }
+
+        if (! isset($this->bindings[ConfigSnapshotCodec::class])) {
+            $this->singleton(ConfigSnapshotCodec::class, fn() => new ConfigSnapshotCodec());
+        }
+
+        if (! isset($this->bindings[ConfigManifestStore::class])) {
+            $this->singleton(ConfigManifestStore::class, fn(Application $app) => new ConfigManifestStore(
+                manifest: new BuildManifest($app->joinPath($app->storagePath('framework'), 'config')),
+                storageRoot: $app->joinPath($app->storagePath('framework'), 'config'),
+                codec: $app->make(ConfigSnapshotCodec::class),
+            ));
         }
 
         if (! isset($this->bindings[ConfigurationScopeRegistry::class])) {
@@ -1214,6 +1228,16 @@ HTML;
     public function configWriter(): ConfigurationOverrideWriter
     {
         return $this->make(ConfigurationOverrideWriter::class);
+    }
+
+    public function configSnapshotCodec(): ConfigSnapshotCodec
+    {
+        return $this->make(ConfigSnapshotCodec::class);
+    }
+
+    public function configManifestStore(): ConfigManifestStore
+    {
+        return $this->make(ConfigManifestStore::class);
     }
 
     public function environment(): string

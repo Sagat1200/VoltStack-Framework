@@ -42,20 +42,21 @@ final class AuthDevicesReconcileCommand extends Command
 
     public function handle(Input $input, Output $output): int
     {
-        $app = $this->bootstrapApplication();
         $now = $this->resolveNow($input);
         $dryRun = $input->hasOption('dry-run');
-
-        $reconciler = $app->make(InventoryReconcilerInterface::class);
-        $result = $reconciler->reconcile($now, $dryRun);
-
-        if ($input->hasOption('verbose')) {
+        [$sessionDriver, $trustedDriver, $result] = $this->runInCommandRuntime(function ($app) use ($now, $dryRun) {
+            $reconciler = $app->make(InventoryReconcilerInterface::class);
+            $result = $reconciler->reconcile($now, $dryRun);
             $sessionDriver = (string) $app->config('auth.session.driver', 'memory');
             $trustedDriver = $app->config('auth.trusted_devices.driver', $sessionDriver);
             $trustedDriver = is_string($trustedDriver) && trim($trustedDriver) !== ''
                 ? trim($trustedDriver)
                 : $sessionDriver;
 
+            return [$sessionDriver, $trustedDriver, $result];
+        });
+
+        if ($input->hasOption('verbose')) {
             $output->writeln(sprintf('Driver sesiones: %s', $sessionDriver));
             $output->writeln(sprintf('Driver trusted devices: %s', $trustedDriver));
             $output->writeln(sprintf('Evaluado en: %d', $result['evaluated_at']));

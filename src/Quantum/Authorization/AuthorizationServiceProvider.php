@@ -105,6 +105,7 @@ final class AuthorizationServiceProvider extends ServiceProvider
             AuthorizationRequestEnricherInterface::class,
             fn(Application $app): AuthorizationRequestEnricherInterface => new MetadataAuthorizationContextEnricher(
                 $app->make(AuthorizationMetadataResolverInterface::class),
+                $this->resolveTenantScopeResolver($app),
             ),
         );
         $this->app->scoped(AuthorizationContextFactoryInterface::class, function (Application $app): AuthorizationContextFactoryInterface {
@@ -218,7 +219,7 @@ final class AuthorizationServiceProvider extends ServiceProvider
 
     private function registerAuthorityRepository(): void
     {
-        $this->app->singleton(
+        $this->app->scoped(
             self::INNER_AUTHORITY_REPOSITORY,
             fn(Application $app): AuthorityRepositoryInterface => $this->makeConfiguredAuthorityRepository($app),
         );
@@ -293,12 +294,16 @@ final class AuthorizationServiceProvider extends ServiceProvider
 
         $scopeKeys = $app->config('authorization.authority.scope_resolution.scope_attribute_keys', ['authorization.scope', 'scope']);
         $tenantKeys = $app->config('authorization.authority.scope_resolution.tenant_attribute_keys', ['tenant.id', 'tenant_id']);
+        $routeParameterKeys = $app->config('authorization.authority.scope_resolution.route_parameter_keys', ['tenant', 'tenant_id', 'tenantId']);
+        $requestHeaderKeys = $app->config('authorization.authority.scope_resolution.request_header_keys', ['X-Tenant-Id']);
         $prefix = $app->config('authorization.authority.scope_resolution.tenant_scope_prefix', 'tenant:');
         $derive = $app->config('authorization.authority.scope_resolution.derive_from_tenant_id', true);
 
         return new TenantScopeResolver(
             is_array($scopeKeys) ? array_values(array_filter($scopeKeys, static fn (mixed $key): bool => is_string($key) && trim($key) !== '')) : ['authorization.scope', 'scope'],
             is_array($tenantKeys) ? array_values(array_filter($tenantKeys, static fn (mixed $key): bool => is_string($key) && trim($key) !== '')) : ['tenant.id', 'tenant_id'],
+            is_array($routeParameterKeys) ? array_values(array_filter($routeParameterKeys, static fn (mixed $key): bool => is_string($key) && trim($key) !== '')) : ['tenant', 'tenant_id', 'tenantId'],
+            is_array($requestHeaderKeys) ? array_values(array_filter($requestHeaderKeys, static fn (mixed $key): bool => is_string($key) && trim($key) !== '')) : ['X-Tenant-Id'],
             $this->booleanOf($derive),
             is_string($prefix) ? $prefix : 'tenant:',
         );
@@ -441,6 +446,8 @@ final class AuthorizationServiceProvider extends ServiceProvider
                     'enabled' => false,
                     'scope_attribute_keys' => ['authorization.scope', 'scope'],
                     'tenant_attribute_keys' => ['tenant.id', 'tenant_id'],
+                    'route_parameter_keys' => ['tenant', 'tenant_id', 'tenantId'],
+                    'request_header_keys' => ['X-Tenant-Id'],
                     'derive_from_tenant_id' => true,
                     'tenant_scope_prefix' => 'tenant:',
                 ],

@@ -282,6 +282,15 @@ final class EntityManager implements EntityManagerInterface
         return $this->unitOfWork->contains($entity);
     }
 
+    public function snapshotCollections(object $entity): void
+    {
+        if (! $this->unitOfWork->contains($entity)) {
+            return;
+        }
+
+        $this->unitOfWork->snapshotOneToManyCollections($entity, $this->unitOfWork->metadataFor($entity));
+    }
+
     public function isPartial(object $entity): bool
     {
         return isset($this->partialEntities[spl_object_id($entity)]);

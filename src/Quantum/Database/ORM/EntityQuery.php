@@ -370,14 +370,21 @@ final class EntityQuery
     {
         $this->assertEntityHydrationAllowed('get');
 
-        $rows = $this->query->get()->rows();
+        $rows = $this->queryForEntityHydration()->get()->rows();
+        if ($this->hasJoinedToManyAssociations()) {
+            $entities = $this->hydrateJoinedEntityRows($rows);
+            $this->manager->preloadAssociations($entities, $this->remainingPreloadedAssociations());
+
+            return $entities;
+        }
+
         $entities = [];
 
         foreach ($rows as $row) {
-            $entities[] = $this->manager->hydrateManaged($this->metadata, $row);
+            $entities[] = $this->hydrateEntityRow($row);
         }
 
-        $this->manager->preloadAssociations($entities, $this->preloadedAssociations);
+        $this->manager->preloadAssociations($entities, $this->remainingPreloadedAssociations());
 
         return $entities;
     }
@@ -386,14 +393,21 @@ final class EntityQuery
     {
         $this->assertEntityHydrationAllowed('first');
 
-        $row = $this->query->first();
+        if ($this->hasJoinedToManyAssociations()) {
+            throw new RuntimeException(sprintf(
+                'Cannot call first() on [%s] when joined to-many associations are present; use get() because SQL row limiting would truncate the joined collection.',
+                $this->metadata->className,
+            ));
+        }
+
+        $row = $this->queryForEntityHydration()->first();
 
         if ($row === null) {
             return null;
         }
 
-        $entity = $this->manager->hydrateManaged($this->metadata, $row);
-        $this->manager->preloadAssociations([$entity], $this->preloadedAssociations);
+        $entity = $this->hydrateEntityRow($row);
+        $this->manager->preloadAssociations([$entity], $this->remainingPreloadedAssociations());
 
         return $entity;
     }
@@ -542,6 +556,27 @@ final class EntityQuery
 
     public function count(?string $column = null): int
     {
+        if ($this->hasJoinedToManyAssociations()) {
+            $selection = [
+                'name' => $this->metadata->identifier->name,
+                'select' => $this->qualifyRootColumn($this->metadata->identifier->column) . ' AS __orm_root_count_id',
+                'resultKey' => '__orm_root_count_id',
+                'hydrate' => static fn(mixed $value): mixed => $value,
+            ];
+
+            $identifiers = [];
+            foreach ($this->queryForSelections([$selection])->get()->rows() as $row) {
+                $value = $row['__orm_root_count_id'] ?? null;
+                if ($value === null || $value === '') {
+                    continue;
+                }
+
+                $identifiers[(string) $this->metadata->canonicalizeIdentifier($value)] = true;
+            }
+
+            return count($identifiers);
+        }
+
         return $this->query->count($column);
     }
 
@@ -723,6 +758,18 @@ final class EntityQuery
         return $query;
     }
 
+    private function queryForEntityHydration(): SelectQueryBuilder
+    {
+        if ($this->joinedAssociations === []) {
+            return $this->query;
+        }
+
+        $query = clone $this->query;
+        $query->select(...$this->entityHydrationSelectColumns());
+
+        return $query;
+    }
+
     /**
      * @return array<string, mixed>
      */
@@ -735,6 +782,147 @@ final class EntityQuery
         }
 
         return $projected;
+    }
+
+    private function hydrateEntityRow(array $row): object
+    {
+        $entity = $this->manager->hydrateManaged($this->metadata, $row);
+
+        if ($this->joinedAssociations === []) {
+            return $entity;
+        }
+
+        foreach ($this->joinedAssociations as $join) {
+            $association = $join['association'];
+            $targetMetadata = $join['targetMetadata'];
+            $targetRow = $this->extractJoinedTargetRow($join, $row);
+
+            if ($targetRow === null) {
+                $this->assignAssociationValue($entity, $association, null);
+
+                continue;
+            }
+
+            $target = $this->manager->hydrateManaged($targetMetadata, $targetRow);
+            $this->assignAssociationValue($entity, $association, $target);
+            $this->linkJoinedReverseAssociation($entity, $association, $target, $targetMetadata);
+        }
+
+        return $entity;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $rows
+     * @return list<object>
+     */
+    private function hydrateJoinedEntityRows(array $rows): array
+    {
+        $entitiesById = [];
+        $order = [];
+        $seenTargets = [];
+
+        foreach ($rows as $row) {
+            $rootIdentifier = $row[$this->metadata->identifier->column] ?? null;
+            if ($rootIdentifier === null || $rootIdentifier === '') {
+                continue;
+            }
+
+            $rootKey = (string) $this->metadata->canonicalizeIdentifier($rootIdentifier);
+            if (! isset($entitiesById[$rootKey])) {
+                $entity = $this->manager->hydrateManaged($this->metadata, $row);
+                $this->initializeJoinedCollections($entity);
+                $entitiesById[$rootKey] = $entity;
+                $order[] = $rootKey;
+            }
+
+            $entity = $entitiesById[$rootKey];
+
+            foreach ($this->joinedAssociations as $join) {
+                $association = $join['association'];
+                if ($association->isToOne()) {
+                    $this->hydrateJoinedToOneAssociation($entity, $join, $row);
+
+                    continue;
+                }
+
+                $seenTargets[$rootKey][$association->name] ??= [];
+                $this->hydrateJoinedToManyAssociation($entity, $join, $row, $seenTargets[$rootKey][$association->name]);
+            }
+        }
+
+        $entities = array_values(array_map(
+            fn(string $key): object => $entitiesById[$key],
+            $order,
+        ));
+
+        foreach ($entities as $entity) {
+            if ($this->manager->contains($entity)) {
+                $this->manager->snapshotCollections($entity);
+            }
+        }
+
+        return $entities;
+    }
+
+    /**
+     * @param array{alias:string,type:string,association:EntityAssociationMetadata,targetMetadata:EntityMetadata} $join
+     */
+    private function hydrateJoinedToOneAssociation(object $entity, array $join, array $row): void
+    {
+        $association = $join['association'];
+        $targetMetadata = $join['targetMetadata'];
+        $targetRow = $this->extractJoinedTargetRow($join, $row);
+
+        if ($targetRow === null) {
+            $this->assignAssociationValue($entity, $association, null);
+
+            return;
+        }
+
+        $target = $this->manager->hydrateManaged($targetMetadata, $targetRow);
+        $this->assignAssociationValue($entity, $association, $target);
+        $this->linkJoinedReverseAssociation($entity, $association, $target, $targetMetadata);
+    }
+
+    /**
+     * @param array{alias:string,type:string,association:EntityAssociationMetadata,targetMetadata:EntityMetadata} $join
+     * @param array<string, true> $seenTargetIds
+     */
+    private function hydrateJoinedToManyAssociation(object $entity, array $join, array $row, array &$seenTargetIds): void
+    {
+        $association = $join['association'];
+        $targetMetadata = $join['targetMetadata'];
+        $current = $this->readAssociationValue($entity, $association);
+        if (! is_array($current)) {
+            $current = [];
+        }
+
+        $targetRow = $this->extractJoinedTargetRow($join, $row);
+        if ($targetRow === null) {
+            $this->assignAssociationValue($entity, $association, $current);
+
+            return;
+        }
+
+        $target = $this->manager->hydrateManaged($targetMetadata, $targetRow);
+        $targetId = $targetMetadata->identifierValue($target);
+        if ($targetId === null) {
+            throw new RuntimeException(sprintf(
+                'Joined target [%s] did not expose an identifier during hydration of [%s::$%s].',
+                $targetMetadata->className,
+                $this->metadata->className,
+                $association->name,
+            ));
+        }
+
+        $targetKey = (string) $targetMetadata->canonicalizeIdentifier($targetId);
+        if (! isset($seenTargetIds[$targetKey])) {
+            $current[] = $target;
+            $seenTargetIds[$targetKey] = true;
+            $this->assignAssociationValue($entity, $association, $current);
+        }
+
+        $this->linkJoinedReverseAssociation($entity, $association, $target, $targetMetadata);
     }
 
     private function addAssociationJoin(string $type, string $associationName, ?string $alias): self
@@ -760,14 +948,6 @@ final class EntityQuery
         }
 
         $association = $this->metadata->association($normalizedAssociation);
-        if (! $association->isToOne()) {
-            throw new RuntimeException(sprintf(
-                'Join support currently only covers to-one associations; [%s::$%s] is to-many.',
-                $this->metadata->className,
-                $normalizedAssociation,
-            ));
-        }
-
         if (isset($this->joinedAssociations[$normalizedAssociation])) {
             return $this;
         }
@@ -779,13 +959,7 @@ final class EntityQuery
         }
 
         $this->ensureRootAlias();
-        [$leftColumn, $rightColumn] = $this->associationJoinColumns($association, $targetMetadata, $joinAlias);
-
-        if (strtolower($type) === 'left') {
-            $this->query->leftJoin($targetMetadata->table, $leftColumn, $rightColumn, alias: $joinAlias);
-        } else {
-            $this->query->join($targetMetadata->table, $leftColumn, $rightColumn, alias: $joinAlias);
-        }
+        $this->applyAssociationJoin($type, $association, $targetMetadata, $joinAlias);
 
         $this->joinedAssociations[$normalizedAssociation] = [
             'alias' => $joinAlias,
@@ -839,6 +1013,90 @@ final class EntityQuery
             $joinAlias . '.' . $association->targetColumn,
             self::ROOT_ALIAS . '.' . $this->metadata->identifier->column,
         ];
+    }
+
+    private function applyAssociationJoin(
+        string $type,
+        EntityAssociationMetadata $association,
+        EntityMetadata $targetMetadata,
+        string $joinAlias,
+    ): void {
+        if ($association->isToOne()) {
+            [$leftColumn, $rightColumn] = $this->associationJoinColumns($association, $targetMetadata, $joinAlias);
+
+            if (strtolower($type) === 'left') {
+                $this->query->leftJoin($targetMetadata->table, $leftColumn, $rightColumn, alias: $joinAlias);
+            } else {
+                $this->query->join($targetMetadata->table, $leftColumn, $rightColumn, alias: $joinAlias);
+            }
+
+            return;
+        }
+
+        if ($association->isOneToMany()) {
+            if ($association->targetColumn === null) {
+                throw new RuntimeException(sprintf(
+                    'Association [%s::$%s] is missing target column metadata for one-to-many join translation.',
+                    $this->metadata->className,
+                    $association->name,
+                ));
+            }
+
+            if (strtolower($type) === 'left') {
+                $this->query->leftJoin(
+                    $targetMetadata->table,
+                    $joinAlias . '.' . $association->targetColumn,
+                    self::ROOT_ALIAS . '.' . $this->metadata->identifier->column,
+                    alias: $joinAlias,
+                );
+            } else {
+                $this->query->join(
+                    $targetMetadata->table,
+                    $joinAlias . '.' . $association->targetColumn,
+                    self::ROOT_ALIAS . '.' . $this->metadata->identifier->column,
+                    alias: $joinAlias,
+                );
+            }
+
+            return;
+        }
+
+        if (! $association->usesJoinTable()) {
+            throw new RuntimeException(sprintf(
+                'ManyToMany association [%s::$%s] is missing JoinTable metadata for join translation.',
+                $this->metadata->className,
+                $association->name,
+            ));
+        }
+
+        $joinTableAlias = $joinAlias . '__jt';
+        if (strtolower($type) === 'left') {
+            $this->query->leftJoin(
+                $association->joinTable,
+                $joinTableAlias . '.' . $association->joinTableSourceColumn,
+                self::ROOT_ALIAS . '.' . $this->metadata->identifier->column,
+                alias: $joinTableAlias,
+            );
+            $this->query->leftJoin(
+                $targetMetadata->table,
+                $joinAlias . '.' . $targetMetadata->identifier->column,
+                $joinTableAlias . '.' . $association->joinTableTargetColumn,
+                alias: $joinAlias,
+            );
+        } else {
+            $this->query->join(
+                $association->joinTable,
+                $joinTableAlias . '.' . $association->joinTableSourceColumn,
+                self::ROOT_ALIAS . '.' . $this->metadata->identifier->column,
+                alias: $joinTableAlias,
+            );
+            $this->query->join(
+                $targetMetadata->table,
+                $joinAlias . '.' . $targetMetadata->identifier->column,
+                $joinTableAlias . '.' . $association->joinTableTargetColumn,
+                alias: $joinAlias,
+            );
+        }
     }
 
     private function qualifyRootColumn(string $column): string
@@ -925,6 +1183,170 @@ final class EntityQuery
     private function projectionResultKey(string $field): string
     {
         return '__orm_' . preg_replace('/[^A-Za-z0-9_]+/', '_', $field);
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function entityHydrationSelectColumns(): array
+    {
+        $columns = [self::ROOT_ALIAS . '.*'];
+
+        foreach ($this->joinedAssociations as $associationName => $join) {
+            $targetMetadata = $join['targetMetadata'];
+            $alias = $join['alias'];
+
+            foreach ($targetMetadata->mappedFields() as $field) {
+                $columns[] = sprintf(
+                    '%s.%s AS %s',
+                    $alias,
+                    $field->column,
+                    $this->joinedResultKey($associationName, $field->column),
+                );
+            }
+
+            foreach ($targetMetadata->embeddeds() as $embedded) {
+                foreach ($embedded->mappedInnerFields() as $innerField) {
+                    $columns[] = sprintf(
+                        '%s.%s AS %s',
+                        $alias,
+                        $innerField->column,
+                        $this->joinedResultKey($associationName, $innerField->column),
+                    );
+                }
+            }
+        }
+
+        return $columns;
+    }
+
+    /**
+     * @param array{alias:string,type:string,association:EntityAssociationMetadata,targetMetadata:EntityMetadata} $join
+     * @return array<string, mixed>|null
+     */
+    private function extractJoinedTargetRow(array $join, array $row): ?array
+    {
+        $targetMetadata = $join['targetMetadata'];
+        $associationName = $join['association']->name;
+        $targetRow = [];
+        $hasAnyValue = false;
+
+        foreach ($targetMetadata->mappedFields() as $field) {
+            $resultKey = $this->joinedResultKey($associationName, $field->column);
+            if (! array_key_exists($resultKey, $row)) {
+                continue;
+            }
+
+            $targetRow[$field->column] = $row[$resultKey];
+            if ($row[$resultKey] !== null) {
+                $hasAnyValue = true;
+            }
+        }
+
+        foreach ($targetMetadata->embeddeds() as $embedded) {
+            foreach ($embedded->mappedInnerFields() as $innerField) {
+                $resultKey = $this->joinedResultKey($associationName, $innerField->column);
+                if (! array_key_exists($resultKey, $row)) {
+                    continue;
+                }
+
+                $targetRow[$innerField->column] = $row[$resultKey];
+                if ($row[$resultKey] !== null) {
+                    $hasAnyValue = true;
+                }
+            }
+        }
+
+        return $hasAnyValue ? $targetRow : null;
+    }
+
+    private function linkJoinedReverseAssociation(
+        object $entity,
+        EntityAssociationMetadata $association,
+        object $target,
+        EntityMetadata $targetMetadata,
+    ): void {
+        $reverseAssociationName = $association->mappedBy ?? $association->inversedBy;
+        if ($reverseAssociationName === null || ! $targetMetadata->hasAssociation($reverseAssociationName)) {
+            return;
+        }
+
+        $reverseAssociation = $targetMetadata->association($reverseAssociationName);
+        if (! $reverseAssociation->isToOne()) {
+            return;
+        }
+
+        $this->assignAssociationValue($target, $reverseAssociation, $entity);
+    }
+
+    private function hasJoinedToManyAssociations(): bool
+    {
+        foreach ($this->joinedAssociations as $join) {
+            if ($join['association']->isToMany()) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function remainingPreloadedAssociations(): array
+    {
+        if ($this->joinedAssociations === []) {
+            return $this->preloadedAssociations;
+        }
+
+        return array_values(array_filter(
+            $this->preloadedAssociations,
+            fn(string $association): bool => ! isset($this->joinedAssociations[$association]),
+        ));
+    }
+
+    private function joinedResultKey(string $associationName, string $column): string
+    {
+        return '__orm_join_' . preg_replace('/[^A-Za-z0-9_]+/', '_', $associationName . '_' . $column);
+    }
+
+    private function initializeJoinedCollections(object $entity): void
+    {
+        foreach ($this->joinedAssociations as $join) {
+            $association = $join['association'];
+            if (! $association->isToMany()) {
+                continue;
+            }
+
+            $current = $this->readAssociationValue($entity, $association);
+            if (! is_array($current)) {
+                $this->assignAssociationValue($entity, $association, []);
+            }
+        }
+    }
+
+    private function readAssociationValue(object $entity, EntityAssociationMetadata $association): mixed
+    {
+        $property = $association->property;
+        if (method_exists($property, 'setAccessible')) {
+            $property->setAccessible(true);
+        }
+
+        if (method_exists($property, 'isInitialized') && ! $property->isInitialized($entity)) {
+            return null;
+        }
+
+        return $property->getValue($entity);
+    }
+
+    private function assignAssociationValue(object $entity, EntityAssociationMetadata $association, mixed $value): void
+    {
+        $property = $association->property;
+        if (method_exists($property, 'setAccessible')) {
+            $property->setAccessible(true);
+        }
+
+        $property->setValue($entity, $value);
     }
 
     /**

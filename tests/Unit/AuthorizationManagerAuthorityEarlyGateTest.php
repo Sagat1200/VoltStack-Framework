@@ -22,6 +22,9 @@ use Quantum\Authorization\Core\AuthorizationRequestFactory;
 use Quantum\Authorization\Context\AuthorizationContext;
 use Quantum\Authorization\Context\AuthorizationContextFactory;
 use Quantum\Authorization\Principal\Principal;
+use Quantum\Routing\Route;
+use Quantum\Routing\RouteDefinition;
+use Quantum\Routing\RouteMatch;
 use VoltStack\Framework\Application;
 
 final class AuthorizationManagerAuthorityEarlyGateTest extends TestCase
@@ -182,6 +185,35 @@ final class AuthorizationManagerAuthorityEarlyGateTest extends TestCase
             'posts.tenantOnly',
             null,
             AuthorizationContext::empty()->withAttributes(['tenant.id' => 'acme']),
+            new Principal('u_1'),
+        );
+
+        self::assertTrue($allowed);
+        self::assertSame(0, $calls);
+    }
+
+    public function test_scope_can_be_derived_from_route_match_tenant_parameter_when_resolver_is_enabled(): void
+    {
+        $authority = new InMemoryAuthorityRepository([
+            ['principal_id' => 'u_1', 'scope' => 'tenant:acme', 'permissions' => ['posts.tenantOnly']],
+        ]);
+        $calls = 0;
+        $fallback = \Quantum\Authorization\Decision\DecisionResult::deny('planner', 'deny');
+        $manager = $this->makeManagerWithFallbackPlanner(
+            $authority,
+            true,
+            $fallback,
+            $calls,
+            new TenantScopeResolver(),
+        );
+        $route = new Route(RouteDefinition::make(['GET'], '/tenants/{tenant}/posts', static fn (): string => 'ok'));
+
+        $allowed = $manager->check(
+            'posts.tenantOnly',
+            null,
+            AuthorizationContext::empty()->withAttributes([
+                'route_match' => new RouteMatch($route, ['tenant' => 'acme'], 'GET'),
+            ]),
             new Principal('u_1'),
         );
 

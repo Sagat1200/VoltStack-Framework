@@ -7,6 +7,8 @@ namespace VoltStack\Test\Unit;
 use PHPUnit\Framework\TestCase;
 use Quantum\Authorization\Attributes\Authorize;
 use Quantum\Authorization\Attributes\PublicAccess;
+use Quantum\Authorization\Context\AuthorizationContext;
+use Quantum\Authorization\Gate\GateRegistry;
 use Quantum\Authorization\Policy\PolicyRegistry;
 use Quantum\Config\ConfigRepository;
 use Quantum\Controllers\Contracts\ControllerExecutionContextAwareInterface;
@@ -586,6 +588,47 @@ final class ControllerEngineTest extends TestCase
         self::assertSame(200, $response->statusCode());
         self::assertSame('public-ok', $response->content());
     }
+
+    public function test_it_projects_tenant_header_into_authorization_context_for_controller_runtime(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $config = $app->make(ConfigRepository::class);
+        $config->set('controller_security', ['enabled' => false]);
+        $config->set('controller_compilation', ['enabled' => false]);
+        $config->set('authorization.authority.scope_resolution.enabled', true);
+        $app->make(GateRegistry::class)->define('documents.tenant-view', static function (
+            mixed $principal,
+            string $document,
+            AuthorizationContext $context,
+        ): bool {
+            return $document === 'tenant-doc'
+                && $context->attribute('tenant.id') === 'acme-corp'
+                && (string) $context->attribute('authorization.scope') === 'tenant:acme-corp';
+        });
+
+        $dispatcher = $app->make(ControllerDispatcher::class);
+        $route = new Route(RouteDefinition::make(
+            ['GET'],
+            '/documents/tenant/{document}',
+            TestTenantAwareAuthorizationController::class . '@show',
+        ));
+        $route->authorize('documents.tenant-view', 'document');
+        $match = new RouteMatch($route, ['document' => 'tenant-doc'], 'GET');
+
+        $response = $dispatcher->dispatch($match, Request::create(
+            '/documents/tenant/tenant-doc',
+            'GET',
+            [],
+            [],
+            [],
+            [],
+            [],
+            ['X-Tenant-Id' => 'acme-corp'],
+        ));
+
+        self::assertSame(200, $response->statusCode());
+        self::assertSame('tenant-document:tenant-doc', $response->content());
+    }
 }
 
 final class TestInvokableController
@@ -741,6 +784,14 @@ final class TestRouteAuthorizationController
     public function show(string $document): string
     {
         return 'document:' . $document;
+    }
+}
+
+final class TestTenantAwareAuthorizationController
+{
+    public function show(string $document): string
+    {
+        return 'tenant-document:' . $document;
     }
 }
 

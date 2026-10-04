@@ -14,6 +14,9 @@ final readonly class EntryMetadata
         public int $createdAtMs,
         public ?int $freshUntilMs,
         public ?int $hardUntilMs,
+        public ?int $observedAtMs = null,
+        public ?int $ageMs = null,
+        public ?int $ttlRemainingMs = null,
         public array $versions = [],
         public string $sourceLevel = 'local',
     ) {}

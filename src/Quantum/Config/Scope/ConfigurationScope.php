@@ -43,6 +43,16 @@ final class ConfigurationScope
         return $this->baseSnapshot;
     }
 
+    public function snapshot(): ConfigSnapshot
+    {
+        return new ConfigSnapshot(
+            data: $this->materialize(),
+            provenance: $this->baseSnapshot->provenance(),
+            schemaHash: $this->baseSnapshot->schemaHash(),
+            configId: null,
+        );
+    }
+
     public function hasOverride(string|ConfigPath $path): bool
     {
         return $this->overrideValue($path, MissingValue::Token) !== MissingValue::Token;

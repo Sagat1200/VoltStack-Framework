@@ -14,6 +14,11 @@ final class StepUpRequiredException extends RuntimeException
         public readonly AuthenticationStrength $requiredStrength = AuthenticationStrength::MultiFactor,
         public readonly AuthenticationStrength $currentStrength = AuthenticationStrength::Password,
         string $message = 'Step-up authentication is required for this resource.',
+        public readonly ?string $operation = null,
+        public readonly ?int $riskScore = null,
+        public readonly ?string $riskLevel = null,
+        public readonly ?int $requiredMinAssurance = null,
+        public readonly ?int $currentAssurance = null,
     ) {
         parent::__construct($message);
     }

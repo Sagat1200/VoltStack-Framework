@@ -21,12 +21,24 @@ final class Bloque6AssuranceV2Test extends TestCase
     public function test_b6_02_headers_include_required_and_current(): void
     {
         $mapper = new AuthExceptionMapper();
-        $e = new AssuranceInsufficientException(requiredMinAssurance: 500, currentAssurance: 150, operation: 'admin.settings');
+        $e = new AssuranceInsufficientException(
+            requiredMinAssurance: 500,
+            currentAssurance: 150,
+            operation: 'admin.settings',
+            riskScore: 82,
+            riskLevel: 'high',
+            requiredStrengthName: 'MultiFactor',
+            currentStrengthName: 'Token',
+        );
         $h = $mapper->headers($e);
         $this->assertSame('true', $h['X-Auth-Assurance-Insufficient']);
         $this->assertSame('500', $h['X-Auth-Assurance-Required-Min']);
         $this->assertSame('150', $h['X-Auth-Assurance-Current']);
         $this->assertSame('admin.settings', $h['X-Auth-Operation']);
+        $this->assertSame('82', $h['X-Auth-Risk-Score']);
+        $this->assertSame('high', $h['X-Auth-Risk-Level']);
+        $this->assertSame('MultiFactor', $h['X-Auth-Required-Strength']);
+        $this->assertSame('Token', $h['X-Auth-Current-Strength']);
     }
 
     public function test_b6_03_constructor_public_props(): void
@@ -46,12 +58,24 @@ final class Bloque6AssuranceV2Test extends TestCase
     public function test_b6_04_json_extensions_fields(): void
     {
         $mapper = new AuthExceptionMapper();
-        $e = new AssuranceInsufficientException(requiredMinAssurance: 300, currentAssurance: 80, operation: 'profile.update_email');
+        $e = new AssuranceInsufficientException(
+            requiredMinAssurance: 300,
+            currentAssurance: 80,
+            operation: 'profile.update_email',
+            riskScore: 79,
+            riskLevel: 'high',
+            requiredStrengthName: 'MultiFactor',
+            currentStrengthName: 'Token',
+        );
         $ext = $mapper->jsonExtensions($e, false);
         $this->assertSame('auth.assurance_insufficient', $ext['reason_code']);
         $this->assertSame('300', $ext['required_min_assurance']);
         $this->assertSame('80', $ext['current_assurance']);
         $this->assertSame('profile.update_email', $ext['operation']);
+        $this->assertSame('79', $ext['risk_score']);
+        $this->assertSame('high', $ext['risk_level']);
+        $this->assertSame('MultiFactor', $ext['required_strength_name']);
+        $this->assertSame('Token', $ext['current_strength_name']);
     }
 
     public function test_b6_05_mapper_error_code_and_message(): void

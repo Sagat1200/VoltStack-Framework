@@ -36,10 +36,16 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
                 'X-Auth-Fresh-Window' => (string) $throwable->freshWindowSeconds,
                 'X-Auth-Operation' => $throwable->operation,
             ],
-            $throwable instanceof StepUpRequiredException => [
+            $throwable instanceof StepUpRequiredException => array_filter([
                 'X-Auth-Step-Up' => 'required',
                 'X-Auth-Required-Strength' => $throwable->requiredStrength->name,
-            ],
+                'X-Auth-Current-Strength' => $throwable->currentStrength->name,
+                'X-Auth-Operation' => $throwable->operation,
+                'X-Auth-Risk-Score' => $throwable->riskScore !== null ? (string) $throwable->riskScore : null,
+                'X-Auth-Risk-Level' => $throwable->riskLevel,
+                'X-Auth-Assurance-Required-Min' => $throwable->requiredMinAssurance !== null ? (string) $throwable->requiredMinAssurance : null,
+                'X-Auth-Assurance-Current' => $throwable->currentAssurance !== null ? (string) $throwable->currentAssurance : null,
+            ], static fn (mixed $v): bool => $v !== null),
             $throwable instanceof CredentialLockedException => array_filter([
                 'X-Auth-Credential-Locked' => 'true',
                 'X-Auth-Lockout-Until' => $throwable->lockoutUntil !== null ? (string) $throwable->lockoutUntil : null,
@@ -66,16 +72,24 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
                 'X-Auth-Throttle-Retry-After' => (string) $throwable->retryAfterSeconds,
                 'X-Auth-Throttle-Identifier' => $throwable->identifier,
             ], static fn (mixed $v): bool => $v !== null),
-            $throwable instanceof RiskDeniedException => [
+            $throwable instanceof RiskDeniedException => array_filter([
                 'X-Auth-Risk-Denied' => 'true',
                 'X-Auth-Risk-Score' => (string) $throwable->riskScore,
                 'X-Auth-Risk-Deny-Threshold' => (string) $throwable->denyThreshold,
-            ],
+                'X-Auth-Risk-Level' => is_string($throwable->metadata['risk_level'] ?? null) ? $throwable->metadata['risk_level'] : null,
+                'X-Auth-Operation' => is_string($throwable->metadata['operation'] ?? null) ? $throwable->metadata['operation'] : null,
+                'X-Auth-Assurance-Current' => isset($throwable->metadata['current_assurance']) ? (string) $throwable->metadata['current_assurance'] : null,
+                'X-Auth-Assurance-Required-Min' => isset($throwable->metadata['required_min_assurance']) ? (string) $throwable->metadata['required_min_assurance'] : null,
+            ], static fn (mixed $v): bool => $v !== null),
             $throwable instanceof AssuranceInsufficientException => array_filter([
                 'X-Auth-Assurance-Insufficient' => 'true',
                 'X-Auth-Assurance-Required-Min' => (string) $throwable->requiredMinAssurance,
                 'X-Auth-Assurance-Current' => (string) $throwable->currentAssurance,
                 'X-Auth-Operation' => $throwable->operation,
+                'X-Auth-Risk-Score' => $throwable->riskScore !== null ? (string) $throwable->riskScore : null,
+                'X-Auth-Risk-Level' => $throwable->riskLevel,
+                'X-Auth-Required-Strength' => $throwable->requiredStrengthName,
+                'X-Auth-Current-Strength' => $throwable->currentStrengthName,
             ], static fn (mixed $v): bool => $v !== null),
             default => [],
         };
@@ -172,7 +186,13 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
                 'required_strength_value' => (string) $throwable->requiredStrength->value,
                 'current_strength_name' => $throwable->currentStrength->name,
                 'current_strength_value' => (string) $throwable->currentStrength->value,
-            ],
+            ] + array_filter([
+                'operation' => $throwable->operation,
+                'risk_score' => $throwable->riskScore !== null ? (string) $throwable->riskScore : null,
+                'risk_level' => $throwable->riskLevel,
+                'required_min_assurance' => $throwable->requiredMinAssurance !== null ? (string) $throwable->requiredMinAssurance : null,
+                'current_assurance' => $throwable->currentAssurance !== null ? (string) $throwable->currentAssurance : null,
+            ], static fn (mixed $v): bool => $v !== null),
             $throwable instanceof PasswordExpiredException => array_filter([
                 'reason_code' => $throwable->reasonCode,
                 'password_created_at' => $throwable->passwordCreatedAt > 0 ? (string) $throwable->passwordCreatedAt : null,
@@ -190,16 +210,24 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
                 'retry_after_seconds' => (string) $throwable->retryAfterSeconds,
                 'throttle_identifier' => $throwable->identifier,
             ], static fn (mixed $v): bool => $v !== null),
-            $throwable instanceof RiskDeniedException => [
+            $throwable instanceof RiskDeniedException => array_filter([
                 'reason_code' => $throwable->reasonCode,
                 'risk_score' => (string) $throwable->riskScore,
                 'deny_threshold' => (string) $throwable->denyThreshold,
-            ],
+                'risk_level' => is_string($throwable->metadata['risk_level'] ?? null) ? $throwable->metadata['risk_level'] : null,
+                'operation' => is_string($throwable->metadata['operation'] ?? null) ? $throwable->metadata['operation'] : null,
+                'current_assurance' => isset($throwable->metadata['current_assurance']) ? (string) $throwable->metadata['current_assurance'] : null,
+                'required_min_assurance' => isset($throwable->metadata['required_min_assurance']) ? (string) $throwable->metadata['required_min_assurance'] : null,
+            ], static fn (mixed $v): bool => $v !== null),
             $throwable instanceof AssuranceInsufficientException => array_filter([
                 'reason_code' => $throwable->reasonCode,
                 'required_min_assurance' => (string) $throwable->requiredMinAssurance,
                 'current_assurance' => (string) $throwable->currentAssurance,
                 'operation' => $throwable->operation,
+                'risk_score' => $throwable->riskScore !== null ? (string) $throwable->riskScore : null,
+                'risk_level' => $throwable->riskLevel,
+                'required_strength_name' => $throwable->requiredStrengthName,
+                'current_strength_name' => $throwable->currentStrengthName,
             ], static fn (mixed $v): bool => $v !== null),
             default => [],
         };

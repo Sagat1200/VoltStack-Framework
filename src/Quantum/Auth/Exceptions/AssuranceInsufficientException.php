@@ -13,6 +13,10 @@ class AssuranceInsufficientException extends AuthenticationException
         public readonly int $requiredMinAssurance = 0,
         public readonly int $currentAssurance = 0,
         public readonly ?string $operation = null,
+        public readonly ?int $riskScore = null,
+        public readonly ?string $riskLevel = null,
+        public readonly ?string $requiredStrengthName = null,
+        public readonly ?string $currentStrengthName = null,
     ) {
         parent::__construct($message, 'auth.assurance_insufficient');
     }

@@ -482,8 +482,19 @@ final class SkeletonSecuritySmokeTest extends TestCase
         $payload = $this->json($response);
         self::assertNotNull($payload);
         self::assertSame('auth.step_up_required', $payload['reason_code'] ?? null);
+        self::assertSame('auth.tokens.protected_operation', $payload['operation'] ?? null);
+        self::assertSame('40', $payload['risk_score'] ?? null);
+        self::assertSame('medium', $payload['risk_level'] ?? null);
+        self::assertSame('20', $payload['required_min_assurance'] ?? null);
+        self::assertSame('10', $payload['current_assurance'] ?? null);
         self::assertSame(['required'], $response['headers']['X-Auth-Step-Up'] ?? []);
         self::assertSame(['MultiFactor'], $response['headers']['X-Auth-Required-Strength'] ?? []);
+        self::assertSame(['Token'], $response['headers']['X-Auth-Current-Strength'] ?? []);
+        self::assertSame(['auth.tokens.protected_operation'], $response['headers']['X-Auth-Operation'] ?? []);
+        self::assertSame(['40'], $response['headers']['X-Auth-Risk-Score'] ?? []);
+        self::assertSame(['medium'], $response['headers']['X-Auth-Risk-Level'] ?? []);
+        self::assertSame(['20'], $response['headers']['X-Auth-Assurance-Required-Min'] ?? []);
+        self::assertSame(['10'], $response['headers']['X-Auth-Assurance-Current'] ?? []);
     }
 
     public function test_3g_protected_operation_returns_423_when_risk_elevates_required_assurance(): void
@@ -518,8 +529,19 @@ final class SkeletonSecuritySmokeTest extends TestCase
         self::assertSame('auth.assurance_insufficient', $payload['reason_code'] ?? null);
         self::assertSame('40', $payload['required_min_assurance'] ?? null);
         self::assertSame('20', $payload['current_assurance'] ?? null);
+        self::assertSame('auth.tokens.protected_operation', $payload['operation'] ?? null);
+        self::assertSame('80', $payload['risk_score'] ?? null);
+        self::assertSame('high', $payload['risk_level'] ?? null);
+        self::assertSame('MultiFactor', $payload['required_strength_name'] ?? null);
+        self::assertSame('MultiFactor', $payload['current_strength_name'] ?? null);
         self::assertSame(['true'], $response['headers']['X-Auth-Assurance-Insufficient'] ?? []);
         self::assertSame(['40'], $response['headers']['X-Auth-Assurance-Required-Min'] ?? []);
+        self::assertSame(['20'], $response['headers']['X-Auth-Assurance-Current'] ?? []);
+        self::assertSame(['auth.tokens.protected_operation'], $response['headers']['X-Auth-Operation'] ?? []);
+        self::assertSame(['80'], $response['headers']['X-Auth-Risk-Score'] ?? []);
+        self::assertSame(['high'], $response['headers']['X-Auth-Risk-Level'] ?? []);
+        self::assertSame(['MultiFactor'], $response['headers']['X-Auth-Required-Strength'] ?? []);
+        self::assertSame(['MultiFactor'], $response['headers']['X-Auth-Current-Strength'] ?? []);
     }
 
     public function test_3h_protected_operation_denies_when_risk_score_crosses_deny_threshold(): void
@@ -552,9 +574,17 @@ final class SkeletonSecuritySmokeTest extends TestCase
         $payload = $this->json($response);
         self::assertNotNull($payload);
         self::assertSame('auth.risk_denied', $payload['reason_code'] ?? null);
+        self::assertSame('auth.tokens.protected_operation', $payload['operation'] ?? null);
+        self::assertSame('critical', $payload['risk_level'] ?? null);
+        self::assertSame('60', $payload['current_assurance'] ?? null);
+        self::assertSame('40', $payload['required_min_assurance'] ?? null);
         self::assertSame(['true'], $response['headers']['X-Auth-Risk-Denied'] ?? []);
         self::assertSame(['96'], $response['headers']['X-Auth-Risk-Score'] ?? []);
         self::assertSame(['95'], $response['headers']['X-Auth-Risk-Deny-Threshold'] ?? []);
+        self::assertSame(['critical'], $response['headers']['X-Auth-Risk-Level'] ?? []);
+        self::assertSame(['auth.tokens.protected_operation'], $response['headers']['X-Auth-Operation'] ?? []);
+        self::assertSame(['60'], $response['headers']['X-Auth-Assurance-Current'] ?? []);
+        self::assertSame(['40'], $response['headers']['X-Auth-Assurance-Required-Min'] ?? []);
     }
 
     public function test_3i_protected_operation_passes_with_mfa_and_sufficient_assurance_under_risk(): void

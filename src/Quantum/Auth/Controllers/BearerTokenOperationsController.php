@@ -136,6 +136,8 @@ final class BearerTokenOperationsController extends Controller
                 metadata: [
                     'operation' => (string) $request->routeMeta('operation_name', 'auth.tokens.protected_operation'),
                     'risk_level' => $risk['level'] ?? null,
+                    'current_assurance' => $currentAssurance,
+                    'required_min_assurance' => $effectiveRequiredMinAssurance,
                 ],
             );
         }
@@ -144,6 +146,11 @@ final class BearerTokenOperationsController extends Controller
             throw new StepUpRequiredException(
                 requiredStrength: $requiredStrength,
                 currentStrength: $currentStrength,
+                operation: (string) $request->routeMeta('operation_name', 'auth.tokens.protected_operation'),
+                riskScore: $riskScore,
+                riskLevel: is_string($risk['level'] ?? null) ? $risk['level'] : null,
+                requiredMinAssurance: $effectiveRequiredMinAssurance,
+                currentAssurance: $currentAssurance,
             );
         }
 
@@ -152,6 +159,10 @@ final class BearerTokenOperationsController extends Controller
                 requiredMinAssurance: $effectiveRequiredMinAssurance,
                 currentAssurance: $currentAssurance,
                 operation: (string) $request->routeMeta('operation_name', 'auth.tokens.protected_operation'),
+                riskScore: $riskScore,
+                riskLevel: is_string($risk['level'] ?? null) ? $risk['level'] : null,
+                requiredStrengthName: $requiredStrength->name,
+                currentStrengthName: $currentStrength->name,
             );
         }
 

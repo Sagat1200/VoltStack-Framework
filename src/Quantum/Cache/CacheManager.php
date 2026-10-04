@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quantum\Cache;
 
 use InvalidArgumentException;
+use Quantum\Cache\Contracts\ClockInterface;
 use Quantum\Cache\Contracts\StoreInterface;
 use VoltStack\Framework\Application;
 
@@ -35,17 +36,24 @@ final class CacheManager
         return $this->store($name);
     }
 
+    public function pool(?string $name = null): Repository
+    {
+        return $this->store($name);
+    }
+
     private function resolveStore(string $name): StoreInterface
     {
         $config = $this->storeConfig($name);
         $driver = (string) ($config['driver'] ?? 'file');
+        $clock = $this->app->make(ClockInterface::class);
 
         return match ($driver) {
             'file' => new FileStore(
                 (string) ($config['path'] ?? $this->app->cachePath('data')),
                 (string) ($config['prefix'] ?? $this->config('prefix', 'voltstack')),
+                $clock,
             ),
-            'memory' => new MemoryStore(),
+            'memory' => new MemoryStore($clock),
             'null' => new NullStore(),
             default => throw new InvalidArgumentException(sprintf('Cache driver [%s] is not supported.', $driver)),
         };

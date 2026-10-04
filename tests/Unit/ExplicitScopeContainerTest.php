@@ -242,4 +242,45 @@ final class ExplicitScopeContainerTest extends TestCase
 
         $container->make('singleton.service');
     }
+
+    public function test_singleton_bindings_cannot_indirectly_retain_request_scoped_dependencies_through_transients(): void
+    {
+        $container = new Container();
+
+        $container->scopedFor('request.service', static fn(): object => new \stdClass(), 'request');
+        $container->bind('transient.helper', function (Container $container): object {
+            return (object) ['dependency' => $container->make('request.service')];
+        });
+        $container->singleton('singleton.service', function (Container $container): object {
+            return (object) ['helper' => $container->make('transient.helper')];
+        });
+
+        $container->enterScope('request');
+
+        $this->expectException(BindingResolutionException::class);
+        $this->expectExceptionMessage('Singleton binding [singleton.service] cannot retain scoped dependency [request.service] with scope [request]');
+
+        $container->make('singleton.service');
+    }
+
+    public function test_generic_scoped_bindings_cannot_indirectly_retain_request_dependencies_inside_generic_frames(): void
+    {
+        $container = new Container();
+
+        $container->scopedFor('request.service', static fn(): object => new \stdClass(), 'request');
+        $container->bind('transient.helper', function (Container $container): object {
+            return (object) ['dependency' => $container->make('request.service')];
+        });
+        $container->scoped('generic.service', function (Container $container): object {
+            return (object) ['helper' => $container->make('transient.helper')];
+        });
+
+        $container->enterScope('request');
+        $container->enterScope('custom-segment');
+
+        $this->expectException(BindingResolutionException::class);
+        $this->expectExceptionMessage('Scoped binding [generic.service] with scope [scope] cannot retain dependency [request.service] with scope [request]');
+
+        $container->make('generic.service');
+    }
 }

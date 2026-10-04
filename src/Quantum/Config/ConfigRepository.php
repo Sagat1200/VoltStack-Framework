@@ -4,12 +4,24 @@ declare(strict_types=1);
 
 namespace Quantum\Config;
 
+use Quantum\Config\Loading\PhpConfigLoader;
+
 final class ConfigRepository
 {
     /**
      * @var array<string, mixed>
      */
     private array $items = [];
+
+    /**
+     * @var list<ConfigDocument>
+     */
+    private array $documents = [];
+
+    /**
+     * @var array<string, mixed>
+     */
+    private array $provenance = [];
 
     /**
      * @param array<string, mixed> $items
@@ -25,6 +37,22 @@ final class ConfigRepository
     public function all(): array
     {
         return $this->items;
+    }
+
+    /**
+     * @return list<ConfigDocument>
+     */
+    public function documents(): array
+    {
+        return $this->documents;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function provenance(): array
+    {
+        return $this->provenance;
     }
 
     public function has(string $key): bool
@@ -71,6 +99,8 @@ final class ConfigRepository
     public function replace(array $items): void
     {
         $this->items = $items;
+        $this->documents = [];
+        $this->provenance = [];
     }
 
     public function hasPath(ConfigPath $path): bool
@@ -112,13 +142,13 @@ final class ConfigRepository
      * @param array<string, mixed> $provenance
      */
     public function snapshot(
-        array $provenance = [],
+        ?array $provenance = null,
         ?string $schemaHash = null,
         ?string $configId = null,
     ): ConfigSnapshot {
         return new ConfigSnapshot(
             data: $this->items,
-            provenance: $provenance,
+            provenance: $provenance ?? $this->provenance,
             schemaHash: $schemaHash,
             configId: $configId,
         );
@@ -139,25 +169,16 @@ final class ConfigRepository
 
     public function loadPath(string $configPath): void
     {
-        if (! is_dir($configPath)) {
-            return;
+        $loaded = (new PhpConfigLoader())->loadPath($configPath);
+
+        foreach ($loaded->items() as $key => $config) {
+            $this->items[$key] = $config;
         }
 
-        $files = glob(rtrim($configPath, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . '*.php');
-
-        if ($files === false) {
-            return;
+        foreach ($loaded->provenance() as $key => $location) {
+            $this->provenance[$key] = $location;
         }
 
-        sort($files);
-
-        foreach ($files as $file) {
-            $key = pathinfo($file, PATHINFO_FILENAME);
-            $config = require $file;
-
-            if (is_array($config)) {
-                $this->items[$key] = $config;
-            }
-        }
+        $this->documents = $loaded->documents();
     }
 }

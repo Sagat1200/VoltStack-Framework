@@ -288,7 +288,7 @@ class Container implements ContainerInterface
             return;
         }
 
-        $parentBinding = $this->bindingResolutionStack[array_key_last($this->bindingResolutionStack)] ?? null;
+        $parentBinding = $this->nearestRetainingBinding();
 
         if ($parentBinding === null || ! $parentBinding->storesResolvedInstance()) {
             return;
@@ -305,20 +305,53 @@ class Container implements ContainerInterface
             ));
         }
 
-        if (! $parentBinding->scoped || $parentBinding->scopeKind === null || $binding->scopeKind === null) {
+        if (! $parentBinding->scoped) {
             return;
         }
 
-        if ($parentBinding->scopeKind->canRetain($binding->scopeKind)) {
+        $parentScopeKind = $this->effectiveScopeKind($parentBinding);
+        $dependencyScopeKind = $this->effectiveScopeKind($binding);
+
+        if ($parentScopeKind === null || $dependencyScopeKind === null) {
+            return;
+        }
+
+        if ($parentScopeKind->canRetain($dependencyScopeKind)) {
             return;
         }
 
         throw new \Quantum\Container\Exceptions\BindingResolutionException(sprintf(
             'Scoped binding [%s] with scope [%s] cannot retain dependency [%s] with scope [%s].',
             $parentBinding->abstract,
-            $parentBinding->scopeKindName() ?? 'scope',
+            $parentScopeKind->value,
             $binding->abstract,
-            $binding->scopeKindName() ?? 'scope',
+            $dependencyScopeKind->value,
         ));
+    }
+
+    protected function nearestRetainingBinding(): ?Binding
+    {
+        for ($index = count($this->bindingResolutionStack) - 1; $index >= 0; $index--) {
+            $binding = $this->bindingResolutionStack[$index];
+
+            if ($binding->storesResolvedInstance()) {
+                return $binding;
+            }
+        }
+
+        return null;
+    }
+
+    protected function effectiveScopeKind(Binding $binding): ?ScopeKind
+    {
+        if (! $binding->scoped) {
+            return null;
+        }
+
+        if ($binding->scopeKind !== null) {
+            return $binding->scopeKind;
+        }
+
+        return $this->scopeFrameForScopedBinding($binding, false)?->kind();
     }
 }

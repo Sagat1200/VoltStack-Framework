@@ -8,9 +8,9 @@ use DateInterval;
 use DateTimeInterface;
 use Quantum\Cache\Concerns\InteractsWithTime;
 use Quantum\Cache\Contracts\ClockInterface;
-use Quantum\Cache\Contracts\StoreInterface;
+use Quantum\Cache\Contracts\InspectableStoreInterface;
 
-final class FileStore implements StoreInterface
+final class FileStore implements InspectableStoreInterface
 {
     use InteractsWithTime;
 
@@ -44,6 +44,7 @@ final class FileStore implements StoreInterface
         return $this->write($key, [
             'expires_at' => $expiresAt,
             'value' => $value,
+            'created_at_ms' => $this->nowUnixMilliseconds(),
         ]);
     }
 
@@ -52,6 +53,7 @@ final class FileStore implements StoreInterface
         return $this->write($key, [
             'expires_at' => null,
             'value' => $value,
+            'created_at_ms' => $this->nowUnixMilliseconds(),
         ]);
     }
 
@@ -76,8 +78,21 @@ final class FileStore implements StoreInterface
         return $this->deleteDirectoryContents($this->path);
     }
 
+    public function sourceLevel(): string
+    {
+        return 'file';
+    }
+
     /**
      * @return array{expires_at: int|null, value: mixed}|null
+     */
+    public function payload(string $key): ?array
+    {
+        return $this->read($key);
+    }
+
+    /**
+     * @return array{expires_at: int|null, value: mixed, created_at_ms: int}|null
      */
     private function read(string $key): ?array
     {
@@ -110,11 +125,14 @@ final class FileStore implements StoreInterface
         return [
             'expires_at' => is_int($expiresAt) ? $expiresAt : null,
             'value' => $payload['value'],
+            'created_at_ms' => is_int($payload['created_at_ms'] ?? null)
+                ? $payload['created_at_ms']
+                : $this->nowUnixMilliseconds(),
         ];
     }
 
     /**
-     * @param array{expires_at: int|null, value: mixed} $payload
+     * @param array{expires_at: int|null, value: mixed, created_at_ms: int} $payload
      */
     private function write(string $key, array $payload): bool
     {

@@ -13,6 +13,12 @@ return [
             'path' => storage_path('framework/cache/data'),
             'prefix' => 'voltstack',
         ],
+        'memory' => [
+            'driver' => 'memory',
+        ],
+        'null' => [
+            'driver' => 'null',
+        ],
     ],
 
     'compiled' => [

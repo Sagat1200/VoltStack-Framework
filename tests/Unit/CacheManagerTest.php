@@ -65,6 +65,7 @@ final class CacheManagerTest extends TestCase
         self::assertTrue($memory->put('runtime.counter', 1));
         self::assertTrue($memory->has('runtime.counter'));
         self::assertSame(1, $memory->get('runtime.counter'));
+        self::assertSame(1, $manager->pool('memory')->get('runtime.counter'));
 
         $null = $manager->store('null');
         self::assertTrue($null->put('runtime.counter', 99));

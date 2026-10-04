@@ -7,6 +7,7 @@ namespace VoltStack\Test\Unit;
 use PHPUnit\Framework\TestCase;
 use Quantum\Cache\Contracts\ClockInterface;
 use Quantum\Cache\Effect;
+use Quantum\Cache\FileStore;
 use Quantum\Cache\HitState;
 use Quantum\Cache\MemoryStore;
 use Quantum\Cache\NullStore;
@@ -58,6 +59,28 @@ final class CacheRepositoryBaselineTest extends TestCase
         self::assertSame(HitState::Miss, $repository->lookup('banner')->state);
     }
 
+    public function test_file_store_lookup_exposes_file_source_metadata(): void
+    {
+        $directory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-cache-file-' . uniqid('', true);
+        mkdir($directory, 0777, true);
+
+        try {
+            $store = new FileStore($directory, 'voltstack', $this->clockAt(1_700_000_000));
+            $repository = new Repository($store);
+
+            self::assertTrue($repository->put('page.home', ['html' => true], 60));
+
+            $lookup = $repository->lookup('page.home');
+
+            self::assertSame(HitState::Fresh, $lookup->state);
+            self::assertSame(['html' => true], $lookup->value);
+            self::assertNotNull($lookup->metadata);
+            self::assertSame('file', $lookup->metadata?->sourceLevel);
+        } finally {
+            $this->deleteDirectory($directory);
+        }
+    }
+
     public function test_repository_receipts_report_applied_effect_for_successful_writes(): void
     {
         $repository = new Repository(new MemoryStore($this->clockAt(1_700_000_000)));
@@ -70,6 +93,29 @@ final class CacheRepositoryBaselineTest extends TestCase
         self::assertSame(Effect::Applied, $forever->effect);
         self::assertSame(Effect::Applied, $forget->effect);
         self::assertNotSame('', $put->operationId);
+    }
+
+    public function test_pull_returns_value_and_removes_the_key(): void
+    {
+        $repository = new Repository(new MemoryStore($this->clockAt(1_700_000_000)));
+
+        self::assertTrue($repository->put('once', 'token', 60));
+        self::assertSame('token', $repository->pull('once'));
+        self::assertFalse($repository->has('once'));
+        self::assertSame('fallback', $repository->pull('once', 'fallback'));
+    }
+
+    public function test_many_returns_values_for_each_requested_key(): void
+    {
+        $repository = new Repository(new MemoryStore($this->clockAt(1_700_000_000)));
+
+        self::assertTrue($repository->put('a', 1, 60));
+        self::assertTrue($repository->put('b', null, 60));
+
+        self::assertSame(
+            ['a' => 1, 'b' => null, 'c' => 'missing'],
+            $repository->many(['a', 'b', 'c'], 'missing'),
+        );
     }
 
     private function clockAt(int $unixSeconds): object
@@ -99,5 +145,35 @@ final class CacheRepositoryBaselineTest extends TestCase
                 $this->unixSeconds += $seconds;
             }
         };
+    }
+
+    private function deleteDirectory(string $path): void
+    {
+        if (! is_dir($path)) {
+            return;
+        }
+
+        $items = scandir($path);
+
+        if ($items === false) {
+            return;
+        }
+
+        foreach ($items as $item) {
+            if (in_array($item, ['.', '..'], true)) {
+                continue;
+            }
+
+            $target = $path . DIRECTORY_SEPARATOR . $item;
+
+            if (is_dir($target)) {
+                $this->deleteDirectory($target);
+                continue;
+            }
+
+            unlink($target);
+        }
+
+        rmdir($path);
     }
 }

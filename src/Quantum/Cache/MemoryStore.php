@@ -8,9 +8,9 @@ use DateInterval;
 use DateTimeInterface;
 use Quantum\Cache\Concerns\InteractsWithTime;
 use Quantum\Cache\Contracts\ClockInterface;
-use Quantum\Cache\Contracts\StoreInterface;
+use Quantum\Cache\Contracts\InspectableStoreInterface;
 
-final class MemoryStore implements StoreInterface
+final class MemoryStore implements InspectableStoreInterface
 {
     use InteractsWithTime;
 
@@ -80,6 +80,11 @@ final class MemoryStore implements StoreInterface
         $this->items = [];
 
         return true;
+    }
+
+    public function sourceLevel(): string
+    {
+        return 'memory';
     }
 
     /**

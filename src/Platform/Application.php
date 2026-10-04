@@ -11,7 +11,9 @@ use Quantum\Authorization\Exceptions\AuthorizationExceptionMapper;
 use Quantum\Database\Integration\DatabaseServiceProvider;
 use Quantum\Auth\Exceptions\AuthExceptionMapper;
 use Quantum\Cache\CacheManager;
+use Quantum\Cache\Contracts\ClockInterface;
 use Quantum\Cache\Repository as CacheRepository;
+use Quantum\Cache\SystemClock;
 use Quantum\Bootstrap\Bootstrapper;
 use Quantum\Bootstrap\Contracts\BootstrapperInterface;
 use Quantum\Compilation\ArtifactStore;
@@ -283,6 +285,10 @@ class Application extends Container
 
         if (! isset($this->bindings[CacheManager::class])) {
             $this->singleton(CacheManager::class);
+        }
+
+        if (! isset($this->bindings[ClockInterface::class])) {
+            $this->singleton(ClockInterface::class, SystemClock::class);
         }
 
         if (! isset($this->bindings[CacheRepository::class])) {

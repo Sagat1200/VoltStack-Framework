@@ -6,14 +6,13 @@ namespace Quantum\Cache;
 
 use DateInterval;
 use DateTimeInterface;
-use Quantum\Cache\Contracts\ClockInterface;
+use Quantum\Cache\Contracts\InspectableStoreInterface;
 use Quantum\Cache\Contracts\StoreInterface;
 
 final class Repository
 {
     public function __construct(
         private readonly StoreInterface $store,
-        private readonly ?ClockInterface $clock = null,
     ) {}
 
     public function lookup(string $key): Lookup
@@ -76,6 +75,29 @@ final class Repository
         return $this->store->flush();
     }
 
+    public function pull(string $key, mixed $default = null): mixed
+    {
+        $value = $this->get($key, $default);
+        $this->forget($key);
+
+        return $value;
+    }
+
+    /**
+     * @param iterable<string> $keys
+     * @return array<string, mixed>
+     */
+    public function many(iterable $keys, mixed $default = null): array
+    {
+        $values = [];
+
+        foreach ($keys as $key) {
+            $values[$key] = $this->get($key, $default);
+        }
+
+        return $values;
+    }
+
     public function remember(string $key, DateInterval|DateTimeInterface|int|null $ttl, callable $callback): mixed
     {
         if ($this->has($key)) {
@@ -110,7 +132,7 @@ final class Repository
 
     private function metadataFor(string $key): ?EntryMetadata
     {
-        if (! $this->store instanceof MemoryStore) {
+        if (! $this->store instanceof InspectableStoreInterface) {
             return null;
         }
 
@@ -127,7 +149,7 @@ final class Repository
             createdAtMs: $payload['created_at_ms'],
             freshUntilMs: is_int($expiresAt) ? $expiresAt * 1000 : null,
             hardUntilMs: is_int($expiresAt) ? $expiresAt * 1000 : null,
-            sourceLevel: 'memory',
+            sourceLevel: $this->store->sourceLevel(),
         );
     }
 }

@@ -210,4 +210,36 @@ final class ExplicitScopeContainerTest extends TestCase
         $container->enterScope('tenant');
         self::assertSame($rootOwned, $container->make('worker.service'));
     }
+
+    public function test_singleton_bindings_cannot_retain_generic_scoped_dependencies(): void
+    {
+        $container = new Container();
+
+        $container->scoped('scoped.service', static fn(): object => new \stdClass());
+        $container->singleton('singleton.service', function (Container $container): object {
+            return (object) ['dependency' => $container->make('scoped.service')];
+        });
+
+        $this->expectException(BindingResolutionException::class);
+        $this->expectExceptionMessage('Singleton binding [singleton.service] cannot retain scoped dependency [scoped.service]');
+
+        $container->make('singleton.service');
+    }
+
+    public function test_singleton_bindings_cannot_retain_request_scoped_dependencies(): void
+    {
+        $container = new Container();
+
+        $container->scopedFor('request.service', static fn(): object => new \stdClass(), 'request');
+        $container->singleton('singleton.service', function (Container $container): object {
+            return (object) ['dependency' => $container->make('request.service')];
+        });
+
+        $container->enterScope('request');
+
+        $this->expectException(BindingResolutionException::class);
+        $this->expectExceptionMessage('Singleton binding [singleton.service] cannot retain scoped dependency [request.service] with scope [request]');
+
+        $container->make('singleton.service');
+    }
 }

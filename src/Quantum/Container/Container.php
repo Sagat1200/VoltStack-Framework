@@ -284,13 +284,28 @@ class Container implements ContainerInterface
 
     protected function assertScopedDependencyCompatibility(?Binding $binding): void
     {
-        if ($binding === null || ! $binding->scoped || $binding->scopeKind === null) {
+        if ($binding === null || ! $binding->scoped) {
             return;
         }
 
         $parentBinding = $this->bindingResolutionStack[array_key_last($this->bindingResolutionStack)] ?? null;
 
-        if ($parentBinding === null || ! $parentBinding->scoped || $parentBinding->scopeKind === null) {
+        if ($parentBinding === null || ! $parentBinding->storesResolvedInstance()) {
+            return;
+        }
+
+        if ($parentBinding->shared) {
+            throw new \Quantum\Container\Exceptions\BindingResolutionException(sprintf(
+                'Singleton binding [%s] cannot retain scoped dependency [%s]%s.',
+                $parentBinding->abstract,
+                $binding->abstract,
+                $binding->scopeKind !== null
+                    ? sprintf(' with scope [%s]', $binding->scopeKindName() ?? 'scope')
+                    : '',
+            ));
+        }
+
+        if (! $parentBinding->scoped || $parentBinding->scopeKind === null || $binding->scopeKind === null) {
             return;
         }
 

@@ -10,6 +10,7 @@ use Quantum\Config\Bridge\ConfigAccessMode;
 use Quantum\Config\Bridge\ConfigAccessRegistry;
 use Quantum\Config\Bridge\ConfigBridge;
 use Quantum\Config\ConfigRepository;
+use Quantum\Config\Scope\ConfigurationOverrideWriter;
 use Quantum\Controllers\Security\Context\ControllerSecurityContextFactory;
 use Quantum\Controllers\Security\Contracts\ControllerSecurityContextFactoryInterface;
 use VoltStack\Framework\Application;
@@ -110,6 +111,59 @@ PHP
         } finally {
             $app->leaveScope();
         }
+    }
+
+    public function test_scoped_reads_use_frozen_snapshot_and_request_overrides(): void
+    {
+        $app = new Application($this->basePath);
+        $config = $app->make(ConfigRepository::class);
+        $bridge = $app->make(ConfigBridge::class);
+        $writer = $app->make(ConfigurationOverrideWriter::class);
+
+        $config->set('controller_security.authorization.max_policy_evaluations', 13);
+        $app->enterRequestScope();
+
+        try {
+            self::assertSame(13, $bridge->scoped('controller_security.authorization.max_policy_evaluations'));
+
+            $config->set('controller_security.authorization.max_policy_evaluations', 21);
+
+            self::assertSame(
+                13,
+                $bridge->scoped('controller_security.authorization.max_policy_evaluations'),
+                'Scoped reads must keep the base snapshot frozen for the active request.',
+            );
+
+            $writer->set('controller_security.authorization.max_policy_evaluations', 34);
+
+            self::assertSame(34, $bridge->scoped('controller_security.authorization.max_policy_evaluations'));
+            self::assertSame(
+                ['controller_security' => ['authorization' => ['max_policy_evaluations' => 34]]],
+                $writer->overrides(),
+            );
+        } finally {
+            $app->leaveScope();
+        }
+
+        $app->enterRequestScope();
+
+        try {
+            self::assertSame(
+                21,
+                $bridge->scoped('controller_security.authorization.max_policy_evaluations'),
+                'A new request must see the latest global snapshot without leaking prior overrides.',
+            );
+        } finally {
+            $app->leaveScope();
+        }
+    }
+
+    public function test_writer_requires_an_active_runtime_scope(): void
+    {
+        $this->expectException(\RuntimeException::class);
+
+        $app = new Application($this->basePath);
+        $app->configWriter()->set('controller_security.authorization.max_policy_evaluations', 10);
     }
 
     private function deleteDirectory(string $path): void

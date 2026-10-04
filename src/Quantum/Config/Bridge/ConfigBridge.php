@@ -6,10 +6,13 @@ namespace Quantum\Config\Bridge;
 
 use Quantum\Config\ConfigRepository;
 use Quantum\Config\ConfigSnapshot;
+use Quantum\Config\Scope\ConfigurationScopeRegistry;
 
 final class ConfigBridge
 {
     private ConfigBridgeSnapshot $snapshot;
+
+    private ?ConfigurationScopeRegistry $scopeRegistry = null;
 
     public function __construct(
         private readonly ConfigAccessRegistry $registry,
@@ -60,6 +63,11 @@ final class ConfigBridge
         return $this->snapshot;
     }
 
+    public function useScopeRegistry(ConfigurationScopeRegistry $scopeRegistry): void
+    {
+        $this->scopeRegistry = $scopeRegistry;
+    }
+
     public function get(string $path, mixed $default = null): mixed
     {
         $mode = $this->registry->modeFor($path);
@@ -87,6 +95,12 @@ final class ConfigBridge
 
     public function scoped(string $path, mixed $default = null): mixed
     {
+        $scope = $this->scopeRegistry?->current();
+
+        if ($scope !== null) {
+            return $scope->get($path, $default);
+        }
+
         $selected = $this->snapshot->scopedPaths();
 
         if (array_key_exists($path, $selected)) {

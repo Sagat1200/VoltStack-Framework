@@ -27,6 +27,8 @@ use Quantum\Config\Diagnostics\ConfigRedactor;
 use Quantum\Config\Reference\ConfigReferenceResolver;
 use Quantum\Config\Reference\EnvSecretValueResolver;
 use Quantum\Config\Reference\SecretValueResolverInterface;
+use Quantum\Config\Scope\ConfigurationOverrideWriter;
+use Quantum\Config\Scope\ConfigurationScopeRegistry;
 use Quantum\Compilation\ArtifactStore;
 use Quantum\Compilation\BuildManifest;
 use Quantum\Compilation\CompiledControllerFactory;
@@ -261,6 +263,21 @@ class Application extends Container
 
         if (! isset($this->bindings[ConfigRedactor::class])) {
             $this->singleton(ConfigRedactor::class, fn() => new ConfigRedactor());
+        }
+
+        if (! isset($this->bindings[ConfigurationScopeRegistry::class])) {
+            $this->singleton(ConfigurationScopeRegistry::class, fn(Application $app) => new ConfigurationScopeRegistry(
+                $app,
+                $app->make(ConfigRepository::class),
+            ));
+
+            $this->make(ConfigBridge::class)->useScopeRegistry($this->make(ConfigurationScopeRegistry::class));
+        }
+
+        if (! isset($this->bindings[ConfigurationOverrideWriter::class])) {
+            $this->singleton(ConfigurationOverrideWriter::class, fn(Application $app) => new ConfigurationOverrideWriter(
+                $app->make(ConfigurationScopeRegistry::class),
+            ));
         }
 
         if (! isset($this->bindings[BootstrapperInterface::class])) {
@@ -807,6 +824,14 @@ class Application extends Container
             }
         });
 
+        $this->make(ResetManager::class)->register(function (Application $app): void {
+            if (! $app->resolved(ConfigurationScopeRegistry::class)) {
+                return;
+            }
+
+            $app->make(ConfigurationScopeRegistry::class)->clearCurrent();
+        });
+
         if (! isset($this->bindings[WorkerFactoryInterface::class])) {
             $this->singleton(WorkerFactoryInterface::class, fn(Application $app) => new WorkerFactory($app));
         }
@@ -1186,6 +1211,11 @@ HTML;
         return $this->make(ConfigBridge::class);
     }
 
+    public function configWriter(): ConfigurationOverrideWriter
+    {
+        return $this->make(ConfigurationOverrideWriter::class);
+    }
+
     public function environment(): string
     {
         $environment = $this->configBridge()->static('app.env', $this->config('app.env'));
@@ -1285,6 +1315,19 @@ HTML;
     public function getProviders(): array
     {
         return $this->providers;
+    }
+
+    public function leaveScope(): void
+    {
+        $scopeId = $this->hasActiveScope() ? $this->currentScopeId() : null;
+
+        parent::leaveScope();
+
+        if ($scopeId === null || ! $this->resolved(ConfigurationScopeRegistry::class)) {
+            return;
+        }
+
+        $this->make(ConfigurationScopeRegistry::class)->endScope($scopeId);
     }
 
     protected function joinPath(string $basePath, string $path = ''): string

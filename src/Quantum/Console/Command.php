@@ -6,6 +6,7 @@ namespace Quantum\Console;
 
 use RuntimeException;
 use VoltStack\Framework\Application;
+use VoltStack\Runtime\Context\ScopeManager;
 
 abstract class Command
 {
@@ -66,5 +67,16 @@ abstract class Command
         }
 
         return $app;
+    }
+
+    protected function runInCommandRuntime(callable $callback, ?string $commandName = null): mixed
+    {
+        $app = $this->bootstrapApplication();
+        $scope = $app->make(ScopeManager::class);
+
+        return $scope->runInCommand(
+            fn(): mixed => $callback($app),
+            $commandName ?? $this->name(),
+        );
     }
 }

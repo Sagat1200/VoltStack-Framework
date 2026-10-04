@@ -8,7 +8,6 @@ use Quantum\Console\Command;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
 use Quantum\Database\Contracts\DatabaseInterface;
-use VoltStack\Runtime\Context\ScopeManager;
 
 final class DatabaseRollbackCommand extends Command
 {
@@ -48,9 +47,7 @@ final class DatabaseRollbackCommand extends Command
 
     public function handle(Input $input, Output $output): int
     {
-        $app = $this->bootstrapApplication();
-        $scope = $app->make(ScopeManager::class);
-        [$connection, $count] = $scope->runInCommand(function () use ($app, $input) {
+        [$connection, $count] = $this->runInCommandRuntime(function ($app) use ($input) {
             $path = $input->arguments()[0] ?? null;
             $connection = $this->resolveConnection($input);
             $count = $app->make(DatabaseInterface::class)->rollbackLastBatch(
@@ -59,7 +56,7 @@ final class DatabaseRollbackCommand extends Command
             );
 
             return [$connection, $count];
-        }, $this->name());
+        });
 
         $output->writeln('Database rollback completed.');
         $output->writeln(sprintf('  Connection: %s', $connection ?? 'default'));

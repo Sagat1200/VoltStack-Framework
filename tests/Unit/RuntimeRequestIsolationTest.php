@@ -11,6 +11,7 @@ use Quantum\Authorization\Authority\CachedAuthorityRepository;
 use Quantum\Authorization\Authority\InMemoryAuthorityRepository;
 use Quantum\Authorization\Contracts\AuthorityRepositoryInterface;
 use Quantum\Config\ConfigRepository;
+use Quantum\Config\Scope\ConfigurationOverrideWriter;
 use Quantum\Controllers\ControllerExecutionContext;
 use Quantum\Controllers\Security\Contracts\ControllerSecurityContextFactoryInterface;
 use Quantum\Controllers\Security\Contracts\ControllerSecurityManagerInterface;
@@ -178,6 +179,33 @@ final class RuntimeRequestIsolationTest extends TestCase
         self::assertNotSame($firstContext->decisions, $secondContext->decisions);
         self::assertSame(0, $secondContext->decisions->count());
         self::assertNull($secondContext->decisions->get($cacheKey));
+
+        $scopeManager->end();
+    }
+
+    public function test_configuration_overrides_are_isolated_per_request_scope(): void
+    {
+        $app = new Application($this->basePath);
+        $app->make(ConfigRepository::class)->set('controller_security.authorization.max_policy_evaluations', 16);
+        $scopeManager = $app->make(ScopeManager::class);
+
+        $scopeManager->begin(Request::create('/config/first'));
+        $writer = $app->make(ConfigurationOverrideWriter::class);
+        $writer->set('controller_security.authorization.max_policy_evaluations', 32);
+
+        self::assertSame(
+            32,
+            $app->configBridge()->scoped('controller_security.authorization.max_policy_evaluations'),
+        );
+
+        $scopeManager->end();
+
+        $scopeManager->begin(Request::create('/config/second'));
+
+        self::assertSame(
+            16,
+            $app->configBridge()->scoped('controller_security.authorization.max_policy_evaluations'),
+        );
 
         $scopeManager->end();
     }

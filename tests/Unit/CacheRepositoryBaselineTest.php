@@ -120,6 +120,58 @@ final class CacheRepositoryBaselineTest extends TestCase
         self::assertSame('v2', $repository->lookup('product:42')->metadata?->versions['namespace'] ?? null);
     }
 
+    public function test_tagged_repository_tracks_tag_versions_and_invalidates_only_matching_tag(): void
+    {
+        $authority = new LocalVersionAuthority();
+        $store = new MemoryStore($this->clockAt(1_700_000_000));
+        $repository = new Repository(
+            $store,
+            'catalog',
+            60,
+            null,
+            $authority,
+            'catalog',
+        );
+
+        $featured = $repository->tags(['featured']);
+        $seasonal = $repository->tags(['seasonal']);
+
+        self::assertTrue($featured->put('product:42', ['name' => 'A']));
+        self::assertTrue($seasonal->put('product:42', ['name' => 'B']));
+        self::assertSame(['name' => 'A'], $featured->get('product:42'));
+        self::assertSame(['name' => 'B'], $seasonal->get('product:42'));
+        self::assertSame('v1', $featured->lookup('product:42')->metadata?->versions['tag:featured'] ?? null);
+
+        self::assertTrue($repository->invalidateTags(['featured']));
+
+        self::assertSame('missing', $featured->get('product:42', 'missing'));
+        self::assertSame(['name' => 'B'], $seasonal->get('product:42'));
+        self::assertTrue($featured->put('product:42', ['name' => 'C']));
+        self::assertSame(['name' => 'C'], $featured->get('product:42'));
+        self::assertSame('v2', $featured->lookup('product:42')->metadata?->versions['tag:featured'] ?? null);
+    }
+
+    public function test_dependencies_alias_reuses_tag_namespace_mechanism(): void
+    {
+        $authority = new LocalVersionAuthority();
+        $store = new MemoryStore($this->clockAt(1_700_000_000));
+        $repository = new Repository(
+            $store,
+            'catalog',
+            60,
+            null,
+            $authority,
+            'catalog',
+        );
+
+        $dependent = $repository->dependencies(['tenant:42']);
+
+        self::assertTrue($dependent->put('dashboard', 'ready'));
+        self::assertSame('ready', $dependent->get('dashboard'));
+        self::assertTrue($repository->invalidateDependencies(['tenant:42']));
+        self::assertSame('missing', $dependent->get('dashboard', 'missing'));
+    }
+
     public function test_repository_receipts_report_applied_effect_for_successful_writes(): void
     {
         $repository = new Repository(new MemoryStore($this->clockAt(1_700_000_000)));

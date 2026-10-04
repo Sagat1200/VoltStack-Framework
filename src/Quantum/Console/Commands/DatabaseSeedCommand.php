@@ -9,7 +9,6 @@ use Quantum\Console\Input;
 use Quantum\Console\Output;
 use Quantum\Database\Contracts\SeederInterface;
 use Quantum\Database\Seeders\SeederRunner;
-use VoltStack\Runtime\Context\ScopeManager;
 
 /**
  * CLI entrypoint for the seeder subsystem.
@@ -59,9 +58,7 @@ final class DatabaseSeedCommand extends Command
 
     public function handle(Input $input, Output $output): int
     {
-        $app = $this->bootstrapApplication();
-        $scope = $app->make(ScopeManager::class);
-        $executed = $scope->runInCommand(function () use ($app, $input) {
+        $executed = $this->runInCommandRuntime(function ($app) use ($input) {
             /** @var SeederRunner $runner */
             $runner = $app->make(SeederRunner::class);
 
@@ -77,7 +74,7 @@ final class DatabaseSeedCommand extends Command
                 : null;
 
             return $runner->run($class, $path);
-        }, $this->name());
+        });
 
         $output->writeln('Database seed');
         $output->writeln(sprintf(

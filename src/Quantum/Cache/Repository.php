@@ -22,6 +22,7 @@ final class Repository
         private readonly ?MarshallerInterface $marshaller = null,
         private readonly ?VersionAuthorityInterface $versionAuthority = null,
         private readonly ?string $versionScope = null,
+        private readonly array $tagNames = [],
     ) {}
 
     public function lookup(string $key): Lookup
@@ -98,6 +99,10 @@ final class Repository
 
     public function clear(): bool
     {
+        if ($this->tagNames !== []) {
+            return $this->invalidateTags($this->tagNames);
+        }
+
         if ($this->versionAuthority === null || $this->versionScope === null || trim($this->versionScope) === '') {
             return $this->flush();
         }
@@ -110,6 +115,52 @@ final class Repository
     public function clearReceipt(): WriteReceipt
     {
         return $this->receiptFor($this->clear());
+    }
+
+    public function tags(array|string $tags): self
+    {
+        return new self(
+            $this->store,
+            $this->keyPrefix,
+            $this->defaultTtl,
+            $this->marshaller,
+            $this->versionAuthority,
+            $this->versionScope,
+            $this->mergeTags($tags),
+        );
+    }
+
+    public function dependencies(array|string $dependencies): self
+    {
+        return $this->tags($dependencies);
+    }
+
+    public function invalidateTags(array|string $tags): bool
+    {
+        if ($this->versionAuthority === null) {
+            return false;
+        }
+
+        foreach ($this->tagScopesFor($tags) as $scope) {
+            $this->versionAuthority->bump($scope);
+        }
+
+        return true;
+    }
+
+    public function invalidateTagsReceipt(array|string $tags): WriteReceipt
+    {
+        return $this->receiptFor($this->invalidateTags($tags));
+    }
+
+    public function invalidateDependencies(array|string $dependencies): bool
+    {
+        return $this->invalidateTags($dependencies);
+    }
+
+    public function invalidateDependenciesReceipt(array|string $dependencies): WriteReceipt
+    {
+        return $this->invalidateTagsReceipt($dependencies);
     }
 
     public function pull(string $key, mixed $default = null): mixed
@@ -196,10 +247,10 @@ final class Repository
         $prefix = trim($this->keyPrefix);
 
         if ($prefix === '') {
-            return $this->withVersionPrefix($key);
+            return $this->withTagVersionPrefix($this->withVersionPrefix($key));
         }
 
-        return $this->withVersionPrefix($prefix . ':' . $key);
+        return $this->withTagVersionPrefix($this->withVersionPrefix($prefix . ':' . $key));
     }
 
     private function encodeStoredValue(mixed $value): mixed
@@ -243,13 +294,17 @@ final class Repository
      */
     private function versionMetadata(): array
     {
-        if ($this->versionAuthority === null || $this->versionScope === null || trim($this->versionScope) === '') {
-            return [];
+        $versions = [];
+
+        if ($this->versionAuthority !== null && $this->versionScope !== null && trim($this->versionScope) !== '') {
+            $versions['namespace'] = $this->versionAuthority->currentVersion($this->versionScope);
         }
 
-        return [
-            'namespace' => $this->versionAuthority->currentVersion($this->versionScope),
-        ];
+        foreach ($this->tagNames as $tag) {
+            $versions['tag:' . $tag] = $this->tagVersionFor($tag);
+        }
+
+        return $versions;
     }
 
     private function withVersionPrefix(string $key): string
@@ -259,5 +314,84 @@ final class Repository
         }
 
         return $this->versionAuthority->currentVersion($this->versionScope) . ':' . $key;
+    }
+
+    private function withTagVersionPrefix(string $key): string
+    {
+        if ($this->tagNames === [] || $this->versionAuthority === null) {
+            return $key;
+        }
+
+        $prefix = implode(':', array_map(
+            fn(string $tag): string => 'tag[' . $tag . '=' . $this->tagVersionFor($tag) . ']',
+            $this->tagNames,
+        ));
+
+        return $prefix . ':' . $key;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function mergeTags(array|string $tags): array
+    {
+        $merged = array_merge($this->tagNames, $this->normalizeTags($tags));
+        $merged = array_values(array_unique($merged));
+        sort($merged, SORT_STRING);
+
+        return $merged;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function normalizeTags(array|string $tags): array
+    {
+        $values = is_array($tags) ? $tags : [$tags];
+        $normalized = [];
+
+        foreach ($values as $tag) {
+            $name = trim((string) $tag);
+
+            if ($name === '') {
+                continue;
+            }
+
+            $normalized[] = $name;
+        }
+
+        $normalized = array_values(array_unique($normalized));
+        sort($normalized, SORT_STRING);
+
+        return $normalized;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function tagScopesFor(array|string $tags): array
+    {
+        return array_map(
+            fn(string $tag): string => $this->tagScopeFor($tag),
+            $this->normalizeTags($tags),
+        );
+    }
+
+    private function tagScopeFor(string $tag): string
+    {
+        $scope = $this->versionScope !== null && trim($this->versionScope) !== ''
+            ? $this->versionScope
+            : 'global';
+
+        return $scope . '.tag.' . $tag;
+    }
+
+    private function tagVersionFor(string $tag): string
+    {
+        if ($this->versionAuthority === null) {
+            return 'v1';
+        }
+
+        return $this->versionAuthority->currentVersion($this->tagScopeFor($tag));
     }
 }

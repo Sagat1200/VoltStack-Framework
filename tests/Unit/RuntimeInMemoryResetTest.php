@@ -7,6 +7,7 @@ namespace VoltStack\Test\Unit;
 use DateTimeImmutable;
 use PHPUnit\Framework\TestCase;
 use Quantum\Config\ConfigRepository;
+use Quantum\Config\Scope\ConfigurationOverrideWriter;
 use Quantum\Controllers\Observability\Contracts\ControllerEventDispatcherInterface;
 use Quantum\Controllers\Observability\Contracts\ControllerEventInterface;
 use Quantum\Controllers\Observability\Engine\InMemoryControllerEventDispatcher;
@@ -64,6 +65,29 @@ final class RuntimeInMemoryResetTest extends TestCase
         self::assertTrue($report->successful());
         self::assertCount(0, $exporter->signals());
         self::assertCount(0, $dispatcher->events());
+    }
+
+    public function test_reset_manager_clears_scoped_configuration_overrides_after_a_request_cycle(): void
+    {
+        $app = new Application($this->basePath);
+        $app->make(ConfigRepository::class)->set('controller_security.authorization.max_policy_evaluations', 12);
+        $app->enterRequestScope();
+
+        try {
+            $writer = $app->make(ConfigurationOverrideWriter::class);
+            $writer->set('controller_security.authorization.max_policy_evaluations', 48);
+
+            self::assertSame(48, $app->configBridge()->scoped('controller_security.authorization.max_policy_evaluations'));
+
+            $report = $app->make(ResetManager::class)->reset($app);
+
+            self::assertTrue($report->successful());
+            self::assertSame(12, $app->configBridge()->scoped('controller_security.authorization.max_policy_evaluations'));
+        } finally {
+            if ($app->hasActiveScope()) {
+                $app->leaveScope();
+            }
+        }
     }
 
     private function deleteDirectory(string $path): void

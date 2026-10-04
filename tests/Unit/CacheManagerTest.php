@@ -153,6 +153,37 @@ final class CacheManagerTest extends TestCase
         self::assertSame('beta-v1', $beta->get('dashboard'));
     }
 
+    public function test_tagged_pool_clear_invalidates_only_the_tag_namespace(): void
+    {
+        $app = new Application($this->basePath);
+        $config = $app->make(ConfigRepository::class);
+        $config->set('cache.stores.memory', ['driver' => 'memory']);
+        $config->set('cache.pools.catalog', [
+            'store' => 'memory',
+            'prefix' => 'catalog',
+            'default_ttl' => 60,
+        ]);
+
+        $manager = $app->make(CacheManager::class);
+        $catalog = $manager->pool('catalog');
+        $featured = $catalog->tags(['featured']);
+        $seasonal = $catalog->tags(['seasonal']);
+
+        self::assertTrue($featured->put('homepage', 'featured-v1'));
+        self::assertTrue($seasonal->put('homepage', 'seasonal-v1'));
+        self::assertTrue($catalog->put('homepage', 'base-v1'));
+
+        self::assertSame('featured-v1', $featured->get('homepage'));
+        self::assertSame('seasonal-v1', $seasonal->get('homepage'));
+        self::assertSame('base-v1', $catalog->get('homepage'));
+
+        self::assertTrue($featured->clear());
+
+        self::assertSame('missing', $featured->get('homepage', 'missing'));
+        self::assertSame('seasonal-v1', $seasonal->get('homepage'));
+        self::assertSame('base-v1', $catalog->get('homepage'));
+    }
+
     private function deleteDirectory(string $path): void
     {
         if (! is_dir($path)) {

@@ -8,7 +8,9 @@ use DateInterval;
 use DateTimeInterface;
 use InvalidArgumentException;
 use Quantum\Cache\Contracts\ClockInterface;
+use Quantum\Cache\Contracts\MarshallerInterface;
 use Quantum\Cache\Contracts\StoreInterface;
+use Quantum\Cache\Contracts\VersionAuthorityInterface;
 use VoltStack\Framework\Application;
 
 final class CacheManager
@@ -40,7 +42,10 @@ final class CacheManager
             return $this->storeRepositories[$name];
         }
 
-        return $this->storeRepositories[$name] = new Repository($this->resolveStore($name));
+        return $this->storeRepositories[$name] = new Repository(
+            $this->resolveStore($name),
+            marshaller: $this->app->make(MarshallerInterface::class),
+        );
     }
 
     public function driver(?string $name = null): Repository
@@ -65,6 +70,9 @@ final class CacheManager
             $this->resolveStore($storeName),
             $prefix,
             $defaultTtl,
+            $this->app->make(MarshallerInterface::class),
+            $this->app->make(VersionAuthorityInterface::class),
+            $name,
         );
     }
 

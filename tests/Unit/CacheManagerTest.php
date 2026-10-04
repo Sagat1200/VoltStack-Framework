@@ -118,6 +118,41 @@ final class CacheManagerTest extends TestCase
         self::assertFalse($beta->has('shared'));
     }
 
+    public function test_pool_clear_invalidates_only_the_current_pool_generation(): void
+    {
+        $app = new Application($this->basePath);
+        $config = $app->make(ConfigRepository::class);
+        $config->set('cache.stores.memory', ['driver' => 'memory']);
+        $config->set('cache.pools.alpha', [
+            'store' => 'memory',
+            'prefix' => 'alpha',
+            'default_ttl' => 60,
+        ]);
+        $config->set('cache.pools.beta', [
+            'store' => 'memory',
+            'prefix' => 'beta',
+            'default_ttl' => 60,
+        ]);
+
+        $manager = $app->make(CacheManager::class);
+        $alpha = $manager->pool('alpha');
+        $beta = $manager->pool('beta');
+
+        self::assertTrue($alpha->put('dashboard', 'alpha-v1'));
+        self::assertTrue($beta->put('dashboard', 'beta-v1'));
+        self::assertSame('alpha-v1', $alpha->get('dashboard'));
+        self::assertSame('beta-v1', $beta->get('dashboard'));
+
+        self::assertTrue($alpha->clear());
+
+        self::assertSame('missing', $alpha->get('dashboard', 'missing'));
+        self::assertSame('beta-v1', $beta->get('dashboard'));
+
+        self::assertTrue($alpha->put('dashboard', 'alpha-v2'));
+        self::assertSame('alpha-v2', $alpha->get('dashboard'));
+        self::assertSame('beta-v1', $beta->get('dashboard'));
+    }
+
     private function deleteDirectory(string $path): void
     {
         if (! is_dir($path)) {

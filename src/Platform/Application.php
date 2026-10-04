@@ -12,10 +12,21 @@ use Quantum\Database\Integration\DatabaseServiceProvider;
 use Quantum\Auth\Exceptions\AuthExceptionMapper;
 use Quantum\Cache\CacheManager;
 use Quantum\Cache\Contracts\ClockInterface;
+use Quantum\Cache\Contracts\MarshallerInterface;
+use Quantum\Cache\Contracts\VersionAuthorityInterface;
+use Quantum\Cache\LocalVersionAuthority;
 use Quantum\Cache\Repository as CacheRepository;
+use Quantum\Cache\PhpSerializeMarshaller;
 use Quantum\Cache\SystemClock;
 use Quantum\Bootstrap\Bootstrapper;
 use Quantum\Bootstrap\Contracts\BootstrapperInterface;
+use Quantum\Config\Bridge\ConfigAccessRegistry;
+use Quantum\Config\Bridge\ConfigBridge;
+use Quantum\Config\Bridge\FrameworkConfigAccessProfile;
+use Quantum\Config\Diagnostics\ConfigRedactor;
+use Quantum\Config\Reference\ConfigReferenceResolver;
+use Quantum\Config\Reference\EnvSecretValueResolver;
+use Quantum\Config\Reference\SecretValueResolverInterface;
 use Quantum\Compilation\ArtifactStore;
 use Quantum\Compilation\BuildManifest;
 use Quantum\Compilation\CompiledControllerFactory;
@@ -38,6 +49,11 @@ use Quantum\Controllers\Observability\Engine\ControllerObservabilityManager;
 use Quantum\Controllers\Observability\Engine\InMemoryControllerEventDispatcher;
 use Quantum\Controllers\Observability\Engine\JsonLineControllerEventDispatcher;
 use Quantum\Controllers\Observability\Engine\NullControllerEventDispatcher;
+use Quantum\Controllers\ControllerEngine;
+use Quantum\Controllers\ControllerInvoker;
+use Quantum\Controllers\ControllerResolver;
+use Quantum\Controllers\Interceptors\ControllerInterceptorPipeline;
+use Quantum\Controllers\ParameterResolutionEngine;
 use Quantum\Controllers\Runtime\ControllerRuntimeResolver;
 use Quantum\Controllers\Runtime\ControllerRuntimeResolverInterface;
 use Quantum\Container\Container;
@@ -217,6 +233,36 @@ class Application extends Container
             $this->instance(ConfigRepository::class, new ConfigRepository());
         }
 
+        if (! isset($this->instances[ConfigAccessRegistry::class])) {
+            $this->instance(ConfigAccessRegistry::class, FrameworkConfigAccessProfile::build());
+        }
+
+        if (! isset($this->instances[ConfigBridge::class])) {
+            $bridge = new ConfigBridge($this->make(ConfigAccessRegistry::class));
+            $this->instance(ConfigBridge::class, $bridge);
+
+            /** @var ConfigRepository $config */
+            $config = $this->make(ConfigRepository::class);
+            $config->onMutation(static function (ConfigRepository $repository) use ($bridge): void {
+                $bridge->sync($repository);
+            });
+            $bridge->sync($config);
+        }
+
+        if (! isset($this->bindings[SecretValueResolverInterface::class])) {
+            $this->singleton(SecretValueResolverInterface::class, fn() => new EnvSecretValueResolver());
+        }
+
+        if (! isset($this->bindings[ConfigReferenceResolver::class])) {
+            $this->singleton(ConfigReferenceResolver::class, fn(Application $app) => new ConfigReferenceResolver(
+                $app->make(SecretValueResolverInterface::class),
+            ));
+        }
+
+        if (! isset($this->bindings[ConfigRedactor::class])) {
+            $this->singleton(ConfigRedactor::class, fn() => new ConfigRedactor());
+        }
+
         if (! isset($this->bindings[BootstrapperInterface::class])) {
             $this->singleton(BootstrapperInterface::class, fn(Application $app) => new Bootstrapper($app));
         }
@@ -264,7 +310,7 @@ class Application extends Container
         if (! isset($this->bindings[CompiledViewStore::class])) {
             $this->singleton(CompiledViewStore::class, fn(Application $app) => new CompiledViewStore(
                 $app->make(ViewCompiler::class),
-                (string) $app->config('cache.compiled.views', $app->cachePath('compiled/views')),
+                (string) $app->make(ConfigBridge::class)->static('cache.compiled.views', $app->cachePath('compiled/views')),
             ));
         }
 
@@ -289,6 +335,14 @@ class Application extends Container
 
         if (! isset($this->bindings[ClockInterface::class])) {
             $this->singleton(ClockInterface::class, SystemClock::class);
+        }
+
+        if (! isset($this->bindings[MarshallerInterface::class])) {
+            $this->singleton(MarshallerInterface::class, PhpSerializeMarshaller::class);
+        }
+
+        if (! isset($this->bindings[VersionAuthorityInterface::class])) {
+            $this->singleton(VersionAuthorityInterface::class, LocalVersionAuthority::class);
         }
 
         if (! isset($this->bindings[CacheRepository::class])) {
@@ -474,7 +528,8 @@ class Application extends Container
 
         if (! isset($this->bindings[ControllerEventDispatcherInterface::class])) {
             $this->singleton(ControllerEventDispatcherInterface::class, function (Application $app): ControllerEventDispatcherInterface {
-                $mode = $app->config('controller_observability.dispatcher', 'auto');
+                $bridge = $app->make(ConfigBridge::class);
+                $mode = $bridge->static('controller_observability.dispatcher', 'auto');
 
                 if ($mode === 'null') {
                     return new NullControllerEventDispatcher();
@@ -485,7 +540,7 @@ class Application extends Container
                 }
 
                 if ($mode === 'jsonl') {
-                    $path = $app->config('controller_observability.jsonl_path');
+                    $path = $bridge->static('controller_observability.jsonl_path');
 
                     if (is_string($path) && trim($path) !== '') {
                         return new JsonLineControllerEventDispatcher(trim($path));
@@ -519,7 +574,8 @@ class Application extends Container
 
         if (! isset($this->bindings[TelemetryExporterInterface::class])) {
             $this->singleton(TelemetryExporterInterface::class, function (Application $app): TelemetryExporterInterface {
-                $mode = $app->config('telemetry.exporter', 'auto');
+                $bridge = $app->make(ConfigBridge::class);
+                $mode = $bridge->static('telemetry.exporter', 'auto');
 
                 if ($mode === 'null') {
                     return new NullTelemetryExporter();
@@ -530,7 +586,7 @@ class Application extends Container
                 }
 
                 if ($mode === 'jsonl') {
-                    $path = $app->config('telemetry.jsonl_path');
+                    $path = $bridge->static('telemetry.jsonl_path');
 
                     if (is_string($path) && trim($path) !== '') {
                         return new JsonLineTelemetryExporter(trim($path));
@@ -542,12 +598,12 @@ class Application extends Container
                 }
 
                 if ($mode === 'webhook') {
-                    $endpoint = trim((string) $app->config('telemetry.webhook_url', ''));
+                    $endpoint = trim((string) $bridge->static('telemetry.webhook_url', ''));
                     if ($endpoint === '') {
                         throw new RuntimeException('Telemetry webhook exporter requires [telemetry.webhook_url].');
                     }
 
-                    $headers = $app->config('telemetry.webhook_headers', []);
+                    $headers = $bridge->static('telemetry.webhook_headers', []);
                     if (! is_array($headers)) {
                         $headers = [];
                     }
@@ -566,7 +622,7 @@ class Application extends Container
                     return new HttpTelemetryExporter(
                         endpoint: $endpoint,
                         headers: $normalizedHeaders,
-                        requestTimeoutMs: max(250, (int) $app->config('telemetry.webhook_timeout_ms', 2000)),
+                        requestTimeoutMs: max(250, (int) $bridge->static('telemetry.webhook_timeout_ms', 2000)),
                     );
                 }
 
@@ -593,7 +649,7 @@ class Application extends Container
 
         if (! isset($this->bindings[BuildManifestInterface::class])) {
             $this->singleton(BuildManifestInterface::class, function (Application $app): BuildManifestInterface {
-                $paths = $app->config('controller_compilation.paths', []);
+                $paths = $app->make(ConfigBridge::class)->static('controller_compilation.paths', []);
                 $root = is_array($paths) && isset($paths['root']) && is_string($paths['root'])
                     ? $paths['root']
                     : $app->joinPath($app->storagePath('framework'), 'controllers');
@@ -604,12 +660,13 @@ class Application extends Container
 
         if (! isset($this->bindings[ArtifactStoreInterface::class])) {
             $this->singleton(ArtifactStoreInterface::class, function (Application $app): ArtifactStoreInterface {
-                $paths = $app->config('controller_compilation.paths', []);
+                $bridge = $app->make(ConfigBridge::class);
+                $paths = $bridge->static('controller_compilation.paths', []);
                 $root = is_array($paths) && isset($paths['root']) && is_string($paths['root'])
                     ? $paths['root']
                     : $app->joinPath($app->storagePath('framework'), 'controllers');
 
-                $format = $app->config('controller_compilation.artifacts.format', 'php');
+                $format = $bridge->static('controller_compilation.artifacts.format', 'php');
 
                 return new ArtifactStore(
                     manifest: $app->make(BuildManifestInterface::class),
@@ -625,7 +682,7 @@ class Application extends Container
 
         if (! isset($this->bindings[CompiledControllerFactoryInterface::class])) {
             $this->singleton(CompiledControllerFactoryInterface::class, function (Application $app): CompiledControllerFactoryInterface {
-                $cache = $app->config('controller_compilation.cache', []);
+                $cache = $app->make(ConfigBridge::class)->static('controller_compilation.cache', []);
                 $workerMax = 2048;
 
                 if (
@@ -959,6 +1016,31 @@ HTML;
             $this->singleton(KernelContract::class, fn(Application $app) => $app->make(HttpKernel::class));
         }
 
+        if (! isset($this->bindings[ControllerEngine::class])) {
+            $this->bind(ControllerEngine::class, fn(Application $app) => new ControllerEngine(
+                app: $app,
+                resolver: $app->make(ControllerResolver::class),
+                parameters: $app->make(ParameterResolutionEngine::class),
+                missing: $app->make(\Quantum\Routing\Dispatching\MissingRouteHandler::class),
+                invoker: $app->make(ControllerInvoker::class),
+                interceptors: $app->make(ControllerInterceptorPipeline::class),
+                runtime: $app->make(ControllerRuntimeResolverInterface::class),
+                observability: $app->make(ControllerObservabilityManagerInterface::class),
+                normalizer: $app->make(ResponseNormalizer::class),
+                compiledFactory: $app->make(CompiledControllerFactoryInterface::class),
+                securityManager: null,
+                authorizationContextFactory: $app->has(\Quantum\Authorization\Contracts\AuthorizationContextFactoryInterface::class)
+                    ? $app->make(\Quantum\Authorization\Contracts\AuthorizationContextFactoryInterface::class)
+                    : null,
+                authorizationManager: $app->has(\Quantum\Authorization\Contracts\AuthorizationManagerInterface::class)
+                    ? $app->make(\Quantum\Authorization\Contracts\AuthorizationManagerInterface::class)
+                    : null,
+                authorizationMetadataResolver: $app->has(\Quantum\Authorization\Contracts\AuthorizationMetadataResolverInterface::class)
+                    ? $app->make(\Quantum\Authorization\Contracts\AuthorizationMetadataResolverInterface::class)
+                    : null,
+            ));
+        }
+
         if (! isset($this->bindings[ControllerSecurityPolicyRegistryInterface::class])) {
             $this->singleton(ControllerSecurityPolicyRegistryInterface::class, function (Application $app): ControllerSecurityPolicyRegistryInterface {
                 $resolver = PolicyExpressionResolver::default();
@@ -1009,7 +1091,7 @@ HTML;
 
         if (! isset($this->bindings[ControllerSecurityContextFactoryInterface::class])) {
             $this->scopedFor(ControllerSecurityContextFactoryInterface::class, function (Application $app): ControllerSecurityContextFactoryInterface {
-                $max = $app->config('controller_security.authorization.max_policy_evaluations', 64);
+                $max = $app->make(ConfigBridge::class)->scoped('controller_security.authorization.max_policy_evaluations', 64);
                 $max = is_numeric($max) ? (int) $max : 64;
                 $authManager = null;
 
@@ -1099,9 +1181,14 @@ HTML;
         return $config->get($key, $default);
     }
 
+    public function configBridge(): ConfigBridge
+    {
+        return $this->make(ConfigBridge::class);
+    }
+
     public function environment(): string
     {
-        $environment = $this->config('app.env');
+        $environment = $this->configBridge()->static('app.env', $this->config('app.env'));
 
         if (! is_string($environment) || trim($environment) === '') {
             return 'local';

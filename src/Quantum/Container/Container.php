@@ -197,6 +197,31 @@ class Container implements ContainerInterface
         return $this->enterScope(ScopeKind::Tenant->value);
     }
 
+    public function runInWorkerScope(callable $callback): mixed
+    {
+        return $this->executeInScope(fn(): string => $this->enterWorkerScope(), $callback);
+    }
+
+    public function runInRequestScope(callable $callback): mixed
+    {
+        return $this->executeInScope(fn(): string => $this->enterRequestScope(), $callback);
+    }
+
+    public function runInJobScope(callable $callback): mixed
+    {
+        return $this->executeInScope(fn(): string => $this->enterJobScope(), $callback);
+    }
+
+    public function runInCommandScope(callable $callback): mixed
+    {
+        return $this->executeInScope(fn(): string => $this->enterCommandScope(), $callback);
+    }
+
+    public function runInTenantScope(callable $callback): mixed
+    {
+        return $this->executeInScope(fn(): string => $this->enterTenantScope(), $callback);
+    }
+
     public function leaveScope(): void
     {
         $this->scopeStack()->leave();
@@ -443,5 +468,16 @@ class Container implements ContainerInterface
             ScopeKind::Tenant->value,
             $currentKind->value,
         ));
+    }
+
+    protected function executeInScope(callable $enterScope, callable $callback): mixed
+    {
+        $enterScope();
+
+        try {
+            return $callback($this);
+        } finally {
+            $this->leaveScope();
+        }
     }
 }

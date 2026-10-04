@@ -175,6 +175,65 @@ final class ExplicitScopeContainerTest extends TestCase
         $container->enterTenantScope();
     }
 
+    public function test_scope_execution_helpers_return_callback_results_and_restore_previous_scope(): void
+    {
+        $container = new Container();
+
+        $result = $container->runInRequestScope(function (Container $container): array {
+            $requestKind = $container->currentScopeKind();
+
+            $tenantKind = $container->runInTenantScope(
+                fn(Container $container): string => $container->currentScopeKind()
+            );
+
+            return [$requestKind, $tenantKind, $container->currentScopeKind()];
+        });
+
+        self::assertSame(['request', 'tenant', 'request'], $result);
+        self::assertSame('root', $container->currentScopeKind());
+    }
+
+    public function test_scope_execution_helpers_close_the_opened_scope_even_when_the_callback_fails(): void
+    {
+        $container = new Container();
+
+        try {
+            $container->runInJobScope(function (): never {
+                throw new \RuntimeException('boom');
+            });
+            self::fail('The callback exception should be propagated.');
+        } catch (\RuntimeException $exception) {
+            self::assertSame('boom', $exception->getMessage());
+        }
+
+        self::assertSame('root', $container->currentScopeKind());
+        self::assertFalse($container->hasActiveScope());
+    }
+
+    public function test_scope_execution_helpers_support_worker_command_and_tenant_chains(): void
+    {
+        $container = new Container();
+
+        $kinds = $container->runInWorkerScope(function (Container $container): array {
+            $workerKind = $container->currentScopeKind();
+
+            $commandKinds = $container->runInCommandScope(function (Container $container): array {
+                return [
+                    $container->currentScopeKind(),
+                    $container->runInTenantScope(
+                        fn(Container $container): string => $container->currentScopeKind()
+                    ),
+                    $container->currentScopeKind(),
+                ];
+            });
+
+            return [$workerKind, ...$commandKinds, $container->currentScopeKind()];
+        });
+
+        self::assertSame(['worker', 'command', 'tenant', 'command', 'worker'], $kinds);
+        self::assertSame('root', $container->currentScopeKind());
+    }
+
     public function test_unknown_scope_names_are_classified_as_generic_scope_kind(): void
     {
         $container = new Container();

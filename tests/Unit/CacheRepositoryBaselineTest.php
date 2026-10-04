@@ -9,6 +9,7 @@ use Quantum\Cache\Contracts\ClockInterface;
 use Quantum\Cache\Effect;
 use Quantum\Cache\FileStore;
 use Quantum\Cache\HitState;
+use Quantum\Cache\LocalVersionAuthority;
 use Quantum\Cache\MemoryStore;
 use Quantum\Cache\NullStore;
 use Quantum\Cache\Repository;
@@ -30,6 +31,7 @@ final class CacheRepositoryBaselineTest extends TestCase
         self::assertNull($lookup->value);
         self::assertNotNull($lookup->metadata);
         self::assertSame('memory', $lookup->metadata?->sourceLevel);
+        self::assertIsArray($store->payload('optional')['value'] ?? null);
     }
 
     public function test_memory_store_expires_entries_from_ttl(): void
@@ -76,9 +78,46 @@ final class CacheRepositoryBaselineTest extends TestCase
             self::assertSame(['html' => true], $lookup->value);
             self::assertNotNull($lookup->metadata);
             self::assertSame('file', $lookup->metadata?->sourceLevel);
+            self::assertIsArray($store->payload('page.home')['value'] ?? null);
         } finally {
             $this->deleteDirectory($directory);
         }
+    }
+
+    public function test_repository_reads_legacy_raw_payloads_without_envelope(): void
+    {
+        $store = new MemoryStore($this->clockAt(1_700_000_000));
+        $store->put('legacy', ['raw' => true], 60);
+
+        $repository = new Repository($store);
+
+        self::assertSame(['raw' => true], $repository->get('legacy'));
+        self::assertSame(HitState::Fresh, $repository->lookup('legacy')->state);
+    }
+
+    public function test_repository_clear_rotates_local_version_scope_when_authority_exists(): void
+    {
+        $authority = new LocalVersionAuthority();
+        $store = new MemoryStore($this->clockAt(1_700_000_000));
+        $repository = new Repository(
+            $store,
+            'catalog',
+            60,
+            null,
+            $authority,
+            'catalog',
+        );
+
+        self::assertTrue($repository->put('product:42', ['name' => 'A']));
+        self::assertSame(['name' => 'A'], $repository->get('product:42'));
+        self::assertSame('v1', $repository->lookup('product:42')->metadata?->versions['namespace'] ?? null);
+
+        self::assertTrue($repository->clear());
+        self::assertSame('missing', $repository->get('product:42', 'missing'));
+
+        self::assertTrue($repository->put('product:42', ['name' => 'B']));
+        self::assertSame(['name' => 'B'], $repository->get('product:42'));
+        self::assertSame('v2', $repository->lookup('product:42')->metadata?->versions['namespace'] ?? null);
     }
 
     public function test_repository_receipts_report_applied_effect_for_successful_writes(): void

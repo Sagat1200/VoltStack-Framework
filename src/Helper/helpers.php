@@ -51,6 +51,29 @@ if (! function_exists('config')) {
     }
 }
 
+if (! function_exists('env')) {
+    function env(string $key, mixed $default = null): mixed
+    {
+        $value = $_ENV[$key] ?? getenv($key);
+
+        if ($value === false || $value === null || $value === '') {
+            return $default;
+        }
+
+        if (! is_string($value)) {
+            return $value;
+        }
+
+        return match (strtolower(trim($value))) {
+            'true', '(true)' => true,
+            'false', '(false)' => false,
+            'null', '(null)' => null,
+            'empty', '(empty)' => '',
+            default => $value,
+        };
+    }
+}
+
 if (! function_exists('base_path')) {
     function base_path(string $path = ''): string
     {

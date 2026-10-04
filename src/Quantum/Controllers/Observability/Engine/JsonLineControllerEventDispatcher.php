@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Quantum\Controllers\Observability\Engine;
 
-use DateTimeInterface;
 use JsonException;
+use Quantum\Config\Diagnostics\ConfigRedactor;
 use Quantum\Controllers\Observability\Contracts\ControllerEventDispatcherInterface;
 use Quantum\Controllers\Observability\Contracts\ControllerEventInterface;
 
@@ -14,6 +14,7 @@ final class JsonLineControllerEventDispatcher implements ControllerEventDispatch
     public function __construct(
         private readonly string $filePath,
         private readonly int $maxBytesPerLine = 32768,
+        private readonly ?ConfigRedactor $redactor = null,
     ) {
     }
 
@@ -62,52 +63,6 @@ final class JsonLineControllerEventDispatcher implements ControllerEventDispatch
 
     private function sanitize(mixed $value, int $depth = 0): mixed
     {
-        if ($depth >= 6) {
-            return '[depth-exceeded]';
-        }
-
-        if ($value === null || is_bool($value) || is_int($value) || is_float($value)) {
-            return $value;
-        }
-
-        if (is_string($value)) {
-            if (strlen($value) <= 2048) {
-                return $value;
-            }
-
-            return substr($value, 0, 2048) . '…';
-        }
-
-        if (is_array($value)) {
-            $items = [];
-            $count = 0;
-
-            foreach ($value as $key => $item) {
-                $count++;
-
-                if ($count > 100) {
-                    $items['_truncated'] = true;
-                    break;
-                }
-
-                $normalizedKey = is_int($key) ? $key : (string) $key;
-                $items[$normalizedKey] = $this->sanitize($item, $depth + 1);
-            }
-
-            return $items;
-        }
-
-        if ($value instanceof DateTimeInterface) {
-            return $value->format(DATE_ATOM);
-        }
-
-        if (is_object($value)) {
-            return [
-                '_type' => $value::class,
-            ];
-        }
-
-        return '[unserializable]';
+        return ($this->redactor ?? new ConfigRedactor())->redact($value);
     }
 }
-

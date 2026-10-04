@@ -82,6 +82,27 @@ final class ControllerEngine
 
     public function handle(RouteMatch $match, Request $request): Response
     {
+        $openedSecurityScope = false;
+        $securityManager = $this->securityManager;
+
+        if ($this->securityGloballyEnabled) {
+            if (! $this->app->hasActiveScope()) {
+                $this->app->enterRequestScope();
+                $openedSecurityScope = true;
+            }
+
+            if ($securityManager === null) {
+                try {
+                    $resolvedManager = $this->app->make(ControllerSecurityManagerInterface::class);
+                    $securityManager = $resolvedManager instanceof ControllerSecurityManagerInterface
+                        ? $resolvedManager
+                        : null;
+                } catch (Throwable) {
+                    $securityManager = null;
+                }
+            }
+        }
+
         $definition = new ControllerDefinition($match->route()->action());
         $context = new ControllerContext($this->app, $match, $request);
 
@@ -191,8 +212,8 @@ final class ControllerEngine
                 $this->observability->emit('controllers.compilation.materialize_failed', $execution, $compilationMaterializeError);
             }
 
-            if ($this->securityGloballyEnabled && $this->securityManager !== null) {
-                $securityContext = $this->securityManager->initialize($request, $executionContext);
+            if ($this->securityGloballyEnabled && $securityManager !== null) {
+                $securityContext = $securityManager->initialize($request, $executionContext);
                 $executionContext->setSecurityContext($securityContext);
                 $execution->setAttribute('controller.security.context', $securityContext);
                 $execution->setAttribute('controller.security.principal_type', $securityContext->principal->type()->value);
@@ -230,7 +251,7 @@ final class ControllerEngine
 
                 try {
                     $this->assertExposure($target, $securityMetadata);
-                    $this->securityManager->assertAuthorized($secRequest);
+                    $securityManager->assertAuthorized($secRequest);
                     $this->observability->emit('controllers.security.authorization.allowed', $execution, [
                         'target_signature' => $target->signature,
                         'action' => $action,
@@ -329,12 +350,17 @@ final class ControllerEngine
 
             return $this->normalizer->normalize($result);
         } finally {
-            if ($securityContext !== null && $this->securityManager !== null) {
+            if ($securityContext !== null && $securityManager !== null) {
                 try {
-                    $this->securityManager->finalize($securityContext);
+                    $securityManager->finalize($securityContext);
                 } catch (Throwable) {
                 }
             }
+
+            if ($openedSecurityScope) {
+                $this->app->leaveScope();
+            }
+
             $this->endPinIfNeeded();
         }
     }

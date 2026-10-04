@@ -8,7 +8,6 @@ use Quantum\Console\Command;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
 use Quantum\Database\Contracts\DatabaseInterface;
-use Quantum\Http\Request;
 use VoltStack\Runtime\Context\ScopeManager;
 
 final class DatabaseMigrateCommand extends Command
@@ -51,18 +50,16 @@ final class DatabaseMigrateCommand extends Command
     {
         $app = $this->bootstrapApplication();
         $scope = $app->make(ScopeManager::class);
-        $scope->begin(Request::create('/_cli/database/migrate', 'POST'));
-
-        try {
+        [$connection, $count] = $scope->runInCommand(function () use ($app, $input) {
             $path = $input->arguments()[0] ?? null;
             $connection = $this->resolveConnection($input);
             $count = $app->make(DatabaseInterface::class)->migrate(
                 is_string($path) && trim($path) !== '' ? trim($path) : null,
                 $connection,
             );
-        } finally {
-            $scope->end();
-        }
+
+            return [$connection, $count];
+        }, $this->name());
 
         $output->writeln('Database migrate completed.');
         $output->writeln(sprintf('  Connection: %s', $connection ?? 'default'));

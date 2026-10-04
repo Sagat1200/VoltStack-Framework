@@ -7,14 +7,21 @@ namespace Quantum\Cache;
 use DateInterval;
 use DateTimeInterface;
 use Quantum\Cache\Contracts\InspectableStoreInterface;
+use Quantum\Cache\Contracts\MarshallerInterface;
 use Quantum\Cache\Contracts\StoreInterface;
+use Quantum\Cache\Contracts\VersionAuthorityInterface;
 
 final class Repository
 {
+    private const ENVELOPE_MARKER = '__quantum_cache_envelope_v1';
+
     public function __construct(
         private readonly StoreInterface $store,
         private readonly string $keyPrefix = '',
         private readonly DateInterval|DateTimeInterface|int|null $defaultTtl = null,
+        private readonly ?MarshallerInterface $marshaller = null,
+        private readonly ?VersionAuthorityInterface $versionAuthority = null,
+        private readonly ?string $versionScope = null,
     ) {}
 
     public function lookup(string $key): Lookup
@@ -25,7 +32,7 @@ final class Repository
             return new Lookup(HitState::Miss, null, missReason: 'not_found');
         }
 
-        $value = $this->store->get($normalizedKey);
+        $value = $this->decodeStoredValue($this->store->get($normalizedKey));
 
         return new Lookup(
             HitState::Fresh,
@@ -36,14 +43,20 @@ final class Repository
 
     public function get(string $key, mixed $default = null): mixed
     {
-        return $this->store->get($this->normalizeKey($key), $default);
+        $normalizedKey = $this->normalizeKey($key);
+
+        if (! $this->store->has($normalizedKey)) {
+            return $default;
+        }
+
+        return $this->decodeStoredValue($this->store->get($normalizedKey));
     }
 
     public function put(string $key, mixed $value, DateInterval|DateTimeInterface|int|null $ttl = null): bool
     {
         return $this->store->put(
             $this->normalizeKey($key),
-            $value,
+            $this->encodeStoredValue($value),
             $ttl ?? $this->defaultTtl,
         );
     }
@@ -55,7 +68,7 @@ final class Repository
 
     public function forever(string $key, mixed $value): bool
     {
-        return $this->store->forever($this->normalizeKey($key), $value);
+        return $this->store->forever($this->normalizeKey($key), $this->encodeStoredValue($value));
     }
 
     public function foreverReceipt(string $key, mixed $value): WriteReceipt
@@ -81,6 +94,22 @@ final class Repository
     public function flush(): bool
     {
         return $this->store->flush();
+    }
+
+    public function clear(): bool
+    {
+        if ($this->versionAuthority === null || $this->versionScope === null || trim($this->versionScope) === '') {
+            return $this->flush();
+        }
+
+        $this->versionAuthority->bump($this->versionScope);
+
+        return true;
+    }
+
+    public function clearReceipt(): WriteReceipt
+    {
+        return $this->receiptFor($this->clear());
     }
 
     public function pull(string $key, mixed $default = null): mixed
@@ -157,6 +186,7 @@ final class Repository
             createdAtMs: $payload['created_at_ms'],
             freshUntilMs: is_int($expiresAt) ? $expiresAt * 1000 : null,
             hardUntilMs: is_int($expiresAt) ? $expiresAt * 1000 : null,
+            versions: $this->versionMetadata(),
             sourceLevel: $this->store->sourceLevel(),
         );
     }
@@ -166,9 +196,68 @@ final class Repository
         $prefix = trim($this->keyPrefix);
 
         if ($prefix === '') {
+            return $this->withVersionPrefix($key);
+        }
+
+        return $this->withVersionPrefix($prefix . ':' . $key);
+    }
+
+    private function encodeStoredValue(mixed $value): mixed
+    {
+        $marshaller = $this->marshaller ?? new PhpSerializeMarshaller();
+        $encoded = $marshaller->encode($value);
+
+        return [
+            self::ENVELOPE_MARKER => true,
+            'format' => $encoded->formatId,
+            'schema' => $encoded->schemaVersion,
+            'bytes' => $encoded->bytes,
+        ];
+    }
+
+    private function decodeStoredValue(mixed $value): mixed
+    {
+        if (! is_array($value) || ($value[self::ENVELOPE_MARKER] ?? false) !== true) {
+            return $value;
+        }
+
+        $bytes = $value['bytes'] ?? null;
+        $format = $value['format'] ?? null;
+        $schema = $value['schema'] ?? null;
+
+        if (! is_string($bytes) || ! is_string($format) || ! is_int($schema)) {
+            return $value;
+        }
+
+        $marshaller = $this->marshaller ?? new PhpSerializeMarshaller();
+
+        return $marshaller->decode(new EncodedValue(
+            formatId: $format,
+            schemaVersion: $schema,
+            bytes: $bytes,
+        ));
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function versionMetadata(): array
+    {
+        if ($this->versionAuthority === null || $this->versionScope === null || trim($this->versionScope) === '') {
+            return [];
+        }
+
+        return [
+            'namespace' => $this->versionAuthority->currentVersion($this->versionScope),
+        ];
+    }
+
+    private function withVersionPrefix(string $key): string
+    {
+        if ($this->versionAuthority === null || $this->versionScope === null || trim($this->versionScope) === '') {
             return $key;
         }
 
-        return $prefix . ':' . $key;
+        return $this->versionAuthority->currentVersion($this->versionScope) . ':' . $key;
     }
 }

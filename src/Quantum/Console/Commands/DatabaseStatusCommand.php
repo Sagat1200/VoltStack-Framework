@@ -8,7 +8,6 @@ use Quantum\Console\Command;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
 use Quantum\Database\Contracts\DatabaseInterface;
-use Quantum\Http\Request;
 use VoltStack\Runtime\Context\ScopeManager;
 
 final class DatabaseStatusCommand extends Command
@@ -44,14 +43,14 @@ final class DatabaseStatusCommand extends Command
     {
         $app = $this->bootstrapApplication();
         $scope = $app->make(ScopeManager::class);
-        $scope->begin(Request::create('/_cli/database/status', 'GET'));
-
-        try {
+        $status = $scope->runInCommand(function () use ($app, $input) {
             $connection = $this->resolveConnection($input);
             $status = $app->make(DatabaseInterface::class)->status($connection);
-        } finally {
-            $scope->end();
-        }
+
+            return [$connection, $status];
+        }, $this->name());
+
+        [$connection, $status] = $status;
 
         $output->writeln('Database status');
         $output->writeln(sprintf('  Default connection: %s', $status->defaultConnectionName));

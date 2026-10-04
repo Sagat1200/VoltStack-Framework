@@ -9,7 +9,6 @@ use Quantum\Console\Input;
 use Quantum\Console\Output;
 use Quantum\Database\Contracts\SeederInterface;
 use Quantum\Database\Seeders\SeederRunner;
-use Quantum\Http\Request;
 use VoltStack\Runtime\Context\ScopeManager;
 
 /**
@@ -62,9 +61,7 @@ final class DatabaseSeedCommand extends Command
     {
         $app = $this->bootstrapApplication();
         $scope = $app->make(ScopeManager::class);
-        $scope->begin(Request::create('/_cli/database/seed', 'POST'));
-
-        try {
+        $executed = $scope->runInCommand(function () use ($app, $input) {
             /** @var SeederRunner $runner */
             $runner = $app->make(SeederRunner::class);
 
@@ -79,17 +76,15 @@ final class DatabaseSeedCommand extends Command
                 ? trim($pathOption)
                 : null;
 
-            $executed = $runner->run($class, $path);
+            return $runner->run($class, $path);
+        }, $this->name());
 
-            $output->writeln('Database seed');
-            $output->writeln(sprintf(
-                '  Seeder ejecutado: [%s]',
-                $executed instanceof SeederInterface ? $executed::class : get_debug_type($executed),
-            ));
-            $output->writeln('  Resultado: OK');
-        } finally {
-            $scope->end();
-        }
+        $output->writeln('Database seed');
+        $output->writeln(sprintf(
+            '  Seeder ejecutado: [%s]',
+            $executed instanceof SeederInterface ? $executed::class : get_debug_type($executed),
+        ));
+        $output->writeln('  Resultado: OK');
 
         return 0;
     }

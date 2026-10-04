@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Quantum\Config;
 
+use Quantum\Config\Diagnostics\ConfigRedactor;
 use Quantum\Config\Loading\PhpConfigLoader;
+use Quantum\Config\Reference\ConfigReferenceResolver;
 use Quantum\Config\Schema\ConfigSchema;
 use Quantum\Config\Schema\ConfigSchemaRegistry;
 use Quantum\Config\Validation\ConfigValidationResult;
@@ -28,6 +30,11 @@ final class ConfigRepository
     private array $provenance = [];
 
     /**
+     * @var array<int, callable(self): void>
+     */
+    private array $mutationListeners = [];
+
+    /**
      * @param array<string, mixed> $items
      */
     public function __construct(array $items = [])
@@ -41,6 +48,14 @@ final class ConfigRepository
     public function all(): array
     {
         return $this->items;
+    }
+
+    /**
+     * @param callable(self): void $listener
+     */
+    public function onMutation(callable $listener): void
+    {
+        $this->mutationListeners[] = $listener;
     }
 
     /**
@@ -98,6 +113,7 @@ final class ConfigRepository
         }
 
         $target = $value;
+        $this->notifyMutationListeners();
     }
 
     public function replace(array $items): void
@@ -105,6 +121,7 @@ final class ConfigRepository
         $this->items = $items;
         $this->documents = [];
         $this->provenance = [];
+        $this->notifyMutationListeners();
     }
 
     public function hasPath(ConfigPath $path): bool
@@ -140,6 +157,7 @@ final class ConfigRepository
         }
 
         $target = $value;
+        $this->notifyMutationListeners();
     }
 
     /**
@@ -169,6 +187,38 @@ final class ConfigRepository
             payload: is_array($payload) ? $payload : [],
             schemaVersion: $schemaVersion,
         );
+    }
+
+    public function resolveReferences(
+        ?string $key = null,
+        ?ConfigReferenceResolver $resolver = null,
+    ): mixed {
+        $resolver ??= new ConfigReferenceResolver();
+
+        return $resolver->resolve($this->get($key));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function redact(
+        ?string $key = null,
+        ?ConfigRedactor $redactor = null,
+    ): array {
+        $redactor ??= new ConfigRedactor();
+        $value = $key === null ? $this->all() : $this->get($key);
+        $path = $key === null ? null : $key;
+        $redacted = $redactor->redact($value, $path);
+
+        if (is_array($redacted)) {
+            return $redacted;
+        }
+
+        if ($key === null) {
+            return [];
+        }
+
+        return [$key => $redacted];
     }
 
     public function validateSchema(
@@ -207,5 +257,13 @@ final class ConfigRepository
         }
 
         $this->documents = $loaded->documents();
+        $this->notifyMutationListeners();
+    }
+
+    private function notifyMutationListeners(): void
+    {
+        foreach ($this->mutationListeners as $listener) {
+            $listener($this);
+        }
     }
 }

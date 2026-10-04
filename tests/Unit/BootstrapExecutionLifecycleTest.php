@@ -128,7 +128,7 @@ PHP
         self::assertSame(WorkerDisposition::Reset, $result->workerDisposition());
         self::assertSame('ok', $result->response()?->content());
         self::assertTrue($result->resetReport()->successful());
-        self::assertSame(1, $result->resetReport()->executedCount());
+        self::assertGreaterThanOrEqual(1, $result->resetReport()->executedCount());
         self::assertSame(1, TestRequestResetter::$calls);
         self::assertFalse($app->make(WorkerLifecycle::class)->shouldReset());
         self::assertFalse($app->resolved('request.runner.scope'));

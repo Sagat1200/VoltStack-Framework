@@ -720,6 +720,30 @@ class Application extends Container
             $this->scopedFor(RequestRunner::class, RequestRunner::class, 'worker');
         }
 
+        $this->make(ResetManager::class)->register(function (Application $app): void {
+            if (! $app->resolved(TelemetryExporterInterface::class)) {
+                return;
+            }
+
+            $exporter = $app->make(TelemetryExporterInterface::class);
+
+            if ($exporter instanceof InMemoryTelemetryExporter) {
+                $exporter->clear();
+            }
+        });
+
+        $this->make(ResetManager::class)->register(function (Application $app): void {
+            if (! $app->resolved(ControllerEventDispatcherInterface::class)) {
+                return;
+            }
+
+            $dispatcher = $app->make(ControllerEventDispatcherInterface::class);
+
+            if ($dispatcher instanceof InMemoryControllerEventDispatcher) {
+                $dispatcher->clear();
+            }
+        });
+
         if (! isset($this->bindings[WorkerFactoryInterface::class])) {
             $this->singleton(WorkerFactoryInterface::class, fn(Application $app) => new WorkerFactory($app));
         }

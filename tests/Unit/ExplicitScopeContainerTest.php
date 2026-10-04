@@ -139,4 +139,57 @@ final class ExplicitScopeContainerTest extends TestCase
 
         $container->make('request.service');
     }
+
+    public function test_tenant_scoped_bindings_can_retain_request_scoped_dependencies(): void
+    {
+        $container = new Container();
+
+        $container->scopedFor('request.service', static fn(): object => new \stdClass(), 'request');
+        $container->scopedFor('tenant.service', function (Container $container): object {
+            return (object) ['dependency' => $container->make('request.service')];
+        }, 'tenant');
+
+        $container->enterScope('request');
+        $container->enterScope('tenant');
+
+        $resolved = $container->make('tenant.service');
+
+        self::assertInstanceOf(\stdClass::class, $resolved->dependency);
+    }
+
+    public function test_request_scoped_bindings_cannot_retain_tenant_scoped_dependencies(): void
+    {
+        $container = new Container();
+
+        $container->scopedFor('tenant.service', static fn(): object => new \stdClass(), 'tenant');
+        $container->scopedFor('request.service', function (Container $container): object {
+            return (object) ['dependency' => $container->make('tenant.service')];
+        }, 'request');
+
+        $container->enterScope('request');
+        $container->enterScope('tenant');
+
+        $this->expectException(BindingResolutionException::class);
+        $this->expectExceptionMessage('cannot retain dependency [tenant.service] with scope [tenant]');
+
+        $container->make('request.service');
+    }
+
+    public function test_worker_scoped_bindings_cannot_retain_request_scoped_dependencies(): void
+    {
+        $container = new Container();
+
+        $container->enterScope('worker');
+        $container->enterScope('request');
+
+        $container->scopedFor('request.service', static fn(): object => new \stdClass(), 'request');
+        $container->scopedFor('worker.service', function (Container $container): object {
+            return (object) ['dependency' => $container->make('request.service')];
+        }, 'worker');
+
+        $this->expectException(BindingResolutionException::class);
+        $this->expectExceptionMessage('cannot retain dependency [request.service] with scope [request]');
+
+        $container->make('worker.service');
+    }
 }

@@ -29,4 +29,17 @@ enum ScopeKind: string
             default => self::Generic,
         };
     }
+
+    public function canRetain(self $dependencyKind): bool
+    {
+        return match ($this) {
+            self::Root => $dependencyKind === self::Root,
+            self::Worker => in_array($dependencyKind, [self::Worker], true),
+            self::Request => in_array($dependencyKind, [self::Request, self::Worker], true),
+            self::Tenant => in_array($dependencyKind, [self::Tenant, self::Request, self::Worker], true),
+            self::Job => in_array($dependencyKind, [self::Job, self::Worker], true),
+            self::Command => in_array($dependencyKind, [self::Command, self::Worker], true),
+            self::Generic => in_array($dependencyKind, [self::Generic], true),
+        };
+    }
 }

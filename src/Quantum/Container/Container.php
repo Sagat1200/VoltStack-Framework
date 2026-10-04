@@ -34,6 +34,11 @@ class Container implements ContainerInterface
 
     protected ?ScopeStack $scopeStack = null;
 
+    /**
+     * @var list<Binding>
+     */
+    protected array $bindingResolutionStack = [];
+
     public function bind(string $abstract, mixed $concrete = null, bool $shared = false): void
     {
         $abstract = $this->normalize($abstract);
@@ -113,7 +118,18 @@ class Container implements ContainerInterface
 
         $concrete = $binding?->concrete ?? $abstract;
 
-        $object = $this->resolve($concrete, $parameters);
+        $this->assertScopedDependencyCompatibility($binding);
+        if ($binding !== null) {
+            $this->bindingResolutionStack[] = $binding;
+        }
+
+        try {
+            $object = $this->resolve($concrete, $parameters);
+        } finally {
+            if ($binding !== null) {
+                array_pop($this->bindingResolutionStack);
+            }
+        }
 
         if ($binding?->shared) {
             $this->instances[$abstract] = $object;
@@ -257,6 +273,31 @@ class Container implements ContainerInterface
 
         throw new \Quantum\Container\Exceptions\BindingResolutionException(sprintf(
             'Scoped binding [%s] requires an active [%s] scope.',
+            $binding->abstract,
+            $binding->scopeKindName() ?? 'scope',
+        ));
+    }
+
+    protected function assertScopedDependencyCompatibility(?Binding $binding): void
+    {
+        if ($binding === null || ! $binding->scoped || $binding->scopeKind === null) {
+            return;
+        }
+
+        $parentBinding = $this->bindingResolutionStack[array_key_last($this->bindingResolutionStack)] ?? null;
+
+        if ($parentBinding === null || ! $parentBinding->scoped || $parentBinding->scopeKind === null) {
+            return;
+        }
+
+        if ($parentBinding->scopeKind->canRetain($binding->scopeKind)) {
+            return;
+        }
+
+        throw new \Quantum\Container\Exceptions\BindingResolutionException(sprintf(
+            'Scoped binding [%s] with scope [%s] cannot retain dependency [%s] with scope [%s].',
+            $parentBinding->abstract,
+            $parentBinding->scopeKindName() ?? 'scope',
             $binding->abstract,
             $binding->scopeKindName() ?? 'scope',
         ));

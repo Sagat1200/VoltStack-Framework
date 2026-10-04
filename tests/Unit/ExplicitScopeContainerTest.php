@@ -95,6 +95,86 @@ final class ExplicitScopeContainerTest extends TestCase
         self::assertSame($rootId, $container->currentScopeId());
     }
 
+    public function test_explicit_unit_entry_points_classify_request_job_and_command_scopes(): void
+    {
+        $container = new Container();
+
+        $container->enterRequestScope();
+        self::assertSame('request', $container->currentScopeKind());
+        $container->leaveScope();
+
+        $container->enterJobScope();
+        self::assertSame('job', $container->currentScopeKind());
+        $container->leaveScope();
+
+        $container->enterCommandScope();
+        self::assertSame('command', $container->currentScopeKind());
+    }
+
+    public function test_worker_scope_can_only_be_entered_from_root(): void
+    {
+        $container = new Container();
+
+        $container->enterWorkerScope();
+        self::assertSame('worker', $container->currentScopeKind());
+
+        $this->expectException(BindingResolutionException::class);
+        $this->expectExceptionMessage('Cannot enter [worker] scope from [worker] scope.');
+
+        $container->enterWorkerScope();
+    }
+
+    public function test_request_scope_cannot_be_entered_from_another_unit_scope(): void
+    {
+        $container = new Container();
+        $container->enterRequestScope();
+
+        $this->expectException(BindingResolutionException::class);
+        $this->expectExceptionMessage('Cannot enter [request] scope from [request] scope.');
+
+        $container->enterRequestScope();
+    }
+
+    public function test_tenant_scope_requires_a_parent_unit_scope(): void
+    {
+        $container = new Container();
+
+        $this->expectException(BindingResolutionException::class);
+        $this->expectExceptionMessage('Cannot enter [tenant] scope from [root] scope.');
+
+        $container->enterTenantScope();
+    }
+
+    public function test_tenant_scope_can_be_entered_from_request_job_and_command_scopes_only(): void
+    {
+        $requestContainer = new Container();
+        $requestContainer->enterRequestScope();
+        $requestContainer->enterTenantScope();
+        self::assertSame('tenant', $requestContainer->currentScopeKind());
+
+        $jobContainer = new Container();
+        $jobContainer->enterJobScope();
+        $jobContainer->enterTenantScope();
+        self::assertSame('tenant', $jobContainer->currentScopeKind());
+
+        $commandContainer = new Container();
+        $commandContainer->enterCommandScope();
+        $commandContainer->enterTenantScope();
+        self::assertSame('tenant', $commandContainer->currentScopeKind());
+    }
+
+    public function test_tenant_scope_cannot_be_nested_under_another_tenant_scope(): void
+    {
+        $container = new Container();
+        $container->enterRequestScope();
+        $container->enterTenantScope();
+
+        $this->expectException(BindingResolutionException::class);
+        $this->expectExceptionMessage('Cannot enter [tenant] scope from [tenant] scope.');
+
+        $container->enterTenantScope();
+    }
+
     public function test_unknown_scope_names_are_classified_as_generic_scope_kind(): void
     {
         $container = new Container();
@@ -157,6 +237,40 @@ final class ExplicitScopeContainerTest extends TestCase
         self::assertInstanceOf(\stdClass::class, $resolved->dependency);
     }
 
+    public function test_tenant_scoped_bindings_can_retain_job_scoped_dependencies_when_job_is_the_parent_unit(): void
+    {
+        $container = new Container();
+
+        $container->scopedFor('job.service', static fn(): object => new \stdClass(), 'job');
+        $container->scopedFor('tenant.service', function (Container $container): object {
+            return (object) ['dependency' => $container->make('job.service')];
+        }, 'tenant');
+
+        $container->enterScope('job');
+        $container->enterScope('tenant');
+
+        $resolved = $container->make('tenant.service');
+
+        self::assertInstanceOf(\stdClass::class, $resolved->dependency);
+    }
+
+    public function test_tenant_scoped_bindings_can_retain_command_scoped_dependencies_when_command_is_the_parent_unit(): void
+    {
+        $container = new Container();
+
+        $container->scopedFor('command.service', static fn(): object => new \stdClass(), 'command');
+        $container->scopedFor('tenant.service', function (Container $container): object {
+            return (object) ['dependency' => $container->make('command.service')];
+        }, 'tenant');
+
+        $container->enterScope('command');
+        $container->enterScope('tenant');
+
+        $resolved = $container->make('tenant.service');
+
+        self::assertInstanceOf(\stdClass::class, $resolved->dependency);
+    }
+
     public function test_request_scoped_bindings_cannot_retain_tenant_scoped_dependencies(): void
     {
         $container = new Container();
@@ -191,6 +305,24 @@ final class ExplicitScopeContainerTest extends TestCase
         $this->expectExceptionMessage('cannot retain dependency [request.service] with scope [request]');
 
         $container->make('worker.service');
+    }
+
+    public function test_job_scoped_bindings_cannot_retain_tenant_scoped_dependencies(): void
+    {
+        $container = new Container();
+
+        $container->scopedFor('tenant.service', static fn(): object => new \stdClass(), 'tenant');
+        $container->scopedFor('job.service', function (Container $container): object {
+            return (object) ['dependency' => $container->make('tenant.service')];
+        }, 'job');
+
+        $container->enterScope('job');
+        $container->enterScope('tenant');
+
+        $this->expectException(BindingResolutionException::class);
+        $this->expectExceptionMessage('cannot retain dependency [tenant.service] with scope [tenant]');
+
+        $container->make('job.service');
     }
 
     public function test_worker_scoped_bindings_fall_back_to_the_root_owner_frame_when_no_worker_scope_is_active(): void

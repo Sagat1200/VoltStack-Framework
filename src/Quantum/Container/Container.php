@@ -162,6 +162,41 @@ class Container implements ContainerInterface
         return $this->scopeStack()->enter($name)->id();
     }
 
+    public function enterWorkerScope(): string
+    {
+        $this->assertCanEnterUnitScope(ScopeKind::Worker);
+
+        return $this->enterScope(ScopeKind::Worker->value);
+    }
+
+    public function enterRequestScope(): string
+    {
+        $this->assertCanEnterUnitScope(ScopeKind::Request);
+
+        return $this->enterScope(ScopeKind::Request->value);
+    }
+
+    public function enterJobScope(): string
+    {
+        $this->assertCanEnterUnitScope(ScopeKind::Job);
+
+        return $this->enterScope(ScopeKind::Job->value);
+    }
+
+    public function enterCommandScope(): string
+    {
+        $this->assertCanEnterUnitScope(ScopeKind::Command);
+
+        return $this->enterScope(ScopeKind::Command->value);
+    }
+
+    public function enterTenantScope(): string
+    {
+        $this->assertCanEnterTenantScope();
+
+        return $this->enterScope(ScopeKind::Tenant->value);
+    }
+
     public function leaveScope(): void
     {
         $this->scopeStack()->leave();
@@ -311,13 +346,17 @@ class Container implements ContainerInterface
 
         $parentScopeKind = $this->effectiveScopeKind($parentBinding);
         $dependencyScopeKind = $this->effectiveScopeKind($binding);
+        $parentOwnerFrame = $this->effectiveOwnerFrame($parentBinding);
+        $dependencyOwnerFrame = $this->effectiveOwnerFrame($binding);
 
-        if ($parentScopeKind === null || $dependencyScopeKind === null) {
+        if ($parentScopeKind === null || $dependencyScopeKind === null || $parentOwnerFrame === null || $dependencyOwnerFrame === null) {
             return;
         }
 
         if ($parentScopeKind->canRetain($dependencyScopeKind)) {
-            return;
+            if ($this->scopeStack()->isAncestorOrSame($dependencyOwnerFrame, $parentOwnerFrame)) {
+                return;
+            }
         }
 
         throw new \Quantum\Container\Exceptions\BindingResolutionException(sprintf(
@@ -353,5 +392,56 @@ class Container implements ContainerInterface
         }
 
         return $this->scopeFrameForScopedBinding($binding, false)?->kind();
+    }
+
+    protected function effectiveOwnerFrame(Binding $binding): ?ScopeFrame
+    {
+        if (! $binding->scoped) {
+            return null;
+        }
+
+        return $this->scopeFrameForScopedBinding($binding, false);
+    }
+
+    protected function assertCanEnterUnitScope(ScopeKind $scopeKind): void
+    {
+        $currentKind = $this->scopeStack()->currentKind();
+
+        if ($scopeKind === ScopeKind::Worker) {
+            if ($currentKind === ScopeKind::Root) {
+                return;
+            }
+
+            throw new \Quantum\Container\Exceptions\BindingResolutionException(sprintf(
+                'Cannot enter [%s] scope from [%s] scope.',
+                $scopeKind->value,
+                $currentKind->value,
+            ));
+        }
+
+        if (in_array($currentKind, [ScopeKind::Root, ScopeKind::Worker], true)) {
+            return;
+        }
+
+        throw new \Quantum\Container\Exceptions\BindingResolutionException(sprintf(
+            'Cannot enter [%s] scope from [%s] scope.',
+            $scopeKind->value,
+            $currentKind->value,
+        ));
+    }
+
+    protected function assertCanEnterTenantScope(): void
+    {
+        $currentKind = $this->scopeStack()->currentKind();
+
+        if (in_array($currentKind, [ScopeKind::Request, ScopeKind::Job, ScopeKind::Command], true)) {
+            return;
+        }
+
+        throw new \Quantum\Container\Exceptions\BindingResolutionException(sprintf(
+            'Cannot enter [%s] scope from [%s] scope.',
+            ScopeKind::Tenant->value,
+            $currentKind->value,
+        ));
     }
 }

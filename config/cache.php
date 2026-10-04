@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 return [
     'default' => 'file',
+    'default_pool' => 'default',
 
     'prefix' => 'voltstack',
 
@@ -18,6 +19,24 @@ return [
         ],
         'null' => [
             'driver' => 'null',
+        ],
+    ],
+
+    'pools' => [
+        'default' => [
+            'store' => 'file',
+            'prefix' => 'default',
+            'default_ttl' => null,
+        ],
+        'runtime' => [
+            'store' => 'memory',
+            'prefix' => 'runtime',
+            'default_ttl' => 300,
+        ],
+        'disabled' => [
+            'store' => 'null',
+            'prefix' => 'disabled',
+            'default_ttl' => 60,
         ],
     ],
 

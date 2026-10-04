@@ -5,6 +5,10 @@ declare(strict_types=1);
 namespace Quantum\Config;
 
 use Quantum\Config\Loading\PhpConfigLoader;
+use Quantum\Config\Schema\ConfigSchema;
+use Quantum\Config\Schema\ConfigSchemaRegistry;
+use Quantum\Config\Validation\ConfigValidationResult;
+use Quantum\Config\Validation\ConfigValidator;
 
 final class ConfigRepository
 {
@@ -164,6 +168,29 @@ final class ConfigRepository
             descriptor: $descriptor,
             payload: is_array($payload) ? $payload : [],
             schemaVersion: $schemaVersion,
+        );
+    }
+
+    public function validateSchema(
+        ConfigSchema $schema,
+        ?ConfigValidator $validator = null,
+    ): ConfigValidationResult {
+        $payload = $this->get($schema->namespace(), []);
+
+        return ($validator ?? new ConfigValidator())->validate(
+            $schema,
+            is_array($payload) ? $payload : [],
+        );
+    }
+
+    public function validateRegistered(
+        string $namespace,
+        ConfigSchemaRegistry $registry,
+        ?ConfigValidator $validator = null,
+    ): ConfigValidationResult {
+        return $this->validateSchema(
+            $registry->get($namespace),
+            $validator,
         );
     }
 

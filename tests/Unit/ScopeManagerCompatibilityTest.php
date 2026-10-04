@@ -20,7 +20,7 @@ final class ScopeManagerCompatibilityTest extends TestCase
         self::assertFalse($app->hasActiveScope());
         $rootScopeId = $app->currentScopeId();
 
-        $context = $scopeManager->begin(Request::create('/scopes'));
+        $context = $scopeManager->beginRequest(Request::create('/scopes'));
 
         self::assertTrue($app->hasActiveScope());
         self::assertNotSame($rootScopeId, $app->currentScopeId());

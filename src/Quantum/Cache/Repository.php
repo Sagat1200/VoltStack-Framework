@@ -13,31 +13,39 @@ final class Repository
 {
     public function __construct(
         private readonly StoreInterface $store,
+        private readonly string $keyPrefix = '',
+        private readonly DateInterval|DateTimeInterface|int|null $defaultTtl = null,
     ) {}
 
     public function lookup(string $key): Lookup
     {
-        if (! $this->store->has($key)) {
+        $normalizedKey = $this->normalizeKey($key);
+
+        if (! $this->store->has($normalizedKey)) {
             return new Lookup(HitState::Miss, null, missReason: 'not_found');
         }
 
-        $value = $this->store->get($key);
+        $value = $this->store->get($normalizedKey);
 
         return new Lookup(
             HitState::Fresh,
             $value,
-            $this->metadataFor($key),
+            $this->metadataFor($normalizedKey),
         );
     }
 
     public function get(string $key, mixed $default = null): mixed
     {
-        return $this->store->get($key, $default);
+        return $this->store->get($this->normalizeKey($key), $default);
     }
 
     public function put(string $key, mixed $value, DateInterval|DateTimeInterface|int|null $ttl = null): bool
     {
-        return $this->store->put($key, $value, $ttl);
+        return $this->store->put(
+            $this->normalizeKey($key),
+            $value,
+            $ttl ?? $this->defaultTtl,
+        );
     }
 
     public function putReceipt(string $key, mixed $value, DateInterval|DateTimeInterface|int|null $ttl = null): WriteReceipt
@@ -47,7 +55,7 @@ final class Repository
 
     public function forever(string $key, mixed $value): bool
     {
-        return $this->store->forever($key, $value);
+        return $this->store->forever($this->normalizeKey($key), $value);
     }
 
     public function foreverReceipt(string $key, mixed $value): WriteReceipt
@@ -57,12 +65,12 @@ final class Repository
 
     public function has(string $key): bool
     {
-        return $this->store->has($key);
+        return $this->store->has($this->normalizeKey($key));
     }
 
     public function forget(string $key): bool
     {
-        return $this->store->forget($key);
+        return $this->store->forget($this->normalizeKey($key));
     }
 
     public function forgetReceipt(string $key): WriteReceipt
@@ -151,5 +159,16 @@ final class Repository
             hardUntilMs: is_int($expiresAt) ? $expiresAt * 1000 : null,
             sourceLevel: $this->store->sourceLevel(),
         );
+    }
+
+    private function normalizeKey(string $key): string
+    {
+        $prefix = trim($this->keyPrefix);
+
+        if ($prefix === '') {
+            return $key;
+        }
+
+        return $prefix . ':' . $key;
     }
 }

@@ -105,6 +105,29 @@ final class ScopeStack
         return null;
     }
 
+    public function isAncestorOrSame(ScopeFrame $ancestor, ScopeFrame $descendant): bool
+    {
+        $ancestorIndex = $this->indexOf($ancestor->id());
+        $descendantIndex = $this->indexOf($descendant->id());
+
+        if ($ancestorIndex === null || $descendantIndex === null) {
+            return false;
+        }
+
+        return $ancestorIndex <= $descendantIndex;
+    }
+
+    private function indexOf(string $frameId): ?int
+    {
+        foreach ($this->frames as $index => $frame) {
+            if ($frame->id() === $frameId) {
+                return $index;
+            }
+        }
+
+        return null;
+    }
+
     private function newId(): string
     {
         return bin2hex(random_bytes(8));

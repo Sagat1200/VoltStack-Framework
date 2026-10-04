@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Quantum\Cache;
 
+use DateInterval;
+use DateTimeInterface;
 use InvalidArgumentException;
 use Quantum\Cache\Contracts\ClockInterface;
 use Quantum\Cache\Contracts\StoreInterface;
@@ -14,7 +16,17 @@ final class CacheManager
     /**
      * @var array<string, Repository>
      */
-    private array $stores = [];
+    private array $storeRepositories = [];
+
+    /**
+     * @var array<string, Repository>
+     */
+    private array $poolRepositories = [];
+
+    /**
+     * @var array<string, StoreInterface>
+     */
+    private array $resolvedStores = [];
 
     public function __construct(
         private readonly Application $app,
@@ -24,11 +36,11 @@ final class CacheManager
     {
         $name ??= (string) $this->config('default', 'file');
 
-        if (isset($this->stores[$name])) {
-            return $this->stores[$name];
+        if (isset($this->storeRepositories[$name])) {
+            return $this->storeRepositories[$name];
         }
 
-        return $this->stores[$name] = new Repository($this->resolveStore($name));
+        return $this->storeRepositories[$name] = new Repository($this->resolveStore($name));
     }
 
     public function driver(?string $name = null): Repository
@@ -38,16 +50,35 @@ final class CacheManager
 
     public function pool(?string $name = null): Repository
     {
-        return $this->store($name);
+        $name ??= (string) $this->config('default_pool', $this->config('default', 'file'));
+
+        if (isset($this->poolRepositories[$name])) {
+            return $this->poolRepositories[$name];
+        }
+
+        $config = $this->poolConfig($name);
+        $storeName = (string) ($config['store'] ?? $this->config('default', 'file'));
+        $prefix = (string) ($config['prefix'] ?? $name);
+        $defaultTtl = $this->normalizePoolDefaultTtl($config['default_ttl'] ?? null);
+
+        return $this->poolRepositories[$name] = new Repository(
+            $this->resolveStore($storeName),
+            $prefix,
+            $defaultTtl,
+        );
     }
 
     private function resolveStore(string $name): StoreInterface
     {
+        if (isset($this->resolvedStores[$name])) {
+            return $this->resolvedStores[$name];
+        }
+
         $config = $this->storeConfig($name);
         $driver = (string) ($config['driver'] ?? 'file');
         $clock = $this->app->make(ClockInterface::class);
 
-        return match ($driver) {
+        return $this->resolvedStores[$name] = match ($driver) {
             'file' => new FileStore(
                 (string) ($config['path'] ?? $this->app->cachePath('data')),
                 (string) ($config['prefix'] ?? $this->config('prefix', 'voltstack')),
@@ -79,6 +110,49 @@ final class CacheManager
         }
 
         return $stores[$name];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function poolConfig(string $name): array
+    {
+        $pools = $this->config('pools', []);
+
+        if (! is_array($pools) || ! isset($pools[$name]) || ! is_array($pools[$name])) {
+            if ($name === 'default') {
+                return [
+                    'store' => $this->config('default', 'file'),
+                    'prefix' => 'default',
+                    'default_ttl' => null,
+                ];
+            }
+
+            throw new InvalidArgumentException(sprintf('Cache pool [%s] is not configured.', $name));
+        }
+
+        return $pools[$name];
+    }
+
+    private function normalizePoolDefaultTtl(mixed $ttl): DateInterval|DateTimeInterface|int|null
+    {
+        if ($ttl === null) {
+            return null;
+        }
+
+        if ($ttl instanceof DateInterval || $ttl instanceof DateTimeInterface) {
+            return $ttl;
+        }
+
+        if (is_int($ttl)) {
+            return $ttl;
+        }
+
+        if (is_numeric($ttl)) {
+            return (int) $ttl;
+        }
+
+        throw new InvalidArgumentException('Cache pool default_ttl must be null, int, DateInterval or DateTimeInterface.');
     }
 
     private function config(string $key, mixed $default = null): mixed

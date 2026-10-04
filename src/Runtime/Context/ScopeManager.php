@@ -15,12 +15,17 @@ final class ScopeManager
 
     public function begin(Request $request): RuntimeContext
     {
+        return $this->beginRequest($request);
+    }
+
+    public function beginRequest(Request $request): RuntimeContext
+    {
         while ($this->app->hasActiveScope()) {
             $this->app->leaveScope();
         }
 
         $this->app->flushScope();
-        $this->app->enterScope('request');
+        $this->app->enterRequestScope();
 
         $context = new RuntimeContext(
             bin2hex(random_bytes(16)),

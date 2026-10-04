@@ -1002,7 +1002,7 @@ HTML;
         }
 
         if (! isset($this->bindings[ControllerSecurityContextFactoryInterface::class])) {
-            $this->singleton(ControllerSecurityContextFactoryInterface::class, function (Application $app): ControllerSecurityContextFactoryInterface {
+            $this->scopedFor(ControllerSecurityContextFactoryInterface::class, function (Application $app): ControllerSecurityContextFactoryInterface {
                 $max = $app->config('controller_security.authorization.max_policy_evaluations', 64);
                 $max = is_numeric($max) ? (int) $max : 64;
                 $authManager = null;
@@ -1022,7 +1022,7 @@ HTML;
                 }
 
                 return new ControllerSecurityContextFactory(max(1, $max), $authManager, $bearerTokenService);
-            });
+            }, 'request');
         }
 
         if (! isset($this->bindings[ControllerSecurityDecisionEngineInterface::class])) {
@@ -1074,12 +1074,12 @@ HTML;
         }
 
         if (! isset($this->bindings[ControllerSecurityManagerInterface::class])) {
-            $this->singleton(ControllerSecurityManagerInterface::class, function (Application $app): ControllerSecurityManagerInterface {
+            $this->scopedFor(ControllerSecurityManagerInterface::class, function (Application $app): ControllerSecurityManagerInterface {
                 return new ControllerSecurityManager(
                     contextFactory: $app->make(ControllerSecurityContextFactoryInterface::class),
                     decisionEngine: $app->make(ControllerSecurityDecisionEngineInterface::class),
                 );
-            });
+            }, 'request');
         }
 
         $this->make(InlinePageLoader::class);

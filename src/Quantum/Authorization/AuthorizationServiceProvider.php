@@ -56,6 +56,8 @@ use VoltStack\Framework\ServiceProvider;
 
 final class AuthorizationServiceProvider extends ServiceProvider
 {
+    private const INNER_AUTHORITY_REPOSITORY = 'quantum.authorization.authority.inner_repository';
+
     public function register(): void
     {
         $this->mergeDefaultConfiguration();
@@ -217,16 +219,17 @@ final class AuthorizationServiceProvider extends ServiceProvider
     private function registerAuthorityRepository(): void
     {
         $this->app->singleton(
+            self::INNER_AUTHORITY_REPOSITORY,
+            fn(Application $app): AuthorityRepositoryInterface => $this->makeConfiguredAuthorityRepository($app),
+        );
+
+        $this->app->scoped(
             AuthorityRepositoryInterface::class,
             function (Application $app): AuthorityRepositoryInterface {
-                $config = $app->config('authorization.authority.grants', []);
-                $seed = is_array($config) ? $config : [];
-                $driver = strtolower(trim((string) $app->config('authorization.authority.driver', 'memory')));
-                $inner = match ($driver) {
-                    'database', 'db', 'dbal' => $this->makeDatabaseAuthorityRepository($app) ?? new InMemoryAuthorityRepository($seed),
-                    default => new InMemoryAuthorityRepository($seed),
-                };
+                /** @var AuthorityRepositoryInterface $inner */
+                $inner = $app->make(self::INNER_AUTHORITY_REPOSITORY);
                 $memoize = $app->config('authorization.authority.memoize', true);
+
                 if (! $this->booleanOf($memoize)) {
                     return $inner;
                 }
@@ -240,6 +243,18 @@ final class AuthorizationServiceProvider extends ServiceProvider
                 }
             },
         );
+    }
+
+    private function makeConfiguredAuthorityRepository(Application $app): AuthorityRepositoryInterface
+    {
+        $config = $app->config('authorization.authority.grants', []);
+        $seed = is_array($config) ? $config : [];
+        $driver = strtolower(trim((string) $app->config('authorization.authority.driver', 'memory')));
+
+        return match ($driver) {
+            'database', 'db', 'dbal' => $this->makeDatabaseAuthorityRepository($app) ?? new InMemoryAuthorityRepository($seed),
+            default => new InMemoryAuthorityRepository($seed),
+        };
     }
 
     private function makeDatabaseAuthorityRepository(Application $app): ?AuthorityRepositoryInterface

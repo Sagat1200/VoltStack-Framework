@@ -45,6 +45,8 @@ final class CacheManager
                 (string) ($config['path'] ?? $this->app->cachePath('data')),
                 (string) ($config['prefix'] ?? $this->config('prefix', 'voltstack')),
             ),
+            'memory' => new MemoryStore(),
+            'null' => new NullStore(),
             default => throw new InvalidArgumentException(sprintf('Cache driver [%s] is not supported.', $driver)),
         };
     }

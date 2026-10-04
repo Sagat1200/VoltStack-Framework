@@ -52,6 +52,26 @@ final class CacheManagerTest extends TestCase
         self::assertFalse($store->has('views.home'));
     }
 
+    public function test_it_supports_memory_and_null_drivers(): void
+    {
+        $app = new Application($this->basePath);
+        $config = $app->make(ConfigRepository::class);
+        $config->set('cache.stores.memory', ['driver' => 'memory']);
+        $config->set('cache.stores.null', ['driver' => 'null']);
+
+        $manager = $app->make(CacheManager::class);
+
+        $memory = $manager->store('memory');
+        self::assertTrue($memory->put('runtime.counter', 1));
+        self::assertTrue($memory->has('runtime.counter'));
+        self::assertSame(1, $memory->get('runtime.counter'));
+
+        $null = $manager->store('null');
+        self::assertTrue($null->put('runtime.counter', 99));
+        self::assertFalse($null->has('runtime.counter'));
+        self::assertSame('fallback', $null->get('runtime.counter', 'fallback'));
+    }
+
     private function deleteDirectory(string $path): void
     {
         if (! is_dir($path)) {

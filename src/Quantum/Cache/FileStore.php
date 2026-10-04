@@ -5,16 +5,22 @@ declare(strict_types=1);
 namespace Quantum\Cache;
 
 use DateInterval;
-use DateTimeImmutable;
 use DateTimeInterface;
+use Quantum\Cache\Concerns\InteractsWithTime;
+use Quantum\Cache\Contracts\ClockInterface;
 use Quantum\Cache\Contracts\StoreInterface;
 
 final class FileStore implements StoreInterface
 {
+    use InteractsWithTime;
+
     public function __construct(
         private readonly string $path,
         private readonly string $prefix = 'voltstack',
-    ) {}
+        ?ClockInterface $clock = null,
+    ) {
+        $this->clock = $clock ?? new SystemClock();
+    }
 
     public function get(string $key, mixed $default = null): mixed
     {
@@ -31,7 +37,7 @@ final class FileStore implements StoreInterface
     {
         $expiresAt = $this->expirationTimestamp($ttl);
 
-        if ($expiresAt !== null && $expiresAt <= time()) {
+        if ($expiresAt !== null && $expiresAt <= $this->nowUnixSeconds()) {
             return $this->forget($key);
         }
 
@@ -95,7 +101,7 @@ final class FileStore implements StoreInterface
 
         $expiresAt = $payload['expires_at'] ?? null;
 
-        if (is_int($expiresAt) && $expiresAt <= time()) {
+        if (is_int($expiresAt) && $expiresAt <= $this->nowUnixSeconds()) {
             $this->forget($key);
 
             return null;
@@ -132,23 +138,6 @@ final class FileStore implements StoreInterface
             . DIRECTORY_SEPARATOR
             . $hash
             . '.cache';
-    }
-
-    private function expirationTimestamp(DateInterval|DateTimeInterface|int|null $ttl): ?int
-    {
-        if ($ttl === null) {
-            return null;
-        }
-
-        if ($ttl instanceof DateInterval) {
-            return (new DateTimeImmutable())->add($ttl)->getTimestamp();
-        }
-
-        if ($ttl instanceof DateTimeInterface) {
-            return $ttl->getTimestamp();
-        }
-
-        return time() + $ttl;
     }
 
     private function deleteDirectoryContents(string $directory): bool

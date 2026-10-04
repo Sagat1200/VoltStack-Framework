@@ -705,7 +705,7 @@ class Application extends Container
         }
 
         if (! isset($this->bindings[ScopeManager::class])) {
-            $this->singleton(ScopeManager::class, fn(Application $app) => new ScopeManager($app));
+            $this->scopedFor(ScopeManager::class, fn(Application $app) => new ScopeManager($app), 'worker');
         }
 
         if (! isset($this->bindings[WorkerLifecycle::class])) {
@@ -713,11 +713,11 @@ class Application extends Container
         }
 
         if (! isset($this->bindings[ResetManager::class])) {
-            $this->singleton(ResetManager::class);
+            $this->scopedFor(ResetManager::class, ResetManager::class, 'worker');
         }
 
         if (! isset($this->bindings[RequestRunner::class])) {
-            $this->singleton(RequestRunner::class);
+            $this->scopedFor(RequestRunner::class, RequestRunner::class, 'worker');
         }
 
         if (! isset($this->bindings[WorkerFactoryInterface::class])) {

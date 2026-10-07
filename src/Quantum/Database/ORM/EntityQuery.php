@@ -38,6 +38,11 @@ final class EntityQuery
     private array $managedPartialSelections = [];
 
     /**
+     * @var array<string, list<array{name:string,column:string,resultKey:string}>>
+     */
+    private array $partialJoinedSelections = [];
+
+    /**
      * @var array<string, array{alias:string,type:string,association:EntityAssociationMetadata,targetMetadata:EntityMetadata}>
      */
     private array $joinedAssociations = [];
@@ -281,18 +286,27 @@ final class EntityQuery
 
     public function partial(string ...$fields): self
     {
-        if ($this->preloadedAssociations !== [] || $this->projectionSelections !== [] || $this->managedPartialSelections !== [] || $this->joinedAssociations !== []) {
+        if ($this->preloadedAssociations !== [] || $this->projectionSelections !== [] || $this->managedPartialSelections !== []) {
             throw new RuntimeException(sprintf(
-                'Cannot combine [%s::partial()] with preload, projection, or joined-association mode on [%s]; partial hydration is a separate query mode.',
+                'Cannot combine [%s::partial()] with preload, projection, or managed partial mode on [%s]; partial hydration is a separate query mode.',
                 self::class,
                 $this->metadata->className,
             ));
         }
 
+        $this->assertJoinedPartialHydrationAllowed('partial');
+
         $columns = [];
+        $joinedColumns = [];
         foreach ($fields as $field) {
             $normalized = trim($field);
             if ($normalized === '') {
+                continue;
+            }
+
+            $joinedSelection = $this->resolveJoinedPartialSelection($normalized);
+            if ($joinedSelection !== null) {
+                $joinedColumns[$joinedSelection['association']][$joinedSelection['column']] = $joinedSelection;
                 continue;
             }
 
@@ -307,29 +321,36 @@ final class EntityQuery
             'column' => $identifierField->column,
         ];
 
+        $this->partialJoinedSelections = $this->finalizeJoinedPartialSelections($joinedColumns);
         $this->partialSelections = array_values($columns);
-        $this->query->select(...array_values(array_map(
-            static fn(array $selection): string => $selection['column'],
-            $this->partialSelections,
-        )));
+        $this->query->select(...$this->partialHydrationSelectColumns($this->partialSelections));
 
         return $this;
     }
 
     public function partialManaged(string ...$fields): self
     {
-        if ($this->preloadedAssociations !== [] || $this->projectionSelections !== [] || $this->partialSelections !== [] || $this->joinedAssociations !== []) {
+        if ($this->preloadedAssociations !== [] || $this->projectionSelections !== [] || $this->partialSelections !== []) {
             throw new RuntimeException(sprintf(
-                'Cannot combine [%s::partialManaged()] with preload, projection, detached partial mode, or joined-association mode on [%s]; managed partial hydration is a separate query mode.',
+                'Cannot combine [%s::partialManaged()] with preload, projection, or detached partial mode on [%s]; managed partial hydration is a separate query mode.',
                 self::class,
                 $this->metadata->className,
             ));
         }
 
+        $this->assertJoinedPartialHydrationAllowed('partialManaged');
+
         $columns = [];
+        $joinedColumns = [];
         foreach ($fields as $field) {
             $normalized = trim($field);
             if ($normalized === '') {
+                continue;
+            }
+
+            $joinedSelection = $this->resolveJoinedPartialSelection($normalized);
+            if ($joinedSelection !== null) {
+                $joinedColumns[$joinedSelection['association']][$joinedSelection['column']] = $joinedSelection;
                 continue;
             }
 
@@ -344,11 +365,9 @@ final class EntityQuery
             'column' => $identifierField->column,
         ];
 
+        $this->partialJoinedSelections = $this->finalizeJoinedPartialSelections($joinedColumns);
         $this->managedPartialSelections = array_values($columns);
-        $this->query->select(...array_values(array_map(
-            static fn(array $selection): string => $selection['column'],
-            $this->managedPartialSelections,
-        )));
+        $this->query->select(...$this->partialHydrationSelectColumns($this->managedPartialSelections));
 
         return $this;
     }
@@ -443,7 +462,9 @@ final class EntityQuery
 
         $entities = [];
         foreach ($this->query->get()->rows() as $row) {
-            $entities[] = $this->manager->hydratePartial($this->metadata, $row);
+            $entities[] = $this->partialJoinedSelections === []
+                ? $this->manager->hydratePartial($this->metadata, $row)
+                : $this->hydrateRelationalPartialRow($row, managed: false);
         }
 
         return $entities;
@@ -460,7 +481,13 @@ final class EntityQuery
 
         $row = $this->query->first();
 
-        return $row !== null ? $this->manager->hydratePartial($this->metadata, $row) : null;
+        if ($row === null) {
+            return null;
+        }
+
+        return $this->partialJoinedSelections === []
+            ? $this->manager->hydratePartial($this->metadata, $row)
+            : $this->hydrateRelationalPartialRow($row, managed: false);
     }
 
     /**
@@ -482,7 +509,9 @@ final class EntityQuery
 
         $entities = [];
         foreach ($this->query->get()->rows() as $row) {
-            $entities[] = $this->manager->hydrateManagedPartial($this->metadata, $row, $loadedFields);
+            $entities[] = $this->partialJoinedSelections === []
+                ? $this->manager->hydrateManagedPartial($this->metadata, $row, $loadedFields)
+                : $this->hydrateRelationalPartialRow($row, managed: true);
         }
 
         return $entities;
@@ -507,7 +536,9 @@ final class EntityQuery
             $this->managedPartialSelections,
         ));
 
-        return $this->manager->hydrateManagedPartial($this->metadata, $row, $loadedFields);
+        return $this->partialJoinedSelections === []
+            ? $this->manager->hydrateManagedPartial($this->metadata, $row, $loadedFields)
+            : $this->hydrateRelationalPartialRow($row, managed: true);
     }
 
     /**
@@ -765,6 +796,79 @@ final class EntityQuery
     }
 
     /**
+     * @return array{association:string,name:string,column:string,resultKey:string}|null
+     */
+    private function resolveJoinedPartialSelection(string $field): ?array
+    {
+        if (! str_contains($field, '.')) {
+            return null;
+        }
+
+        [$associationName, $targetFieldPath] = explode('.', $field, 2);
+        if ($this->metadata->hasAssociation($associationName) && ! isset($this->joinedAssociations[$associationName])) {
+            throw new RuntimeException(sprintf(
+                'Joined partial field path [%s] requires calling join(%s) or leftJoin(%s) first on [%s].',
+                $field,
+                var_export($associationName, true),
+                var_export($associationName, true),
+                $this->metadata->className,
+            ));
+        }
+
+        if (! isset($this->joinedAssociations[$associationName])) {
+            return null;
+        }
+
+        $join = $this->joinedAssociations[$associationName];
+        $association = $join['association'];
+        if (! $association->isToOne()) {
+            throw new RuntimeException(sprintf(
+                'Cannot partially hydrate joined to-many association [%s::$%s]; relational partial hydration V1 supports joined to-one associations only.',
+                $this->metadata->className,
+                $associationName,
+            ));
+        }
+
+        $targetMetadata = $join['targetMetadata'];
+        if ($targetMetadata->hasAssociation($targetFieldPath)) {
+            throw new RuntimeException(sprintf(
+                'Cannot partially hydrate nested association path [%s] on [%s]; relational partial hydration V1 supports scalar fields and embedded paths on joined to-one targets only.',
+                $field,
+                $targetMetadata->className,
+            ));
+        }
+
+        $embeddedPath = $this->resolveEmbeddedPathForMetadata($targetMetadata, $targetFieldPath);
+        if ($embeddedPath !== null) {
+            [, $innerColumn] = $embeddedPath;
+
+            return [
+                'association' => $associationName,
+                'name' => $targetFieldPath,
+                'column' => $innerColumn,
+                'resultKey' => $this->joinedResultKey($associationName, $innerColumn),
+            ];
+        }
+
+        if (! $targetMetadata->hasField($targetFieldPath)) {
+            throw new RuntimeException(sprintf(
+                'Joined partial field path [%s] is not mapped on target entity [%s].',
+                $field,
+                $targetMetadata->className,
+            ));
+        }
+
+        $targetField = $targetMetadata->field($targetFieldPath);
+
+        return [
+            'association' => $associationName,
+            'name' => $targetField->name,
+            'column' => $targetField->column,
+            'resultKey' => $this->joinedResultKey($associationName, $targetField->column),
+        ];
+    }
+
+    /**
      * @param list<array{name:string,select:string,resultKey:string,hydrate:Closure}> $selections
      */
     private function queryForSelections(array $selections): SelectQueryBuilder
@@ -796,6 +900,42 @@ final class EntityQuery
         $query->select(...$this->entityHydrationSelectColumns());
 
         return $query;
+    }
+
+    /**
+     * @param list<array{name:string,column:string}> $rootSelections
+     * @return list<string>
+     */
+    private function partialHydrationSelectColumns(array $rootSelections): array
+    {
+        $columns = [];
+
+        foreach ($rootSelections as $selection) {
+            if ($this->joinedAssociations === []) {
+                $columns[] = $selection['column'];
+                continue;
+            }
+
+            $columns[] = sprintf(
+                '%s AS %s',
+                $this->qualifyRootColumn($selection['column']),
+                $selection['column'],
+            );
+        }
+
+        foreach ($this->partialJoinedSelections as $associationName => $selections) {
+            $join = $this->joinedAssociations[$associationName];
+            foreach ($selections as $selection) {
+                $columns[] = sprintf(
+                    '%s.%s AS %s',
+                    $join['alias'],
+                    $selection['column'],
+                    $selection['resultKey'],
+                );
+            }
+        }
+
+        return $columns;
     }
 
     /**
@@ -832,6 +972,54 @@ final class EntityQuery
         }
 
         return $projected;
+    }
+
+    private function hydrateRelationalPartialRow(array $row, bool $managed): object
+    {
+        $rootSelections = $managed ? $this->managedPartialSelections : $this->partialSelections;
+        $rootLoadedFields = array_values(array_map(
+            static fn(array $selection): string => $selection['name'],
+            $rootSelections,
+        ));
+
+        $rootRow = [];
+        foreach ($rootSelections as $selection) {
+            if (! array_key_exists($selection['column'], $row)) {
+                continue;
+            }
+
+            $rootRow[$selection['column']] = $row[$selection['column']];
+        }
+
+        $entity = $managed
+            ? $this->manager->hydrateManagedPartial($this->metadata, $rootRow, $rootLoadedFields)
+            : $this->manager->hydratePartial($this->metadata, $rootRow);
+
+        foreach ($this->partialJoinedSelections as $associationName => $selections) {
+            $join = $this->joinedAssociations[$associationName];
+            $association = $join['association'];
+            $targetMetadata = $join['targetMetadata'];
+            $targetRow = $this->extractJoinedTargetRow($join, $row);
+
+            if ($targetRow === null) {
+                $this->assignAssociationValue($entity, $association, null);
+                continue;
+            }
+
+            $targetLoadedFields = array_values(array_map(
+                static fn(array $selection): string => $selection['name'],
+                $selections,
+            ));
+
+            $target = $managed
+                ? $this->manager->hydrateManagedPartial($targetMetadata, $targetRow, $targetLoadedFields)
+                : $this->manager->hydratePartial($targetMetadata, $targetRow);
+
+            $this->assignAssociationValue($entity, $association, $target);
+            $this->linkJoinedReverseAssociation($entity, $association, $target, $targetMetadata);
+        }
+
+        return $entity;
     }
 
     private function hydrateEntityRow(array $row): object
@@ -1338,6 +1526,42 @@ final class EntityQuery
         }
 
         return false;
+    }
+
+    private function assertJoinedPartialHydrationAllowed(string $mode): void
+    {
+        foreach ($this->joinedAssociations as $join) {
+            if (! $join['association']->isToOne()) {
+                throw new RuntimeException(sprintf(
+                    'Cannot combine [%s::%s()] with joined to-many association [%s::$%s]; relational partial hydration V1 supports joined to-one associations only.',
+                    self::class,
+                    $mode,
+                    $this->metadata->className,
+                    $join['association']->name,
+                ));
+            }
+        }
+    }
+
+    /**
+     * @param array<string, array<string, array{name:string,column:string,resultKey:string}>> $joinedColumns
+     * @return array<string, list<array{name:string,column:string,resultKey:string}>>
+     */
+    private function finalizeJoinedPartialSelections(array $joinedColumns): array
+    {
+        foreach ($joinedColumns as $associationName => &$selections) {
+            $join = $this->joinedAssociations[$associationName];
+            $identifierField = $join['targetMetadata']->identifier;
+            $selections[$identifierField->column] ??= [
+                'name' => $identifierField->name,
+                'column' => $identifierField->column,
+                'resultKey' => $this->joinedResultKey($associationName, $identifierField->column),
+            ];
+            $selections = array_values($selections);
+        }
+        unset($selections);
+
+        return $joinedColumns;
     }
 
     /**

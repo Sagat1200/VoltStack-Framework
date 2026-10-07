@@ -168,11 +168,16 @@ final class Repository
 
     public function diagnostics(): RepositoryDiagnostics
     {
+        $context = $this->context();
+
         return new RepositoryDiagnostics(
             sourceLevel: $this->store instanceof InspectableStoreInterface ? $this->store->sourceLevel() : 'store',
-            context: $this->context(),
+            context: $context,
+            contextFingerprint: $this->contextFingerprint($context),
             capabilities: $this->capabilities(),
             versions: $this->versionMetadata(),
+            storageNamespace: $this->storageNamespace(),
+            invalidationScopes: $this->invalidationScopes(),
             store: $this->storeDiagnostics(),
             observedAtMs: $this->cacheClock()->nowUnixMilliseconds(),
             clearStrategy: $this->clearStrategy(),
@@ -588,15 +593,71 @@ final class Repository
      */
     private function diagnosticsSnapshot(): array
     {
+        $context = $this->context();
+
         return [
             'source_level' => $this->store instanceof InspectableStoreInterface ? $this->store->sourceLevel() : 'store',
-            'context' => $this->context()->toArray(),
+            'context' => $context->toArray(),
+            'context_fingerprint' => $this->contextFingerprint($context),
             'capabilities' => $this->capabilities(),
             'versions' => $this->versionMetadata(),
+            'storage_namespace' => $this->storageNamespace(),
+            'invalidation_scopes' => $this->invalidationScopes(),
             'store' => $this->storeDiagnostics(),
             'observed_at_ms' => $this->cacheClock()->nowUnixMilliseconds(),
             'clear_strategy' => $this->clearStrategy(),
         ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function invalidationScopes(): array
+    {
+        $tagScopes = [];
+
+        foreach ($this->tagNames as $tag) {
+            $tagScopes[$tag] = $this->tagScopeFor($tag);
+        }
+
+        return [
+            'namespace' => $this->versionScope,
+            'tags' => $tagScopes,
+        ];
+    }
+
+    private function storageNamespace(): string
+    {
+        $segments = [];
+
+        if ($this->tagNames !== [] && $this->versionAuthority !== null) {
+            $segments[] = implode(':', array_map(
+                fn(string $tag): string => 'tag[' . $tag . '=' . $this->tagVersionFor($tag) . ']',
+                $this->tagNames,
+            ));
+        }
+
+        if ($this->versionAuthority !== null && $this->versionScope !== null && trim($this->versionScope) !== '') {
+            $segments[] = $this->versionAuthority->currentVersion($this->versionScope);
+        }
+
+        $prefix = CacheContext::normalizePrefix($this->keyPrefix);
+
+        if ($prefix !== '') {
+            $segments[] = $prefix;
+        }
+
+        return implode(':', $segments);
+    }
+
+    private function contextFingerprint(CacheContext $context): string
+    {
+        return sha1(json_encode([
+            'key_prefix' => $context->keyPrefix,
+            'version_scope' => $context->versionScope,
+            'tags' => $context->tags,
+            'default_ttl' => $this->describeTtl($context->defaultTtl),
+        ], JSON_THROW_ON_ERROR));
     }
 
     private function clearStrategy(): string

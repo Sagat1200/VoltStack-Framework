@@ -1491,6 +1491,140 @@ final class DatabaseOrmFeatureTest extends TestCase
         }
     }
 
+    public function test_entity_query_partial_relational_hydration_supports_joined_to_one_associations(): void
+    {
+        $app = $this->makeApp();
+        $scope = $app->make(ScopeManager::class);
+        $scope->begin(Request::create('/database/orm/partial-relational-hydration', 'GET'));
+
+        try {
+            $database = $app->make(DatabaseInterface::class);
+            $database->schema()->create('orm_blog_posts', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('title');
+                $table->boolean('published');
+            }, true);
+            $database->schema()->create('orm_blog_comments', function (TableBlueprint $table): void {
+                $table->id();
+                $table->integer('post_id');
+                $table->string('body');
+            }, true);
+            $database->schema()->create('orm_account_users', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+            }, true);
+            $database->schema()->create('orm_user_profiles', function (TableBlueprint $table): void {
+                $table->id();
+                $table->integer('user_id')->nullable();
+                $table->string('bio');
+            }, true);
+
+            $em = $database->entityManager();
+
+            $post = new OrmBlogPost();
+            $post->title = 'Alpha';
+            $post->published = true;
+            $em->persist($post);
+            $em->flush();
+
+            $comment = new OrmBlogComment();
+            $comment->body = 'Alpha #1';
+            $comment->post = $post;
+            $em->persist($comment);
+
+            $userWithProfile = new OrmAccountUser();
+            $userWithProfile->name = 'Ada';
+
+            $userWithoutProfile = new OrmAccountUser();
+            $userWithoutProfile->name = 'Linus';
+
+            $profile = new OrmUserProfile();
+            $profile->bio = 'Joined profile';
+            $profile->user = $userWithProfile;
+
+            $em->persist($userWithProfile);
+            $em->persist($userWithoutProfile);
+            $em->persist($profile);
+            $em->flush();
+            $em->clear();
+
+            $partialComment = $em->query(OrmBlogComment::class)
+                ->join('post', 'p')
+                ->partial('body', 'post.title')
+                ->where('body', 'Alpha #1')
+                ->firstPartial();
+            self::assertInstanceOf(OrmBlogComment::class, $partialComment);
+            self::assertSame(EntityState::Detached, $em->state($partialComment));
+            self::assertFalse($em->contains($partialComment));
+            self::assertSame('Alpha #1', $partialComment->body);
+            self::assertInstanceOf(OrmBlogPost::class, $partialComment->post);
+            self::assertSame('Alpha', $partialComment->post->title);
+            self::assertTrue($this->isPropertyInitialized($partialComment->post, 'id'));
+            self::assertFalse($this->isPropertyInitialized($partialComment->post, 'published'));
+
+            $partialUsers = $em->query(OrmAccountUser::class)
+                ->leftJoin('profile', 'pr')
+                ->partial('name', 'profile.bio')
+                ->orderBy('name')
+                ->getPartial();
+            self::assertCount(2, $partialUsers);
+            self::assertSame('Ada', $partialUsers[0]->name);
+            self::assertInstanceOf(OrmUserProfile::class, $partialUsers[0]->profile);
+            self::assertSame('Joined profile', $partialUsers[0]->profile->bio);
+            self::assertSame($partialUsers[0], $partialUsers[0]->profile->user);
+            self::assertSame('Linus', $partialUsers[1]->name);
+            self::assertNull($partialUsers[1]->profile);
+
+            $em->clear();
+
+            $managedPartialComment = $em->query(OrmBlogComment::class)
+                ->join('post', 'p')
+                ->partialManaged('body', 'post.title')
+                ->where('body', 'Alpha #1')
+                ->firstPartialManaged();
+            self::assertInstanceOf(OrmBlogComment::class, $managedPartialComment);
+            self::assertSame(EntityState::Managed, $em->state($managedPartialComment));
+            self::assertTrue($em->contains($managedPartialComment));
+            self::assertInstanceOf(OrmBlogPost::class, $managedPartialComment->post);
+            self::assertTrue($em->contains($managedPartialComment->post));
+            self::assertFalse($this->isPropertyInitialized($managedPartialComment->post, 'published'));
+
+            $managedPartialComment->body = 'Alpha #1 updated';
+            $managedPartialComment->post->title = 'Alpha updated';
+            $em->flush();
+
+            $rawComment = $database->table('orm_blog_comments')
+                ->where('id', $managedPartialComment->id)
+                ->first();
+            self::assertNotNull($rawComment);
+            self::assertSame('Alpha #1 updated', $rawComment['body'] ?? null);
+
+            $rawPost = $database->table('orm_blog_posts')
+                ->where('id', $managedPartialComment->post->id)
+                ->first();
+            self::assertNotNull($rawPost);
+            self::assertSame('Alpha updated', $rawPost['title'] ?? null);
+            self::assertSame(1, $rawPost['published'] ?? null);
+
+            $foundPost = $em->find(OrmBlogPost::class, $managedPartialComment->post->id);
+            self::assertSame($managedPartialComment->post, $foundPost);
+            self::assertTrue($this->isPropertyInitialized($managedPartialComment->post, 'published'));
+            self::assertTrue($managedPartialComment->post->published);
+
+            try {
+                $em->query(OrmBlogPost::class)
+                    ->join('comments', 'c')
+                    ->partial('title', 'comments.body')
+                    ->firstPartial();
+                self::fail('Relational partial hydration must reject joined to-many associations.');
+            } catch (RuntimeException $exception) {
+                self::assertStringContainsString('joined to-many association', $exception->getMessage());
+            }
+        } finally {
+            $scope->end();
+        }
+    }
+
     private function makeApp(): Application
     {
         $app = new Application($this->basePath);

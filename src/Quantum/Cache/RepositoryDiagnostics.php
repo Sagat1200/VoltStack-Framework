@@ -14,8 +14,11 @@ final readonly class RepositoryDiagnostics
     public function __construct(
         public string $sourceLevel,
         public CacheContext $context,
+        public string $contextFingerprint,
         public array $capabilities,
         public array $versions,
+        public string $storageNamespace,
+        public array $invalidationScopes,
         public array $store,
         public int $observedAtMs,
         public string $clearStrategy,
@@ -29,8 +32,11 @@ final readonly class RepositoryDiagnostics
         return [
             'source_level' => $this->sourceLevel,
             'context' => $this->context->toArray(),
+            'context_fingerprint' => $this->contextFingerprint,
             'capabilities' => $this->capabilities,
             'versions' => $this->versions,
+            'storage_namespace' => $this->storageNamespace,
+            'invalidation_scopes' => $this->invalidationScopes,
             'store' => $this->store,
             'observed_at_ms' => $this->observedAtMs,
             'clear_strategy' => $this->clearStrategy,

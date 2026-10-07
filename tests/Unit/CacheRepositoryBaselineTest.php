@@ -350,11 +350,15 @@ final class CacheRepositoryBaselineTest extends TestCase
         self::assertSame('catalog', $diagnostics->context->versionScope);
         self::assertSame(['featured'], $diagnostics->context->tags);
         self::assertSame(60, $diagnostics->context->defaultTtl);
+        self::assertSame(40, strlen($diagnostics->contextFingerprint));
         self::assertTrue($diagnostics->capabilities['inspectable'] ?? false);
         self::assertTrue($diagnostics->capabilities['scoped_versions'] ?? false);
         self::assertTrue($diagnostics->capabilities['tag_versions'] ?? false);
         self::assertSame('v1', $diagnostics->versions['namespace'] ?? null);
         self::assertSame('v1', $diagnostics->versions['tag:featured'] ?? null);
+        self::assertSame('tag[featured=v1]:v1:catalog', $diagnostics->storageNamespace);
+        self::assertSame('catalog', $diagnostics->invalidationScopes['namespace'] ?? null);
+        self::assertSame('catalog.tag.featured', $diagnostics->invalidationScopes['tags']['featured'] ?? null);
         self::assertSame(MemoryStore::class, $diagnostics->store['class'] ?? null);
         self::assertSame('tag_invalidation', $diagnostics->clearStrategy);
         self::assertSame(1_700_000_000_000, $diagnostics->observedAtMs);
@@ -379,6 +383,9 @@ final class CacheRepositoryBaselineTest extends TestCase
 
         self::assertSame('memory', $receipt->details['diagnostics']['source_level'] ?? null);
         self::assertSame('catalog', $receipt->details['diagnostics']['context']['key_prefix'] ?? null);
+        self::assertSame(40, strlen((string) ($receipt->details['diagnostics']['context_fingerprint'] ?? '')));
+        self::assertSame('tag[featured=v1]:v1:catalog', $receipt->details['diagnostics']['storage_namespace'] ?? null);
+        self::assertSame('catalog.tag.featured', $receipt->details['diagnostics']['invalidation_scopes']['tags']['featured'] ?? null);
         self::assertSame('tag_invalidation', $receipt->details['diagnostics']['clear_strategy'] ?? null);
         self::assertTrue($receipt->details['diagnostics']['capabilities']['inspectable'] ?? false);
         self::assertSame(MemoryStore::class, $receipt->details['diagnostics']['store']['class'] ?? null);

@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Quantum\Exceptions\Context;
 
+use Quantum\Exceptions\Runtime\ExceptionScope;
+
 final readonly class ExceptionContext
 {
     /**
@@ -16,6 +18,7 @@ final readonly class ExceptionContext
         public ?string $locale = null,
         public bool $debug = false,
         public array $attributes = [],
+        public ?ExceptionScope $scope = null,
     ) {
         if ($scopeId === '') {
             throw new \InvalidArgumentException('Exception scopeId must not be empty.');

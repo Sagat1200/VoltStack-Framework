@@ -24,6 +24,36 @@ final class ConfigurationScopeRegistry
 
     public function current(): ?ConfigurationScope
     {
+        $existing = $this->findCurrent();
+
+        if ($existing !== null) {
+            return $existing;
+        }
+
+        if (! $this->app->hasActiveScope()) {
+            return null;
+        }
+
+        $kind = $this->app->currentScopeKind();
+
+        if (in_array($kind, ['root', 'worker'], true)) {
+            return null;
+        }
+
+        $id = $this->app->currentScopeId();
+        $scope = new ConfigurationScope(
+            id: $id,
+            kind: $kind,
+            parentId: $this->app->currentScopeParentId(),
+            baseSnapshot: $this->resolveBaseSnapshot($this->app->currentScopeParentId()),
+        );
+        $this->scopes[$id] = $scope;
+
+        return $scope;
+    }
+
+    public function findCurrent(): ?ConfigurationScope
+    {
         if (! $this->app->hasActiveScope()) {
             return null;
         }
@@ -36,16 +66,7 @@ final class ConfigurationScopeRegistry
 
         $id = $this->app->currentScopeId();
 
-        if (! isset($this->scopes[$id])) {
-            $this->scopes[$id] = new ConfigurationScope(
-                id: $id,
-                kind: $kind,
-                parentId: $this->app->currentScopeParentId(),
-                baseSnapshot: $this->resolveBaseSnapshot($this->app->currentScopeParentId()),
-            );
-        }
-
-        return $this->scopes[$id];
+        return $this->scopes[$id] ?? null;
     }
 
     public function currentOrFail(): ConfigurationScope

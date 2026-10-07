@@ -45,25 +45,27 @@ final class RouteClearCommand extends Command
 
     public function handle(Input $input, Output $output): int
     {
-        $app = $this->bootstrapApplication();
         $verbose = $input->hasOption('verbose');
-        $deleted = $app->make(RouteArtifactManager::class)->clear();
 
-        if ($deleted === []) {
-            $output->writeln('No habia artifacts de rutas para eliminar.');
+        return $this->runInCommandRuntime(function ($app) use ($output, $verbose): int {
+            $deleted = $app->make(RouteArtifactManager::class)->clear();
+
+            if ($deleted === []) {
+                $output->writeln('No habia artifacts de rutas para eliminar.');
+
+                return 0;
+            }
+
+            if ($verbose) {
+                foreach ($deleted as $name => $path) {
+                    $output->writeln(sprintf('  [%s] %s', $name, $path));
+                }
+            }
+
+            $output->writeln('Artifacts de rutas eliminados correctamente.');
+            $output->writeln(sprintf('  Artifacts eliminados: %d', count($deleted)));
 
             return 0;
-        }
-
-        if ($verbose) {
-            foreach ($deleted as $name => $path) {
-                $output->writeln(sprintf('  [%s] %s', $name, $path));
-            }
-        }
-
-        $output->writeln('Artifacts de rutas eliminados correctamente.');
-        $output->writeln(sprintf('  Artifacts eliminados: %d', count($deleted)));
-
-        return 0;
+        });
     }
 }

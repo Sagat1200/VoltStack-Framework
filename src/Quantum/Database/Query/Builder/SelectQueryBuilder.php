@@ -163,6 +163,22 @@ final class SelectQueryBuilder
         return $this->runner->run($query)->first();
     }
 
+    public function withoutLimitOffset(): self
+    {
+        return (new self(
+            $this->table,
+            $this->runner,
+            $this->compiler,
+            $this->connectionName,
+        ))
+            ->select(...$this->columns)
+            ->as($this->alias ?? '')
+            ->distinct($this->distinct)
+            ->joins($this->joins)
+            ->wherePredicates($this->predicates)
+            ->orderings($this->orderings);
+    }
+
     public function count(?string $column = null): int
     {
         $builder = (new self(
@@ -201,6 +217,18 @@ final class SelectQueryBuilder
     {
         foreach ($joins as $join) {
             $this->joins[] = $join;
+        }
+
+        return $this;
+    }
+
+    /**
+     * @param list<Ordering> $orderings
+     */
+    private function orderings(array $orderings): self
+    {
+        foreach ($orderings as $ordering) {
+            $this->orderings[] = $ordering;
         }
 
         return $this;

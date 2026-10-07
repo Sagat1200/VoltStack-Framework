@@ -85,6 +85,7 @@ final class AuthorizationManifestIntegrationTest extends TestCase
                 'subject' => 'document',
                 'source' => 'method',
                 'condition' => null,
+                'relation' => null,
             ]],
             $enriched->context()->attribute('authorization.metadata.matched_requirements'),
         );
@@ -121,6 +122,7 @@ final class AuthorizationManifestIntegrationTest extends TestCase
                     'type' => 'integer',
                     'max' => 50,
                 ],
+                'relation' => null,
             ],
         ], array_values(array_filter(
             $second->requirementsAsArray(),

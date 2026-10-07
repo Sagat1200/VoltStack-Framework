@@ -49,35 +49,37 @@ final class ViewCacheCommand extends Command
 
     public function handle(Input $input, Output $output): int
     {
-        $app = $this->bootstrapApplication();
-        $factory = $app->make(ViewFactory::class);
-        $store = $app->make(CompiledViewStore::class);
-        $views = $this->discoverViews($factory->paths());
         $verbose = $input->hasOption('verbose');
 
-        if ($views === []) {
-            $output->writeln('No se encontraron vistas para compilar.');
+        return $this->runInCommandRuntime(function ($app) use ($output, $verbose): int {
+            $factory = $app->make(ViewFactory::class);
+            $store = $app->make(CompiledViewStore::class);
+            $views = $this->discoverViews($factory->paths());
+
+            if ($views === []) {
+                $output->writeln('No se encontraron vistas para compilar.');
+
+                return 0;
+            }
+
+            $compiled = 0;
+
+            foreach ($views as $viewPath) {
+                $compiledPath = $store->ensureCompiled($viewPath);
+                $compiled++;
+
+                if ($verbose) {
+                    $output->writeln(sprintf('  [%d] %s', $compiled, $viewPath));
+                    $output->writeln(sprintf('      -> %s', $compiledPath));
+                }
+            }
+
+            $output->writeln('Vistas compiladas correctamente.');
+            $output->writeln(sprintf('  Directorio cache: %s', $store->directory()));
+            $output->writeln(sprintf('  Vistas compiladas: %d', $compiled));
 
             return 0;
-        }
-
-        $compiled = 0;
-
-        foreach ($views as $viewPath) {
-            $compiledPath = $store->ensureCompiled($viewPath);
-            $compiled++;
-
-            if ($verbose) {
-                $output->writeln(sprintf('  [%d] %s', $compiled, $viewPath));
-                $output->writeln(sprintf('      -> %s', $compiledPath));
-            }
-        }
-
-        $output->writeln('Vistas compiladas correctamente.');
-        $output->writeln(sprintf('  Directorio cache: %s', $store->directory()));
-        $output->writeln(sprintf('  Vistas compiladas: %d', $compiled));
-
-        return 0;
+        });
     }
 
     /**

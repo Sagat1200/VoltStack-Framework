@@ -61,44 +61,45 @@ final class CacheClearCommand extends Command
             return 1;
         }
 
-        $app = $this->bootstrapApplication();
-        $manager = $app->make(CacheManager::class);
-        $deletedDataFiles = 0;
-        $deletedViewFiles = 0;
-        $deletedPageFiles = 0;
+        return $this->runInCommandRuntime(function ($app) use ($compiledOnly, $dataOnly, $output, $verbose): int {
+            $manager = $app->make(CacheManager::class);
+            $deletedDataFiles = 0;
+            $deletedViewFiles = 0;
+            $deletedPageFiles = 0;
 
-        if (! $compiledOnly) {
-            foreach ($this->fileStorePaths($app->config('cache.stores', [])) as $name => $path) {
-                $deletedFiles = $this->countFiles($path);
-                $deletedDataFiles += $deletedFiles;
-                $manager->store((string) $name)->flush();
-                $this->deleteDirectory($path);
+            if (! $compiledOnly) {
+                foreach ($this->fileStorePaths($app->config('cache.stores', [])) as $name => $path) {
+                    $deletedFiles = $this->countFiles($path);
+                    $deletedDataFiles += $deletedFiles;
+                    $manager->store((string) $name)->flush();
+                    $this->deleteDirectory($path);
 
-                if ($verbose) {
-                    $output->writeln(sprintf('  [data] %s -> %s (%d archivos)', $name, $path, $deletedFiles));
+                    if ($verbose) {
+                        $output->writeln(sprintf('  [data] %s -> %s (%d archivos)', $name, $path, $deletedFiles));
+                    }
                 }
             }
-        }
 
-        if (! $dataOnly) {
-            $compiledViewsPath = (string) $app->config('cache.compiled.views', $app->cachePath('compiled/views'));
-            $compiledPagesPath = (string) $app->config('cache.compiled.pages', $app->cachePath('compiled/pages'));
+            if (! $dataOnly) {
+                $compiledViewsPath = (string) $app->config('cache.compiled.views', $app->cachePath('compiled/views'));
+                $compiledPagesPath = (string) $app->config('cache.compiled.pages', $app->cachePath('compiled/pages'));
 
-            $deletedViewFiles = $this->deleteDirectory($compiledViewsPath);
-            $deletedPageFiles = $this->deleteDirectory($compiledPagesPath);
+                $deletedViewFiles = $this->deleteDirectory($compiledViewsPath);
+                $deletedPageFiles = $this->deleteDirectory($compiledPagesPath);
 
-            if ($verbose) {
-                $output->writeln(sprintf('  [compiled.views] %s (%d archivos)', $compiledViewsPath, $deletedViewFiles));
-                $output->writeln(sprintf('  [compiled.pages] %s (%d archivos)', $compiledPagesPath, $deletedPageFiles));
+                if ($verbose) {
+                    $output->writeln(sprintf('  [compiled.views] %s (%d archivos)', $compiledViewsPath, $deletedViewFiles));
+                    $output->writeln(sprintf('  [compiled.pages] %s (%d archivos)', $compiledPagesPath, $deletedPageFiles));
+                }
             }
-        }
 
-        $output->writeln('Cache limpiada correctamente.');
-        $output->writeln(sprintf('  Datos eliminados: %d', $deletedDataFiles));
-        $output->writeln(sprintf('  Vistas compiladas eliminadas: %d', $deletedViewFiles));
-        $output->writeln(sprintf('  Paginas compiladas eliminadas: %d', $deletedPageFiles));
+            $output->writeln('Cache limpiada correctamente.');
+            $output->writeln(sprintf('  Datos eliminados: %d', $deletedDataFiles));
+            $output->writeln(sprintf('  Vistas compiladas eliminadas: %d', $deletedViewFiles));
+            $output->writeln(sprintf('  Paginas compiladas eliminadas: %d', $deletedPageFiles));
 
-        return 0;
+            return 0;
+        });
     }
 
     /**

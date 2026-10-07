@@ -24,6 +24,7 @@ use Quantum\Config\Bridge\ConfigAccessRegistry;
 use Quantum\Config\Bridge\ConfigBridge;
 use Quantum\Config\Bridge\FrameworkConfigAccessProfile;
 use Quantum\Config\Diagnostics\ConfigRedactor;
+use Quantum\Config\Diagnostics\ConfigStatusInspector;
 use Quantum\Config\Publication\ConfigManifestStore;
 use Quantum\Config\Publication\ConfigSnapshotCodec;
 use Quantum\Config\Reference\ConfigReferenceResolver;
@@ -265,6 +266,15 @@ class Application extends Container
 
         if (! isset($this->bindings[ConfigRedactor::class])) {
             $this->singleton(ConfigRedactor::class, fn() => new ConfigRedactor());
+        }
+
+        if (! isset($this->bindings[ConfigStatusInspector::class])) {
+            $this->singleton(ConfigStatusInspector::class, fn(Application $app) => new ConfigStatusInspector(
+                redactor: $app->make(ConfigRedactor::class),
+                codec: $app->make(ConfigSnapshotCodec::class),
+                manifestStore: $app->make(ConfigManifestStore::class),
+                scopeRegistry: $app->make(ConfigurationScopeRegistry::class),
+            ));
         }
 
         if (! isset($this->bindings[ConfigSnapshotCodec::class])) {
@@ -1228,6 +1238,11 @@ HTML;
     public function configWriter(): ConfigurationOverrideWriter
     {
         return $this->make(ConfigurationOverrideWriter::class);
+    }
+
+    public function configStatusInspector(): ConfigStatusInspector
+    {
+        return $this->make(ConfigStatusInspector::class);
     }
 
     public function configSnapshotCodec(): ConfigSnapshotCodec

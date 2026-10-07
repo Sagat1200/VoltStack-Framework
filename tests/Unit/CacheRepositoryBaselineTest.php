@@ -302,6 +302,88 @@ final class CacheRepositoryBaselineTest extends TestCase
         self::assertSame('missing', $scoped->get('page.home', 'missing'));
     }
 
+    public function test_repository_namespace_creates_a_subnamespace_without_replacing_scope_or_tags(): void
+    {
+        $authority = new LocalVersionAuthority();
+        $clock = $this->clockAt(1_700_000_000);
+        $repository = new Repository(
+            new MemoryStore($clock),
+            'catalog',
+            60,
+            null,
+            $authority,
+            'catalog',
+            ['featured'],
+            $clock,
+        );
+
+        $namespaced = $repository->namespace(['tenant', '42'])->namespace('feed/home');
+        $receipt = $namespaced->putReceipt('page.hero', ['ok' => true], 15);
+
+        self::assertSame('catalog:tenant:42:feed:home', $namespaced->context()->keyPrefix);
+        self::assertSame('catalog', $namespaced->context()->versionScope);
+        self::assertSame(['featured'], $namespaced->context()->tags);
+        self::assertSame(60, $namespaced->context()->defaultTtl);
+        self::assertStringContainsString('catalog:tenant:42:feed:home:page.hero', (string) ($receipt->details['normalized_key'] ?? ''));
+        self::assertSame('tag_invalidation', $receipt->details['diagnostics']['clear_strategy'] ?? null);
+    }
+
+    public function test_repository_diagnostics_exposes_context_capabilities_versions_and_store_snapshot(): void
+    {
+        $authority = new LocalVersionAuthority();
+        $clock = $this->clockAt(1_700_000_000);
+        $repository = new Repository(
+            new MemoryStore($clock),
+            'catalog',
+            60,
+            null,
+            $authority,
+            'catalog',
+            ['featured'],
+            $clock,
+        );
+
+        $diagnostics = $repository->diagnostics();
+
+        self::assertSame('memory', $diagnostics->sourceLevel);
+        self::assertSame('catalog', $diagnostics->context->keyPrefix);
+        self::assertSame('catalog', $diagnostics->context->versionScope);
+        self::assertSame(['featured'], $diagnostics->context->tags);
+        self::assertSame(60, $diagnostics->context->defaultTtl);
+        self::assertTrue($diagnostics->capabilities['inspectable'] ?? false);
+        self::assertTrue($diagnostics->capabilities['scoped_versions'] ?? false);
+        self::assertTrue($diagnostics->capabilities['tag_versions'] ?? false);
+        self::assertSame('v1', $diagnostics->versions['namespace'] ?? null);
+        self::assertSame('v1', $diagnostics->versions['tag:featured'] ?? null);
+        self::assertSame(MemoryStore::class, $diagnostics->store['class'] ?? null);
+        self::assertSame('tag_invalidation', $diagnostics->clearStrategy);
+        self::assertSame(1_700_000_000_000, $diagnostics->observedAtMs);
+    }
+
+    public function test_receipt_details_include_repository_diagnostics_snapshot(): void
+    {
+        $authority = new LocalVersionAuthority();
+        $clock = $this->clockAt(1_700_000_000);
+        $repository = new Repository(
+            new MemoryStore($clock),
+            'catalog',
+            60,
+            null,
+            $authority,
+            'catalog',
+            ['featured'],
+            $clock,
+        );
+
+        $receipt = $repository->putReceipt('product:42', ['name' => 'A'], 30);
+
+        self::assertSame('memory', $receipt->details['diagnostics']['source_level'] ?? null);
+        self::assertSame('catalog', $receipt->details['diagnostics']['context']['key_prefix'] ?? null);
+        self::assertSame('tag_invalidation', $receipt->details['diagnostics']['clear_strategy'] ?? null);
+        self::assertTrue($receipt->details['diagnostics']['capabilities']['inspectable'] ?? false);
+        self::assertSame(MemoryStore::class, $receipt->details['diagnostics']['store']['class'] ?? null);
+    }
+
     public function test_pull_returns_value_and_removes_the_key(): void
     {
         $repository = new Repository(new MemoryStore($this->clockAt(1_700_000_000)));

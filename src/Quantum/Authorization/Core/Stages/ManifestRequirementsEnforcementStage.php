@@ -10,9 +10,11 @@ use Quantum\Authorization\Authority\Permission;
 use Quantum\Authorization\Authority\Scope;
 use Quantum\Authorization\Contracts\AuthorityRepositoryInterface;
 use Quantum\Authorization\Contracts\AuthorizationEvaluationStageInterface;
+use Quantum\Authorization\Contracts\RelationshipRepositoryInterface;
 use Quantum\Authorization\Contracts\TenantScopeResolverInterface;
 use Quantum\Authorization\Core\AuthorizationRequest;
 use Quantum\Authorization\Decision\DecisionResult;
+use Quantum\Authorization\Relationship\RelationshipEvaluator;
 
 final class ManifestRequirementsEnforcementStage implements AuthorizationEvaluationStageInterface
 {
@@ -21,7 +23,10 @@ final class ManifestRequirementsEnforcementStage implements AuthorizationEvaluat
         private readonly ?AuthorityRepositoryInterface $authorityRepository = null,
         private readonly bool $evaluateRequirementsConcretely = false,
         private readonly bool $evaluateAttributeConditions = false,
+        private readonly bool $evaluateRelationships = false,
         private readonly ?AttributeConditionEvaluator $attributeConditionEvaluator = null,
+        private readonly ?RelationshipRepositoryInterface $relationshipRepository = null,
+        private readonly ?RelationshipEvaluator $relationshipEvaluator = null,
         private readonly ?TenantScopeResolverInterface $tenantScopeResolver = null,
     ) {}
 
@@ -129,7 +134,7 @@ final class ManifestRequirementsEnforcementStage implements AuthorizationEvaluat
 
     /**
      * @param mixed $matched
-     * @return list<array{ability:string,scope?:string|null,principal?:string|null,condition?:mixed,effect?:string}>
+     * @return list<array{ability:string,scope?:string|null,principal?:string|null,condition?:mixed,effect?:string,relation?:string|null}>
      */
     private function normalizedMatchedRequirements(mixed $matched, Ability $requestedAbility): array
     {
@@ -167,6 +172,9 @@ final class ManifestRequirementsEnforcementStage implements AuthorizationEvaluat
                     ? $entry['principal']
                     : null,
                 'condition' => $entry['condition'] ?? null,
+                'relation' => isset($entry['relation']) && is_string($entry['relation']) && trim($entry['relation']) !== ''
+                    ? trim($entry['relation'])
+                    : null,
                 'effect' => isset($entry['effect']) && is_string($entry['effect']) ? strtolower($entry['effect']) : 'permit',
             ];
         }
@@ -175,7 +183,7 @@ final class ManifestRequirementsEnforcementStage implements AuthorizationEvaluat
     }
 
     /**
-     * @param list<array{ability:string,scope?:string|null,principal?:string|null,condition?:mixed,effect?:string}> $matchedRequirements
+     * @param list<array{ability:string,scope?:string|null,principal?:string|null,condition?:mixed,effect?:string,relation?:string|null}> $matchedRequirements
      * @param array<string, mixed> $baseMetadata
      * @return list<DecisionResult>
      */
@@ -241,6 +249,32 @@ final class ManifestRequirementsEnforcementStage implements AuthorizationEvaluat
                 continue;
             }
 
+            if ($this->evaluateRelationships && ! $this->relationshipSatisfied($request, $requirement, $requirementScope)) {
+                $relationMetadata = [
+                    ...$baseMetadata,
+                    'ability' => $requirement['ability'],
+                    'scope' => (string) $requirementScope,
+                    'relation' => $requirement['relation'] ?? null,
+                    'principal_id' => $principalId,
+                ];
+
+                if ($this->failClosed) {
+                    $results[] = DecisionResult::deny(
+                        source: 'authorization.stage:manifest_requirements',
+                        reasonCode: 'manifest_requirement_relationship_not_satisfied',
+                        metadata: $relationMetadata,
+                    );
+                } else {
+                    $results[] = DecisionResult::abstain(
+                        source: 'authorization.stage:manifest_requirements',
+                        reasonCode: 'manifest_requirement_relationship_not_satisfied_fail_open',
+                        metadata: $relationMetadata,
+                    );
+                }
+
+                continue;
+            }
+
             $hasPermission = $this->authorityRepository->hasPermission(
                 principalId: $principalId,
                 permission: $permission,
@@ -257,6 +291,8 @@ final class ManifestRequirementsEnforcementStage implements AuthorizationEvaluat
                         'scope' => (string) $requirementScope,
                         'repository' => $this->authorityRepository::class,
                         'abac_conditions_evaluated' => $this->evaluateAttributeConditions && ($requirement['condition'] ?? null) !== null,
+                        'relationship_evaluated' => $this->evaluateRelationships && ($requirement['relation'] ?? null) !== null,
+                        'relation' => $requirement['relation'] ?? null,
                     ],
                 );
             } else {
@@ -276,6 +312,26 @@ final class ManifestRequirementsEnforcementStage implements AuthorizationEvaluat
         }
 
         return $results;
+    }
+
+    /**
+     * @param array{relation?:string|null} $requirement
+     */
+    private function relationshipSatisfied(AuthorizationRequest $request, array $requirement, Scope $scope): bool
+    {
+        $relation = $requirement['relation'] ?? null;
+
+        if (! is_string($relation) || trim($relation) === '') {
+            return true;
+        }
+
+        if (! $this->evaluateRelationships || $this->relationshipRepository === null) {
+            return true;
+        }
+
+        $evaluator = $this->relationshipEvaluator ?? new RelationshipEvaluator($this->relationshipRepository);
+
+        return $evaluator->evaluate($request, $requirement, $scope);
     }
 
     private function conditionSatisfied(AuthorizationRequest $request, mixed $condition): bool

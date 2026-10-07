@@ -54,7 +54,7 @@ final class MetadataAuthorizationContextEnricherTest extends TestCase
         self::assertNotSame('', (string) $enriched->context()->attribute('authorization.metadata.fingerprint'));
         self::assertCount(3, $enriched->context()->attribute('authorization.metadata.requirements', []));
         self::assertSame([
-            ['ability' => 'documents.method-view', 'subject' => 'document', 'source' => 'method', 'condition' => null],
+            ['ability' => 'documents.method-view', 'subject' => 'document', 'source' => 'method', 'condition' => null, 'relation' => null],
         ], $enriched->context()->attribute('authorization.metadata.matched_requirements'));
     }
 
@@ -98,6 +98,7 @@ final class MetadataAuthorizationContextEnricherTest extends TestCase
                     'type' => 'integer',
                     'max' => 50,
                 ],
+                'relation' => null,
             ],
         ], $matched);
     }

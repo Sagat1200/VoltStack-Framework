@@ -151,7 +151,7 @@ final class Repository
             details: $this->operationDetails(null, [
                 'mode' => $this->tagNames !== []
                     ? 'tag_invalidation'
-                    : ($this->versionScope !== null && trim($this->versionScope) !== '' ? 'namespace_rotation' : 'store_flush'),
+                    : $this->clearStrategy(),
             ]),
         );
     }
@@ -163,6 +163,19 @@ final class Repository
             versionScope: $this->versionScope,
             tags: $this->tagNames,
             defaultTtl: $this->defaultTtl,
+        );
+    }
+
+    public function diagnostics(): RepositoryDiagnostics
+    {
+        return new RepositoryDiagnostics(
+            sourceLevel: $this->store instanceof InspectableStoreInterface ? $this->store->sourceLevel() : 'store',
+            context: $this->context(),
+            capabilities: $this->capabilities(),
+            versions: $this->versionMetadata(),
+            store: $this->storeDiagnostics(),
+            observedAtMs: $this->cacheClock()->nowUnixMilliseconds(),
+            clearStrategy: $this->clearStrategy(),
         );
     }
 
@@ -186,6 +199,11 @@ final class Repository
             $this->mergeTags($context->tags),
             $this->clock,
         );
+    }
+
+    public function namespace(array|string|null $prefix): self
+    {
+        return $this->withContext(CacheContext::from(keyPrefix: $prefix));
     }
 
     public function tags(array|string $tags): self
@@ -523,6 +541,7 @@ final class Repository
             'scope' => $this->versionScope,
             'tags' => $this->tagNames,
             'context' => $this->context()->toArray(),
+            'diagnostics' => $this->diagnosticsSnapshot(),
         ];
 
         if ($key !== null) {
@@ -536,5 +555,60 @@ final class Repository
     private function composePrefix(string $base, string $extra): string
     {
         return CacheContext::normalizePrefix([$base, $extra]);
+    }
+
+    /**
+     * @return array<string, bool>
+     */
+    private function capabilities(): array
+    {
+        return [
+            'inspectable' => $this->store instanceof InspectableStoreInterface,
+            'scoped_versions' => $this->versionAuthority !== null && $this->versionScope !== null && trim($this->versionScope) !== '',
+            'tag_versions' => $this->versionAuthority !== null,
+            'contextualized' => $this->context()->keyPrefix !== '' || $this->context()->versionScope !== null || $this->context()->tags !== [],
+            'ttl_default' => $this->defaultTtl !== null,
+            'marshaller' => $this->marshaller !== null,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function storeDiagnostics(): array
+    {
+        return [
+            'class' => $this->store::class,
+            'inspectable' => $this->store instanceof InspectableStoreInterface,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function diagnosticsSnapshot(): array
+    {
+        return [
+            'source_level' => $this->store instanceof InspectableStoreInterface ? $this->store->sourceLevel() : 'store',
+            'context' => $this->context()->toArray(),
+            'capabilities' => $this->capabilities(),
+            'versions' => $this->versionMetadata(),
+            'store' => $this->storeDiagnostics(),
+            'observed_at_ms' => $this->cacheClock()->nowUnixMilliseconds(),
+            'clear_strategy' => $this->clearStrategy(),
+        ];
+    }
+
+    private function clearStrategy(): string
+    {
+        if ($this->tagNames !== []) {
+            return 'tag_invalidation';
+        }
+
+        if ($this->versionScope !== null && trim($this->versionScope) !== '') {
+            return 'namespace_rotation';
+        }
+
+        return 'store_flush';
     }
 }

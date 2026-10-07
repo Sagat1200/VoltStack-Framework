@@ -13,5 +13,6 @@ final readonly class Authorize
         public string $ability,
         public string|array|null $subject = null,
         public mixed $condition = null,
+        public ?string $relation = null,
     ) {}
 }

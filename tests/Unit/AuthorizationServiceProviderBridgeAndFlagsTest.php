@@ -12,8 +12,10 @@ use Quantum\Authorization\Bridges\ControllerSecurityPlannerBridge;
 use Quantum\Authorization\Contracts\AuthorityMemoizationCacheInterface;
 use Quantum\Authorization\Contracts\AuthorityRepositoryInterface;
 use Quantum\Authorization\Contracts\AuthorizationManagerInterface;
+use Quantum\Authorization\Contracts\RelationshipRepositoryInterface;
 use Quantum\Authorization\Contracts\TenantScopeResolverInterface;
 use Quantum\Authorization\Core\AuthorizationManager;
+use Quantum\Authorization\Relationship\InMemoryRelationshipRepository;
 use Quantum\Config\ConfigRepository;
 use VoltStack\Framework\Application;
 
@@ -31,6 +33,8 @@ final class AuthorizationServiceProviderBridgeAndFlagsTest extends TestCase
         self::assertFalse($config->get('authorization.authority.scope_resolution.enabled'));
         self::assertSame('tenant:', $config->get('authorization.authority.scope_resolution.tenant_scope_prefix'));
         self::assertFalse($config->get('authorization.controllers_security.bridge.enabled'));
+        self::assertFalse($config->get('authorization.relationships.evaluate'));
+        self::assertSame([], $config->get('authorization.relationships.entries'));
     }
 
     public function test_authority_repository_default_wraps_in_memory_with_cached_decorator(): void
@@ -132,6 +136,21 @@ final class AuthorizationServiceProviderBridgeAndFlagsTest extends TestCase
         $resolver = $app->make(TenantScopeResolverInterface::class);
 
         self::assertInstanceOf(TenantScopeResolverInterface::class, $resolver);
+    }
+
+    public function test_relationship_repository_uses_in_memory_driver_seeded_from_config(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        /** @var ConfigRepository $config */
+        $config = $app->make(ConfigRepository::class);
+        $config->set('authorization.relationships.entries', [
+            ['principal_id' => '42', 'relation' => 'owner', 'resource' => 'doc-1'],
+        ]);
+
+        $repository = $app->make(RelationshipRepositoryInterface::class);
+
+        self::assertInstanceOf(InMemoryRelationshipRepository::class, $repository);
+        self::assertTrue($repository->hasRelationship('42', 'owner', 'doc-1'));
     }
 
     public function test_manager_explain_and_explain_plan_methods_are_available_on_interface_resolved_via_container(): void

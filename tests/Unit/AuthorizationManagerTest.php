@@ -288,6 +288,49 @@ final class AuthorizationManagerTest extends TestCase
         self::assertSame('manifest_requirement_attribute_conditions_not_satisfied', $deny->reasonCode());
         self::assertSame(['risk.score', 'department'], $deny->metadata()['abac_condition_attributes'] ?? null);
     }
+
+    public function test_authorization_manager_applies_route_relationship_requirements_end_to_end(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $config = $app->make(ConfigRepository::class);
+        $config->set('authorization.authority.evaluate_requirements_concretely', true);
+        $config->set('authorization.relationships.evaluate', true);
+        $config->set('authorization.authority.grants', [
+            ['principal_id' => '42', 'permissions' => ['documents.manage']],
+        ]);
+
+        $document = (object) ['id' => 'doc-1'];
+        $config->set('authorization.relationships.entries', [
+            ['principal_id' => '42', 'relation' => 'owner', 'resource' => $document],
+        ]);
+
+        $manager = $app->make(AuthorizationManagerInterface::class);
+        $route = new Route(RouteDefinition::make(
+            ['GET'],
+            '/policies/relation/{document}',
+            static fn (): string => 'ok',
+        ));
+        $route->authorizeRelated('documents.manage', 'owner', 'document');
+
+        $allowContext = new AuthorizationContext('req-owner', attributes: [
+            'route_match' => new RouteMatch($route, ['document' => 'doc-1'], 'GET'),
+        ]);
+        $denyContext = new AuthorizationContext('req-non-owner', attributes: [
+            'route_match' => new RouteMatch($route, ['document' => 'doc-1'], 'GET'),
+        ]);
+
+        $allow = $manager->decide('documents.manage', $document, $allowContext, new Principal('42'));
+        $deny = $manager->decide('documents.manage', $document, $denyContext, new Principal('24'));
+
+        self::assertTrue($allow->isAllowed());
+        self::assertSame('manifest_requirement_granted_by_authority', $allow->reasonCode());
+        self::assertTrue($allow->metadata()['relationship_evaluated'] ?? false);
+        self::assertSame('owner', $allow->metadata()['relation'] ?? null);
+
+        self::assertTrue($deny->isDenied());
+        self::assertSame('manifest_requirement_relationship_not_satisfied', $deny->reasonCode());
+        self::assertSame('owner', $deny->metadata()['relation'] ?? null);
+    }
 }
 
 final readonly class AuthorizationArticle

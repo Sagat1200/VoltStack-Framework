@@ -48,69 +48,71 @@ final class RouteCacheCommand extends Command
 
     public function handle(Input $input, Output $output): int
     {
-        $app = $this->bootstrapApplication();
-        $router = $app->make(Router::class);
-        $manager = $app->make(RouteArtifactManager::class);
         $verbose = $input->hasOption('verbose');
-        $report = $manager->pipelineOptimizationReport($router);
         $optimizerOnly = $input->hasOption('optimizer-only');
 
-        if ($optimizerOnly) {
-            $this->renderOptimizerReport($output, $report, true);
-            return 0;
-        }
+        return $this->runInCommandRuntime(function ($app) use ($optimizerOnly, $output, $verbose): int {
+            $router = $app->make(Router::class);
+            $manager = $app->make(RouteArtifactManager::class);
+            $report = $manager->pipelineOptimizationReport($router);
 
-        $paths = $manager->compileAndWrite($router);
-
-        if ($verbose) {
-            foreach ($paths as $name => $path) {
-                $output->writeln(sprintf('  [%s] %s', $name, $path));
+            if ($optimizerOnly) {
+                $this->renderOptimizerReport($output, $report, true);
+                return 0;
             }
-        }
 
-        $output->writeln('Artifacts de rutas compilados correctamente.');
-        $output->writeln(sprintf('  Artifacts escritos: %d', count($paths)));
+            $paths = $manager->compileAndWrite($router);
 
-        if ($verbose) {
-            $output->writeln('  Pipeline optimizer:');
-            $output->writeln(sprintf('    Rutas analizadas: %d', $report->totalRoutes()));
-            $output->writeln(sprintf('    Pipelines unicos: %d', $report->uniquePipelines()));
-            $output->writeln(sprintf('    Rutas reutilizando pipeline: %d', $report->sharedRouteCount()));
-            $output->writeln(sprintf('    Pipelines singleton: %d', $report->singletonPipelines()));
-            $output->writeln(sprintf('    Max reutilizacion: %d rutas por pipeline', $report->maxPipelineReuse()));
-            $output->writeln(sprintf(
-                '    Pipeline mas largo: %s (%d middleware)',
-                $report->longestRouteUri() ?? '-',
-                $report->longestPipelineLength(),
-            ));
+            if ($verbose) {
+                foreach ($paths as $name => $path) {
+                    $output->writeln(sprintf('  [%s] %s', $name, $path));
+                }
+            }
 
-            $output->writeln(sprintf('    Top pipelines reutilizados: %d', count($report->topReusedPipelines())));
+            $output->writeln('Artifacts de rutas compilados correctamente.');
+            $output->writeln(sprintf('  Artifacts escritos: %d', count($paths)));
 
-            foreach ($report->topReusedPipelines() as $pipeline) {
+            if ($verbose) {
+                $output->writeln('  Pipeline optimizer:');
+                $output->writeln(sprintf('    Rutas analizadas: %d', $report->totalRoutes()));
+                $output->writeln(sprintf('    Pipelines unicos: %d', $report->uniquePipelines()));
+                $output->writeln(sprintf('    Rutas reutilizando pipeline: %d', $report->sharedRouteCount()));
+                $output->writeln(sprintf('    Pipelines singleton: %d', $report->singletonPipelines()));
+                $output->writeln(sprintf('    Max reutilizacion: %d rutas por pipeline', $report->maxPipelineReuse()));
                 $output->writeln(sprintf(
-                    '      - %d rutas -> %s (id:%s)',
-                    $pipeline['routes'] ?? 0,
-                    $pipeline['example'] ?? '-',
-                    substr((string) ($pipeline['id'] ?? ''), 0, 12),
+                    '    Pipeline mas largo: %s (%d middleware)',
+                    $report->longestRouteUri() ?? '-',
+                    $report->longestPipelineLength(),
                 ));
+
+                $output->writeln(sprintf('    Top pipelines reutilizados: %d', count($report->topReusedPipelines())));
+
+                foreach ($report->topReusedPipelines() as $pipeline) {
+                    $output->writeln(sprintf(
+                        '      - %d rutas -> %s (id:%s)',
+                        $pipeline['routes'] ?? 0,
+                        $pipeline['example'] ?? '-',
+                        substr((string) ($pipeline['id'] ?? ''), 0, 12),
+                    ));
+                }
+
+                $output->writeln(sprintf('    Ejemplos singleton: %d', count($report->singletonRouteExamples())));
+
+                foreach ($report->singletonRouteExamples() as $routeUri) {
+                    $output->writeln(sprintf('      - %s', (string) $routeUri));
+                }
             }
 
-            $output->writeln(sprintf('    Ejemplos singleton: %d', count($report->singletonRouteExamples())));
+            if ($report->hasWarnings()) {
+                $output->writeln('  Advertencias del pipeline optimizer:');
 
-            foreach ($report->singletonRouteExamples() as $routeUri) {
-                $output->writeln(sprintf('      - %s', (string) $routeUri));
+                foreach ($report->warnings() as $warning) {
+                    $output->writeln(sprintf('    - %s', $warning));
+                }
             }
-        }
 
-        if ($report->hasWarnings()) {
-            $output->writeln('  Advertencias del pipeline optimizer:');
-
-            foreach ($report->warnings() as $warning) {
-                $output->writeln(sprintf('    - %s', $warning));
-            }
-        }
-
-        return 0;
+            return 0;
+        });
     }
 
     private function renderOptimizerReport(Output $output, PipelineOptimizationReport $report, bool $expanded): void

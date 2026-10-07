@@ -177,6 +177,9 @@ final class AttributeMetadataProvider implements MetadataProviderInterface
                                 'subject' => $instance->subject,
                                 'source' => str_contains($location, '@') ? 'method' : 'class',
                                 'condition' => $instance->condition,
+                                'relation' => is_string($instance->relation) && trim($instance->relation) !== ''
+                                    ? trim($instance->relation)
+                                    : null,
                             ]],
                             origin: new MetadataOrigin(
                                 provider: $this->name(),
@@ -200,6 +203,7 @@ final class AttributeMetadataProvider implements MetadataProviderInterface
                                 'subject' => $instance->subject,
                                 'source' => str_contains($location, '@') ? 'method' : 'class',
                                 'condition' => $instance->condition(),
+                                'relation' => null,
                             ]],
                             origin: new MetadataOrigin(
                                 provider: $this->name(),

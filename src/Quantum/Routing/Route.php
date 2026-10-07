@@ -296,7 +296,12 @@ final class Route extends CompiledRoute
         return $this->meta('auth', $value);
     }
 
-    public function authorize(string $ability, string|array|null $subject = null, mixed $condition = null): static
+    public function authorize(
+        string $ability,
+        string|array|null $subject = null,
+        mixed $condition = null,
+        ?string $relation = null,
+    ): static
     {
         $authorization = $this->definition()->metadata()['authorization'] ?? [];
 
@@ -314,6 +319,7 @@ final class Route extends CompiledRoute
             'ability' => trim($ability),
             'subject' => $subject,
             'condition' => $this->normalizeAuthorizationCondition($condition),
+            'relation' => $this->normalizeAuthorizationRelation($relation),
         ];
 
         $authorization['requirements'] = $requirements;
@@ -346,6 +352,15 @@ final class Route extends CompiledRoute
     public function authorizeWhenAll(string $ability, string|array|null $subject = null, array $conditions = []): static
     {
         return $this->authorize($ability, $subject, $conditions);
+    }
+
+    public function authorizeRelated(
+        string $ability,
+        string $relation,
+        string|array|null $subject = null,
+        mixed $condition = null,
+    ): static {
+        return $this->authorize($ability, $subject, $condition, $relation);
     }
 
     public function publicAccess(bool $enabled = true): static
@@ -577,5 +592,16 @@ final class Route extends CompiledRoute
         }
 
         return $normalized;
+    }
+
+    private function normalizeAuthorizationRelation(?string $relation): ?string
+    {
+        if (! is_string($relation)) {
+            return null;
+        }
+
+        $normalized = trim($relation);
+
+        return $normalized === '' ? null : $normalized;
     }
 }

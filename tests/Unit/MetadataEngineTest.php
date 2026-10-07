@@ -228,8 +228,8 @@ final class MetadataEngineTest extends TestCase
 
         self::assertTrue($bag->get('authorization.public'));
         self::assertSame([
-            ['ability' => 'documents.class-view', 'subject' => null, 'source' => 'class', 'condition' => null],
-            ['ability' => 'documents.method-view', 'subject' => 'document', 'source' => 'method', 'condition' => null],
+            ['ability' => 'documents.class-view', 'subject' => null, 'source' => 'class', 'condition' => null, 'relation' => null],
+            ['ability' => 'documents.method-view', 'subject' => 'document', 'source' => 'method', 'condition' => null, 'relation' => null],
         ], $bag->get('authorization.requirements'));
     }
 
@@ -250,7 +250,7 @@ final class MetadataEngineTest extends TestCase
 
         self::assertTrue($bag->get('authorization.public'));
         self::assertSame([
-            ['ability' => 'documents.route-view', 'subject' => 'document', 'source' => 'route', 'condition' => null],
+            ['ability' => 'documents.route-view', 'subject' => 'document', 'source' => 'route', 'condition' => null, 'relation' => null],
         ], $bag->get('authorization.requirements'));
     }
 
@@ -281,6 +281,7 @@ final class MetadataEngineTest extends TestCase
                     'constraints' => ['max' => 50],
                     'description' => 'Only low-risk approvals',
                 ],
+                'relation' => null,
             ],
         ], $bag->get('authorization.requirements'));
     }
@@ -317,6 +318,7 @@ final class MetadataEngineTest extends TestCase
                     'constraints' => ['max' => 50],
                     'description' => 'Only low-risk route approvals',
                 ],
+                'relation' => null,
             ],
         ], $bag->get('authorization.requirements'));
     }
@@ -357,6 +359,66 @@ final class MetadataEngineTest extends TestCase
                         'description' => 'Allowed departments',
                     ],
                 ],
+                'relation' => null,
+            ],
+        ], $bag->get('authorization.requirements'));
+    }
+
+    public function test_it_projects_route_relationship_metadata_into_metadata_engine(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $engine = $app->make(MetadataEngineInterface::class);
+
+        $route = new Route(RouteDefinition::make(['GET'], '/meta-authz-relation-route', fn () => 'ok'));
+        $route->authorizeRelated('documents.route-manage', 'owner', 'document');
+        $match = new RouteMatch($route, [], 'GET');
+
+        $bag = $engine->resolve(new MetadataRequest(
+            subject: new RouteMatchSubject($match),
+            keys: ['authorization.requirements'],
+        ));
+
+        self::assertSame([
+            [
+                'ability' => 'documents.route-manage',
+                'subject' => 'document',
+                'source' => 'route',
+                'condition' => null,
+                'relation' => 'owner',
+            ],
+        ], $bag->get('authorization.requirements'));
+    }
+
+    public function test_it_projects_authorize_attribute_relation_into_metadata(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $engine = $app->make(MetadataEngineInterface::class);
+
+        $route = new Route(RouteDefinition::make(['GET'], '/meta-authz-relation-attr', TestAuthorizationRelationshipMetadataController::class));
+        $match = new RouteMatch($route, [], 'GET');
+        $routeSubject = new RouteMatchSubject($match);
+        $classSubject = new ControllerClassSubject(TestAuthorizationRelationshipMetadataController::class, $routeSubject);
+        $methodSubject = new ControllerMethodSubject(TestAuthorizationRelationshipMetadataController::class, '__invoke', $classSubject);
+
+        $bag = $engine->resolve(new MetadataRequest(
+            subject: $methodSubject,
+            keys: ['authorization.requirements'],
+        ));
+
+        self::assertSame([
+            [
+                'ability' => 'documents.class-manage',
+                'subject' => 'document',
+                'source' => 'class',
+                'condition' => null,
+                'relation' => 'owner',
+            ],
+            [
+                'ability' => 'documents.method-manage',
+                'subject' => 'document',
+                'source' => 'method',
+                'condition' => null,
+                'relation' => 'editor',
             ],
         ], $bag->get('authorization.requirements'));
     }
@@ -404,6 +466,16 @@ final class TestAuthorizationConditionalMetadataController
         constraints: ['max' => 50],
         description: 'Only low-risk approvals',
     )]
+    public function __invoke(): string
+    {
+        return 'ok';
+    }
+}
+
+#[Authorize('documents.class-manage', 'document', null, 'owner')]
+final class TestAuthorizationRelationshipMetadataController
+{
+    #[Authorize('documents.method-manage', 'document', null, 'editor')]
     public function __invoke(): string
     {
         return 'ok';

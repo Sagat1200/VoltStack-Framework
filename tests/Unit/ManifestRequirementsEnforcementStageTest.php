@@ -13,6 +13,7 @@ use Quantum\Authorization\Core\AuthorizationRequest;
 use Quantum\Authorization\Core\Stages\ManifestRequirementsEnforcementStage;
 use Quantum\Authorization\Decision\Decision;
 use Quantum\Authorization\Principal\Principal;
+use Quantum\Authorization\Relationship\InMemoryRelationshipRepository;
 use Quantum\Authorization\Subject\SubjectDescriptor;
 use Quantum\Authorization\Subject\SubjectType;
 use Quantum\Routing\Route;
@@ -411,6 +412,92 @@ final class ManifestRequirementsEnforcementStageTest extends TestCase
         self::assertSame(\Quantum\Authorization\Decision\Decision::Deny, $deny->decision());
         self::assertSame('manifest_requirement_attribute_conditions_not_satisfied', $deny->reasonCode());
         self::assertSame(['risk.score'], $deny->metadata()['abac_condition_attributes'] ?? null);
+    }
+
+    public function test_relationship_requirement_allows_when_relation_is_satisfied(): void
+    {
+        $document = (object) ['id' => 'doc-1'];
+        $authority = new InMemoryAuthorityRepository([
+            ['principal_id' => 'user-1', 'permissions' => ['documents.manage']],
+        ]);
+        $relationships = new InMemoryRelationshipRepository([
+            ['principal_id' => 'user-1', 'relation' => 'owner', 'resource' => $document],
+        ]);
+        $stage = new ManifestRequirementsEnforcementStage(
+            failClosed: true,
+            authorityRepository: $authority,
+            evaluateRequirementsConcretely: true,
+            evaluateAttributeConditions: false,
+            evaluateRelationships: true,
+            attributeConditionEvaluator: null,
+            relationshipRepository: $relationships,
+        );
+        $context = new AuthorizationContext('req-relation-allow', attributes: [
+            'authorization.metadata.public' => false,
+            'authorization.metadata.requirements' => [
+                ['ability' => 'documents.manage'],
+            ],
+            'authorization.metadata.matched_requirements' => [
+                ['ability' => 'documents.manage', 'relation' => 'owner'],
+            ],
+        ]);
+        $request = new AuthorizationRequest(
+            new Ability('documents.manage'),
+            new Principal('user-1'),
+            new SubjectDescriptor(SubjectType::Object, $document, \stdClass::class),
+            $context,
+        );
+
+        $results = $stage->evaluate($request);
+        $allow = $results[0] ?? null;
+
+        self::assertNotNull($allow);
+        self::assertSame(Decision::Allow, $allow->decision());
+        self::assertSame('manifest_requirement_granted_by_authority', $allow->reasonCode());
+        self::assertTrue($allow->metadata()['relationship_evaluated'] ?? false);
+        self::assertSame('owner', $allow->metadata()['relation'] ?? null);
+    }
+
+    public function test_relationship_requirement_denies_when_relation_is_not_satisfied(): void
+    {
+        $document = (object) ['id' => 'doc-1'];
+        $authority = new InMemoryAuthorityRepository([
+            ['principal_id' => 'user-1', 'permissions' => ['documents.manage']],
+        ]);
+        $relationships = new InMemoryRelationshipRepository([]);
+        $stage = new ManifestRequirementsEnforcementStage(
+            failClosed: true,
+            authorityRepository: $authority,
+            evaluateRequirementsConcretely: true,
+            evaluateAttributeConditions: false,
+            evaluateRelationships: true,
+            attributeConditionEvaluator: null,
+            relationshipRepository: $relationships,
+        );
+        $context = new AuthorizationContext('req-relation-deny', attributes: [
+            'authorization.metadata.public' => false,
+            'authorization.metadata.requirements' => [
+                ['ability' => 'documents.manage'],
+            ],
+            'authorization.metadata.matched_requirements' => [
+                ['ability' => 'documents.manage', 'relation' => 'owner'],
+            ],
+        ]);
+        $request = new AuthorizationRequest(
+            new Ability('documents.manage'),
+            new Principal('user-1'),
+            new SubjectDescriptor(SubjectType::Object, $document, \stdClass::class),
+            $context,
+        );
+
+        $results = $stage->evaluate($request);
+        $deny = $results[0] ?? null;
+
+        self::assertNotNull($deny);
+        self::assertSame(Decision::Deny, $deny->decision());
+        self::assertSame('manifest_requirement_relationship_not_satisfied', $deny->reasonCode());
+        self::assertSame('owner', $deny->metadata()['relation'] ?? null);
+        self::assertSame('user-1', $deny->metadata()['principal_id'] ?? null);
     }
 
     public function test_scope_can_be_derived_from_tenant_id_when_resolver_is_enabled(): void

@@ -968,7 +968,7 @@ final class DatabaseOrmFeatureTest extends TestCase
         }
     }
 
-    public function test_entity_query_can_join_to_many_associations_with_root_deduplication_and_collection_hydration(): void
+    public function test_entity_query_can_join_to_many_associations_with_root_deduplication_collection_hydration_and_root_safe_windowing(): void
     {
         $app = $this->makeApp();
         $scope = $app->make(ScopeManager::class);
@@ -1085,6 +1085,42 @@ final class DatabaseOrmFeatureTest extends TestCase
             self::assertSame([], $posts[2]->comments);
             self::assertSame(3, $em->query(OrmBlogPost::class)->leftJoin('comments', 'c')->count());
 
+            $windowedPost = $em->query(OrmBlogPost::class)
+                ->leftJoin('comments', 'c')
+                ->orderBy('title')
+                ->limit(1)
+                ->get();
+            self::assertCount(1, $windowedPost);
+            self::assertSame('Alpha', $windowedPost[0]->title);
+            self::assertCount(2, $windowedPost[0]->comments);
+
+            $commentOrderedWindow = $em->query(OrmBlogPost::class)
+                ->join('comments', 'c')
+                ->orderBy('comments.body')
+                ->limit(1)
+                ->get();
+            self::assertCount(1, $commentOrderedWindow);
+            self::assertSame('Alpha', $commentOrderedWindow[0]->title);
+            self::assertCount(2, $commentOrderedWindow[0]->comments);
+
+            $offsetPost = $em->query(OrmBlogPost::class)
+                ->join('comments', 'c')
+                ->orderBy('title')
+                ->offset(1)
+                ->first();
+            self::assertInstanceOf(OrmBlogPost::class, $offsetPost);
+            self::assertSame('Beta', $offsetPost->title);
+            self::assertCount(1, $offsetPost->comments);
+
+            $commentOrderedOffsetPost = $em->query(OrmBlogPost::class)
+                ->join('comments', 'c')
+                ->orderBy('comments.body')
+                ->offset(1)
+                ->first();
+            self::assertInstanceOf(OrmBlogPost::class, $commentOrderedOffsetPost);
+            self::assertSame('Beta', $commentOrderedOffsetPost->title);
+            self::assertCount(1, $commentOrderedOffsetPost->comments);
+
             $students = $em->query(OrmStudent::class)
                 ->leftJoin('courses', 'co')
                 ->orderBy('name')
@@ -1100,14 +1136,15 @@ final class DatabaseOrmFeatureTest extends TestCase
             ));
             self::assertCount(1, $students[2]->courses);
 
-            try {
-                $em->query(OrmBlogPost::class)
-                    ->join('comments', 'c')
-                    ->first();
-                self::fail('first() must be rejected for joined to-many associations.');
-            } catch (RuntimeException $exception) {
-                self::assertStringContainsString('joined to-many associations', $exception->getMessage());
-            }
+            $windowedStudent = $em->query(OrmStudent::class)
+                ->leftJoin('courses', 'co')
+                ->orderBy('name')
+                ->limit(1)
+                ->offset(1)
+                ->first();
+            self::assertInstanceOf(OrmStudent::class, $windowedStudent);
+            self::assertSame('Linus', $windowedStudent->name);
+            self::assertCount(2, $windowedStudent->courses);
         } finally {
             $scope->end();
         }

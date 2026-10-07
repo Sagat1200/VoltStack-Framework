@@ -4,9 +4,13 @@ declare(strict_types=1);
 
 namespace Quantum\Exceptions\Normalization;
 
+use Quantum\Auth\Exceptions\AuthenticationException;
+use Quantum\Auth\Exceptions\ThrottleDeniedException;
+use Quantum\Database\Execution\ExecutionException;
 use Quantum\Exceptions\Context\ExceptionContext;
 use Quantum\Exceptions\Contracts\ExceptionNormalizerInterface;
 use Quantum\Exceptions\Model\FailureSnapshot;
+use Quantum\Validation\Exceptions\ValidationException;
 use Throwable;
 
 final readonly class ThrowableNormalizer implements ExceptionNormalizerInterface
@@ -87,7 +91,7 @@ final readonly class ThrowableNormalizer implements ExceptionNormalizerInterface
             frames: $frames,
             causes: $causes,
             origin: $this->normalizeOrigin($context),
-            safeMetadata: $this->normalizeMetadata($context->attributes),
+            safeMetadata: $this->normalizeMetadata($context->attributes + $this->extractKnownSafeMetadata($error)),
             truncated: $truncated,
         );
     }
@@ -243,5 +247,30 @@ final readonly class ThrowableNormalizer implements ExceptionNormalizerInterface
         }
 
         return true;
+    }
+
+    /**
+     * @return array<string, scalar|array|null>
+     */
+    private function extractKnownSafeMetadata(Throwable $error): array
+    {
+        return match (true) {
+            $error instanceof ValidationException => [
+                'validation_fields' => array_values(array_keys($error->errors())),
+            ],
+            $error instanceof ThrottleDeniedException => array_filter([
+                'auth_reason_code' => $error->reasonCode,
+                'retry_after_seconds' => $error->retryAfterSeconds > 0 ? $error->retryAfterSeconds : null,
+            ], static fn (mixed $value): bool => $value !== null),
+            $error instanceof AuthenticationException => [
+                'auth_reason_code' => $error->reasonCode,
+            ],
+            $error instanceof ExecutionException => array_filter([
+                'db_phase' => $error->failure()->phase,
+                'db_retryable' => $error->failure()->retryable,
+                'db_sql_state' => $error->failure()->sqlState,
+            ], static fn (mixed $value): bool => $value !== null),
+            default => [],
+        };
     }
 }

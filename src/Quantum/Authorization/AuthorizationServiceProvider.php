@@ -24,6 +24,7 @@ use Quantum\Authorization\Contracts\AuthorizationMetadataResolverInterface;
 use Quantum\Authorization\Contracts\AuthorizationPlannerInterface;
 use Quantum\Authorization\Contracts\AuthorizationRequestEnricherInterface;
 use Quantum\Authorization\Contracts\PrincipalResolverInterface;
+use Quantum\Authorization\Contracts\RelationshipRepositoryInterface;
 use Quantum\Authorization\Contracts\SubjectResolverInterface;
 use Quantum\Authorization\Contracts\TenantScopeResolverInterface;
 use Quantum\Authorization\Context\AuthorizationContextFactory;
@@ -44,6 +45,8 @@ use Quantum\Authorization\Metadata\MetadataAuthorizationContextEnricher;
 use Quantum\Authorization\Policy\PolicyDispatcher;
 use Quantum\Authorization\Policy\PolicyRegistry;
 use Quantum\Authorization\Principal\PrincipalResolver;
+use Quantum\Authorization\Relationship\InMemoryRelationshipRepository;
+use Quantum\Authorization\Relationship\RelationshipEvaluator;
 use Quantum\Authorization\Subject\SubjectResolver;
 use Quantum\Config\ConfigRepository;
 use Quantum\Database\Contracts\DatabaseInterface;
@@ -64,6 +67,7 @@ final class AuthorizationServiceProvider extends ServiceProvider
         $this->registerMetadataSchemas();
         $this->registerManifestStore();
         $this->registerAuthorityRepository();
+        $this->registerRelationshipRepository();
         $this->registerMemoizationBindings();
         $this->registerControllersSecurityBridgeBinding();
 
@@ -120,17 +124,24 @@ final class AuthorizationServiceProvider extends ServiceProvider
         );
         $this->app->scoped(AuthorizationRequestFactory::class);
         $this->app->scoped(AttributeConditionEvaluator::class);
+        $this->app->scoped(RelationshipEvaluator::class, function (Application $app): RelationshipEvaluator {
+            return new RelationshipEvaluator($app->make(RelationshipRepositoryInterface::class));
+        });
         $this->app->scoped(ManifestRequirementsEnforcementStage::class, function (Application $app): ManifestRequirementsEnforcementStage {
             $failClosed = $app->config('authorization.fail_closed', true);
             $evaluateConcretely = $app->config('authorization.authority.evaluate_requirements_concretely', false);
             $evaluateAttributeConditions = $app->config('authorization.authority.evaluate_attribute_conditions', false);
+            $evaluateRelationships = $app->config('authorization.relationships.evaluate', false);
 
             return new ManifestRequirementsEnforcementStage(
                 is_bool($failClosed) ? $failClosed : (bool) $failClosed,
                 $this->resolveAuthorityRepository($app),
                 is_bool($evaluateConcretely) ? $evaluateConcretely : (bool) $evaluateConcretely,
                 is_bool($evaluateAttributeConditions) ? $evaluateAttributeConditions : (bool) $evaluateAttributeConditions,
+                is_bool($evaluateRelationships) ? $evaluateRelationships : (bool) $evaluateRelationships,
                 $app->make(AttributeConditionEvaluator::class),
+                $this->resolveRelationshipRepository($app),
+                $app->make(RelationshipEvaluator::class),
                 $this->resolveTenantScopeResolver($app),
             );
         });
@@ -284,6 +295,18 @@ final class AuthorizationServiceProvider extends ServiceProvider
         );
     }
 
+    private function registerRelationshipRepository(): void
+    {
+        $this->app->scoped(
+            RelationshipRepositoryInterface::class,
+            function (Application $app): RelationshipRepositoryInterface {
+                $entries = $app->config('authorization.relationships.entries', []);
+
+                return new InMemoryRelationshipRepository(is_iterable($entries) ? $entries : []);
+            },
+        );
+    }
+
     private function makeTenantScopeResolver(Application $app): ?TenantScopeResolverInterface
     {
         $enabled = $app->config('authorization.authority.scope_resolution.enabled', false);
@@ -313,6 +336,15 @@ final class AuthorizationServiceProvider extends ServiceProvider
     {
         try {
             return $app->make(TenantScopeResolverInterface::class);
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    private function resolveRelationshipRepository(Application $app): ?RelationshipRepositoryInterface
+    {
+        try {
+            return $app->make(RelationshipRepositoryInterface::class);
         } catch (\Throwable) {
             return null;
         }
@@ -464,6 +496,10 @@ final class AuthorizationServiceProvider extends ServiceProvider
                 'bridge' => [
                     'enabled' => false,
                 ],
+            ],
+            'relationships' => [
+                'evaluate' => false,
+                'entries' => [],
             ],
         ];
     }

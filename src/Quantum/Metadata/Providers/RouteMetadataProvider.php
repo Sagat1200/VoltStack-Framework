@@ -88,6 +88,9 @@ final class RouteMetadataProvider implements MetadataProviderInterface
                         'subject' => $requirement['subject'] ?? null,
                         'source' => 'route',
                         'condition' => $requirement['condition'] ?? null,
+                        'relation' => isset($requirement['relation']) && is_string($requirement['relation']) && trim($requirement['relation']) !== ''
+                            ? trim($requirement['relation'])
+                            : null,
                     ];
                 }
 

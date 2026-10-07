@@ -42,6 +42,10 @@ final class EntityQuery
      */
     private array $joinedAssociations = [];
 
+    private ?int $requestedLimit = null;
+
+    private int $requestedOffset = 0;
+
     public function __construct(
         private readonly EntityManager $manager,
         private readonly EntityMetadata $metadata,
@@ -351,6 +355,7 @@ final class EntityQuery
 
     public function limit(int $limit): self
     {
+        $this->requestedLimit = max(0, $limit);
         $this->query->limit($limit);
 
         return $this;
@@ -358,6 +363,7 @@ final class EntityQuery
 
     public function offset(int $offset): self
     {
+        $this->requestedOffset = max(0, $offset);
         $this->query->offset($offset);
 
         return $this;
@@ -370,14 +376,17 @@ final class EntityQuery
     {
         $this->assertEntityHydrationAllowed('get');
 
-        $rows = $this->queryForEntityHydration()->get()->rows();
         if ($this->hasJoinedToManyAssociations()) {
-            $entities = $this->hydrateJoinedEntityRows($rows);
+            $windowIdentifiers = $this->joinedRootIdentifiersForWindow();
+            $entities = $windowIdentifiers === null
+                ? $this->hydrateJoinedEntityRows($this->queryForJoinedToManyEntityHydration()->get()->rows())
+                : $this->hydrateJoinedEntitiesForRootIdentifiers($windowIdentifiers);
             $this->manager->preloadAssociations($entities, $this->remainingPreloadedAssociations());
 
             return $entities;
         }
 
+        $rows = $this->queryForEntityHydration()->get()->rows();
         $entities = [];
 
         foreach ($rows as $row) {
@@ -394,10 +403,18 @@ final class EntityQuery
         $this->assertEntityHydrationAllowed('first');
 
         if ($this->hasJoinedToManyAssociations()) {
-            throw new RuntimeException(sprintf(
-                'Cannot call first() on [%s] when joined to-many associations are present; use get() because SQL row limiting would truncate the joined collection.',
-                $this->metadata->className,
-            ));
+            $entities = $this->hydrateJoinedEntitiesForRootIdentifiers(
+                $this->joinedRootIdentifiersForWindow(limit: 1),
+            );
+
+            if ($entities === []) {
+                return null;
+            }
+
+            $entity = $entities[0];
+            $this->manager->preloadAssociations([$entity], $this->remainingPreloadedAssociations());
+
+            return $entity;
         }
 
         $row = $this->queryForEntityHydration()->first();
@@ -565,7 +582,10 @@ final class EntityQuery
             ];
 
             $identifiers = [];
-            foreach ($this->queryForSelections([$selection])->get()->rows() as $row) {
+            $query = $this->query->withoutLimitOffset();
+            $query->select($selection['select']);
+
+            foreach ($query->get()->rows() as $row) {
                 $value = $row['__orm_root_count_id'] ?? null;
                 if ($value === null || $value === '') {
                     continue;
@@ -768,6 +788,36 @@ final class EntityQuery
         $query->select(...$this->entityHydrationSelectColumns());
 
         return $query;
+    }
+
+    private function queryForJoinedToManyEntityHydration(): SelectQueryBuilder
+    {
+        $query = $this->query->withoutLimitOffset();
+        $query->select(...$this->entityHydrationSelectColumns());
+
+        return $query;
+    }
+
+    /**
+     * @param list<int|string> $rootIdentifiers
+     * @return list<object>
+     */
+    private function hydrateJoinedEntitiesForRootIdentifiers(array $rootIdentifiers): array
+    {
+        if ($rootIdentifiers === []) {
+            return [];
+        }
+
+        $query = $this->queryForJoinedToManyEntityHydration();
+        $query->whereIn(
+            $this->qualifyRootColumn($this->metadata->identifier->column),
+            $rootIdentifiers,
+        );
+
+        return $this->orderEntitiesByRootIdentifiers(
+            $this->hydrateJoinedEntityRows($query->get()->rows()),
+            $rootIdentifiers,
+        );
     }
 
     /**
@@ -1291,6 +1341,72 @@ final class EntityQuery
     }
 
     /**
+     * @return list<int|string>|null
+     */
+    private function joinedRootIdentifiersForWindow(?int $limit = null): ?array
+    {
+        $effectiveLimit = $limit ?? $this->requestedLimit;
+        if ($this->requestedOffset === 0 && $effectiveLimit === null) {
+            return null;
+        }
+
+        if ($effectiveLimit === 0) {
+            return [];
+        }
+
+        $resultKey = '__orm_root_window_id';
+        $query = clone $this->query;
+        $query->select($this->qualifyRootColumn($this->metadata->identifier->column) . ' AS ' . $resultKey);
+        $query->distinct();
+
+        if ($limit !== null) {
+            $query->limit($limit);
+        }
+
+        $identifiers = [];
+        foreach ($query->get()->rows() as $row) {
+            $value = $row[$resultKey] ?? null;
+            if ($value === null || $value === '') {
+                continue;
+            }
+
+            $identifiers[] = $this->metadata->canonicalizeIdentifier($value);
+        }
+
+        return $identifiers;
+    }
+
+    /**
+     * @param list<object> $entities
+     * @param list<int|string> $rootIdentifiers
+     * @return list<object>
+     */
+    private function orderEntitiesByRootIdentifiers(array $entities, array $rootIdentifiers): array
+    {
+        $entitiesById = [];
+        foreach ($entities as $entity) {
+            $identifier = $this->metadata->identifierValue($entity);
+            if ($identifier === null) {
+                continue;
+            }
+
+            $entitiesById[(string) $this->metadata->canonicalizeIdentifier($identifier)] = $entity;
+        }
+
+        $ordered = [];
+        foreach ($rootIdentifiers as $identifier) {
+            $key = (string) $this->metadata->canonicalizeIdentifier($identifier);
+            if (! isset($entitiesById[$key])) {
+                continue;
+            }
+
+            $ordered[] = $entitiesById[$key];
+        }
+
+        return $ordered;
+    }
+
+    /**
      * @return list<string>
      */
     private function remainingPreloadedAssociations(): array
@@ -1318,10 +1434,7 @@ final class EntityQuery
                 continue;
             }
 
-            $current = $this->readAssociationValue($entity, $association);
-            if (! is_array($current)) {
-                $this->assignAssociationValue($entity, $association, []);
-            }
+            $this->assignAssociationValue($entity, $association, []);
         }
     }
 

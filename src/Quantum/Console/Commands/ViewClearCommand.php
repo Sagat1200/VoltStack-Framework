@@ -48,28 +48,30 @@ final class ViewClearCommand extends Command
 
     public function handle(Input $input, Output $output): int
     {
-        $app = $this->bootstrapApplication();
-        $store = $app->make(CompiledViewStore::class);
         $verbose = $input->hasOption('verbose');
-        $files = $verbose ? $this->compiledFiles($store->directory()) : [];
-        $deleted = $store->clear();
 
-        if ($deleted === 0) {
-            $output->writeln('No habia vistas compiladas para eliminar.');
+        return $this->runInCommandRuntime(function ($app) use ($output, $verbose): int {
+            $store = $app->make(CompiledViewStore::class);
+            $files = $verbose ? $this->compiledFiles($store->directory()) : [];
+            $deleted = $store->clear();
+
+            if ($deleted === 0) {
+                $output->writeln('No habia vistas compiladas para eliminar.');
+
+                return 0;
+            }
+
+            if ($verbose) {
+                foreach ($files as $index => $file) {
+                    $output->writeln(sprintf('  [%d] %s', $index + 1, $file));
+                }
+            }
+
+            $output->writeln('Cache de vistas limpiada correctamente.');
+            $output->writeln(sprintf('  Archivos eliminados: %d', $deleted));
 
             return 0;
-        }
-
-        if ($verbose) {
-            foreach ($files as $index => $file) {
-                $output->writeln(sprintf('  [%d] %s', $index + 1, $file));
-            }
-        }
-
-        $output->writeln('Cache de vistas limpiada correctamente.');
-        $output->writeln(sprintf('  Archivos eliminados: %d', $deleted));
-
-        return 0;
+        });
     }
 
     /**

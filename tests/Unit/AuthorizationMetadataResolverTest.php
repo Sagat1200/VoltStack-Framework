@@ -37,9 +37,9 @@ final class AuthorizationMetadataResolverTest extends TestCase
         self::assertTrue($metadata->public());
         self::assertNotSame('', $metadata->payload()->fingerprint());
         self::assertSame([
-            ['ability' => 'documents.class-view', 'subject' => null, 'source' => 'class', 'condition' => null],
-            ['ability' => 'documents.method-view', 'subject' => 'document', 'source' => 'method', 'condition' => null],
-            ['ability' => 'documents.route-view', 'subject' => 'document', 'source' => 'route', 'condition' => null],
+            ['ability' => 'documents.class-view', 'subject' => null, 'source' => 'class', 'condition' => null, 'relation' => null],
+            ['ability' => 'documents.method-view', 'subject' => 'document', 'source' => 'method', 'condition' => null, 'relation' => null],
+            ['ability' => 'documents.route-view', 'subject' => 'document', 'source' => 'route', 'condition' => null, 'relation' => null],
         ], $metadata->requirementsAsArray());
     }
 
@@ -57,7 +57,7 @@ final class AuthorizationMetadataResolverTest extends TestCase
 
         self::assertTrue($metadata->public());
         self::assertSame([
-            ['ability' => 'documents.route-view', 'subject' => 'document', 'source' => 'route', 'condition' => null],
+            ['ability' => 'documents.route-view', 'subject' => 'document', 'source' => 'route', 'condition' => null, 'relation' => null],
         ], $metadata->requirementsAsArray());
     }
 
@@ -93,6 +93,7 @@ final class AuthorizationMetadataResolverTest extends TestCase
                     'type' => 'enum',
                     'values' => ['legal'],
                 ],
+                'relation' => null,
             ],
             [
                 'ability' => 'documents.method-view',
@@ -103,6 +104,7 @@ final class AuthorizationMetadataResolverTest extends TestCase
                     'type' => 'integer',
                     'max' => 80,
                 ],
+                'relation' => null,
             ],
             [
                 'ability' => 'documents.route-approve',
@@ -113,6 +115,50 @@ final class AuthorizationMetadataResolverTest extends TestCase
                     'type' => 'integer',
                     'max' => 50,
                 ],
+                'relation' => null,
+            ],
+        ], $metadata->requirementsAsArray());
+    }
+
+    public function test_it_preserves_relations_declared_in_attributes_and_route_metadata(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $resolver = $app->make(AuthorizationMetadataResolverInterface::class);
+
+        $route = new Route(RouteDefinition::make(
+            ['GET'],
+            '/resolver/relationship/{document}',
+            TestAuthorizationRelationshipMetadataResolverController::class,
+        ));
+        $route->authorizeRelated('documents.route-manage', 'owner', 'document');
+        $match = new RouteMatch($route, ['document' => 'doc-1'], 'GET');
+
+        $metadata = $resolver->resolve(
+            $match,
+            new ControllerDefinition(TestAuthorizationRelationshipMetadataResolverController::class),
+        );
+
+        self::assertSame([
+            [
+                'ability' => 'documents.class-manage',
+                'subject' => 'document',
+                'source' => 'class',
+                'condition' => null,
+                'relation' => 'owner',
+            ],
+            [
+                'ability' => 'documents.method-manage',
+                'subject' => 'document',
+                'source' => 'method',
+                'condition' => null,
+                'relation' => 'editor',
+            ],
+            [
+                'ability' => 'documents.route-manage',
+                'subject' => 'document',
+                'source' => 'route',
+                'condition' => null,
+                'relation' => 'owner',
             ],
         ], $metadata->requirementsAsArray());
     }
@@ -141,6 +187,16 @@ final class TestAuthorizationConditionalMetadataResolverController
         'type' => 'integer',
         'max' => 80,
     ])]
+    public function __invoke(string $document): string
+    {
+        return $document;
+    }
+}
+
+#[Authorize('documents.class-manage', 'document', null, 'owner')]
+final class TestAuthorizationRelationshipMetadataResolverController
+{
+    #[Authorize('documents.method-manage', 'document', null, 'editor')]
     public function __invoke(string $document): string
     {
         return $document;

@@ -54,12 +54,14 @@ use Quantum\Authorization\Relationship\RelationshipEvaluator;
 use Quantum\Authorization\Subject\SubjectResolver;
 use Quantum\Config\ConfigRepository;
 use Quantum\Database\Contracts\DatabaseInterface;
+use Quantum\Http\Request;
 use Quantum\Metadata\MetadataMergeStrategy;
 use Quantum\Metadata\MetadataValueType;
 use Quantum\Metadata\Schema\MetadataSchema;
 use Quantum\Metadata\Schema\MetadataSchemaRegistry;
 use VoltStack\Framework\Application;
 use VoltStack\Framework\ServiceProvider;
+use VoltStack\Runtime\Context\RuntimeContext;
 
 final class AuthorizationServiceProvider extends ServiceProvider
 {
@@ -120,6 +122,8 @@ final class AuthorizationServiceProvider extends ServiceProvider
             return new AuthorizationContextFactory(
                 $app->make(AuthenticationManagerInterface::class),
                 $this->resolveTenantScopeResolver($app),
+                $this->resolveOptionalRequest($app),
+                $this->resolveOptionalRuntimeContext($app),
             );
         });
         $this->app->scoped(
@@ -381,6 +385,28 @@ final class AuthorizationServiceProvider extends ServiceProvider
             return $app->make(TenantScopeResolverInterface::class);
         } catch (\Throwable) {
             return null;
+        }
+    }
+
+    private function resolveOptionalRequest(Application $app): ?Request
+    {
+        try {
+            $request = $app->make(Request::class);
+
+            return $request instanceof Request ? $request : null;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    private function resolveOptionalRuntimeContext(Application $app): ?RuntimeContext
+    {
+        try {
+            $runtimeContext = $app->make(RuntimeContext::class);
+
+            return $runtimeContext instanceof RuntimeContext ? $runtimeContext : RuntimeContext::current();
+        } catch (\Throwable) {
+            return RuntimeContext::current();
         }
     }
 

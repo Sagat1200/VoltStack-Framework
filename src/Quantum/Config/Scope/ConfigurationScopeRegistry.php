@@ -80,6 +80,11 @@ final class ConfigurationScopeRegistry
         throw new RuntimeException('Configuration overrides require an active request, command, job, or tenant scope.');
     }
 
+    public function findById(string $scopeId): ?ConfigurationScope
+    {
+        return $this->scopes[$scopeId] ?? null;
+    }
+
     public function endScope(string $scopeId): void
     {
         unset($this->scopes[$scopeId]);

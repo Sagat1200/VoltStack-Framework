@@ -4,8 +4,10 @@ declare(strict_types=1);
 
 namespace VoltStack\Runtime\Adapters;
 
+use Closure;
 use Quantum\Bootstrap\ApplicationPlan;
 use Quantum\Http\Request;
+use Quantum\Http\Response;
 use Quantum\Exceptions\Enums\WorkerDisposition;
 use Quantum\Transport\Bridges\Http\HttpResponseTransformer;
 use Quantum\Transport\Contracts\ResponseTransportManagerInterface;
@@ -18,9 +20,16 @@ use VoltStack\Runtime\Contracts\WorkerFactoryInterface;
 use VoltStack\Runtime\Exceptions\RuntimeAdapterException;
 use VoltStack\Runtime\RuntimeCapabilities;
 use VoltStack\Runtime\RuntimeConfiguration;
+use VoltStack\Runtime\WorkerSession;
 
 final class FrankenPhpRuntimeAdapter implements RuntimeAdapterInterface
 {
+    public function __construct(
+        private readonly ?Closure $nativeLoopInvoker = null,
+        private readonly ?Closure $nativeAvailabilityResolver = null,
+    ) {
+    }
+
     public function id(): string
     {
         return 'frankenphp';
@@ -48,7 +57,13 @@ final class FrankenPhpRuntimeAdapter implements RuntimeAdapterInterface
         );
 
         $session = $factory->create($plan, $workerContext);
-        $requests = $this->normalizeRequestSource($configuration->requestSource());
+        $requestSource = $configuration->requestSource();
+
+        if ($requestSource === null) {
+            return $this->runNativeLoop($session);
+        }
+
+        $requests = $this->normalizeRequestSource($requestSource);
         $requests->rewind();
 
         while ($session->canAcceptMoreRequests() && $requests->valid()) {
@@ -75,7 +90,41 @@ final class FrankenPhpRuntimeAdapter implements RuntimeAdapterInterface
         return 0;
     }
 
-    private function emitResponse(\VoltStack\Runtime\WorkerSession $session, ?\Quantum\Http\Response $response, Request $request): bool
+    private function runNativeLoop(WorkerSession $session): int
+    {
+        if (! $this->isNativeRuntimeAvailable()) {
+            throw new RuntimeAdapterException(
+                'FrankenPHP native worker mode requires frankenphp_handle_request() when no in-memory request source is provided.'
+            );
+        }
+
+        while ($session->canAcceptMoreRequests()) {
+            $continue = $this->invokeNativeLoop(function () use ($session): void {
+                $request = Request::capture();
+                $result = $session->handle($request);
+
+                if ($result->workerDisposition() === WorkerDisposition::Terminate) {
+                    return;
+                }
+
+                if (! $this->emitResponse($session, $result->response(), $request)) {
+                    $session->lifecycle()->request(WorkerDisposition::Terminate);
+                }
+            });
+
+            if ($session->lifecycle()->shouldTerminate()) {
+                return 1;
+            }
+
+            if (! $continue) {
+                break;
+            }
+        }
+
+        return 0;
+    }
+
+    private function emitResponse(WorkerSession $session, ?Response $response, Request $request): bool
     {
         if ($response === null) {
             return true;
@@ -98,6 +147,25 @@ final class FrankenPhpRuntimeAdapter implements RuntimeAdapterInterface
         $transportResult = $manager->send($transportResponse, $transportContext);
 
         return $transportResult->completed && $transportResult->exception === null;
+    }
+
+    private function isNativeRuntimeAvailable(): bool
+    {
+        if ($this->nativeAvailabilityResolver !== null) {
+            return (bool) ($this->nativeAvailabilityResolver)();
+        }
+
+        return function_exists('frankenphp_handle_request');
+    }
+
+    private function invokeNativeLoop(callable $handler): bool
+    {
+        if ($this->nativeLoopInvoker !== null) {
+            return (bool) ($this->nativeLoopInvoker)($handler);
+        }
+
+        /** @phpstan-ignore-next-line */
+        return \frankenphp_handle_request($handler);
     }
 
     /**

@@ -184,22 +184,31 @@ final class Repository
         );
     }
 
-    /**
-     * @return array<string, mixed>
-     */
-    public function explain(string $key): array
+    public function explain(string $key): RepositoryExplain
     {
         $lookup = $this->lookup($key);
         $normalizedKey = $this->normalizeKey($key);
+        $context = $this->context();
+        $scopeFingerprint = $this->contextFingerprint($context);
+        $lookupSnapshot = $this->lookupSnapshot($lookup);
+        $diagnostics = $this->diagnosticsSnapshot();
+        $warnings = $this->explainWarnings($lookupSnapshot);
+        $effects = $this->explainEffects();
 
-        return [
-            'key' => $key,
-            'normalized_key' => $normalizedKey,
-            'lookup' => $this->lookupSnapshot($lookup),
-            'plan' => $this->explainPlan($key, $normalizedKey),
-            'policies' => $this->policySnapshot(),
-            'diagnostics' => $this->diagnosticsSnapshot(),
-        ];
+        return new RepositoryExplain(
+            schemaVersion: 'cache.explain.v1',
+            operationId: bin2hex(random_bytes(8)),
+            scopeFingerprint: $scopeFingerprint,
+            outcome: $lookup->state->value,
+            effects: $effects,
+            warnings: $warnings,
+            key: $key,
+            normalizedKey: $normalizedKey,
+            lookup: $lookupSnapshot,
+            plan: $this->explainPlan($key, $normalizedKey, $scopeFingerprint),
+            policies: $this->policySnapshot(),
+            diagnostics: $diagnostics,
+        );
     }
 
     public function withContext(CacheContext $context): self
@@ -665,14 +674,14 @@ final class Repository
     /**
      * @return array<string, mixed>
      */
-    private function explainPlan(string $key, string $normalizedKey): array
+    private function explainPlan(string $key, string $normalizedKey, string $scopeFingerprint): array
     {
         return [
             'operation' => 'lookup',
             'logical_key' => $key,
             'normalized_key' => $normalizedKey,
             'storage_namespace' => $this->storageNamespace(),
-            'context_fingerprint' => $this->contextFingerprint($this->context()),
+            'context_fingerprint' => $scopeFingerprint,
             'clear_strategy' => $this->clearStrategy(),
             'invalidation_scopes' => $this->invalidationScopes(),
         ];
@@ -690,6 +699,37 @@ final class Repository
             'uses_tag_versions' => $this->versionAuthority !== null && $this->tagNames !== [],
             'inspectable_store' => $this->store instanceof InspectableStoreInterface,
             'source_level' => $this->store instanceof InspectableStoreInterface ? $this->store->sourceLevel() : 'store',
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $lookup
+     * @return array<int, string>
+     */
+    private function explainWarnings(array $lookup): array
+    {
+        $warnings = [];
+
+        if (! $this->store instanceof InspectableStoreInterface) {
+            $warnings[] = 'store_not_inspectable';
+        }
+
+        if (($lookup['metadata'] ?? null) === null) {
+            $warnings[] = 'metadata_unavailable';
+        }
+
+        return $warnings;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function explainEffects(): array
+    {
+        return [
+            'lookup',
+            'diagnostics_snapshot',
+            'policy_projection',
         ];
     }
 

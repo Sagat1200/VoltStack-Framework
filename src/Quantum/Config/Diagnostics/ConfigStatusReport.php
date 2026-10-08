@@ -11,11 +11,15 @@ final readonly class ConfigStatusReport
      * @param array<string, mixed> $provenance
      * @param array<string, mixed> $redactedConfig
      * @param array<string, mixed> $redactedOverrides
+     * @param list<array<string, mixed>> $scopeLineage
+     * @param array<string, mixed>|null $tenantContext
      * @param list<string> $alerts
      */
     public function __construct(
         private string $environment,
+        private string $scopeName,
         private string $scopeKind,
+        private int $scopeDepth,
         private ?string $scopeId,
         private ?string $parentScopeId,
         private bool $hasScopeOverrides,
@@ -26,6 +30,8 @@ final readonly class ConfigStatusReport
         private array $provenance,
         private array $redactedConfig,
         private array $redactedOverrides,
+        private array $scopeLineage,
+        private ?array $tenantContext,
         private bool $hasActiveGeneration,
         private ?string $generationId,
         private ?string $manifestPath,
@@ -40,9 +46,19 @@ final readonly class ConfigStatusReport
         return $this->environment;
     }
 
+    public function scopeName(): string
+    {
+        return $this->scopeName;
+    }
+
     public function scopeKind(): string
     {
         return $this->scopeKind;
+    }
+
+    public function scopeDepth(): int
+    {
+        return $this->scopeDepth;
     }
 
     public function scopeId(): ?string
@@ -107,6 +123,22 @@ final readonly class ConfigStatusReport
         return $this->redactedOverrides;
     }
 
+    /**
+     * @return list<array<string, mixed>>
+     */
+    public function scopeLineage(): array
+    {
+        return $this->scopeLineage;
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    public function tenantContext(): ?array
+    {
+        return $this->tenantContext;
+    }
+
     public function hasActiveGeneration(): bool
     {
         return $this->hasActiveGeneration;
@@ -153,7 +185,9 @@ final readonly class ConfigStatusReport
         return [
             'environment' => $this->environment,
             'healthy' => $this->healthy(),
+            'scope_name' => $this->scopeName,
             'scope_kind' => $this->scopeKind,
+            'scope_depth' => $this->scopeDepth,
             'scope_id' => $this->scopeId,
             'parent_scope_id' => $this->parentScopeId,
             'has_scope_overrides' => $this->hasScopeOverrides,
@@ -164,6 +198,8 @@ final readonly class ConfigStatusReport
             'provenance' => $this->provenance,
             'redacted_config' => $this->redactedConfig,
             'redacted_overrides' => $this->redactedOverrides,
+            'scope_lineage' => $this->scopeLineage,
+            'tenant_context' => $this->tenantContext,
             'has_active_generation' => $this->hasActiveGeneration,
             'generation_id' => $this->generationId,
             'manifest_path' => $this->manifestPath,

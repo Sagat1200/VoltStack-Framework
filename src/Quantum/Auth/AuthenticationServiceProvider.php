@@ -46,6 +46,7 @@ use Quantum\Auth\Identity\LocalIdentityProvider;
 use Quantum\Auth\Passkeys\CoseOpensslCryptoVerifier;
 use Quantum\Auth\Passkeys\FilePasskeyCredentialStore;
 use Quantum\Auth\Passkeys\InMemoryPasskeyCredentialStore;
+use Quantum\Auth\Passkeys\PasskeyAssertionCeremony;
 use Quantum\Auth\Passkeys\PasskeyAuthenticator;
 use Quantum\Auth\Passkeys\RelyingPartyConfig;
 use Quantum\Auth\Passwords\PasswordPolicy;
@@ -432,7 +433,7 @@ final class AuthenticationServiceProvider extends ServiceProvider
             }
         });
 
-        $this->app->scoped(\Quantum\Auth\Contracts\TransactionNonceStoreInterface::class, static function (Application $app): ?\Quantum\Auth\Contracts\TransactionNonceStoreInterface {
+        $this->app->singleton(\Quantum\Auth\Contracts\TransactionNonceStoreInterface::class, static function (Application $app): ?\Quantum\Auth\Contracts\TransactionNonceStoreInterface {
             $config = $app->make(ConfigRepository::class);
             if (! (bool) $config->get('auth.transaction.nonce.enabled', false)) {
                 return null;
@@ -543,8 +544,8 @@ final class AuthenticationServiceProvider extends ServiceProvider
                 }
             }
             return new RelyingPartyConfig(
-                id: $rpId !== '' ? $rpId : 'localhost',
-                name: $rpName !== '' ? $rpName : 'VoltStack App',
+                rpId: $rpId !== '' ? $rpId : 'localhost',
+                rpName: $rpName !== '' ? $rpName : 'VoltStack App',
                 allowedOrigins: $originsList,
             );
         });
@@ -585,6 +586,15 @@ final class AuthenticationServiceProvider extends ServiceProvider
                 if (! $store instanceof PasskeyCredentialStoreInterface) {
                     return null;
                 }
+                $verifier = null;
+                try {
+                    $candidate = $app->make(PasskeyCryptoVerifierInterface::class);
+                    if ($candidate instanceof PasskeyCryptoVerifierInterface) {
+                        $verifier = $candidate;
+                    }
+                } catch (\Throwable) {
+                    $verifier = null;
+                }
                 $idp = null;
                 try {
                     $candidate = $app->make(IdentityProviderInterface::class);
@@ -594,7 +604,14 @@ final class AuthenticationServiceProvider extends ServiceProvider
                 } catch (\Throwable) {
                     $idp = null;
                 }
-                return new PasskeyAuthenticator($rp, $store, $idp);
+                if (! $idp instanceof IdentityProviderInterface) {
+                    return null;
+                }
+                return new PasskeyAuthenticator(
+                    new PasskeyAssertionCeremony($rp, $verifier),
+                    $store,
+                    $idp,
+                );
             } catch (\Throwable) {
                 return null;
             }

@@ -41,34 +41,35 @@ final class RouteListCommand extends Command
 
     public function handle(Input $input, Output $output): int
     {
-        $app = $this->bootstrapApplication();
-        $router = $app->make(Router::class);
-        $routes = $router->routes();
+        return $this->runInCommandRuntime(function ($app) use ($output): int {
+            $router = $app->make(Router::class);
+            $routes = $router->routes();
 
-        if ($routes === []) {
-            $output->writeln('No hay rutas registradas.');
+            if ($routes === []) {
+                $output->writeln('No hay rutas registradas.');
+
+                return 0;
+            }
+
+            $output->writeln('VoltStack Routes');
+            $output->writeln();
+            $output->writeln(sprintf('%-18s %-24s %s', 'Method', 'URI', 'Action'));
+            $output->writeln(str_repeat('-', 78));
+
+            foreach ($routes as $route) {
+                $output->writeln(sprintf(
+                    '%-18s %-24s %s',
+                    implode('|', $route->methods()),
+                    $route->uri(),
+                    $this->formatAction($route),
+                ));
+            }
+
+            $output->writeln();
+            $output->writeln(sprintf('Total routes: %d', count($routes)));
 
             return 0;
-        }
-
-        $output->writeln('VoltStack Routes');
-        $output->writeln();
-        $output->writeln(sprintf('%-18s %-24s %s', 'Method', 'URI', 'Action'));
-        $output->writeln(str_repeat('-', 78));
-
-        foreach ($routes as $route) {
-            $output->writeln(sprintf(
-                '%-18s %-24s %s',
-                implode('|', $route->methods()),
-                $route->uri(),
-                $this->formatAction($route),
-            ));
-        }
-
-        $output->writeln();
-        $output->writeln(sprintf('Total routes: %d', count($routes)));
-
-        return 0;
+        });
     }
 
     private function formatAction(Route $route): string

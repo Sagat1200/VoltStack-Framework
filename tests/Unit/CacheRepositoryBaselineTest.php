@@ -409,30 +409,39 @@ final class CacheRepositoryBaselineTest extends TestCase
         self::assertTrue($repository->put('product:42', ['name' => 'A'], 30));
 
         $explain = $repository->explain('product:42');
+        $payload = $explain->toArray();
 
-        self::assertSame('product:42', $explain['key'] ?? null);
-        self::assertStringContainsString('tag[featured=v1]:v1:catalog:product:42', (string) ($explain['normalized_key'] ?? ''));
-        self::assertSame('fresh', $explain['lookup']['state'] ?? null);
-        self::assertArrayHasKey('miss_reason', $explain['lookup']);
-        self::assertNull($explain['lookup']['miss_reason']);
-        self::assertFalse($explain['lookup']['value_exposed'] ?? true);
-        self::assertArrayNotHasKey('value', $explain['lookup']);
-        self::assertSame('memory', $explain['lookup']['metadata']['source_level'] ?? null);
-        self::assertSame('v1', $explain['lookup']['metadata']['versions']['namespace'] ?? null);
-        self::assertSame('lookup', $explain['plan']['operation'] ?? null);
-        self::assertSame('product:42', $explain['plan']['logical_key'] ?? null);
-        self::assertStringContainsString('tag[featured=v1]:v1:catalog:product:42', (string) ($explain['plan']['normalized_key'] ?? ''));
-        self::assertSame('tag_invalidation', $explain['plan']['clear_strategy'] ?? null);
-        self::assertSame('catalog.tag.featured', $explain['plan']['invalidation_scopes']['tags']['featured'] ?? null);
-        self::assertSame('relative', $explain['policies']['default_ttl']['mode'] ?? null);
-        self::assertSame(60, $explain['policies']['default_ttl']['remaining_seconds'] ?? null);
-        self::assertFalse($explain['policies']['uses_marshaller'] ?? true);
-        self::assertTrue($explain['policies']['uses_namespace_versions'] ?? false);
-        self::assertTrue($explain['policies']['uses_tag_versions'] ?? false);
-        self::assertTrue($explain['policies']['inspectable_store'] ?? false);
-        self::assertSame('memory', $explain['policies']['source_level'] ?? null);
-        self::assertSame('tag[featured=v1]:v1:catalog', $explain['diagnostics']['storage_namespace'] ?? null);
-        self::assertSame('catalog.tag.featured', $explain['diagnostics']['invalidation_scopes']['tags']['featured'] ?? null);
+        self::assertSame('cache.explain.v1', $payload['schema_version'] ?? null);
+        self::assertSame(16, strlen((string) ($payload['operation_id'] ?? '')));
+        self::assertSame(40, strlen((string) ($payload['scope_fingerprint'] ?? '')));
+        self::assertSame('fresh', $payload['outcome'] ?? null);
+        self::assertSame(['lookup', 'diagnostics_snapshot', 'policy_projection'], $payload['effects'] ?? null);
+        self::assertSame([], $payload['warnings'] ?? null);
+        self::assertSame('product:42', $payload['key'] ?? null);
+        self::assertStringContainsString('tag[featured=v1]:v1:catalog:product:42', (string) ($payload['normalized_key'] ?? ''));
+        self::assertSame('fresh', $payload['lookup']['state'] ?? null);
+        self::assertArrayHasKey('miss_reason', $payload['lookup']);
+        self::assertNull($payload['lookup']['miss_reason']);
+        self::assertFalse($payload['lookup']['value_exposed'] ?? true);
+        self::assertArrayNotHasKey('value', $payload['lookup']);
+        self::assertSame('memory', $payload['lookup']['metadata']['source_level'] ?? null);
+        self::assertSame('v1', $payload['lookup']['metadata']['versions']['namespace'] ?? null);
+        self::assertSame('lookup', $payload['plan']['operation'] ?? null);
+        self::assertSame('product:42', $payload['plan']['logical_key'] ?? null);
+        self::assertStringContainsString('tag[featured=v1]:v1:catalog:product:42', (string) ($payload['plan']['normalized_key'] ?? ''));
+        self::assertSame($payload['scope_fingerprint'] ?? null, $payload['plan']['context_fingerprint'] ?? null);
+        self::assertSame('tag_invalidation', $payload['plan']['clear_strategy'] ?? null);
+        self::assertSame('catalog.tag.featured', $payload['plan']['invalidation_scopes']['tags']['featured'] ?? null);
+        self::assertSame('relative', $payload['policies']['default_ttl']['mode'] ?? null);
+        self::assertSame(60, $payload['policies']['default_ttl']['remaining_seconds'] ?? null);
+        self::assertFalse($payload['policies']['uses_marshaller'] ?? true);
+        self::assertTrue($payload['policies']['uses_namespace_versions'] ?? false);
+        self::assertTrue($payload['policies']['uses_tag_versions'] ?? false);
+        self::assertTrue($payload['policies']['inspectable_store'] ?? false);
+        self::assertSame('memory', $payload['policies']['source_level'] ?? null);
+        self::assertSame('tag[featured=v1]:v1:catalog', $payload['diagnostics']['storage_namespace'] ?? null);
+        self::assertSame('catalog.tag.featured', $payload['diagnostics']['invalidation_scopes']['tags']['featured'] ?? null);
+        self::assertSame($payload, $explain->jsonSerialize());
     }
 
     public function test_repository_explain_reports_miss_reason_without_payload(): void
@@ -440,21 +449,27 @@ final class CacheRepositoryBaselineTest extends TestCase
         $repository = new Repository(new MemoryStore($this->clockAt(1_700_000_000)));
 
         $explain = $repository->explain('missing-key');
+        $payload = $explain->toArray();
 
-        self::assertSame('missing-key', $explain['key'] ?? null);
-        self::assertSame('missing-key', $explain['normalized_key'] ?? null);
-        self::assertSame('miss', $explain['lookup']['state'] ?? null);
-        self::assertSame('not_found', $explain['lookup']['miss_reason'] ?? null);
-        self::assertArrayHasKey('metadata', $explain['lookup']);
-        self::assertNull($explain['lookup']['metadata']);
-        self::assertFalse($explain['lookup']['value_exposed'] ?? true);
-        self::assertSame('lookup', $explain['plan']['operation'] ?? null);
-        self::assertSame('missing-key', $explain['plan']['normalized_key'] ?? null);
-        self::assertSame('store_flush', $explain['plan']['clear_strategy'] ?? null);
-        self::assertSame('forever', $explain['policies']['default_ttl']['mode'] ?? null);
-        self::assertFalse($explain['policies']['uses_namespace_versions'] ?? true);
-        self::assertFalse($explain['policies']['uses_tag_versions'] ?? true);
-        self::assertTrue($explain['policies']['inspectable_store'] ?? false);
+        self::assertSame('cache.explain.v1', $payload['schema_version'] ?? null);
+        self::assertSame('miss', $payload['outcome'] ?? null);
+        self::assertSame(['metadata_unavailable'], $payload['warnings'] ?? null);
+        self::assertSame('missing-key', $payload['key'] ?? null);
+        self::assertSame('missing-key', $payload['normalized_key'] ?? null);
+        self::assertSame('miss', $payload['lookup']['state'] ?? null);
+        self::assertSame('not_found', $payload['lookup']['miss_reason'] ?? null);
+        self::assertArrayHasKey('metadata', $payload['lookup']);
+        self::assertNull($payload['lookup']['metadata']);
+        self::assertFalse($payload['lookup']['value_exposed'] ?? true);
+        self::assertSame('lookup', $payload['plan']['operation'] ?? null);
+        self::assertSame('missing-key', $payload['plan']['normalized_key'] ?? null);
+        self::assertSame($payload['scope_fingerprint'] ?? null, $payload['plan']['context_fingerprint'] ?? null);
+        self::assertSame('store_flush', $payload['plan']['clear_strategy'] ?? null);
+        self::assertSame('forever', $payload['policies']['default_ttl']['mode'] ?? null);
+        self::assertFalse($payload['policies']['uses_namespace_versions'] ?? true);
+        self::assertFalse($payload['policies']['uses_tag_versions'] ?? true);
+        self::assertTrue($payload['policies']['inspectable_store'] ?? false);
+        self::assertSame($payload, $explain->jsonSerialize());
     }
 
     public function test_pull_returns_value_and_removes_the_key(): void

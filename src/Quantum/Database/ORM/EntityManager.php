@@ -366,9 +366,13 @@ final class EntityManager implements EntityManagerInterface
         }
 
         foreach ($associationNames as $associationName) {
-            $this->preloadAssociationBatch(
+            $loadedTargets = $this->preloadAssociationBatch(
                 $entities,
                 $metadata,
+                $metadata->association($associationName),
+            );
+            $this->preloadConfiguredEagerAssociationsOnTargets(
+                $loadedTargets,
                 $metadata->association($associationName),
             );
         }
@@ -380,6 +384,70 @@ final class EntityManager implements EntityManagerInterface
     private function preloadConfiguredEagerAssociations(array $entities, EntityMetadata $metadata): void
     {
         $this->preloadAssociations($entities, $metadata->eagerAssociationNames());
+    }
+
+    /**
+     * @param list<object> $targets
+     */
+    private function preloadConfiguredEagerAssociationsOnTargets(
+        array $targets,
+        EntityAssociationMetadata $loadedAssociation,
+    ): void {
+        if ($targets === []) {
+            return;
+        }
+
+        $targetMetadata = $this->metadata->for($loadedAssociation->targetEntity);
+        $associationNames = $targetMetadata->eagerAssociationNames();
+        if ($associationNames === []) {
+            return;
+        }
+
+        $reverseAssociation = $loadedAssociation->mappedBy ?? $loadedAssociation->inversedBy;
+        if ($reverseAssociation !== null) {
+            $associationNames = array_values(array_filter(
+                $associationNames,
+                static fn(string $name): bool => $name !== $reverseAssociation,
+            ));
+        }
+
+        if ($associationNames === []) {
+            return;
+        }
+
+        $this->preloadAssociationsWithoutEagerCascade($targets, $associationNames);
+    }
+
+    /**
+     * @param list<object> $entities
+     * @param list<string> $associationNames
+     */
+    private function preloadAssociationsWithoutEagerCascade(array $entities, array $associationNames): void
+    {
+        if ($entities === [] || $associationNames === []) {
+            return;
+        }
+
+        $first = $entities[0];
+        $metadata = $this->metadata->for($first::class);
+
+        foreach ($entities as $entity) {
+            if (! $entity instanceof $metadata->className) {
+                throw new RuntimeException(sprintf(
+                    'Cannot preload associations for mixed entity types; expected [%s], got [%s].',
+                    $metadata->className,
+                    $entity::class,
+                ));
+            }
+        }
+
+        foreach ($associationNames as $associationName) {
+            $this->preloadAssociationBatch(
+                $entities,
+                $metadata,
+                $metadata->association($associationName),
+            );
+        }
     }
 
     public function loadToOne(object $entity, string $associationName): ?object
@@ -480,34 +548,31 @@ final class EntityManager implements EntityManagerInterface
         array $entities,
         EntityMetadata $metadata,
         EntityAssociationMetadata $association,
-    ): void {
+    ): array {
         if ($entities === []) {
-            return;
+            return [];
         }
 
         if ($association->isToOne()) {
             if ($association->isOwningSide()) {
-                $this->preloadOwningToOneAssociation($entities, $association);
+                return $this->preloadOwningToOneAssociation($entities, $association);
             } else {
-                $this->preloadInverseOneToOneAssociation($entities, $metadata, $association);
+                return $this->preloadInverseOneToOneAssociation($entities, $metadata, $association);
             }
-
-            return;
         }
 
         if ($association->isManyToMany()) {
-            $this->preloadManyToManyAssociation($entities, $metadata, $association);
-
-            return;
+            return $this->preloadManyToManyAssociation($entities, $metadata, $association);
         }
 
-        $this->preloadOneToManyAssociation($entities, $metadata, $association);
+        return $this->preloadOneToManyAssociation($entities, $metadata, $association);
     }
 
     /**
      * @param list<object> $entities
+     * @return list<object>
      */
-    private function preloadOwningToOneAssociation(array $entities, EntityAssociationMetadata $association): void
+    private function preloadOwningToOneAssociation(array $entities, EntityAssociationMetadata $association): array
     {
         $foreignKeys = [];
         foreach ($entities as $entity) {
@@ -521,7 +586,7 @@ final class EntityManager implements EntityManagerInterface
         }
 
         if ($foreignKeys === []) {
-            return;
+            return [];
         }
 
         $targetsById = $this->fetchEntitiesByIdentifiers(
@@ -541,16 +606,19 @@ final class EntityManager implements EntityManagerInterface
                 $targetsById[(string) $foreignKey] ?? null,
             );
         }
+
+        return $this->uniqueObjects(array_values($targetsById));
     }
 
     /**
      * @param list<object> $entities
+     * @return list<object>
      */
     private function preloadInverseOneToOneAssociation(
         array $entities,
         EntityMetadata $metadata,
         EntityAssociationMetadata $association,
-    ): void {
+    ): array {
         if ($association->targetColumn === null) {
             throw new RuntimeException(sprintf(
                 'Association [%s::$%s] has no resolved target column for inverse to-one preload.',
@@ -561,7 +629,7 @@ final class EntityManager implements EntityManagerInterface
 
         $entitiesById = $this->mapEntitiesByIdentifier($entities, $metadata);
         if ($entitiesById === []) {
-            return;
+            return [];
         }
 
         $targetMetadata = $this->metadata->for($association->targetEntity);
@@ -595,16 +663,19 @@ final class EntityManager implements EntityManagerInterface
         foreach ($entitiesById as $identifier => $entity) {
             $this->assignAssociationValue($entity, $association, $loadedBySourceId[$identifier] ?? null);
         }
+
+        return $this->uniqueObjects(array_values($loadedBySourceId));
     }
 
     /**
      * @param list<object> $entities
+     * @return list<object>
      */
     private function preloadOneToManyAssociation(
         array $entities,
         EntityMetadata $metadata,
         EntityAssociationMetadata $association,
-    ): void {
+    ): array {
         if ($association->targetColumn === null) {
             throw new RuntimeException(sprintf(
                 'Association [%s::$%s] has no resolved target column for to-many preload.',
@@ -615,7 +686,7 @@ final class EntityManager implements EntityManagerInterface
 
         $entitiesById = $this->mapEntitiesByIdentifier($entities, $metadata);
         if ($entitiesById === []) {
-            return;
+            return [];
         }
 
         $targetMetadata = $this->metadata->for($association->targetEntity);
@@ -655,16 +726,23 @@ final class EntityManager implements EntityManagerInterface
                 $this->unitOfWork->snapshotOneToManyCollections($entity, $metadata);
             }
         }
+
+        if ($grouped === []) {
+            return [];
+        }
+
+        return $this->uniqueObjects(array_merge(...array_values($grouped)));
     }
 
     /**
      * @param list<object> $entities
+     * @return list<object>
      */
     private function preloadManyToManyAssociation(
         array $entities,
         EntityMetadata $metadata,
         EntityAssociationMetadata $association,
-    ): void {
+    ): array {
         if (! $association->usesJoinTable()) {
             throw new RuntimeException(sprintf(
                 'ManyToMany association [%s::$%s] is missing JoinTable metadata.',
@@ -675,7 +753,7 @@ final class EntityManager implements EntityManagerInterface
 
         $entitiesById = $this->mapEntitiesByIdentifier($entities, $metadata);
         if ($entitiesById === []) {
-            return;
+            return [];
         }
 
         $membershipRows = $this->queries->table($association->joinTable)
@@ -726,6 +804,8 @@ final class EntityManager implements EntityManagerInterface
                 $this->unitOfWork->snapshotOneToManyCollections($entity, $metadata);
             }
         }
+
+        return $this->uniqueObjects(array_values($targetsById));
     }
 
     private function flushInsert(object $entity): void
@@ -1495,6 +1575,20 @@ final class EntityManager implements EntityManagerInterface
         }
 
         return $entities;
+    }
+
+    /**
+     * @param list<object> $objects
+     * @return list<object>
+     */
+    private function uniqueObjects(array $objects): array
+    {
+        $unique = [];
+        foreach ($objects as $object) {
+            $unique[spl_object_id($object)] = $object;
+        }
+
+        return array_values($unique);
     }
 
     private function associationSourceValue(object $entity, EntityAssociationMetadata $association): int|string|null

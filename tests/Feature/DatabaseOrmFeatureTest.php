@@ -1781,9 +1781,14 @@ final class DatabaseOrmFeatureTest extends TestCase
                 $table->id();
                 $table->string('name');
             }, true);
+            $database->schema()->create('orm_fetch_publishers', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+            }, true);
             $database->schema()->create('orm_fetch_books', function (TableBlueprint $table): void {
                 $table->id();
                 $table->integer('author_id');
+                $table->integer('publisher_id');
                 $table->string('title');
             }, true);
 
@@ -1792,17 +1797,23 @@ final class DatabaseOrmFeatureTest extends TestCase
             $author = new OrmFetchAuthor();
             $author->name = 'Ada';
 
+            $publisher = new OrmFetchPublisher();
+            $publisher->name = 'VoltStack Press';
+
             $bookA = new OrmFetchBook();
             $bookA->title = 'Compiler Construction';
             $bookA->author = $author;
+            $bookA->publisher = $publisher;
 
             $bookB = new OrmFetchBook();
             $bookB->title = 'Runtime Notes';
             $bookB->author = $author;
+            $bookB->publisher = $publisher;
 
             $author->books = [$bookA, $bookB];
 
             $em->persist($author);
+            $em->persist($publisher);
             $em->persist($bookA);
             $em->persist($bookB);
             $em->flush();
@@ -1825,6 +1836,9 @@ final class DatabaseOrmFeatureTest extends TestCase
             ));
             self::assertSame($loadedAuthor, $loadedAuthor->books[0]->author);
             self::assertSame($loadedAuthor, $loadedAuthor->books[1]->author);
+            self::assertInstanceOf(OrmFetchPublisher::class, $loadedAuthor->books[0]->publisher);
+            self::assertSame('VoltStack Press', $loadedAuthor->books[0]->publisher->name);
+            self::assertSame($loadedAuthor->books[0]->publisher, $loadedAuthor->books[1]->publisher);
 
             $em->clear();
 
@@ -1835,6 +1849,8 @@ final class DatabaseOrmFeatureTest extends TestCase
             self::assertInstanceOf(OrmFetchAuthor::class, $books[0]->author);
             self::assertSame('Ada', $books[0]->author->name);
             self::assertSame($books[0]->author, $books[1]->author);
+            self::assertInstanceOf(OrmFetchPublisher::class, $books[0]->publisher);
+            self::assertSame('VoltStack Press', $books[0]->publisher->name);
 
             $em->clear();
 
@@ -1843,6 +1859,7 @@ final class DatabaseOrmFeatureTest extends TestCase
                 ->first();
             self::assertInstanceOf(OrmFetchAuthor::class, $queriedAuthor);
             self::assertCount(2, $queriedAuthor->books);
+            self::assertInstanceOf(OrmFetchPublisher::class, $queriedAuthor->books[0]->publisher);
         } finally {
             $scope->end();
         }
@@ -2785,6 +2802,17 @@ final class OrmFetchAuthor
 }
 
 #[Entity]
+#[Table(name: 'orm_fetch_publishers')]
+final class OrmFetchPublisher
+{
+    #[Id]
+    public ?int $id = null;
+
+    #[Column]
+    public string $name;
+}
+
+#[Entity]
 #[Table(name: 'orm_fetch_books')]
 final class OrmFetchBook
 {
@@ -2794,9 +2822,15 @@ final class OrmFetchBook
     #[Column(name: 'author_id')]
     public int $authorId;
 
+    #[Column(name: 'publisher_id')]
+    public int $publisherId;
+
     #[Column]
     public string $title;
 
     #[ManyToOne(targetEntity: OrmFetchAuthor::class, inversedBy: 'books', fetch: 'eager')]
     public ?OrmFetchAuthor $author = null;
+
+    #[ManyToOne(targetEntity: OrmFetchPublisher::class, fetch: 'eager')]
+    public ?OrmFetchPublisher $publisher = null;
 }

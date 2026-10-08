@@ -27,6 +27,7 @@ final class ConfigStatusInspector
     {
         $repository = $app->make(ConfigRepository::class);
         $scope = $this->scopeRegistry()?->findCurrent();
+        $scopeStack = $app->currentScopeStack();
         $effectiveSnapshot = $scope?->snapshot() ?? $repository->snapshot();
         $effectiveConfigId = $effectiveSnapshot->configId() ?? $this->codec()->configId($effectiveSnapshot);
 
@@ -51,7 +52,9 @@ final class ConfigStatusInspector
 
         return new ConfigStatusReport(
             environment: $app->environment(),
+            scopeName: $app->currentScopeName(),
             scopeKind: $scope?->kind() ?? ($app->hasActiveScope() ? $app->currentScopeKind() : 'root'),
+            scopeDepth: $app->currentScopeDepth(),
             scopeId: $scope?->id() ?? ($app->hasActiveScope() ? $app->currentScopeId() : null),
             parentScopeId: $scope?->parentId() ?? ($app->hasActiveScope() ? $app->currentScopeParentId() : null),
             hasScopeOverrides: $scope !== null && $scope->overrides() !== [],
@@ -62,6 +65,8 @@ final class ConfigStatusInspector
             provenance: $effectiveSnapshot->provenance(),
             redactedConfig: $this->redactSnapshot($effectiveSnapshot),
             redactedOverrides: $scope !== null ? $this->redactOverrides($scope) : [],
+            scopeLineage: $this->scopeLineage($scopeStack),
+            tenantContext: $this->tenantContext($scopeStack),
             hasActiveGeneration: $artifact !== null,
             generationId: $artifact?->generationId(),
             manifestPath: $artifact?->manifestPath(),
@@ -100,6 +105,60 @@ final class ConfigStatusInspector
             'descriptor' => $document->descriptor()->toArray(),
             'schema_version' => $document->schemaVersion(),
             'payload_keys' => array_keys($document->payload()),
+        ];
+    }
+
+    /**
+     * @param list<array{id: string, name: string, kind: string, parent_id: ?string, depth: int}> $scopeStack
+     * @return list<array<string, mixed>>
+     */
+    private function scopeLineage(array $scopeStack): array
+    {
+        $registry = $this->scopeRegistry();
+        $currentId = $scopeStack[array_key_last($scopeStack)]['id'] ?? null;
+
+        return array_map(
+            static function (array $frame) use ($registry, $currentId): array {
+                $configScope = $registry?->findById($frame['id']);
+
+                return [
+                    'id' => $frame['id'],
+                    'name' => $frame['name'],
+                    'kind' => $frame['kind'],
+                    'parent_id' => $frame['parent_id'],
+                    'depth' => $frame['depth'],
+                    'current' => $frame['id'] === $currentId,
+                    'has_config_scope' => $configScope !== null,
+                    'has_overrides' => $configScope !== null && $configScope->overrides() !== [],
+                ];
+            },
+            $scopeStack,
+        );
+    }
+
+    /**
+     * @param list<array{id: string, name: string, kind: string, parent_id: ?string, depth: int}> $scopeStack
+     * @return array<string, mixed>|null
+     */
+    private function tenantContext(array $scopeStack): ?array
+    {
+        $current = $scopeStack[array_key_last($scopeStack)] ?? null;
+
+        if (! is_array($current) || ($current['kind'] ?? null) !== 'tenant') {
+            return null;
+        }
+
+        $parent = count($scopeStack) >= 2 ? $scopeStack[count($scopeStack) - 2] : null;
+
+        return [
+            'active' => true,
+            'scope_id' => $current['id'],
+            'scope_name' => $current['name'],
+            'scope_depth' => $current['depth'],
+            'parent_scope_id' => is_array($parent) ? ($parent['id'] ?? null) : null,
+            'parent_scope_name' => is_array($parent) ? ($parent['name'] ?? null) : null,
+            'parent_scope_kind' => is_array($parent) ? ($parent['kind'] ?? null) : null,
+            'inherits_parent_snapshot' => true,
         ];
     }
 

@@ -257,6 +257,14 @@ class Container implements ContainerInterface
         return $this->scopeStack()->current()->depth();
     }
 
+    /**
+     * @return list<array{id: string, name: string, kind: string, parent_id: ?string, depth: int}>
+     */
+    public function currentScopeStack(): array
+    {
+        return $this->scopeStack()->describe();
+    }
+
     protected function resolve(mixed $concrete, array $parameters = []): mixed
     {
         return $this->concreteResolver()->resolve(

@@ -125,8 +125,13 @@ PHP
         self::assertSame(0, $exitCode);
         self::assertStringContainsString('Config status:', $output->stdout());
         self::assertStringContainsString('Environment: testing', $output->stdout());
+        self::assertStringContainsString('Scope: command', $output->stdout());
+        self::assertStringContainsString('Scope depth: 1', $output->stdout());
         self::assertStringContainsString('Active generation: yes', $output->stdout());
         self::assertStringContainsString('Published matches effective: yes', $output->stdout());
+        self::assertStringContainsString('Scope lineage:', $output->stdout());
+        self::assertStringContainsString('- [0] root', $output->stdout());
+        self::assertStringContainsString('- [1] command', $output->stdout());
         self::assertStringContainsString('Telemetry: emitted', $output->stdout());
 
         $telemetry = file_get_contents($this->telemetryPath);
@@ -156,10 +161,16 @@ PHP
         self::assertIsArray($decoded);
         self::assertSame('config:status', $decoded['command'] ?? null);
         self::assertSame(true, $decoded['report']['healthy'] ?? null);
+        self::assertSame('command', $decoded['report']['scope_name'] ?? null);
+        self::assertSame(1, $decoded['report']['scope_depth'] ?? null);
+        self::assertNull($decoded['report']['tenant_context'] ?? null);
         self::assertSame(true, $decoded['report']['has_active_generation'] ?? null);
         self::assertSame($artifact['generation_id'], $decoded['report']['generation_id'] ?? null);
         self::assertSame($artifact['config_id'], $decoded['report']['effective_config_id'] ?? null);
         self::assertSame($artifact['config_id'], $decoded['report']['published_config_id'] ?? null);
+        self::assertCount(2, $decoded['report']['scope_lineage'] ?? []);
+        self::assertSame('root', $decoded['report']['scope_lineage'][0]['kind'] ?? null);
+        self::assertSame('command', $decoded['report']['scope_lineage'][1]['kind'] ?? null);
         self::assertSame('[redacted]', $decoded['report']['redacted_config']['database']['connections']['default']['password'] ?? null);
     }
 

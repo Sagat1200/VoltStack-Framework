@@ -12,7 +12,10 @@ use Quantum\Authorization\Contracts\PrincipalInterface;
 use Quantum\Authorization\Exceptions\AuthorizationDeniedException;
 use Quantum\Authorization\Gate\GateRegistry;
 use Quantum\Authorization\Principal\Principal;
+use Quantum\Config\ConfigRepository;
+use Quantum\Http\Request;
 use VoltStack\Framework\Application;
+use VoltStack\Runtime\Context\ScopeManager;
 
 final class AuthorizationMultiSurfaceIntegrationTest extends TestCase
 {
@@ -109,5 +112,85 @@ final class AuthorizationMultiSurfaceIntegrationTest extends TestCase
             ability: 'reports:export',
             principal: new Principal('u1'),
         ));
+    }
+
+    public function test_command_surface_can_derive_tenant_scope_from_runtime_metadata(): void
+    {
+        $basePath = sys_get_temp_dir();
+        $app = new Application($basePath);
+        $config = $app->make(ConfigRepository::class);
+        $config->set('authorization.authority.scope_resolution.enabled', true);
+
+        /** @var GateRegistry $gates */
+        $gates = $app->make(GateRegistry::class);
+        $gates->define(
+            'reports:command-tenant',
+            static function (PrincipalInterface $principal, mixed $subject, \Quantum\Authorization\Context\AuthorizationContext $context): bool {
+                return $principal->id() === 'cli-operator'
+                    && $subject === 'nightly'
+                    && $context->attribute('tenant.id') === 'acme-cli'
+                    && (string) $context->attribute('authorization.scope') === 'tenant:acme-cli'
+                    && $context->channel() === 'cli';
+            },
+        );
+
+        $scopeManager = $app->make(ScopeManager::class);
+        $scopeManager->beginCommand('reports:nightly', null, [
+            'tenant_id' => 'acme-cli',
+            'runtime.channel' => 'cli',
+        ]);
+
+        try {
+            /** @var AuthorizationManagerInterface $manager */
+            $manager = $app->make(AuthorizationManagerInterface::class);
+            self::assertTrue($manager->check(
+                ability: 'reports:command-tenant',
+                subject: 'nightly',
+                principal: new Principal('cli-operator'),
+            ));
+        } finally {
+            $scopeManager->end();
+        }
+    }
+
+    public function test_job_surface_can_derive_tenant_scope_from_runtime_request_parameters(): void
+    {
+        $basePath = sys_get_temp_dir();
+        $app = new Application($basePath);
+        $config = $app->make(ConfigRepository::class);
+        $config->set('authorization.authority.scope_resolution.enabled', true);
+
+        /** @var GateRegistry $gates */
+        $gates = $app->make(GateRegistry::class);
+        $gates->define(
+            'jobs:tenant-process',
+            static function (PrincipalInterface $principal, mixed $subject, \Quantum\Authorization\Context\AuthorizationContext $context): bool {
+                return $principal->id() === 'worker-tenant'
+                    && $subject === 'reindex-search'
+                    && $context->attribute('tenant.id') === 'acme-worker'
+                    && (string) $context->attribute('authorization.scope') === 'tenant:acme-worker'
+                    && $context->channel() === 'worker';
+            },
+        );
+
+        $request = Request::create('/_runtime/job/reindex-search', 'POST');
+        $request->setRouteParameters(['tenant' => 'acme-worker']);
+
+        $scopeManager = $app->make(ScopeManager::class);
+        $scopeManager->beginJob('reindex:search', $request, [
+            'runtime.channel' => 'worker',
+        ]);
+
+        try {
+            /** @var AuthorizationManagerInterface $manager */
+            $manager = $app->make(AuthorizationManagerInterface::class);
+            self::assertTrue($manager->check(
+                ability: 'jobs:tenant-process',
+                subject: 'reindex-search',
+                principal: new Principal('worker-tenant'),
+            ));
+        } finally {
+            $scopeManager->end();
+        }
     }
 }

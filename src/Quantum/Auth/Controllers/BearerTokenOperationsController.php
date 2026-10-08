@@ -9,6 +9,7 @@ use Quantum\Auth\Context\AuthenticationRequest;
 use Quantum\Auth\Contracts\AuthenticationOrchestratorInterface;
 use Quantum\Auth\Contracts\IdentityProviderInterface;
 use Quantum\Auth\Contracts\MultiFactorIdentityProviderInterface;
+use Quantum\Auth\Contracts\TransactionNonceStoreInterface;
 use Quantum\Auth\Exceptions\AssuranceInsufficientException;
 use Quantum\Auth\Exceptions\AuthenticationException;
 use Quantum\Auth\Exceptions\InvalidCredentialsException;
@@ -24,7 +25,6 @@ use Quantum\Auth\Identity\GenericIdentity;
 use Quantum\Auth\Identity\IdentityIdentifier;
 use Quantum\Auth\Identity\IdentityInterface;
 use Quantum\Auth\Identity\IdentityReference;
-use Quantum\Auth\Passkeys\PasskeyAssertionCeremony;
 use Quantum\Auth\Runtime\AuthenticationOperationContext;
 use Quantum\Auth\Support\AuthenticationAssurance;
 use Quantum\Auth\Tokens\BearerTokenService;
@@ -154,6 +154,26 @@ final class BearerTokenOperationsController extends Controller
     {
         $state = $this->protectedOperationState($request);
         $this->assertRiskNotDenied($state);
+
+        $stepUpResultContext = $this->consumeStepUpResult($request, $state['current_context']);
+        if ($stepUpResultContext instanceof AuthenticationContext) {
+            $result = $this->evaluateProtectedOperation($request, $stepUpResultContext);
+            $result['payload']['step_up'] = [
+                'decision' => 'completed',
+                'mechanism' => $stepUpResultContext->method,
+                'previous_strength' => $state['current_strength']->name,
+                'current_strength' => $stepUpResultContext->authenticationStrength()->name,
+                'current_assurance' => $this->assuranceValueForContext(
+                    $stepUpResultContext,
+                    $stepUpResultContext->authenticationStrength()->value,
+                ),
+                'continuation_endpoint' => $this->stepUpContinuationEndpoint($request),
+            ];
+            $result['headers']['X-Auth-Step-Up-Completed'] = 'true';
+            $result['headers']['X-Auth-Step-Up-Mechanism'] = $stepUpResultContext->method;
+
+            return $this->json($result['payload'], 200, $result['headers']);
+        }
 
         if (! $state['step_up_required'] && ! $state['assurance_insufficient']) {
             $result = $this->evaluateProtectedOperation($request, $state['current_context']);
@@ -524,21 +544,15 @@ final class BearerTokenOperationsController extends Controller
         if ((bool) $this->config->get('auth.passkeys.enabled', false)) {
             $names[] = 'passkey';
             $recommended[] = 'passkey';
-            $origins = $this->config->get('auth.passkeys.rp.origins', []);
-            $originList = is_array($origins)
-                ? array_values(array_filter($origins, static fn (mixed $origin): bool => is_string($origin) && trim($origin) !== ''))
-                : [];
             $definitions[] = [
                 'type' => 'passkey',
                 'supported' => true,
                 'can_satisfy_requirement' => true,
-                'assertion' => (new PasskeyAssertionCeremony(new \Quantum\Auth\Passkeys\RelyingPartyConfig(
-                    rpId: (string) $this->config->get('auth.passkeys.rp.id', 'localhost'),
-                    rpName: (string) $this->config->get('auth.passkeys.rp.name', 'VoltStack App'),
-                    allowedOrigins: $originList,
-                )))->beginAssertion(
-                    $currentContext->identity->identifier()->value,
-                ),
+                'mode' => 'step_up',
+                'user_handle' => $this->passkeyUserHandleForContext($currentContext),
+                'challenge_endpoint' => '/auth/passkeys/assertion/challenge',
+                'complete_endpoint' => '/auth/passkeys/assertion/complete',
+                'target_continuation_endpoint' => '/auth/tokens/protected-operation/step-up/continue',
                 'fields' => ['passkey_assertion'],
             ];
         }
@@ -569,6 +583,61 @@ final class BearerTokenOperationsController extends Controller
         return $credentials;
     }
 
+    private function consumeStepUpResult(Request $request, AuthenticationContext $currentContext): ?AuthenticationContext
+    {
+        $stepUpResult = $this->nonEmptyString($request->input('step_up_result'));
+        if ($stepUpResult === null) {
+            $credentials = $this->continuationCredentials($request);
+            $stepUpResult = $this->nonEmptyString($credentials['step_up_result'] ?? null);
+        }
+
+        if ($stepUpResult === null) {
+            return null;
+        }
+
+        $store = $this->transactionNonceStore();
+        if (! $store instanceof TransactionNonceStoreInterface) {
+            throw new InvalidCredentialsException('The step-up continuation result cannot be validated without transaction nonce support.');
+        }
+
+        $validation = $store->validateNonce($stepUpResult, [
+            'flow' => 'step_up_result',
+            'principal_id' => $currentContext->identity->identifier()->value,
+            'principal_type' => $currentContext->identity->type(),
+            'target_continuation_endpoint' => $this->stepUpContinuationEndpoint($request),
+        ]);
+
+        if (! $validation->valid || $validation->nonceRecord === null) {
+            throw new InvalidCredentialsException('The provided step-up continuation result is invalid or has already been consumed.');
+        }
+
+        $claims = $validation->nonceRecord->bindingClaims;
+        $strength = AuthenticationAssurance::resolveExplicitStrength($claims['authentication_strength'] ?? null)
+            ?? $currentContext->authenticationStrength();
+        $assurance = $this->normalizeInt($claims['current_assurance'] ?? null, $strength->value) ?? $strength->value;
+        $amr = is_array($claims['amr'] ?? null) ? $claims['amr'] : [];
+        $method = $this->nonEmptyString($claims['authentication_method'] ?? null) ?? 'step_up';
+
+        return new AuthenticationContext(
+            identity: $currentContext->identity,
+            reference: $currentContext->reference,
+            requestId: $this->requestIdentifier($request),
+            method: $method,
+            attributes: AuthenticationAssurance::enrichAttributes(array_merge(
+                $currentContext->attributes,
+                [
+                    'amr' => $amr !== [] ? $amr : $currentContext->attribute('amr', []),
+                    'assurance_value' => $assurance,
+                    'authentication_strength' => $strength->name,
+                    'authentication_strength_value' => $strength->value,
+                    'authentication_assurance_profile' => $this->nonEmptyString(
+                        $claims['authentication_assurance_profile'] ?? null,
+                    ) ?? AuthenticationAssurance::profileFor($strength),
+                ],
+            ), $method),
+        );
+    }
+
     /**
      * @param array<string,mixed> $credentials
      */
@@ -584,6 +653,9 @@ final class BearerTokenOperationsController extends Controller
         if (is_string($credentials['second_factor'] ?? null) && trim((string) $credentials['second_factor']) !== '') {
             return 'second_factor';
         }
+        if (is_string($credentials['step_up_result'] ?? null) && trim((string) $credentials['step_up_result']) !== '') {
+            return 'step_up_result';
+        }
 
         return 'unknown';
     }
@@ -592,6 +664,18 @@ final class BearerTokenOperationsController extends Controller
     {
         return $left->identity->identifier()->value === $right->identity->identifier()->value
             && $left->identity->type() === $right->identity->type();
+    }
+
+    private function passkeyUserHandleForContext(AuthenticationContext $context): string
+    {
+        if ($context->identity instanceof GenericIdentity) {
+            $providerIdentifier = $context->identity->attributes['_provider_identifier_value'] ?? null;
+            if (is_string($providerIdentifier) && trim($providerIdentifier) !== '') {
+                return trim($providerIdentifier);
+            }
+        }
+
+        return $context->identity->identifier()->value;
     }
 
     private function assuranceValueForContext(AuthenticationContext $context, int $default): int
@@ -787,5 +871,33 @@ final class BearerTokenOperationsController extends Controller
         }
 
         return $headers;
+    }
+
+    private function nonEmptyString(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $trimmed = trim($value);
+
+        return $trimmed !== '' ? $trimmed : null;
+    }
+
+    private function transactionNonceStore(): ?TransactionNonceStoreInterface
+    {
+        if (! (bool) $this->config->get('auth.transaction.nonce.enabled', false)) {
+            return null;
+        }
+
+        try {
+            $candidate = app(TransactionNonceStoreInterface::class);
+        } catch (\Throwable) {
+            return null;
+        }
+
+        return $candidate instanceof TransactionNonceStoreInterface
+            ? $candidate
+            : null;
     }
 }

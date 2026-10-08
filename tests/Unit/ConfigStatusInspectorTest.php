@@ -71,12 +71,18 @@ PHP
         $report = $app->configStatusInspector()->inspect($app);
 
         self::assertSame('testing', $report->environment());
+        self::assertSame('root', $report->scopeName());
         self::assertSame('root', $report->scopeKind());
+        self::assertSame(0, $report->scopeDepth());
+        self::assertNull($report->tenantContext());
         self::assertTrue($report->hasActiveGeneration());
         self::assertTrue($report->publishedMatchesEffective());
         self::assertSame([], $report->alerts());
         self::assertGreaterThanOrEqual(2, $report->documentCount());
         self::assertGreaterThanOrEqual(2, $report->provenanceCount());
+        self::assertCount(1, $report->scopeLineage());
+        self::assertSame('root', $report->scopeLineage()[0]['kind']);
+        self::assertTrue($report->scopeLineage()[0]['current']);
         self::assertIsArray($report->redactedConfig()['app']['key']);
         self::assertSame('secret_reference', $report->redactedConfig()['app']['key']['_type']);
         self::assertSame('[redacted]', $report->redactedConfig()['app']['key']['value']);
@@ -103,11 +109,21 @@ PHP
                 $app->configWriter()->set('app.name', 'Tenant Config');
                 $report = $app->configStatusInspector()->inspect($app);
 
+                self::assertSame('tenant', $report->scopeName());
                 self::assertSame('tenant', $report->scopeKind());
+                self::assertSame(2, $report->scopeDepth());
                 self::assertNotNull($report->scopeId());
                 self::assertNotNull($report->parentScopeId());
                 self::assertTrue($report->hasScopeOverrides());
                 self::assertFalse($report->publishedMatchesEffective());
+                self::assertNotNull($report->tenantContext());
+                self::assertSame('request', $report->tenantContext()['parent_scope_kind'] ?? null);
+                self::assertSame($report->parentScopeId(), $report->tenantContext()['parent_scope_id'] ?? null);
+                self::assertTrue($report->tenantContext()['inherits_parent_snapshot'] ?? false);
+                self::assertCount(3, $report->scopeLineage());
+                self::assertSame(['root', 'request', 'tenant'], array_column($report->scopeLineage(), 'kind'));
+                self::assertTrue($report->scopeLineage()[2]['current']);
+                self::assertTrue($report->scopeLineage()[2]['has_overrides']);
                 self::assertSame('Tenant Config', $report->redactedConfig()['app']['name']);
                 self::assertSame('Tenant Config', $report->redactedOverrides()['app']['name']);
                 self::assertContains(

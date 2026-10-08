@@ -92,6 +92,23 @@ final class ScopeStack
         return $this->current()->name();
     }
 
+    /**
+     * @return list<array{id: string, name: string, kind: string, parent_id: ?string, depth: int}>
+     */
+    public function describe(): array
+    {
+        return array_map(
+            static fn (ScopeFrame $frame): array => [
+                'id' => $frame->id(),
+                'name' => $frame->name(),
+                'kind' => $frame->kind()->value,
+                'parent_id' => $frame->parentId(),
+                'depth' => $frame->depth(),
+            ],
+            $this->frames,
+        );
+    }
+
     public function findClosestByKind(ScopeKind $kind): ?ScopeFrame
     {
         for ($index = count($this->frames) - 1; $index >= 0; $index--) {

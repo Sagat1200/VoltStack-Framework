@@ -16,8 +16,10 @@ use Quantum\Transport\Testing\InMemoryTransportEmitter;
 use RuntimeException;
 use VoltStack\Framework\Application;
 use VoltStack\Framework\Contracts\Kernel as KernelContract;
+use VoltStack\Runtime\Adapters\FrankenPhpRuntimeAdapter;
 use VoltStack\Runtime\Context\WorkerContext;
 use VoltStack\Runtime\Contracts\WorkerFactoryInterface;
+use VoltStack\Runtime\Exceptions\RuntimeAdapterException;
 use VoltStack\Runtime\RuntimeManagerServer;
 use VoltStack\Runtime\RuntimeConfiguration;
 
@@ -181,6 +183,98 @@ PHP
 
         self::assertSame(1, $exitCode);
         self::assertSame(['/first'], TestRuntimeManagerKernel::$handledPaths);
+    }
+
+    public function test_runtime_manager_server_fails_when_no_request_source_and_native_runtime_is_unavailable(): void
+    {
+        $app = new Application($this->basePath);
+        $app->instance(KernelContract::class, new TestRuntimeManagerKernel());
+
+        $plan = ApplicationBuilder::create($this->basePath)
+            ->withEnvironment('testing')
+            ->withProfile('worker')
+            ->build();
+
+        /** @var RuntimeManagerServer $manager */
+        $manager = $app->make(RuntimeManagerServer::class);
+        $manager->registerAdapter(new FrankenPhpRuntimeAdapter(
+            nativeLoopInvoker: null,
+            nativeAvailabilityResolver: static fn(): bool => false,
+        ));
+
+        $this->expectException(RuntimeAdapterException::class);
+        $this->expectExceptionMessage('FrankenPHP native worker mode requires frankenphp_handle_request()');
+
+        $manager->run($plan, RuntimeConfiguration::frankenphp(
+            maxRequests: 2,
+            requestSource: null,
+        ));
+    }
+
+    public function test_runtime_manager_server_can_process_multiple_requests_through_native_frankenphp_loop(): void
+    {
+        $app = new Application($this->basePath);
+        $app->instance(KernelContract::class, new TestRuntimeManagerKernel());
+        $emitter = new InMemoryTransportEmitter();
+        $app->instance(TransportEmitterInterface::class, $emitter);
+
+        $plan = ApplicationBuilder::create($this->basePath)
+            ->withEnvironment('testing')
+            ->withProfile('worker')
+            ->build();
+
+        $requests = [
+            ['REQUEST_METHOD' => 'GET', 'REQUEST_URI' => '/native-first'],
+            ['REQUEST_METHOD' => 'GET', 'REQUEST_URI' => '/native-second'],
+        ];
+
+        /** @var RuntimeManagerServer $manager */
+        $manager = $app->make(RuntimeManagerServer::class);
+        $manager->registerAdapter(new FrankenPhpRuntimeAdapter(
+            nativeLoopInvoker: static function (callable $handler) use (&$requests): bool {
+                $server = array_shift($requests);
+
+                if ($server === null) {
+                    return false;
+                }
+
+                $_GET = [];
+                $_POST = [];
+                $_COOKIE = [];
+                $_FILES = [];
+                $_SERVER = $server;
+
+                $handler();
+
+                return $requests !== [];
+            },
+            nativeAvailabilityResolver: static fn(): bool => true,
+        ));
+
+        $originalGet = $_GET;
+        $originalPost = $_POST;
+        $originalCookie = $_COOKIE;
+        $originalFiles = $_FILES;
+        $originalServer = $_SERVER;
+
+        try {
+            $exitCode = $manager->run($plan, RuntimeConfiguration::frankenphp(
+                maxRequests: 2,
+                requestSource: null,
+            ));
+        } finally {
+            $_GET = $originalGet;
+            $_POST = $originalPost;
+            $_COOKIE = $originalCookie;
+            $_FILES = $originalFiles;
+            $_SERVER = $originalServer;
+        }
+
+        self::assertSame(0, $exitCode);
+        self::assertSame(['/native-first', '/native-second'], TestRuntimeManagerKernel::$handledPaths);
+        self::assertCount(2, $emitter->emitted());
+        self::assertSame('runtime:/native-first', $emitter->emitted()[0]['response']->payload());
+        self::assertSame('runtime:/native-second', $emitter->emitted()[1]['response']->payload());
     }
 
     private function deleteDirectory(string $path): void

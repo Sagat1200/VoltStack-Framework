@@ -49,7 +49,11 @@ final class HttpTransportMapper implements TransportMapperInterface
     {
         $profile = strtolower(trim((string) $context->routeProfile));
 
-        if (in_array($profile, ['api', 'json'], true)) {
+        if (in_array($profile, ['api', 'problem', 'problem_json'], true)) {
+            return 'http.problem_json';
+        }
+
+        if (in_array($profile, ['json', 'legacy_json'], true)) {
             return 'http.json';
         }
 
@@ -98,7 +102,7 @@ final class HttpTransportMapper implements TransportMapperInterface
                 continue;
             }
 
-            foreach (['http.json', 'http.html'] as $candidate) {
+            foreach (['http.problem_json', 'http.json', 'http.html'] as $candidate) {
                 $specificity = $this->specificityFor($mediaType, $candidate);
 
                 if ($specificity < 0) {
@@ -141,8 +145,19 @@ final class HttpTransportMapper implements TransportMapperInterface
     private function specificityFor(string $mediaType, string $candidate): int
     {
         return match ($candidate) {
+            'http.problem_json' => $this->problemJsonSpecificity($mediaType),
             'http.json' => $this->jsonSpecificity($mediaType),
             'http.html' => $this->htmlSpecificity($mediaType),
+            default => -1,
+        };
+    }
+
+    private function problemJsonSpecificity(string $mediaType): int
+    {
+        return match ($mediaType) {
+            'application/problem+json' => 5,
+            'application/*' => 2,
+            '*/*' => 1,
             default => -1,
         };
     }

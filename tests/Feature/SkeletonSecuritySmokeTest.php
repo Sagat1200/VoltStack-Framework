@@ -5,8 +5,13 @@ declare(strict_types=1);
 namespace VoltStack\Test\Feature;
 
 use PHPUnit\Framework\TestCase;
+use Quantum\Auth\Contracts\PasskeyCredentialStoreInterface;
+use Quantum\Auth\Contracts\TransactionNonceStoreInterface;
+use Quantum\Auth\Controllers\PasskeyAssertionController;
 use Quantum\Auth\Identity\IdentityIdentifier;
 use Quantum\Auth\Identity\IdentityReference;
+use Quantum\Auth\Passkeys\PasskeyCredentialRecord;
+use Quantum\Auth\Passkeys\Support\CoseKey;
 use Quantum\Auth\Support\AuthenticationHttpState;
 use Quantum\Auth\Controllers\BearerTokenOperationsController;
 use Quantum\Auth\Tokens\BearerTokenService;
@@ -224,6 +229,11 @@ final class SkeletonSecuritySmokeTest extends TestCase
                 ])
                 ->name('smoke.authTokensProtectedOperationStepUpContinue');
         });
+
+        $router->group(['prefix' => '/auth/passkeys'], function () use ($router): void {
+            $router->get('/assertion/challenge', [PasskeyAssertionController::class, 'challenge'])->name('smoke.passkeyAssertionChallenge');
+            $router->post('/assertion/complete', [PasskeyAssertionController::class, 'complete'])->name('smoke.passkeyAssertionComplete');
+        });
     }
 
     protected function tearDown(): void
@@ -251,9 +261,16 @@ final class SkeletonSecuritySmokeTest extends TestCase
      * Helper: Simulate an HTTP request against the test kernel.
      * @param array<string,string> $headers
      * @param array<string,string> $cookies
+     * @param array<string,mixed> $requestData
      * @return array{status:int,content:string,headers:array<string,string[]>,debugThrowable:?string}
      */
-    private function dispatch(string $path, array $headers = [], array $cookies = [], string $method = 'GET'): array
+    private function dispatch(
+        string $path,
+        array $headers = [],
+        array $cookies = [],
+        string $method = 'GET',
+        array $requestData = [],
+    ): array
     {
         $server = [];
         foreach ($headers as $name => $value) {
@@ -268,7 +285,13 @@ final class SkeletonSecuritySmokeTest extends TestCase
         $kernel = $this->app->make(HttpKernel::class);
         $throwableStr = null;
         try {
-            $response = $kernel->handle(Request::create($path, strtoupper($method), cookies: $cookies, server: $server));
+            $response = $kernel->handle(Request::create(
+                $path,
+                strtoupper($method),
+                request: $requestData,
+                cookies: $cookies,
+                server: $server,
+            ));
         } catch (\Throwable $t) {
             $throwableStr = $t::class . ': ' . $t->getMessage() . PHP_EOL . 'File=' . $t->getFile() . '@' . $t->getLine() . PHP_EOL . $t->getTraceAsString();
             $response = new \Quantum\Http\Response(500, [
@@ -765,6 +788,307 @@ final class SkeletonSecuritySmokeTest extends TestCase
         self::assertSame(['second_factor'], $response['headers']['X-Auth-Step-Up-Available-Methods'] ?? []);
     }
 
+    public function test_3m_protected_operation_step_up_challenge_advertises_passkey_controller_endpoints(): void
+    {
+        $this->enablePasskeysForSmoke();
+
+        $svc = $this->app->make(BearerTokenService::class);
+        $pair = $svc->issueTokenPair(
+            new IdentityReference(new IdentityIdentifier('session-admin@example.com'), 'user'),
+            'client-step-up-passkey-01',
+            ['dashboard:read'],
+            null,
+            null,
+            [
+                'roles' => ['user'],
+                'permissions' => ['dashboard:read'],
+                'risk_score' => 40,
+                'risk_level' => 'medium',
+                'current_assurance' => 10,
+                'required_min_assurance' => 20,
+                'authentication_assurance_profile' => 'opaque_access_token',
+                'amr' => ['bearer'],
+            ],
+        );
+
+        $response = $this->dispatch('/auth/tokens/protected-operation/step-up/challenge', [
+            'Authorization' => 'Bearer ' . $pair['access_token']->id->value,
+            'Accept' => 'application/json',
+        ]);
+
+        self::assertSame(200, $response['status'], $response['debugThrowable'] ?? '');
+        $payload = $this->json($response);
+        self::assertNotNull($payload);
+        self::assertContains('passkey', (array) ($payload['challenge']['available_methods'] ?? []));
+
+        $passkey = null;
+        foreach ((array) ($payload['challenge']['methods'] ?? []) as $definition) {
+            if (($definition['type'] ?? null) === 'passkey') {
+                $passkey = $definition;
+                break;
+            }
+        }
+
+        self::assertIsArray($passkey);
+        self::assertSame('/auth/passkeys/assertion/challenge', $passkey['challenge_endpoint'] ?? null);
+        self::assertSame('/auth/passkeys/assertion/complete', $passkey['complete_endpoint'] ?? null);
+        self::assertSame('/auth/tokens/protected-operation/step-up/continue', $passkey['target_continuation_endpoint'] ?? null);
+        self::assertSame('step_up', $passkey['mode'] ?? null);
+        self::assertSame('session-admin@example.com', $passkey['user_handle'] ?? null);
+    }
+
+    public function test_3n_passkey_assertion_controller_completes_authenticate_mode_with_valid_assertion(): void
+    {
+        $kp = self::loadPasskeyKeypair();
+        if ($kp === null) {
+            $this->markTestSkipped('OpenSSL passkey keypair generation unavailable; skipping passkey assertion HTTP smoke.');
+        }
+
+        $this->enablePasskeysForSmoke();
+        $credential = $this->seedPasskeyCredential('session-admin@example.com', $kp, 3);
+
+        $challengeResponse = $this->dispatch('/auth/passkeys/assertion/challenge?mode=authenticate&user_handle=session-admin@example.com', [
+            'Accept' => 'application/json',
+        ]);
+
+        self::assertSame(200, $challengeResponse['status'], $challengeResponse['debugThrowable'] ?? '');
+        $challengePayload = $this->json($challengeResponse);
+        self::assertNotNull($challengePayload);
+        self::assertIsArray($challengePayload['transaction'] ?? null);
+        self::assertIsString($challengePayload['transaction']['auth_nonce'] ?? null);
+        self::assertIsString($challengePayload['transaction']['csrf_challenge'] ?? null);
+
+        $assertion = $this->buildValidPasskeyAssertion(
+            $challengePayload['challenge'],
+            $kp,
+            $credential['credential_binary'],
+            'session-admin@example.com',
+            4,
+        );
+
+        $response = $this->dispatch('/auth/passkeys/assertion/complete?mode=authenticate', [
+            'Accept' => 'application/json',
+        ], [], 'POST', array_merge($assertion, [
+            'auth_nonce' => $challengePayload['transaction']['auth_nonce'],
+            'csrf_challenge' => $challengePayload['transaction']['csrf_challenge'],
+        ]));
+
+        self::assertSame(200, $response['status'], $response['debugThrowable'] ?? '');
+        $payload = $this->json($response);
+        self::assertNotNull($payload);
+        self::assertSame('authenticate', $payload['mode'] ?? null);
+        self::assertSame('authenticated', $payload['status'] ?? null);
+        self::assertSame('session-admin@example.com', $payload['principal_id'] ?? null);
+        self::assertSame('passkey', $payload['authentication_method'] ?? null);
+        self::assertSame('HardwareBacked', $payload['authentication_strength'] ?? null);
+        self::assertSame(40, $payload['current_assurance'] ?? null);
+        self::assertSame(['authenticated'], $response['headers']['X-Auth-Passkey-Decision'] ?? []);
+    }
+
+    public function test_3o_passkey_assertion_controller_completes_step_up_mode_with_bearer_context(): void
+    {
+        $kp = self::loadPasskeyKeypair();
+        if ($kp === null) {
+            $this->markTestSkipped('OpenSSL passkey keypair generation unavailable; skipping passkey step-up HTTP smoke.');
+        }
+
+        $this->enablePasskeysForSmoke();
+        $credential = $this->seedPasskeyCredential('session-admin@example.com', $kp, 5);
+
+        $svc = $this->app->make(BearerTokenService::class);
+        $pair = $svc->issueTokenPair(
+            new IdentityReference(new IdentityIdentifier('session-admin@example.com'), 'user'),
+            'client-passkey-step-up-01',
+            ['dashboard:read'],
+            null,
+            null,
+            [
+                'roles' => ['user'],
+                'permissions' => ['dashboard:read'],
+                'risk_score' => 40,
+                'risk_level' => 'medium',
+                'current_assurance' => 10,
+                'required_min_assurance' => 20,
+                'authentication_assurance_profile' => 'opaque_access_token',
+                'amr' => ['bearer'],
+            ],
+        );
+
+        $challengeResponse = $this->dispatch('/auth/passkeys/assertion/challenge?mode=step_up&operation=auth.tokens.protected_operation&target_continuation_endpoint=/auth/tokens/protected-operation/step-up/continue', [
+            'Authorization' => 'Bearer ' . $pair['access_token']->id->value,
+            'Accept' => 'application/json',
+        ]);
+
+        self::assertSame(200, $challengeResponse['status'], $challengeResponse['debugThrowable'] ?? '');
+        $challengePayload = $this->json($challengeResponse);
+        self::assertNotNull($challengePayload);
+        self::assertSame('session-admin@example.com', $challengePayload['current_user_handle'] ?? null);
+        self::assertIsArray($challengePayload['transaction'] ?? null);
+        self::assertIsString($challengePayload['transaction']['auth_nonce'] ?? null);
+        self::assertIsString($challengePayload['transaction']['csrf_challenge'] ?? null);
+
+        $assertion = $this->buildValidPasskeyAssertion(
+            $challengePayload['challenge'],
+            $kp,
+            $credential['credential_binary'],
+            'session-admin@example.com',
+            6,
+        );
+
+        $response = $this->dispatch('/auth/passkeys/assertion/complete?mode=step_up&target_continuation_endpoint=/auth/tokens/protected-operation/step-up/continue', [
+            'Authorization' => 'Bearer ' . $pair['access_token']->id->value,
+            'Accept' => 'application/json',
+        ], [], 'POST', array_merge($assertion, [
+            'auth_nonce' => $challengePayload['transaction']['auth_nonce'],
+            'csrf_challenge' => $challengePayload['transaction']['csrf_challenge'],
+        ]));
+
+        self::assertSame(200, $response['status'], $response['debugThrowable'] ?? '');
+        $payload = $this->json($response);
+        self::assertNotNull($payload);
+        self::assertSame('step_up', $payload['mode'] ?? null);
+        self::assertSame('authenticated', $payload['status'] ?? null);
+        self::assertSame('Token', $payload['previous_strength'] ?? null);
+        self::assertSame(10, $payload['previous_assurance'] ?? null);
+        self::assertSame('HardwareBacked', $payload['authentication_strength'] ?? null);
+        self::assertSame(40, $payload['current_assurance'] ?? null);
+        self::assertSame('/auth/tokens/protected-operation/step-up/continue', $payload['target_continuation_endpoint'] ?? null);
+        self::assertSame(['true'], $response['headers']['X-Auth-Step-Up-Completed'] ?? []);
+        self::assertIsArray($payload['continuation_request'] ?? null);
+        self::assertSame('/auth/tokens/protected-operation/step-up/continue', $payload['continuation_request']['endpoint'] ?? null);
+        self::assertSame('POST', $payload['continuation_request']['method'] ?? null);
+        self::assertIsString($payload['continuation_request']['payload']['step_up_result'] ?? null);
+    }
+
+    public function test_3p_passkey_step_up_result_can_complete_bearer_continuation_without_reusing_assertion(): void
+    {
+        $kp = self::loadPasskeyKeypair();
+        if ($kp === null) {
+            $this->markTestSkipped('OpenSSL passkey keypair generation unavailable; skipping passkey step-up continuation HTTP smoke.');
+        }
+
+        $this->enablePasskeysForSmoke();
+        $credential = $this->seedPasskeyCredential('session-admin@example.com', $kp, 7);
+
+        $svc = $this->app->make(BearerTokenService::class);
+        $pair = $svc->issueTokenPair(
+            new IdentityReference(new IdentityIdentifier('session-admin@example.com'), 'user'),
+            'client-passkey-step-up-final-01',
+            ['dashboard:read'],
+            null,
+            null,
+            [
+                'roles' => ['user'],
+                'permissions' => ['dashboard:read'],
+                'risk_score' => 80,
+                'risk_level' => 'high',
+                'current_assurance' => 10,
+                'required_min_assurance' => 20,
+                'authentication_assurance_profile' => 'opaque_access_token',
+                'amr' => ['bearer'],
+            ],
+        );
+
+        $challengeResponse = $this->dispatch('/auth/passkeys/assertion/challenge?mode=step_up&operation=auth.tokens.protected_operation&target_continuation_endpoint=/auth/tokens/protected-operation/step-up/continue', [
+            'Authorization' => 'Bearer ' . $pair['access_token']->id->value,
+            'Accept' => 'application/json',
+        ]);
+
+        self::assertSame(200, $challengeResponse['status'], $challengeResponse['debugThrowable'] ?? '');
+        $challengePayload = $this->json($challengeResponse);
+        self::assertNotNull($challengePayload);
+
+        $assertion = $this->buildValidPasskeyAssertion(
+            $challengePayload['challenge'],
+            $kp,
+            $credential['credential_binary'],
+            'session-admin@example.com',
+            8,
+        );
+
+        $complete = $this->dispatch('/auth/passkeys/assertion/complete?mode=step_up&target_continuation_endpoint=/auth/tokens/protected-operation/step-up/continue', [
+            'Authorization' => 'Bearer ' . $pair['access_token']->id->value,
+            'Accept' => 'application/json',
+        ], [], 'POST', array_merge($assertion, [
+            'auth_nonce' => $challengePayload['transaction']['auth_nonce'],
+            'csrf_challenge' => $challengePayload['transaction']['csrf_challenge'],
+        ]));
+
+        self::assertSame(200, $complete['status'], $complete['debugThrowable'] ?? '');
+        $completePayload = $this->json($complete);
+        self::assertNotNull($completePayload);
+        self::assertIsArray($completePayload['continuation_request'] ?? null);
+
+        $continuation = $this->dispatch('/auth/tokens/protected-operation/step-up/continue', [
+            'Authorization' => 'Bearer ' . $pair['access_token']->id->value,
+            'Accept' => 'application/json',
+        ], [], 'POST', $completePayload['continuation_request']['payload']);
+
+        self::assertSame(200, $continuation['status'], $continuation['debugThrowable'] ?? '');
+        $continuationPayload = $this->json($continuation);
+        self::assertNotNull($continuationPayload);
+        self::assertSame('passed', $continuationPayload['operation']['decision'] ?? null);
+        self::assertSame('completed', $continuationPayload['step_up']['decision'] ?? null);
+        self::assertSame('passkey', $continuationPayload['step_up']['mechanism'] ?? null);
+        self::assertSame('HardwareBacked', $continuationPayload['step_up']['current_strength'] ?? null);
+        self::assertSame(40, $continuationPayload['step_up']['current_assurance'] ?? null);
+    }
+
+    public function test_3q_structural_step_up_result_token_can_complete_bearer_continuation(): void
+    {
+        $this->enablePasskeysForSmoke();
+
+        $svc = $this->app->make(BearerTokenService::class);
+        $pair = $svc->issueTokenPair(
+            new IdentityReference(new IdentityIdentifier('session-admin@example.com'), 'user'),
+            'client-step-up-result-01',
+            ['dashboard:read'],
+            null,
+            null,
+            [
+                'roles' => ['user'],
+                'permissions' => ['dashboard:read'],
+                'risk_score' => 80,
+                'risk_level' => 'high',
+                'current_assurance' => 10,
+                'required_min_assurance' => 20,
+                'authentication_assurance_profile' => 'opaque_access_token',
+                'amr' => ['bearer'],
+            ],
+        );
+
+        $nonceStore = $this->app->make(TransactionNonceStoreInterface::class);
+        self::assertInstanceOf(TransactionNonceStoreInterface::class, $nonceStore);
+
+        $stepUp = $nonceStore->issueNonce(300, [
+            'flow' => 'step_up_result',
+            'principal_id' => '9901',
+            'principal_type' => 'user',
+            'target_continuation_endpoint' => '/auth/tokens/protected-operation/step-up/continue',
+            'authentication_method' => 'passkey',
+            'authentication_strength' => 'HardwareBacked',
+            'current_assurance' => 40,
+            'authentication_assurance_profile' => 'hardware_backed',
+            'amr' => ['passkey', 'hwk'],
+        ]);
+
+        $response = $this->dispatch('/auth/tokens/protected-operation/step-up/continue', [
+            'Authorization' => 'Bearer ' . $pair['access_token']->id->value,
+            'Accept' => 'application/json',
+        ], [], 'POST', [
+            'step_up_result' => $stepUp->value,
+        ]);
+
+        self::assertSame(200, $response['status'], $response['debugThrowable'] ?? '');
+        $payload = $this->json($response);
+        self::assertNotNull($payload);
+        self::assertSame('passed', $payload['operation']['decision'] ?? null);
+        self::assertSame('completed', $payload['step_up']['decision'] ?? null);
+        self::assertSame('passkey', $payload['step_up']['mechanism'] ?? null);
+        self::assertSame('HardwareBacked', $payload['step_up']['current_strength'] ?? null);
+        self::assertSame(40, $payload['step_up']['current_assurance'] ?? null);
+    }
+
     public function test_4_admin_mfa_fails_with_only_token_strength(): void
     {
         $headers = $this->jwtHeaders([
@@ -955,6 +1279,226 @@ final class SkeletonSecuritySmokeTest extends TestCase
         self::assertSame('privileged_admin', $payload['management_privilege_level'] ?? null);
         self::assertContains('security_center_export', (array) ($payload['management_scopes'] ?? []));
         self::assertSame('MultiFactor', $payload['authentication_strength'] ?? null);
+    }
+
+    private function enablePasskeysForSmoke(): void
+    {
+        $config = $this->app->make(ConfigRepository::class);
+        $config->set('auth.passkeys.enabled', true);
+        $config->set('auth.passkeys.crypto.enabled', true);
+        $config->set('auth.passkeys.store.driver', 'memory');
+        $config->set('auth.passkeys.rp.id', 'localhost');
+        $config->set('auth.passkeys.rp.name', 'VoltStack App');
+        $config->set('auth.passkeys.rp.origins', ['https://localhost']);
+        $config->set('auth.transaction.nonce.enabled', true);
+        $config->set('auth.transaction.nonce.ttl', 300);
+        $config->set('app.url', 'https://localhost');
+    }
+
+    /**
+     * @return array{credential_hex:string, credential_binary:string}
+     */
+    private function seedPasskeyCredential(string $userHandle, array $keyPair, int $signCount = 3): array
+    {
+        $credentialBinary = random_bytes(16);
+        $credentialHex = bin2hex($credentialBinary);
+
+        $store = $this->app->make(PasskeyCredentialStoreInterface::class);
+        self::assertInstanceOf(PasskeyCredentialStoreInterface::class, $store);
+
+        $store->save(new PasskeyCredentialRecord(
+            credentialId: $credentialHex,
+            credentialPublicKey: CoseKey::fromMap($keyPair['cose_map'])->toPemPublicKey(),
+            userHandle: $userHandle,
+            rpId: 'localhost',
+            signCount: $signCount,
+            createdAt: time(),
+            transports: ['internal'],
+        ));
+
+        return [
+            'credential_hex' => $credentialHex,
+            'credential_binary' => $credentialBinary,
+        ];
+    }
+
+    /**
+     * @param array<string,mixed> $challenge
+     * @param array{private:mixed,is_ec:bool,cose_map:array<int,int|string>} $keyPair
+     * @return array{passkey_assertion:array<string,string>}
+     */
+    private function buildValidPasskeyAssertion(array $challenge, array $keyPair, string $credentialBinary, string $userHandle, int $newSignCount): array
+    {
+        $clientDataJson = json_encode([
+            'type' => 'webauthn.get',
+            'challenge' => $challenge['challenge'] ?? '',
+            'origin' => 'https://localhost',
+        ], JSON_THROW_ON_ERROR);
+
+        $rpIdHash = hash('sha256', 'localhost', true);
+        $flags = "\x41";
+        $authData = $rpIdHash . $flags . pack('N', $newSignCount);
+        $message = $authData . hash('sha256', $clientDataJson, true);
+        $derSignature = '';
+        openssl_sign($message, $derSignature, $keyPair['private'], OPENSSL_ALGO_SHA256);
+        $signature = $keyPair['is_ec'] ? $this->ecDerToRaw64($derSignature) : $derSignature;
+
+        return [
+            'passkey_assertion' => [
+                'client_data_json_b64' => base64_encode($clientDataJson),
+                'authenticator_data_b64' => base64_encode($authData),
+                'signature_b64' => base64_encode($signature),
+                'credential_id_b64' => base64_encode($credentialBinary),
+                'user_handle' => $userHandle,
+            ],
+        ];
+    }
+
+    /**
+     * @return array{private:mixed,is_ec:bool,cose_map:array<int,int|string>}|null
+     */
+    private static function loadPasskeyKeypair(): ?array
+    {
+        $ec = self::tryLoadEcP256Keypair();
+        if ($ec !== null) {
+            return [
+                'private' => $ec['private'],
+                'is_ec' => true,
+                'cose_map' => [
+                    1 => 2,
+                    3 => -7,
+                    -1 => 1,
+                    -2 => $ec['x'],
+                    -3 => $ec['y'],
+                ],
+            ];
+        }
+
+        $rsa = self::tryLoadRsaKeypair();
+        if ($rsa !== null) {
+            return [
+                'private' => $rsa['private'],
+                'is_ec' => false,
+                'cose_map' => [
+                    1 => 3,
+                    3 => -257,
+                    -1 => $rsa['n'],
+                    -2 => $rsa['e'],
+                ],
+            ];
+        }
+
+        return null;
+    }
+
+    /**
+     * @return array{private:mixed,x:string,y:string}|null
+     */
+    private static function tryLoadEcP256Keypair(): ?array
+    {
+        static $cached = false;
+        if ($cached !== false) {
+            return is_array($cached) ? $cached : null;
+        }
+
+        $config = ['private_key_type' => OPENSSL_KEYTYPE_EC, 'curve_name' => 'prime256v1'];
+        $private = @openssl_pkey_new($config);
+        if ($private === false) {
+            $cached = null;
+            return null;
+        }
+
+        $details = @openssl_pkey_get_details($private);
+        if ($details === false || ! isset($details['ec']['x'], $details['ec']['y'])) {
+            $cached = null;
+            return null;
+        }
+
+        $cached = [
+            'private' => $private,
+            'x' => $details['ec']['x'],
+            'y' => $details['ec']['y'],
+        ];
+
+        return $cached;
+    }
+
+    /**
+     * @return array{private:mixed,n:string,e:string}|null
+     */
+    private static function tryLoadRsaKeypair(): ?array
+    {
+        static $cached = false;
+        if ($cached !== false) {
+            return is_array($cached) ? $cached : null;
+        }
+
+        $config = ['private_key_type' => OPENSSL_KEYTYPE_RSA, 'private_key_bits' => 2048];
+        $private = @openssl_pkey_new($config);
+        if ($private === false) {
+            $cached = null;
+            return null;
+        }
+
+        $details = @openssl_pkey_get_details($private);
+        if ($details === false || ! isset($details['rsa']['n'], $details['rsa']['e'])) {
+            $cached = null;
+            return null;
+        }
+
+        $cached = [
+            'private' => $private,
+            'n' => $details['rsa']['n'],
+            'e' => $details['rsa']['e'],
+        ];
+
+        return $cached;
+    }
+
+    private function ecDerToRaw64(string $der): string
+    {
+        if (strlen($der) < 8 || ord($der[0]) !== 0x30) {
+            return str_repeat("\x00", 64);
+        }
+
+        $offset = 1;
+        $len = ord($der[$offset]);
+        $offset++;
+        if (($len & 0x80) !== 0) {
+            $offset += $len & 0x7f;
+        }
+
+        $parseInt = function () use (&$der, &$offset): string {
+            if ($offset >= strlen($der) || ord($der[$offset]) !== 0x02) {
+                return '';
+            }
+
+            $offset++;
+            $length = ord($der[$offset]);
+            $offset++;
+            if (($length & 0x80) !== 0) {
+                $count = $length & 0x7f;
+                $lengthBytes = substr($der, $offset, $count);
+                $offset += $count;
+                $length = 0;
+                foreach (str_split($lengthBytes) as $byte) {
+                    $length = ($length << 8) | ord($byte);
+                }
+            }
+
+            $value = substr($der, $offset, $length);
+            $offset += $length;
+            while ($value !== '' && ord($value[0]) === 0x00) {
+                $value = substr($value, 1);
+            }
+
+            return $value;
+        };
+
+        $r = str_pad($parseInt(), 32, "\x00", STR_PAD_LEFT);
+        $s = str_pad($parseInt(), 32, "\x00", STR_PAD_LEFT);
+
+        return substr($r, -32) . substr($s, -32);
     }
 
     private function removeDirectory(string $dir): void

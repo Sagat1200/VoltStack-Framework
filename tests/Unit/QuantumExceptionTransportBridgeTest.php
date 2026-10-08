@@ -36,10 +36,10 @@ final class QuantumExceptionTransportBridgeTest extends TestCase
 
         $plan = $mapper->map($descriptor, new TransportContext(
             kind: 'http',
-            accept: ['text/html;q=0.2, application/json;q=0.9'],
+            accept: ['text/html;q=0.2, application/problem+json;q=0.9'],
         ));
 
-        self::assertSame('http.json', $plan->target);
+        self::assertSame('http.problem_json', $plan->target);
         self::assertSame(422, $plan->status);
         self::assertSame('no-store', $plan->headers['Cache-Control'] ?? null);
     }
@@ -51,10 +51,10 @@ final class QuantumExceptionTransportBridgeTest extends TestCase
 
         $plan = $mapper->map($descriptor, new TransportContext(
             kind: 'http',
-            accept: ['text/html;q=0, application/json;q=0.5'],
+            accept: ['text/html;q=0, application/problem+json;q=0.5'],
         ));
 
-        self::assertSame('http.json', $plan->target);
+        self::assertSame('http.problem_json', $plan->target);
     }
 
     public function test_renderer_escapes_html_and_strips_cli_control_bytes(): void
@@ -81,7 +81,7 @@ final class QuantumExceptionTransportBridgeTest extends TestCase
         self::assertStringNotContainsString("\x07", $cli->bodyBytes);
     }
 
-    public function test_manager_renders_http_json_for_api_profile(): void
+    public function test_manager_renders_problem_details_for_api_profile(): void
     {
         $manager = new ExceptionManager(
             normalizer: new ThrowableNormalizer(),
@@ -105,9 +105,40 @@ final class QuantumExceptionTransportBridgeTest extends TestCase
         );
 
         self::assertSame(HandlingResultKind::Rendered, $result->kind);
-        self::assertSame('application/json', $result->output?->mediaType);
+        self::assertSame('application/problem+json', $result->output?->mediaType);
         self::assertSame(422, $result->output?->status);
+        self::assertStringContainsString('"type":"about:blank"', $result->output?->bodyBytes ?? '');
+        self::assertStringContainsString('"title":"Unprocessable Content"', $result->output?->bodyBytes ?? '');
         self::assertStringContainsString('"code":"validation.failed"', $result->output?->bodyBytes ?? '');
+        self::assertStringContainsString('"errors":[', $result->output?->bodyBytes ?? '');
+    }
+
+    public function test_manager_keeps_legacy_json_profile_available(): void
+    {
+        $manager = new ExceptionManager(
+            normalizer: new ThrowableNormalizer(),
+            semanticMapper: DeterministicSemanticExceptionMapper::standard(),
+            recoveryPolicy: new DeterministicRecoveryPolicy(),
+            transportMapper: new HttpTransportMapper(),
+            renderer: new TransportExceptionRenderer(),
+        );
+
+        $result = $manager->handle(
+            new ValidationException(['email' => ['invalid']]),
+            new ExceptionContext(
+                scopeId: 'scope-http-legacy-json',
+                locale: 'es',
+                attributes: [
+                    'surface' => 'http',
+                    'transport_kind' => 'http',
+                    'transport_route_profile' => 'json',
+                ],
+            ),
+        );
+
+        self::assertSame(HandlingResultKind::Rendered, $result->kind);
+        self::assertSame('application/json', $result->output?->mediaType);
+        self::assertStringContainsString('"occurrence_id"', $result->output?->bodyBytes ?? '');
     }
 
     public function test_manager_renders_cli_json_when_profile_requests_it(): void

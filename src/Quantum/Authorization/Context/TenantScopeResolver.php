@@ -9,6 +9,7 @@ use Quantum\Authorization\Contracts\TenantScopeResolverInterface;
 use Quantum\Controllers\Security\Context\ControllerSecurityContext;
 use Quantum\Http\Request;
 use Quantum\Routing\RouteMatch;
+use VoltStack\Runtime\Context\RuntimeContext;
 
 final readonly class TenantScopeResolver implements TenantScopeResolverInterface
 {
@@ -49,6 +50,12 @@ final readonly class TenantScopeResolver implements TenantScopeResolverInterface
             return $context;
         }
 
+        $normalizedTenantId = $tenantId;
+        if ($normalizedTenantId === null) {
+            $existingTenantId = $context->tenantId();
+            $normalizedTenantId = is_string($existingTenantId) && trim($existingTenantId) !== '' ? trim($existingTenantId) : null;
+        }
+
         foreach ($updates as $key => $value) {
             if (array_key_exists($key, $attributes) && $attributes[$key] === $value) {
                 unset($updates[$key]);
@@ -59,7 +66,12 @@ final readonly class TenantScopeResolver implements TenantScopeResolverInterface
             return $context;
         }
 
-        return $context->mergeAttributes($updates);
+        return new AuthorizationContext(
+            requestId: $context->requestId(),
+            tenantId: $normalizedTenantId,
+            channel: $context->channel(),
+            attributes: array_replace($attributes, $updates),
+        );
     }
 
     public function resolveScope(?AuthorizationContext $context): Scope
@@ -128,6 +140,16 @@ final readonly class TenantScopeResolver implements TenantScopeResolverInterface
             }
         }
 
+        $runtimeContext = $this->runtimeContextFrom($context);
+        if ($runtimeContext !== null) {
+            foreach (['tenant.id', 'tenant_id', 'runtime.tenant.id', 'runtime.tenant_id'] as $key) {
+                $value = $runtimeContext->get($key, null);
+                if (is_string($value) && trim($value) !== '') {
+                    return trim($value);
+                }
+            }
+        }
+
         $securityContext = $context->attribute('controller.security.context');
         if ($securityContext instanceof ControllerSecurityContext) {
             $tenantId = $securityContext->tenant?->id;
@@ -177,6 +199,44 @@ final readonly class TenantScopeResolver implements TenantScopeResolverInterface
                     return trim($parameterValue);
                 }
             }
+        }
+
+        if ($runtimeContext !== null) {
+            $request = $runtimeContext->request();
+
+            foreach ($this->requestHeaderKeys as $headerKey) {
+                $headerValue = $request->header($headerKey, null);
+                if (is_string($headerValue) && trim($headerValue) !== '') {
+                    return trim($headerValue);
+                }
+
+                $serverValue = $request->server($headerKey, null);
+                if (is_string($serverValue) && trim($serverValue) !== '') {
+                    return trim($serverValue);
+                }
+            }
+
+            foreach ($this->routeParameterKeys as $parameterKey) {
+                $parameterValue = $request->routeParameter($parameterKey, null);
+                if (is_string($parameterValue) && trim($parameterValue) !== '') {
+                    return trim($parameterValue);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function runtimeContextFrom(AuthorizationContext $context): ?RuntimeContext
+    {
+        $runtimeContext = $context->attribute('runtime_context');
+        if ($runtimeContext instanceof RuntimeContext) {
+            return $runtimeContext;
+        }
+
+        $runtimeContext = $context->attribute('runtime.context');
+        if ($runtimeContext instanceof RuntimeContext) {
+            return $runtimeContext;
         }
 
         return null;

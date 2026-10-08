@@ -15,6 +15,7 @@ use Quantum\Authorization\Contracts\AuthorizationManagerInterface;
 use Quantum\Authorization\Contracts\RelationshipRepositoryInterface;
 use Quantum\Authorization\Contracts\TenantScopeResolverInterface;
 use Quantum\Authorization\Core\AuthorizationManager;
+use Quantum\Authorization\Relationship\DatabaseRelationshipRepository;
 use Quantum\Authorization\Relationship\InMemoryRelationshipRepository;
 use Quantum\Config\ConfigRepository;
 use VoltStack\Framework\Application;
@@ -34,7 +35,12 @@ final class AuthorizationServiceProviderBridgeAndFlagsTest extends TestCase
         self::assertSame('tenant:', $config->get('authorization.authority.scope_resolution.tenant_scope_prefix'));
         self::assertFalse($config->get('authorization.controllers_security.bridge.enabled'));
         self::assertFalse($config->get('authorization.relationships.evaluate'));
+        self::assertSame('memory', $config->get('authorization.relationships.driver'));
         self::assertSame([], $config->get('authorization.relationships.entries'));
+        self::assertSame(
+            DatabaseRelationshipRepository::DEFAULT_RELATIONSHIPS_TABLE,
+            $config->get('authorization.relationships.database.table'),
+        );
     }
 
     public function test_authority_repository_default_wraps_in_memory_with_cached_decorator(): void

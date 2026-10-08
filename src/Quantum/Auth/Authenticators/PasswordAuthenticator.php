@@ -417,6 +417,8 @@ final class PasswordAuthenticator implements AuthenticatorInterface
         $attributes = array_merge($current->attributes, [
             'amr' => ['pwd', 'mfa'],
             'authentication_strength' => AuthenticationStrength::MultiFactor->name,
+            'assurance_value' => AuthenticationStrength::MultiFactor->value,
+            'assurance_name' => 'multi_factor',
             'authentication_assurance_profile' => 'multi_factor',
         ]);
 

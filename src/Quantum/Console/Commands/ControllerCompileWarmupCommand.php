@@ -49,121 +49,122 @@ final class ControllerCompileWarmupCommand extends Command
 
     public function handle(Input $input, Output $output): int
     {
-        $app = $this->bootstrapApplication();
         $verbose = $input->hasOption('verbose');
         $rebuildCurrent = $input->hasOption('rebuild-current');
 
-        $store = $app->make(ArtifactStoreInterface::class);
-        $compiler = $app->make(CompilerInterface::class);
-        $metadata = $app->make(ControllerMetadataResolverInterface::class);
+        return $this->runInCommandRuntime(function ($app) use ($output, $rebuildCurrent, $verbose): int {
+            $store = $app->make(ArtifactStoreInterface::class);
+            $compiler = $app->make(CompilerInterface::class);
+            $metadata = $app->make(ControllerMetadataResolverInterface::class);
 
-        $hotRoutes = $app->config('controller_compilation.warmup.hot_routes', []);
-        if (! is_array($hotRoutes)) {
-            $hotRoutes = [];
-        }
-
-        if ($hotRoutes === []) {
-            $output->writeln('No hay rutas hot configuradas en controller_compilation.warmup.hot_routes.');
-            $output->writeln('Sugerencia: agrega controladores críticos en formato "Class@method" o "InvokableClass" al config.');
-
-            return 0;
-        }
-
-        $specs = [];
-        foreach ($hotRoutes as $route) {
-            if (! is_string($route) || trim($route) === '') {
-                continue;
+            $hotRoutes = $app->config('controller_compilation.warmup.hot_routes', []);
+            if (! is_array($hotRoutes)) {
+                $hotRoutes = [];
             }
 
-            if (str_contains($route, '@')) {
-                [$class, $method] = explode('@', $route, 2);
-                if (! class_exists($class)) {
-                    $output->error(sprintf('[SKIP] Hot route class not found: %s', $class));
+            if ($hotRoutes === []) {
+                $output->writeln('No hay rutas hot configuradas en controller_compilation.warmup.hot_routes.');
+                $output->writeln('Sugerencia: agrega controladores críticos en formato "Class@method" o "InvokableClass" al config.');
+
+                return 0;
+            }
+
+            $specs = [];
+            foreach ($hotRoutes as $route) {
+                if (! is_string($route) || trim($route) === '') {
                     continue;
                 }
-                $specs[] = ['class' => $class, 'method' => $method];
-            } elseif (class_exists($route)) {
-                $specs[] = ['class' => $route, 'method' => null];
-            } else {
-                $output->error(sprintf('[SKIP] Hot route class not found: %s', $route));
+
+                if (str_contains($route, '@')) {
+                    [$class, $method] = explode('@', $route, 2);
+                    if (! class_exists($class)) {
+                        $output->error(sprintf('[SKIP] Hot route class not found: %s', $class));
+                        continue;
+                    }
+                    $specs[] = ['class' => $class, 'method' => $method];
+                } elseif (class_exists($route)) {
+                    $specs[] = ['class' => $route, 'method' => null];
+                } else {
+                    $output->error(sprintf('[SKIP] Hot route class not found: %s', $route));
+                }
             }
-        }
 
-        if ($specs === []) {
-            $output->writeln('No hay rutas hot válidas para compilar.');
-
-            return 1;
-        }
-
-        $output->writeln(sprintf('Warmup de %d ruta(s) hot...', count($specs)));
-        $output->writeln('');
-
-        $buildId = null;
-
-        if ($rebuildCurrent) {
-            $currentBuild = $store->currentBuild();
-            if ($currentBuild === null) {
-                $output->error('No existe build actual activo. Usa `compile` primero u omite --rebuild-current.');
+            if ($specs === []) {
+                $output->writeln('No hay rutas hot válidas para compilar.');
 
                 return 1;
             }
-            $buildId = $currentBuild->id;
-            $output->writeln(sprintf('Recompilando sobre build actual: %s', $buildId));
-        } else {
-            $build = $store->createBuild();
-            $buildId = $build->id;
-            $output->writeln(sprintf('Nuevo build de warmup: %s', $buildId));
-        }
 
-        $success = 0;
-        $fail = 0;
+            $output->writeln(sprintf('Warmup de %d ruta(s) hot...', count($specs)));
+            $output->writeln('');
 
-        foreach ($compiler->compileBatch($specs, $metadata) as $result) {
-            if (! $result->success) {
-                $fail++;
-                $output->error(sprintf(
-                    '[FAIL warmup] %s@%s: %s',
-                    $result->class,
-                    $result->method,
-                    $result->error?->getMessage() ?? 'unknown',
-                ));
+            $buildId = null;
 
-                continue;
+            if ($rebuildCurrent) {
+                $currentBuild = $store->currentBuild();
+                if ($currentBuild === null) {
+                    $output->error('No existe build actual activo. Usa `compile` primero u omite --rebuild-current.');
+
+                    return 1;
+                }
+                $buildId = $currentBuild->id;
+                $output->writeln(sprintf('Recompilando sobre build actual: %s', $buildId));
+            } else {
+                $build = $store->createBuild();
+                $buildId = $build->id;
+                $output->writeln(sprintf('Nuevo build de warmup: %s', $buildId));
             }
 
-            try {
-                $artifact = $store->write($result, $buildId);
-                $success++;
+            $success = 0;
+            $fail = 0;
 
-                if ($verbose) {
-                    $output->writeln(sprintf(
-                        '  [WARMUP OK] %s::%s -> %s',
+            foreach ($compiler->compileBatch($specs, $metadata) as $result) {
+                if (! $result->success) {
+                    $fail++;
+                    $output->error(sprintf(
+                        '[FAIL warmup] %s@%s: %s',
                         $result->class,
                         $result->method,
-                        basename($artifact->artifactPath),
+                        $result->error?->getMessage() ?? 'unknown',
+                    ));
+
+                    continue;
+                }
+
+                try {
+                    $artifact = $store->write($result, $buildId);
+                    $success++;
+
+                    if ($verbose) {
+                        $output->writeln(sprintf(
+                            '  [WARMUP OK] %s::%s -> %s',
+                            $result->class,
+                            $result->method,
+                            basename($artifact->artifactPath),
+                        ));
+                    }
+                } catch (\Throwable $e) {
+                    $fail++;
+                    $output->error(sprintf(
+                        '[FAIL warmup write] %s::%s: %s',
+                        $result->class,
+                        $result->method,
+                        $e->getMessage(),
                     ));
                 }
-            } catch (\Throwable $e) {
-                $fail++;
-                $output->error(sprintf(
-                    '[FAIL warmup write] %s::%s: %s',
-                    $result->class,
-                    $result->method,
-                    $e->getMessage(),
-                ));
             }
-        }
 
-        $output->writeln('');
-        $output->writeln(sprintf('Warmup: %d OK / %d FAIL', $success, $fail));
+            $output->writeln('');
+            $output->writeln(sprintf('Warmup: %d OK / %d FAIL', $success, $fail));
 
-        if (! $rebuildCurrent) {
-            $activated = $store->activateBuild($buildId);
-            $output->writeln(sprintf('Build warmup activado: %s', $activated->id));
-        }
+            if (! $rebuildCurrent) {
+                $activated = $store->activateBuild($buildId);
+                $output->writeln(sprintf('Build warmup activado: %s', $activated->id));
+            }
 
-        $output->writeln('Warmup completado. Cold-start evitado para las rutas hot configuradas.');
+            $output->writeln('Warmup completado. Cold-start evitado para las rutas hot configuradas.');
 
-        return $fail === 0 ? 0 : 1;
+            return $fail === 0 ? 0 : 1;
+        });
     }
 }

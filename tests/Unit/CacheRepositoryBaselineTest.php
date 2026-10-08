@@ -391,6 +391,53 @@ final class CacheRepositoryBaselineTest extends TestCase
         self::assertSame(MemoryStore::class, $receipt->details['diagnostics']['store']['class'] ?? null);
     }
 
+    public function test_repository_explain_reports_normalized_key_lookup_and_diagnostics_without_payload(): void
+    {
+        $authority = new LocalVersionAuthority();
+        $clock = $this->clockAt(1_700_000_000);
+        $repository = new Repository(
+            new MemoryStore($clock),
+            'catalog',
+            60,
+            null,
+            $authority,
+            'catalog',
+            ['featured'],
+            $clock,
+        );
+
+        self::assertTrue($repository->put('product:42', ['name' => 'A'], 30));
+
+        $explain = $repository->explain('product:42');
+
+        self::assertSame('product:42', $explain['key'] ?? null);
+        self::assertStringContainsString('tag[featured=v1]:v1:catalog:product:42', (string) ($explain['normalized_key'] ?? ''));
+        self::assertSame('fresh', $explain['lookup']['state'] ?? null);
+        self::assertArrayHasKey('miss_reason', $explain['lookup']);
+        self::assertNull($explain['lookup']['miss_reason']);
+        self::assertFalse($explain['lookup']['value_exposed'] ?? true);
+        self::assertArrayNotHasKey('value', $explain['lookup']);
+        self::assertSame('memory', $explain['lookup']['metadata']['source_level'] ?? null);
+        self::assertSame('v1', $explain['lookup']['metadata']['versions']['namespace'] ?? null);
+        self::assertSame('tag[featured=v1]:v1:catalog', $explain['diagnostics']['storage_namespace'] ?? null);
+        self::assertSame('catalog.tag.featured', $explain['diagnostics']['invalidation_scopes']['tags']['featured'] ?? null);
+    }
+
+    public function test_repository_explain_reports_miss_reason_without_payload(): void
+    {
+        $repository = new Repository(new MemoryStore($this->clockAt(1_700_000_000)));
+
+        $explain = $repository->explain('missing-key');
+
+        self::assertSame('missing-key', $explain['key'] ?? null);
+        self::assertSame('missing-key', $explain['normalized_key'] ?? null);
+        self::assertSame('miss', $explain['lookup']['state'] ?? null);
+        self::assertSame('not_found', $explain['lookup']['miss_reason'] ?? null);
+        self::assertArrayHasKey('metadata', $explain['lookup']);
+        self::assertNull($explain['lookup']['metadata']);
+        self::assertFalse($explain['lookup']['value_exposed'] ?? true);
+    }
+
     public function test_pull_returns_value_and_removes_the_key(): void
     {
         $repository = new Repository(new MemoryStore($this->clockAt(1_700_000_000)));

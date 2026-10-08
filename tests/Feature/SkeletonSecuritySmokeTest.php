@@ -195,8 +195,34 @@ final class SkeletonSecuritySmokeTest extends TestCase
                     'risk_step_up_threshold' => 75,
                     'risk_elevated_min_assurance' => 40,
                     'risk_deny_threshold' => 95,
+                    'step_up_challenge_endpoint' => '/auth/tokens/protected-operation/step-up/challenge',
+                    'step_up_continuation_endpoint' => '/auth/tokens/protected-operation/step-up/continue',
                 ])
                 ->name('smoke.authTokensProtectedOperation');
+            $router->get('/protected-operation/step-up/challenge', [BearerTokenOperationsController::class, 'protectedOperationStepUpChallenge'])
+                ->meta([
+                    'operation_name' => 'auth.tokens.protected_operation',
+                    'required_strength' => 'MultiFactor',
+                    'required_min_assurance' => 20,
+                    'risk_step_up_threshold' => 75,
+                    'risk_elevated_min_assurance' => 40,
+                    'risk_deny_threshold' => 95,
+                    'step_up_challenge_endpoint' => '/auth/tokens/protected-operation/step-up/challenge',
+                    'step_up_continuation_endpoint' => '/auth/tokens/protected-operation/step-up/continue',
+                ])
+                ->name('smoke.authTokensProtectedOperationStepUpChallenge');
+            $router->post('/protected-operation/step-up/continue', [BearerTokenOperationsController::class, 'protectedOperationStepUpContinue'])
+                ->meta([
+                    'operation_name' => 'auth.tokens.protected_operation',
+                    'required_strength' => 'MultiFactor',
+                    'required_min_assurance' => 20,
+                    'risk_step_up_threshold' => 75,
+                    'risk_elevated_min_assurance' => 40,
+                    'risk_deny_threshold' => 95,
+                    'step_up_challenge_endpoint' => '/auth/tokens/protected-operation/step-up/challenge',
+                    'step_up_continuation_endpoint' => '/auth/tokens/protected-operation/step-up/continue',
+                ])
+                ->name('smoke.authTokensProtectedOperationStepUpContinue');
         });
     }
 
@@ -623,6 +649,120 @@ final class SkeletonSecuritySmokeTest extends TestCase
         self::assertSame(['passed'], $response['headers']['X-Auth-Operation-Decision'] ?? []);
         self::assertSame(['MultiFactor'], $response['headers']['X-Auth-Required-Strength'] ?? []);
         self::assertSame(['40'], $response['headers']['X-Auth-Assurance-Required-Min'] ?? []);
+    }
+
+    public function test_3j_protected_operation_step_up_challenge_exposes_continuation_methods(): void
+    {
+        $svc = $this->app->make(BearerTokenService::class);
+        $pair = $svc->issueTokenPair(
+            new IdentityReference(new IdentityIdentifier('session-admin@example.com'), 'user'),
+            'client-step-up-challenge-01',
+            ['dashboard:read'],
+            null,
+            null,
+            [
+                'roles' => ['user'],
+                'permissions' => ['dashboard:read'],
+                'risk_score' => 40,
+                'risk_level' => 'medium',
+                'current_assurance' => 20,
+                'required_min_assurance' => 20,
+                'authentication_assurance_profile' => 'opaque_access_token',
+                'amr' => ['bearer'],
+            ],
+        );
+
+        $response = $this->dispatch('/auth/tokens/protected-operation/step-up/challenge', [
+            'Authorization' => 'Bearer ' . $pair['access_token']->id->value,
+            'Accept' => 'application/json',
+        ]);
+
+        self::assertSame(200, $response['status'], $response['debugThrowable'] ?? '');
+        $payload = $this->json($response);
+        self::assertNotNull($payload);
+        self::assertSame('challenge_required', $payload['operation']['decision'] ?? null);
+        self::assertSame(['second_factor'], $payload['challenge']['available_methods'] ?? null);
+        self::assertSame(['second_factor'], $payload['challenge']['recommended_methods'] ?? null);
+        self::assertSame('/auth/tokens/protected-operation/step-up/challenge', $payload['challenge']['challenge_endpoint'] ?? null);
+        self::assertSame('/auth/tokens/protected-operation/step-up/continue', $payload['challenge']['continuation_endpoint'] ?? null);
+        self::assertSame(['second_factor'], $response['headers']['X-Auth-Step-Up-Available-Methods'] ?? []);
+        self::assertSame(['/auth/tokens/protected-operation/step-up/challenge'], $response['headers']['X-Auth-Step-Up-Challenge-Endpoint'] ?? []);
+        self::assertSame(['/auth/tokens/protected-operation/step-up/continue'], $response['headers']['X-Auth-Step-Up-Continuation-Endpoint'] ?? []);
+    }
+
+    public function test_3k_protected_operation_step_up_continue_with_second_factor_can_pass(): void
+    {
+        $svc = $this->app->make(BearerTokenService::class);
+        $pair = $svc->issueTokenPair(
+            new IdentityReference(new IdentityIdentifier('session-admin@example.com'), 'user'),
+            'client-step-up-continue-01',
+            ['dashboard:read'],
+            null,
+            null,
+            [
+                'roles' => ['user'],
+                'permissions' => ['dashboard:read'],
+                'risk_score' => 40,
+                'risk_level' => 'medium',
+                'current_assurance' => 20,
+                'required_min_assurance' => 20,
+                'authentication_assurance_profile' => 'opaque_access_token',
+                'amr' => ['bearer'],
+            ],
+        );
+
+        $response = $this->dispatch('/auth/tokens/protected-operation/step-up/continue?second_factor=654321', [
+            'Authorization' => 'Bearer ' . $pair['access_token']->id->value,
+            'Accept' => 'application/json',
+        ], [], 'POST');
+
+        self::assertSame(200, $response['status'], $response['debugThrowable'] ?? '');
+        $payload = $this->json($response);
+        self::assertNotNull($payload);
+        self::assertSame('passed', $payload['operation']['decision'] ?? null);
+        self::assertSame('completed', $payload['step_up']['decision'] ?? null);
+        self::assertSame('second_factor', $payload['step_up']['mechanism'] ?? null);
+        self::assertSame('Token', $payload['step_up']['previous_strength'] ?? null);
+        self::assertSame('MultiFactor', $payload['step_up']['current_strength'] ?? null);
+        self::assertSame(['true'], $response['headers']['X-Auth-Step-Up-Completed'] ?? []);
+        self::assertSame(['second_factor'], $response['headers']['X-Auth-Step-Up-Mechanism'] ?? []);
+    }
+
+    public function test_3l_protected_operation_step_up_continue_can_still_require_more_assurance(): void
+    {
+        $svc = $this->app->make(BearerTokenService::class);
+        $pair = $svc->issueTokenPair(
+            new IdentityReference(new IdentityIdentifier('session-admin@example.com'), 'user'),
+            'client-step-up-assurance-01',
+            ['dashboard:read'],
+            null,
+            null,
+            [
+                'roles' => ['user'],
+                'permissions' => ['dashboard:read'],
+                'risk_score' => 80,
+                'risk_level' => 'high',
+                'current_assurance' => 20,
+                'required_min_assurance' => 20,
+                'authentication_assurance_profile' => 'opaque_access_token',
+                'amr' => ['bearer'],
+            ],
+        );
+
+        $response = $this->dispatch('/auth/tokens/protected-operation/step-up/continue?second_factor=654321', [
+            'Authorization' => 'Bearer ' . $pair['access_token']->id->value,
+            'Accept' => 'application/json',
+        ], [], 'POST');
+
+        self::assertSame(423, $response['status'], $response['debugThrowable'] ?? '');
+        $payload = $this->json($response);
+        self::assertNotNull($payload);
+        self::assertSame('auth.assurance_insufficient', $payload['reason_code'] ?? null);
+        self::assertSame('40', $payload['required_min_assurance'] ?? null);
+        self::assertSame('30', $payload['current_assurance'] ?? null);
+        self::assertSame('/auth/tokens/protected-operation/step-up/challenge', $payload['challenge_endpoint'] ?? null);
+        self::assertSame('/auth/tokens/protected-operation/step-up/continue', $payload['continuation_endpoint'] ?? null);
+        self::assertSame(['second_factor'], $response['headers']['X-Auth-Step-Up-Available-Methods'] ?? []);
     }
 
     public function test_4_admin_mfa_fails_with_only_token_strength(): void

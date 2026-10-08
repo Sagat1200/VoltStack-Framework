@@ -367,6 +367,7 @@ final class EntityMetadataRegistry
                 targetColumn: $targetColumn,
                 inversedBy: $attr->inversedBy,
                 cascade: $attr->cascade,
+                fetch: strtolower(trim($attr->fetch)),
             );
         }
 
@@ -447,6 +448,7 @@ final class EntityMetadataRegistry
                         targetColumn: $joinColumn,
                         mappedBy: $mappedBy,
                         cascade: $attr->cascade,
+                        fetch: strtolower(trim($attr->fetch)),
                     );
                 }
 
@@ -461,6 +463,7 @@ final class EntityMetadataRegistry
                     targetColumn: $mappedByAssociation->sourceColumn,
                     mappedBy: $mappedBy,
                     cascade: $attr->cascade,
+                    fetch: strtolower(trim($attr->fetch)),
                 );
             }
 
@@ -470,6 +473,7 @@ final class EntityMetadataRegistry
                 joinColumn: $attr->joinColumn,
                 referencedColumn: $attr->referencedColumn,
                 cascade: $attr->cascade,
+                fetch: $attr->fetch,
             ));
             $targetColumn = $attr->referencedColumn !== null && trim($attr->referencedColumn) !== ''
                 ? trim($attr->referencedColumn)
@@ -488,6 +492,7 @@ final class EntityMetadataRegistry
                 targetColumn: $targetColumn,
                 inversedBy: $attr->inversedBy,
                 cascade: $attr->cascade,
+                fetch: strtolower(trim($attr->fetch)),
             );
         }
 
@@ -528,6 +533,7 @@ final class EntityMetadataRegistry
                 mappedBy: $mappedBy,
                 cascade: $attr->cascade,
                 orphanRemoval: $attr->orphanRemoval,
+                fetch: strtolower(trim($attr->fetch)),
             );
         }
 
@@ -606,6 +612,7 @@ final class EntityMetadataRegistry
                     joinTable: trim($mappedJoinTable->name),
                     joinTableSourceColumn: $mappedJoinTable->inverseJoinColumns[0] ?? $this->guessJoinTableColumn($declaringEntity),
                     joinTableTargetColumn: $mappedJoinTable->joinColumns[0] ?? $this->guessJoinTableColumn($target),
+                    fetch: strtolower(trim($attr->fetch)),
                 );
             }
 
@@ -623,6 +630,7 @@ final class EntityMetadataRegistry
                 joinTable: $mappedByAssociation->joinTable,
                 joinTableSourceColumn: $mappedByAssociation->joinTableTargetColumn,
                 joinTableTargetColumn: $mappedByAssociation->joinTableSourceColumn,
+                fetch: strtolower(trim($attr->fetch)),
             );
         }
 
@@ -651,6 +659,7 @@ final class EntityMetadataRegistry
             joinTable: trim($joinTable->name),
             joinTableSourceColumn: $joinTable->joinColumns[0] ?? $this->guessJoinTableColumn($declaringEntity),
             joinTableTargetColumn: $joinTable->inverseJoinColumns[0] ?? $this->guessJoinTableColumn($target),
+            fetch: strtolower(trim($attr->fetch)),
         );
     }
 

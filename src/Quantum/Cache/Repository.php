@@ -184,6 +184,21 @@ final class Repository
         );
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    public function explain(string $key): array
+    {
+        $lookup = $this->lookup($key);
+
+        return [
+            'key' => $key,
+            'normalized_key' => $this->normalizeKey($key),
+            'lookup' => $this->lookupSnapshot($lookup),
+            'diagnostics' => $this->diagnosticsSnapshot(),
+        ];
+    }
+
     public function withContext(CacheContext $context): self
     {
         $current = $this->context();
@@ -606,6 +621,41 @@ final class Repository
             'store' => $this->storeDiagnostics(),
             'observed_at_ms' => $this->cacheClock()->nowUnixMilliseconds(),
             'clear_strategy' => $this->clearStrategy(),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function lookupSnapshot(Lookup $lookup): array
+    {
+        return [
+            'state' => $lookup->state->value,
+            'miss_reason' => $lookup->missReason,
+            'metadata' => $this->metadataSnapshot($lookup->metadata),
+            'value_exposed' => false,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>|null
+     */
+    private function metadataSnapshot(?EntryMetadata $metadata): ?array
+    {
+        if ($metadata === null) {
+            return null;
+        }
+
+        return [
+            'write_id' => $metadata->writeId,
+            'created_at_ms' => $metadata->createdAtMs,
+            'fresh_until_ms' => $metadata->freshUntilMs,
+            'hard_until_ms' => $metadata->hardUntilMs,
+            'observed_at_ms' => $metadata->observedAtMs,
+            'age_ms' => $metadata->ageMs,
+            'ttl_remaining_ms' => $metadata->ttlRemainingMs,
+            'versions' => $metadata->versions,
+            'source_level' => $metadata->sourceLevel,
         ];
     }
 

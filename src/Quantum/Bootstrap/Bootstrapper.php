@@ -187,6 +187,15 @@ final class Bootstrapper implements BootstrapperInterface
     {
         /** @var ConfigRepository $config */
         $config = $this->app->make(ConfigRepository::class);
+
+        $publishedSnapshot = $this->app->configManifestStore()->currentSnapshot();
+
+        if ($publishedSnapshot !== null) {
+            $config->loadSnapshot($publishedSnapshot);
+
+            return;
+        }
+
         $config->loadPath($configPath ?? $this->app->configPath());
     }
 

@@ -1625,6 +1625,85 @@ final class DatabaseOrmFeatureTest extends TestCase
         }
     }
 
+    public function test_entity_manager_and_entity_query_honor_declarative_eager_fetch_strategies(): void
+    {
+        $app = $this->makeApp();
+        $scope = $app->make(ScopeManager::class);
+        $scope->begin(Request::create('/database/orm/fetch-strategies', 'GET'));
+
+        try {
+            $database = $app->make(DatabaseInterface::class);
+            $database->schema()->create('orm_fetch_authors', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+            }, true);
+            $database->schema()->create('orm_fetch_books', function (TableBlueprint $table): void {
+                $table->id();
+                $table->integer('author_id');
+                $table->string('title');
+            }, true);
+
+            $em = $database->entityManager();
+
+            $author = new OrmFetchAuthor();
+            $author->name = 'Ada';
+
+            $bookA = new OrmFetchBook();
+            $bookA->title = 'Compiler Construction';
+            $bookA->author = $author;
+
+            $bookB = new OrmFetchBook();
+            $bookB->title = 'Runtime Notes';
+            $bookB->author = $author;
+
+            $author->books = [$bookA, $bookB];
+
+            $em->persist($author);
+            $em->persist($bookA);
+            $em->persist($bookB);
+            $em->flush();
+            $em->clear();
+
+            $loadedBook = $em->find(OrmFetchBook::class, $bookA->id);
+            self::assertInstanceOf(OrmFetchBook::class, $loadedBook);
+            self::assertInstanceOf(OrmFetchAuthor::class, $loadedBook->author);
+            self::assertSame('Ada', $loadedBook->author->name);
+
+            $em->clear();
+
+            $loadedAuthor = $em->find(OrmFetchAuthor::class, $author->id);
+            self::assertInstanceOf(OrmFetchAuthor::class, $loadedAuthor);
+            self::assertCount(2, $loadedAuthor->books);
+            usort($loadedAuthor->books, static fn(OrmFetchBook $a, OrmFetchBook $b): int => strcmp($a->title, $b->title));
+            self::assertSame(['Compiler Construction', 'Runtime Notes'], array_map(
+                static fn(OrmFetchBook $book): string => $book->title,
+                $loadedAuthor->books,
+            ));
+            self::assertSame($loadedAuthor, $loadedAuthor->books[0]->author);
+            self::assertSame($loadedAuthor, $loadedAuthor->books[1]->author);
+
+            $em->clear();
+
+            $books = $em->query(OrmFetchBook::class)
+                ->orderBy('title')
+                ->get();
+            self::assertCount(2, $books);
+            self::assertInstanceOf(OrmFetchAuthor::class, $books[0]->author);
+            self::assertSame('Ada', $books[0]->author->name);
+            self::assertSame($books[0]->author, $books[1]->author);
+
+            $em->clear();
+
+            $queriedAuthor = $em->query(OrmFetchAuthor::class)
+                ->where('name', 'Ada')
+                ->first();
+            self::assertInstanceOf(OrmFetchAuthor::class, $queriedAuthor);
+            self::assertCount(2, $queriedAuthor->books);
+        } finally {
+            $scope->end();
+        }
+    }
+
     private function makeApp(): Application
     {
         $app = new Application($this->basePath);
@@ -2544,4 +2623,36 @@ final class OrmCourse
     /** @var list<OrmStudent> */
     #[ManyToMany(targetEntity: OrmStudent::class, mappedBy: 'courses')]
     public array $students = [];
+}
+
+#[Entity]
+#[Table(name: 'orm_fetch_authors')]
+final class OrmFetchAuthor
+{
+    #[Id]
+    public ?int $id = null;
+
+    #[Column]
+    public string $name;
+
+    /** @var list<OrmFetchBook> */
+    #[OneToMany(targetEntity: OrmFetchBook::class, mappedBy: 'author', fetch: 'eager')]
+    public array $books = [];
+}
+
+#[Entity]
+#[Table(name: 'orm_fetch_books')]
+final class OrmFetchBook
+{
+    #[Id]
+    public ?int $id = null;
+
+    #[Column(name: 'author_id')]
+    public int $authorId;
+
+    #[Column]
+    public string $title;
+
+    #[ManyToOne(targetEntity: OrmFetchAuthor::class, inversedBy: 'books', fetch: 'eager')]
+    public ?OrmFetchAuthor $author = null;
 }

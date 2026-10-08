@@ -12,6 +12,7 @@ final readonly class OneToOne
     /**
      * @param class-string $targetEntity
      * @param list<string> $cascade Values from \Quantum\Database\ORM\Contracts\Cascade::*
+     * @param string       $fetch   Association fetch strategy (`lazy` by default, `eager` opt-in in V1)
      */
     public function __construct(
         public string $targetEntity,
@@ -20,6 +21,7 @@ final readonly class OneToOne
         public ?string $joinColumn = null,
         public ?string $referencedColumn = null,
         public array $cascade = [],
+        public string $fetch = 'lazy',
     ) {
     }
 }

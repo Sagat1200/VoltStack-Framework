@@ -28,27 +28,26 @@ final class ResetManager
         $executed = 0;
         $errors = [];
 
-        try {
-            foreach ($this->resetters as $resetter) {
+        foreach ($this->resetters as $resetter) {
+            try {
                 $this->invokeResetter($app, $resetter);
                 $executed++;
+            } catch (Throwable $exception) {
+                $errors[] = $exception;
             }
+        }
 
-            return new ResetReport(
-                executedCount: $executed,
-                successful: true,
-            );
+        try {
+            $app->flushScope();
         } catch (Throwable $exception) {
             $errors[] = $exception;
-
-            return new ResetReport(
-                executedCount: $executed,
-                successful: false,
-                errors: $errors,
-            );
-        } finally {
-            $app->flushScope();
         }
+
+        return new ResetReport(
+            executedCount: $executed,
+            successful: $errors === [],
+            errors: $errors,
+        );
     }
 
     /**

@@ -219,6 +219,80 @@ final class BootstrapperTest extends TestCase
         self::assertSame('/from-route-file', $runtimeApp->make(Router::class)->collection()->named('route.file')?->uri());
     }
 
+    public function test_it_prefers_the_active_published_configuration_snapshot_over_live_config_files(): void
+    {
+        $builderApp = new Application($this->basePath);
+        $builderConfig = $builderApp->make(ConfigRepository::class);
+        $builderConfig->set('app.name', 'Published Config');
+        $builderConfig->set('app.env', 'production');
+        $builderConfig->set('app.key', 'published-secret');
+
+        $codec = $builderApp->configSnapshotCodec();
+        $baseSnapshot = $builderConfig->snapshot(provenance: [
+            'app' => 'published',
+        ]);
+        $artifact = $builderApp->configManifestStore()->publish($builderConfig->snapshot(
+            provenance: $baseSnapshot->provenance(),
+            configId: $codec->configId($baseSnapshot),
+        ));
+        $builderApp->configManifestStore()->activateGeneration($artifact->generationId());
+
+        $configPath = $this->basePath . DIRECTORY_SEPARATOR . 'config';
+        mkdir($configPath, 0777, true);
+        file_put_contents(
+            $configPath . DIRECTORY_SEPARATOR . 'app.php',
+            <<<'PHP'
+<?php
+
+return [
+    'name' => 'Live Config',
+    'env' => 'local',
+    'key' => 'live-secret',
+];
+PHP
+        );
+
+        $runtimeApp = new Application($this->basePath);
+        $bootstrapper = new Bootstrapper($runtimeApp);
+        $bootstrapper->loadConfiguration();
+
+        $runtimeConfig = $runtimeApp->make(ConfigRepository::class);
+
+        self::assertSame('Published Config', $runtimeConfig->get('app.name'));
+        self::assertSame('production', $runtimeConfig->get('app.env'));
+        self::assertSame('published-secret', $runtimeConfig->get('app.key'));
+        self::assertSame(['app' => 'published'], $runtimeConfig->provenance());
+    }
+
+    public function test_it_falls_back_to_live_config_files_when_no_published_configuration_is_active(): void
+    {
+        $configPath = $this->basePath . DIRECTORY_SEPARATOR . 'config';
+        mkdir($configPath, 0777, true);
+        file_put_contents(
+            $configPath . DIRECTORY_SEPARATOR . 'app.php',
+            <<<'PHP'
+<?php
+
+return [
+    'name' => 'Live Config',
+    'env' => 'local',
+    'key' => 'live-secret',
+];
+PHP
+        );
+
+        $runtimeApp = new Application($this->basePath);
+        $bootstrapper = new Bootstrapper($runtimeApp);
+        $bootstrapper->loadConfiguration();
+
+        $runtimeConfig = $runtimeApp->make(ConfigRepository::class);
+
+        self::assertSame('Live Config', $runtimeConfig->get('app.name'));
+        self::assertSame('local', $runtimeConfig->get('app.env'));
+        self::assertSame('live-secret', $runtimeConfig->get('app.key'));
+        self::assertSame($configPath . DIRECTORY_SEPARATOR . 'app.php', $runtimeConfig->provenance()['app']);
+    }
+
     private function writeRouteFile(string $name, string $uri): string
     {
         $path = $this->basePath . DIRECTORY_SEPARATOR . 'routes.php';

@@ -124,6 +124,14 @@ final class ConfigRepository
         $this->notifyMutationListeners();
     }
 
+    public function loadSnapshot(ConfigSnapshot $snapshot): void
+    {
+        $this->items = $snapshot->all();
+        $this->documents = [];
+        $this->provenance = $snapshot->provenance();
+        $this->notifyMutationListeners();
+    }
+
     public function hasPath(ConfigPath $path): bool
     {
         return $this->getPath($path, MissingValue::Token) !== MissingValue::Token;

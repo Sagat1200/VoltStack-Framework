@@ -46,40 +46,41 @@ final class ControllerCompileClearCommand extends Command
 
     public function handle(Input $input, Output $output): int
     {
-        $app = $this->bootstrapApplication();
         $verbose = $input->hasOption('verbose');
 
-        $store = $app->make(ArtifactStoreInterface::class);
+        return $this->runInCommandRuntime(function ($app) use ($output, $verbose): int {
+            $store = $app->make(ArtifactStoreInterface::class);
 
-        if ($verbose) {
-            $builds = $store->listBuilds();
-            $output->writeln(sprintf('Builds existentes antes de limpiar: %d', count($builds)));
-            foreach ($builds as $build) {
-                $status = $build->active ? '[ACTIVO]' : '';
-                $output->writeln(sprintf(
-                    '  - %s (%d controllers) created=%s %s',
-                    $build->id,
-                    $build->controllerCount,
-                    date('Y-m-d H:i:s', $build->createdAt),
-                    $status,
-                ));
-            }
-        }
-
-        $removedBuilds = $store->clearBuilds();
-        $output->writeln(sprintf('Builds eliminados: %d', $removedBuilds));
-
-        $factory = $app->make(CompiledControllerFactoryInterface::class);
-        if ($factory instanceof \Quantum\Compilation\CompiledControllerFactory) {
-            $clearedWorker = $factory->workerCacheClear();
             if ($verbose) {
-                $output->writeln(sprintf('Cache worker invalidado: %d entradas liberadas.', $clearedWorker));
+                $builds = $store->listBuilds();
+                $output->writeln(sprintf('Builds existentes antes de limpiar: %d', count($builds)));
+                foreach ($builds as $build) {
+                    $status = $build->active ? '[ACTIVO]' : '';
+                    $output->writeln(sprintf(
+                        '  - %s (%d controllers) created=%s %s',
+                        $build->id,
+                        $build->controllerCount,
+                        date('Y-m-d H:i:s', $build->createdAt),
+                        $status,
+                    ));
+                }
             }
-        }
 
-        $output->writeln('');
-        $output->writeln('Cache de compilación de controladores limpiado correctamente.');
+            $removedBuilds = $store->clearBuilds();
+            $output->writeln(sprintf('Builds eliminados: %d', $removedBuilds));
 
-        return 0;
+            $factory = $app->make(CompiledControllerFactoryInterface::class);
+            if ($factory instanceof \Quantum\Compilation\CompiledControllerFactory) {
+                $clearedWorker = $factory->workerCacheClear();
+                if ($verbose) {
+                    $output->writeln(sprintf('Cache worker invalidado: %d entradas liberadas.', $clearedWorker));
+                }
+            }
+
+            $output->writeln('');
+            $output->writeln('Cache de compilación de controladores limpiado correctamente.');
+
+            return 0;
+        });
     }
 }

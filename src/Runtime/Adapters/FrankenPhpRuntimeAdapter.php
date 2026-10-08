@@ -7,6 +7,7 @@ namespace VoltStack\Runtime\Adapters;
 use Quantum\Bootstrap\ApplicationPlan;
 use Quantum\Http\Request;
 use Quantum\Exceptions\Enums\WorkerDisposition;
+use Iterator;
 use Traversable;
 use VoltStack\Runtime\Context\WorkerContext;
 use VoltStack\Runtime\Contracts\RuntimeAdapterInterface;
@@ -45,57 +46,58 @@ final class FrankenPhpRuntimeAdapter implements RuntimeAdapterInterface
 
         $session = $factory->create($plan, $workerContext);
         $requests = $this->normalizeRequestSource($configuration->requestSource());
+        $requests->rewind();
 
-        if ($requests === []) {
-            return 0;
-        }
-
-        foreach ($requests as $index => $request) {
-            if ($index >= $workerContext->maxRequests()) {
-                break;
-            }
-
+        while ($session->canAcceptMoreRequests() && $requests->valid()) {
+            $request = $requests->current();
             $result = $session->handle($request);
 
             if ($result->workerDisposition() === WorkerDisposition::Terminate) {
                 return 1;
             }
+
+            if (! $session->canAcceptMoreRequests()) {
+                break;
+            }
+
+            $requests->next();
         }
 
         return 0;
     }
 
     /**
-     * @return list<Request>
+     * @return Iterator<int, Request>
      */
-    private function normalizeRequestSource(mixed $source): array
+    private function normalizeRequestSource(mixed $source): Iterator
     {
         if ($source === null) {
-            return [];
+            return $this->yieldRequests([]);
         }
 
         if (is_callable($source)) {
             $source = $source();
         }
 
-        if ($source instanceof Traversable) {
-            $source = iterator_to_array($source, false);
-        }
-
-        if (! is_array($source)) {
+        if (! is_array($source) && ! $source instanceof Traversable) {
             throw new RuntimeAdapterException('FrankenPHP runtime request source must be iterable or callable.');
         }
 
-        $requests = [];
+        return $this->yieldRequests($source);
+    }
 
+    /**
+     * @param iterable<mixed> $source
+     * @return Iterator<int, Request>
+     */
+    private function yieldRequests(iterable $source): Iterator
+    {
         foreach ($source as $request) {
             if (! $request instanceof Request) {
                 throw new RuntimeAdapterException('FrankenPHP runtime request source must yield Request instances.');
             }
 
-            $requests[] = $request;
+            yield $request;
         }
-
-        return $requests;
     }
 }

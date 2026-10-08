@@ -46,6 +46,8 @@ final class EntityManager implements EntityManagerInterface
                 $this->refresh($managed);
             }
 
+            $this->preloadConfiguredEagerAssociations([$managed], $metadata);
+
             return $managed;
         }
 
@@ -57,7 +59,10 @@ final class EntityManager implements EntityManagerInterface
             return null;
         }
 
-        return $this->hydrateManaged($metadata, $row);
+        $entity = $this->hydrateManaged($metadata, $row);
+        $this->preloadConfiguredEagerAssociations([$entity], $metadata);
+
+        return $entity;
     }
 
     public function hydrateManaged(EntityMetadata $metadata, array $row): object
@@ -230,6 +235,7 @@ final class EntityManager implements EntityManagerInterface
         $this->identityMap->register($key, $entity);
         $this->unitOfWork->registerManaged($entity, $metadata, $key);
         unset($this->partialEntities[spl_object_id($entity)]);
+        $this->preloadConfiguredEagerAssociations([$entity], $metadata);
     }
 
     public function flush(): void
@@ -366,6 +372,14 @@ final class EntityManager implements EntityManagerInterface
                 $metadata->association($associationName),
             );
         }
+    }
+
+    /**
+     * @param list<object> $entities
+     */
+    private function preloadConfiguredEagerAssociations(array $entities, EntityMetadata $metadata): void
+    {
+        $this->preloadAssociations($entities, $metadata->eagerAssociationNames());
     }
 
     public function loadToOne(object $entity, string $associationName): ?object

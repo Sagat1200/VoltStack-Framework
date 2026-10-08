@@ -129,6 +129,7 @@ final class QuantumExceptionManagerTest extends TestCase
         self::assertCount(1, $second->receipts);
         self::assertFalse($first->deduplicated);
         self::assertTrue($second->deduplicated);
+        self::assertContains('duplicate', $second->suppressionReasons);
         self::assertSame(1, $reporter->calls);
     }
 

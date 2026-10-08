@@ -122,6 +122,31 @@ PHP
         self::assertSame(1, TestFailingRuntimeManagerKernel::$calls);
     }
 
+    public function test_runtime_manager_server_does_not_overconsume_incremental_request_sources_after_reaching_limit(): void
+    {
+        $app = new Application($this->basePath);
+        $app->instance(KernelContract::class, new TestRuntimeManagerKernel());
+
+        $plan = ApplicationBuilder::create($this->basePath)
+            ->withEnvironment('testing')
+            ->withProfile('worker')
+            ->build();
+
+        /** @var RuntimeManagerServer $manager */
+        $manager = $app->make(RuntimeManagerServer::class);
+        $exitCode = $manager->run($plan, RuntimeConfiguration::frankenphp(
+            maxRequests: 2,
+            requestSource: static function (): \Generator {
+                yield Request::create('/first');
+                yield Request::create('/second');
+                throw new RuntimeException('request source consumed beyond admission limit');
+            },
+        ));
+
+        self::assertSame(0, $exitCode);
+        self::assertSame(['/first', '/second'], TestRuntimeManagerKernel::$handledPaths);
+    }
+
     private function deleteDirectory(string $path): void
     {
         if (! is_dir($path)) {

@@ -57,7 +57,7 @@ final class WorkerSession
     public function handle(Request $request): RequestRunResult
     {
         $result = $this->requestRunner->run($request);
-        $this->handledRequests++;
+        $this->handledRequests = $this->handledRequests + 1;
 
         return $result;
     }

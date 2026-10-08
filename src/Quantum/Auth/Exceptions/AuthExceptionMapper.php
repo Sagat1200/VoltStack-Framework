@@ -45,6 +45,9 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
                 'X-Auth-Risk-Level' => $throwable->riskLevel,
                 'X-Auth-Assurance-Required-Min' => $throwable->requiredMinAssurance !== null ? (string) $throwable->requiredMinAssurance : null,
                 'X-Auth-Assurance-Current' => $throwable->currentAssurance !== null ? (string) $throwable->currentAssurance : null,
+                'X-Auth-Step-Up-Challenge-Endpoint' => $throwable->challengeEndpoint,
+                'X-Auth-Step-Up-Continuation-Endpoint' => $throwable->continuationEndpoint,
+                'X-Auth-Step-Up-Available-Methods' => $throwable->availableMethods !== [] ? implode(',', $throwable->availableMethods) : null,
             ], static fn (mixed $v): bool => $v !== null),
             $throwable instanceof CredentialLockedException => array_filter([
                 'X-Auth-Credential-Locked' => 'true',
@@ -90,6 +93,9 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
                 'X-Auth-Risk-Level' => $throwable->riskLevel,
                 'X-Auth-Required-Strength' => $throwable->requiredStrengthName,
                 'X-Auth-Current-Strength' => $throwable->currentStrengthName,
+                'X-Auth-Step-Up-Challenge-Endpoint' => $throwable->challengeEndpoint,
+                'X-Auth-Step-Up-Continuation-Endpoint' => $throwable->continuationEndpoint,
+                'X-Auth-Step-Up-Available-Methods' => $throwable->availableMethods !== [] ? implode(',', $throwable->availableMethods) : null,
             ], static fn (mixed $v): bool => $v !== null),
             default => [],
         };
@@ -192,6 +198,9 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
                 'risk_level' => $throwable->riskLevel,
                 'required_min_assurance' => $throwable->requiredMinAssurance !== null ? (string) $throwable->requiredMinAssurance : null,
                 'current_assurance' => $throwable->currentAssurance !== null ? (string) $throwable->currentAssurance : null,
+                'challenge_endpoint' => $throwable->challengeEndpoint,
+                'continuation_endpoint' => $throwable->continuationEndpoint,
+                'available_methods' => $throwable->availableMethods !== [] ? $throwable->availableMethods : null,
             ], static fn (mixed $v): bool => $v !== null),
             $throwable instanceof PasswordExpiredException => array_filter([
                 'reason_code' => $throwable->reasonCode,
@@ -228,6 +237,9 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
                 'risk_level' => $throwable->riskLevel,
                 'required_strength_name' => $throwable->requiredStrengthName,
                 'current_strength_name' => $throwable->currentStrengthName,
+                'challenge_endpoint' => $throwable->challengeEndpoint,
+                'continuation_endpoint' => $throwable->continuationEndpoint,
+                'available_methods' => $throwable->availableMethods !== [] ? $throwable->availableMethods : null,
             ], static fn (mixed $v): bool => $v !== null),
             default => [],
         };

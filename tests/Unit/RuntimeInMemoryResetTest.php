@@ -90,6 +90,54 @@ final class RuntimeInMemoryResetTest extends TestCase
         }
     }
 
+    public function test_reset_manager_continues_running_resetters_after_a_failure(): void
+    {
+        $app = new Application($this->basePath);
+        $manager = $app->make(ResetManager::class);
+
+        $manager->register(static function (Application $app): void {
+            throw new \RuntimeException('first resetter failed');
+        });
+        $manager->register(static function (Application $app): void {
+            $app->instance('runtime.reset.after_failure', true);
+        });
+
+        $report = $manager->reset($app);
+
+        self::assertFalse($report->successful());
+        self::assertGreaterThanOrEqual(1, $report->executedCount());
+        self::assertCount(1, $report->errors());
+        self::assertTrue($app->make('runtime.reset.after_failure'));
+    }
+
+    public function test_reset_manager_reports_flush_scope_failures_without_hiding_other_errors(): void
+    {
+        $app = new class($this->basePath) extends Application
+        {
+            public function flushScope(): void
+            {
+                throw new \RuntimeException('flush scope failed');
+            }
+        };
+
+        $manager = $app->make(ResetManager::class);
+        $manager->register(static function (Application $app): void {
+            throw new \RuntimeException('resetter failed');
+        });
+        $manager->register(static function (Application $app): void {
+            $app->instance('runtime.reset.flush_failure.after_resetter', true);
+        });
+
+        $report = $manager->reset($app);
+
+        self::assertFalse($report->successful());
+        self::assertGreaterThanOrEqual(1, $report->executedCount());
+        self::assertCount(2, $report->errors());
+        self::assertTrue($app->make('runtime.reset.flush_failure.after_resetter'));
+        self::assertSame('resetter failed', $report->errors()[0]->getMessage());
+        self::assertSame('flush scope failed', $report->errors()[1]->getMessage());
+    }
+
     private function deleteDirectory(string $path): void
     {
         if (! is_dir($path)) {

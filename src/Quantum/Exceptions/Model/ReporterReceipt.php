@@ -13,6 +13,8 @@ final readonly class ReporterReceipt
         public ReporterReceiptState $state,
         public int $durationMs = 0,
         public ?string $errorCode = null,
+        public ?string $reasonCode = null,
+        public ?string $deliveryId = null,
     ) {
         if ($reporterId === '') {
             throw new \InvalidArgumentException('ReporterReceipt reporterId must not be empty.');
@@ -20,6 +22,18 @@ final readonly class ReporterReceipt
 
         if ($durationMs < 0) {
             throw new \InvalidArgumentException('ReporterReceipt durationMs must be greater than or equal to zero.');
+        }
+
+        if ($errorCode !== null && $errorCode === '') {
+            throw new \InvalidArgumentException('ReporterReceipt errorCode must not be empty when provided.');
+        }
+
+        if ($reasonCode !== null && $reasonCode === '') {
+            throw new \InvalidArgumentException('ReporterReceipt reasonCode must not be empty when provided.');
+        }
+
+        if ($deliveryId !== null && $deliveryId === '') {
+            throw new \InvalidArgumentException('ReporterReceipt deliveryId must not be empty when provided.');
         }
     }
 }

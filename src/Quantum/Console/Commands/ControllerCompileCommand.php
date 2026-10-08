@@ -55,166 +55,167 @@ final class ControllerCompileCommand extends Command
 
     public function handle(Input $input, Output $output): int
     {
-        $app = $this->bootstrapApplication();
         $verbose = $input->hasOption('verbose');
         $noActivate = $input->hasOption('no-activate');
         $retainOption = $input->option('retain');
         $retain = is_numeric($retainOption) ? max(1, (int) $retainOption) : 3;
         $incremental = $input->hasOption('incremental');
 
-        /** @var Router $router */
-        $router = $app->make(Router::class);
-        $compiler = $app->make(CompilerInterface::class);
-        $store = $app->make(ArtifactStoreInterface::class);
-        $metadata = $app->make(ControllerMetadataResolverInterface::class);
+        return $this->runInCommandRuntime(function ($app) use ($incremental, $noActivate, $output, $retain, $verbose): int {
+            /** @var Router $router */
+            $router = $app->make(Router::class);
+            $compiler = $app->make(CompilerInterface::class);
+            $store = $app->make(ArtifactStoreInterface::class);
+            $metadata = $app->make(ControllerMetadataResolverInterface::class);
 
-        $build = $store->createBuild();
-        $output->writeln(sprintf('Build creado: %s', $build->id));
-        $output->writeln(sprintf('Directorio build: %s', $store->buildsPath() . DIRECTORY_SEPARATOR . $build->id));
-        $output->writeln('');
+            $build = $store->createBuild();
+            $output->writeln(sprintf('Build creado: %s', $build->id));
+            $output->writeln(sprintf('Directorio build: %s', $store->buildsPath() . DIRECTORY_SEPARATOR . $build->id));
+            $output->writeln('');
 
-        $specs = $this->discoverControllers($app, $router);
+            $specs = $this->discoverControllers($app, $router);
 
-        if ($specs === []) {
-            $output->writeln('No se encontraron controladores para compilar (rutas vacías).');
-            $output->writeln('Sugerencia: registra rutas en routes/web.php o usa RouteCache primero.');
+            if ($specs === []) {
+                $output->writeln('No se encontraron controladores para compilar (rutas vacías).');
+                $output->writeln('Sugerencia: registra rutas en routes/web.php o usa RouteCache primero.');
+
+                return 0;
+            }
+
+            $output->writeln(sprintf('Compilando %d controlador(es)...', count($specs)));
+            $output->writeln('');
+
+            $successCount = 0;
+            $failCount = 0;
+            $skippedIncremental = 0;
+            $existingKeys = [];
+
+            if ($incremental) {
+                $currentBuild = $store->currentBuild();
+                if ($currentBuild !== null) {
+                    $existingKeys = $this->discoverExistingArtifactKeys($store, $currentBuild->id);
+                }
+            }
+
+            foreach ($compiler->compileBatch($specs, $metadata) as $result) {
+                if (! $result->success) {
+                    $failCount++;
+                    $class = is_array($result->definition->action())
+                        ? (is_object($result->definition->action()[0]) ? $result->definition->action()[0]::class : $result->definition->action()[0])
+                        : (is_string($result->definition->action()) ? $result->definition->action() : 'unknown');
+
+                    $output->error(sprintf(
+                        '[FAIL] %s: %s',
+                        $class,
+                        $result->error?->getMessage() ?? 'unknown compilation error',
+                    ));
+
+                    continue;
+                }
+
+                if ($incremental && isset($existingKeys[$result->artifactKey])) {
+                    $skippedIncremental++;
+                    if ($verbose) {
+                        $output->writeln(sprintf(
+                            '  [SKIP incremental] %s::%s',
+                            $result->class,
+                            $result->method,
+                        ));
+                    }
+
+                    $existing = $existingKeys[$result->artifactKey];
+                    $existingBuildId = $existing['buildId'];
+                    $source = $store->buildsPath() . DIRECTORY_SEPARATOR . $existingBuildId . DIRECTORY_SEPARATOR . basename($existing['path']);
+                    $targetDir = $store->buildsPath() . DIRECTORY_SEPARATOR . $build->id;
+                    if (! is_dir($targetDir)) {
+                        @mkdir($targetDir, 0777, true);
+                    }
+                    $target = $targetDir . DIRECTORY_SEPARATOR . basename($existing['path']);
+                    if (is_file($source)) {
+                        @copy($source, $target);
+                    }
+                    $successCount++;
+
+                    continue;
+                }
+
+                try {
+                    $artifact = $store->write($result, $build->id);
+                    $successCount++;
+
+                    if ($verbose) {
+                        $output->writeln(sprintf(
+                            '  [OK] %s::%s -> %s',
+                            $result->class,
+                            $result->method,
+                            basename($artifact->artifactPath),
+                        ));
+                    }
+                } catch (\Throwable $e) {
+                    $failCount++;
+                    $output->error(sprintf(
+                        '[FAIL] %s::%s (write artifact): %s',
+                        $result->class,
+                        $result->method,
+                        $e->getMessage(),
+                    ));
+                }
+            }
+
+            $output->writeln('');
+            $output->writeln(sprintf(
+                'Resultado: %d OK / %d FAIL / %d SKIP',
+                $successCount,
+                $failCount,
+                $skippedIncremental,
+            ));
+
+            if ($successCount === 0 && $failCount > 0) {
+                $output->error('No se pudo compilar ningún controlador. Build conservado pero no activado.');
+
+                return 1;
+            }
+
+            if ($noActivate) {
+                $output->writeln(sprintf(
+                    'Build completado pero NO activado (--no-activate). Para activar manualmente: %s',
+                    $build->id,
+                ));
+                $store->pruneStaleBuilds($retain);
+
+                return $failCount > 0 ? 1 : 0;
+            }
+
+            $activated = $store->activateBuild($build->id);
+            $output->writeln(sprintf(
+                'Build activado: %s (%d controladores)',
+                $activated->id,
+                $successCount,
+            ));
+
+            $workerCache = $app->make(CompiledControllerFactoryInterface::class);
+            if ($workerCache instanceof \Quantum\Compilation\CompiledControllerFactory) {
+                $cleared = $workerCache->workerCacheClear();
+                if ($verbose) {
+                    $output->writeln(sprintf('Cache de worker invalidado: %d entradas liberadas.', $cleared));
+                }
+            }
+
+            $pruned = $store->pruneStaleBuilds($retain);
+            if ($verbose && $pruned > 0) {
+                $output->writeln(sprintf('Builds obsoletos removidos: %d (retain=%d)', $pruned, $retain));
+            }
+
+            $output->writeln('');
+            if ($failCount > 0) {
+                $output->writeln('Compilación de controladores completada con advertencias (algunos controladores fallaron, revisa los [FAIL] arriba).');
+
+                return 1;
+            }
+            $output->writeln('¡Compilación de controladores completada con éxito!');
 
             return 0;
-        }
-
-        $output->writeln(sprintf('Compilando %d controlador(es)...', count($specs)));
-        $output->writeln('');
-
-        $successCount = 0;
-        $failCount = 0;
-        $skippedIncremental = 0;
-        $existingKeys = [];
-
-        if ($incremental) {
-            $currentBuild = $store->currentBuild();
-            if ($currentBuild !== null) {
-                $existingKeys = $this->discoverExistingArtifactKeys($store, $currentBuild->id);
-            }
-        }
-
-        foreach ($compiler->compileBatch($specs, $metadata) as $result) {
-            if (! $result->success) {
-                $failCount++;
-                $class = is_array($result->definition->action())
-                    ? (is_object($result->definition->action()[0]) ? $result->definition->action()[0]::class : $result->definition->action()[0])
-                    : (is_string($result->definition->action()) ? $result->definition->action() : 'unknown');
-
-                $output->error(sprintf(
-                    '[FAIL] %s: %s',
-                    $class,
-                    $result->error?->getMessage() ?? 'unknown compilation error',
-                ));
-
-                continue;
-            }
-
-            if ($incremental && isset($existingKeys[$result->artifactKey])) {
-                $skippedIncremental++;
-                if ($verbose) {
-                    $output->writeln(sprintf(
-                        '  [SKIP incremental] %s::%s',
-                        $result->class,
-                        $result->method,
-                    ));
-                }
-
-                $existing = $existingKeys[$result->artifactKey];
-                $existingBuildId = $existing['buildId'];
-                $source = $store->buildsPath() . DIRECTORY_SEPARATOR . $existingBuildId . DIRECTORY_SEPARATOR . basename($existing['path']);
-                $targetDir = $store->buildsPath() . DIRECTORY_SEPARATOR . $build->id;
-                if (! is_dir($targetDir)) {
-                    @mkdir($targetDir, 0777, true);
-                }
-                $target = $targetDir . DIRECTORY_SEPARATOR . basename($existing['path']);
-                if (is_file($source)) {
-                    @copy($source, $target);
-                }
-                $successCount++;
-
-                continue;
-            }
-
-            try {
-                $artifact = $store->write($result, $build->id);
-                $successCount++;
-
-                if ($verbose) {
-                    $output->writeln(sprintf(
-                        '  [OK] %s::%s -> %s',
-                        $result->class,
-                        $result->method,
-                        basename($artifact->artifactPath),
-                    ));
-                }
-            } catch (\Throwable $e) {
-                $failCount++;
-                $output->error(sprintf(
-                    '[FAIL] %s::%s (write artifact): %s',
-                    $result->class,
-                    $result->method,
-                    $e->getMessage(),
-                ));
-            }
-        }
-
-        $output->writeln('');
-        $output->writeln(sprintf(
-            'Resultado: %d OK / %d FAIL / %d SKIP',
-            $successCount,
-            $failCount,
-            $skippedIncremental,
-        ));
-
-        if ($successCount === 0 && $failCount > 0) {
-            $output->error('No se pudo compilar ningún controlador. Build conservado pero no activado.');
-
-            return 1;
-        }
-
-        if ($noActivate) {
-            $output->writeln(sprintf(
-                'Build completado pero NO activado (--no-activate). Para activar manualmente: %s',
-                $build->id,
-            ));
-            $store->pruneStaleBuilds($retain);
-
-            return $failCount > 0 ? 1 : 0;
-        }
-
-        $activated = $store->activateBuild($build->id);
-        $output->writeln(sprintf(
-            'Build activado: %s (%d controladores)',
-            $activated->id,
-            $successCount,
-        ));
-
-        $workerCache = $app->make(CompiledControllerFactoryInterface::class);
-        if ($workerCache instanceof \Quantum\Compilation\CompiledControllerFactory) {
-            $cleared = $workerCache->workerCacheClear();
-            if ($verbose) {
-                $output->writeln(sprintf('Cache de worker invalidado: %d entradas liberadas.', $cleared));
-            }
-        }
-
-        $pruned = $store->pruneStaleBuilds($retain);
-        if ($verbose && $pruned > 0) {
-            $output->writeln(sprintf('Builds obsoletos removidos: %d (retain=%d)', $pruned, $retain));
-        }
-
-        $output->writeln('');
-        if ($failCount > 0) {
-            $output->writeln('Compilación de controladores completada con advertencias (algunos controladores fallaron, revisa los [FAIL] arriba).');
-
-            return 1;
-        }
-        $output->writeln('¡Compilación de controladores completada con éxito!');
-
-        return 0;
+        });
     }
 
     /**

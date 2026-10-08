@@ -16,6 +16,7 @@ use Quantum\Auth\Identity\IdentityReference;
 use Quantum\Auth\Passkeys\AssertionResult;
 use Quantum\Auth\Passkeys\PasskeyAssertionCeremony;
 use Quantum\Auth\Runtime\AuthenticationOperationContext;
+use Quantum\Controllers\Security\Context\AuthenticationStrength;
 use Quantum\Auth\Support\AuthenticationAssurance;
 
 /**
@@ -99,6 +100,9 @@ final class PasskeyAuthenticator implements AuthenticatorInterface
         $attributes = [
             'amr' => $amr,
             'assurance_profile' => $assuranceProfile->value,
+            'assurance_value' => AuthenticationStrength::HardwareBacked->value,
+            'assurance_name' => $assuranceProfile->displayName(),
+            'authentication_strength' => AuthenticationStrength::HardwareBacked->name,
         ];
         $authContext = new AuthenticationContext(
             identity: $identity,

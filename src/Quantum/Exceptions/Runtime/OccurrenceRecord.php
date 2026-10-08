@@ -87,6 +87,23 @@ final class OccurrenceRecord
             occurrenceId: $this->occurrenceId,
             receipts: $this->receipts(),
             deduplicated: $this->attemptedReporters !== [] && count($this->receiptsByReporter) < count($this->attemptedReporters),
+            suppressionReasons: $this->suppressionReasons(),
         );
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function suppressionReasons(): array
+    {
+        $reasons = [];
+
+        foreach ($this->receiptsByReporter as $receipt) {
+            if ($receipt->reasonCode !== null && $receipt->reasonCode !== '') {
+                $reasons[] = $receipt->reasonCode;
+            }
+        }
+
+        return array_values(array_unique($reasons));
     }
 }

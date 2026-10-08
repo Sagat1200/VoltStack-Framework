@@ -46,6 +46,7 @@ use Quantum\Authorization\Policy\PolicyDispatcher;
 use Quantum\Authorization\Policy\PolicyRegistry;
 use Quantum\Authorization\Principal\PrincipalResolver;
 use Quantum\Authorization\Relationship\InMemoryRelationshipRepository;
+use Quantum\Authorization\Relationship\DatabaseRelationshipRepository;
 use Quantum\Authorization\Relationship\RelationshipEvaluator;
 use Quantum\Authorization\Subject\SubjectResolver;
 use Quantum\Config\ConfigRepository;
@@ -300,11 +301,38 @@ final class AuthorizationServiceProvider extends ServiceProvider
         $this->app->scoped(
             RelationshipRepositoryInterface::class,
             function (Application $app): RelationshipRepositoryInterface {
-                $entries = $app->config('authorization.relationships.entries', []);
-
-                return new InMemoryRelationshipRepository(is_iterable($entries) ? $entries : []);
+                return $this->makeConfiguredRelationshipRepository($app);
             },
         );
+    }
+
+    private function makeConfiguredRelationshipRepository(Application $app): RelationshipRepositoryInterface
+    {
+        $entries = $app->config('authorization.relationships.entries', []);
+        $driver = strtolower(trim((string) $app->config('authorization.relationships.driver', 'memory')));
+
+        return match ($driver) {
+            'database', 'db', 'dbal' => $this->makeDatabaseRelationshipRepository($app) ?? new InMemoryRelationshipRepository(is_iterable($entries) ? $entries : []),
+            default => new InMemoryRelationshipRepository(is_iterable($entries) ? $entries : []),
+        };
+    }
+
+    private function makeDatabaseRelationshipRepository(Application $app): ?RelationshipRepositoryInterface
+    {
+        try {
+            /** @var DatabaseInterface $database */
+            $database = $app->make(DatabaseInterface::class);
+            $connection = $app->config('authorization.relationships.database.connection');
+            $table = $app->config('authorization.relationships.database.table', DatabaseRelationshipRepository::DEFAULT_RELATIONSHIPS_TABLE);
+
+            return new DatabaseRelationshipRepository(
+                $database,
+                is_string($connection) && trim($connection) !== '' ? $connection : null,
+                is_string($table) && trim($table) !== '' ? $table : DatabaseRelationshipRepository::DEFAULT_RELATIONSHIPS_TABLE,
+            );
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     private function makeTenantScopeResolver(Application $app): ?TenantScopeResolverInterface
@@ -498,8 +526,13 @@ final class AuthorizationServiceProvider extends ServiceProvider
                 ],
             ],
             'relationships' => [
+                'driver' => 'memory',
                 'evaluate' => false,
                 'entries' => [],
+                'database' => [
+                    'connection' => null,
+                    'table' => DatabaseRelationshipRepository::DEFAULT_RELATIONSHIPS_TABLE,
+                ],
             ],
         ];
     }

@@ -19,6 +19,10 @@ final class StepUpRequiredException extends RuntimeException
         public readonly ?string $riskLevel = null,
         public readonly ?int $requiredMinAssurance = null,
         public readonly ?int $currentAssurance = null,
+        public readonly ?string $challengeEndpoint = null,
+        public readonly ?string $continuationEndpoint = null,
+        /** @var list<string> */
+        public readonly array $availableMethods = [],
     ) {
         parent::__construct($message);
     }

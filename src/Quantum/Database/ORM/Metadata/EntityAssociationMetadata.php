@@ -13,6 +13,8 @@ final class EntityAssociationMetadata
     public const KIND_ONE_TO_MANY = 'one_to_many';
     public const KIND_ONE_TO_ONE = 'one_to_one';
     public const KIND_MANY_TO_MANY = 'many_to_many';
+    public const FETCH_LAZY = 'lazy';
+    public const FETCH_EAGER = 'eager';
 
     /**
      * @param class-string  $targetEntity
@@ -35,7 +37,17 @@ final class EntityAssociationMetadata
         public readonly ?string $joinTable = null,
         public readonly ?string $joinTableSourceColumn = null,
         public readonly ?string $joinTableTargetColumn = null,
+        public readonly string $fetch = self::FETCH_LAZY,
     ) {
+        if (! in_array($this->fetch, [self::FETCH_LAZY, self::FETCH_EAGER], true)) {
+            throw new \RuntimeException(sprintf(
+                'Association [%s::$%s] declares unsupported fetch strategy [%s]. Allowed: %s.',
+                $property->getDeclaringClass()->getName(),
+                $name,
+                $this->fetch,
+                implode(', ', [self::FETCH_LAZY, self::FETCH_EAGER]),
+            ));
+        }
     }
 
     public function isOwningSide(): bool
@@ -97,5 +109,15 @@ final class EntityAssociationMetadata
         return $this->joinTable !== null
             && $this->joinTableSourceColumn !== null
             && $this->joinTableTargetColumn !== null;
+    }
+
+    public function isEager(): bool
+    {
+        return $this->fetch === self::FETCH_EAGER;
+    }
+
+    public function isLazy(): bool
+    {
+        return $this->fetch === self::FETCH_LAZY;
     }
 }

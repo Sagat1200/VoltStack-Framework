@@ -138,6 +138,20 @@ final class EntityMetadata
     }
 
     /**
+     * @return list<string>
+     */
+    public function eagerAssociationNames(): array
+    {
+        return array_values(array_map(
+            static fn(EntityAssociationMetadata $association): string => $association->name,
+            array_filter(
+                $this->associations(),
+                static fn(EntityAssociationMetadata $association): bool => $association->isEager(),
+            ),
+        ));
+    }
+
+    /**
      * @return list<EntityEmbeddedMetadata>
      */
     public function embeddeds(): array

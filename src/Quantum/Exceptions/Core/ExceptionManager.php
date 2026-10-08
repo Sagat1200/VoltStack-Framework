@@ -145,6 +145,9 @@ final class ExceptionManager implements ExceptionManagerInterface
             correlation: array_filter([
                 'scope_id' => $context->scopeId,
                 'correlation_id' => $context->correlationId,
+                'transport' => is_string($context->attributes['transport_kind'] ?? null) ? $context->attributes['transport_kind'] : null,
+                'trace_id' => is_string($context->attributes['trace_id'] ?? null) ? $context->attributes['trace_id'] : null,
+                'tenant_id' => is_string($context->attributes['tenant_id'] ?? null) ? $context->attributes['tenant_id'] : null,
             ], static fn (mixed $value): bool => $value !== null),
         );
 

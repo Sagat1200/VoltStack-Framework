@@ -400,7 +400,7 @@ final class EntityQuery
             $entities = $windowIdentifiers === null
                 ? $this->hydrateJoinedEntityRows($this->queryForJoinedToManyEntityHydration()->get()->rows())
                 : $this->hydrateJoinedEntitiesForRootIdentifiers($windowIdentifiers);
-            $this->manager->preloadAssociations($entities, $this->remainingPreloadedAssociations());
+            $this->manager->preloadAssociations($entities, $this->associationsToPreload());
 
             return $entities;
         }
@@ -412,7 +412,7 @@ final class EntityQuery
             $entities[] = $this->hydrateEntityRow($row);
         }
 
-        $this->manager->preloadAssociations($entities, $this->remainingPreloadedAssociations());
+        $this->manager->preloadAssociations($entities, $this->associationsToPreload());
 
         return $entities;
     }
@@ -431,7 +431,7 @@ final class EntityQuery
             }
 
             $entity = $entities[0];
-            $this->manager->preloadAssociations([$entity], $this->remainingPreloadedAssociations());
+            $this->manager->preloadAssociations([$entity], $this->associationsToPreload());
 
             return $entity;
         }
@@ -443,7 +443,7 @@ final class EntityQuery
         }
 
         $entity = $this->hydrateEntityRow($row);
-        $this->manager->preloadAssociations([$entity], $this->remainingPreloadedAssociations());
+        $this->manager->preloadAssociations([$entity], $this->associationsToPreload());
 
         return $entity;
     }
@@ -1643,6 +1643,25 @@ final class EntityQuery
             $this->preloadedAssociations,
             fn(string $association): bool => ! isset($this->joinedAssociations[$association]),
         ));
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function associationsToPreload(): array
+    {
+        $configured = $this->metadata->eagerAssociationNames();
+        if ($this->joinedAssociations !== []) {
+            $configured = array_values(array_filter(
+                $configured,
+                fn(string $association): bool => ! isset($this->joinedAssociations[$association]),
+            ));
+        }
+
+        return array_values(array_unique(array_merge(
+            $this->remainingPreloadedAssociations(),
+            $configured,
+        )));
     }
 
     private function joinedResultKey(string $associationName, string $column): string

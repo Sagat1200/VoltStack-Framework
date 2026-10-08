@@ -7,15 +7,20 @@ namespace VoltStack\Test\Feature;
 use PDO;
 use PHPUnit\Framework\TestCase;
 use Quantum\Config\ConfigRepository;
+use Quantum\Database\Connection\ConnectionManager;
 use Quantum\Database\Contracts\ConnectionManagerInterface;
 use Quantum\Database\Contracts\TransactionManagerInterface;
 use Quantum\Database\Query\Builder\DatabaseQueryManager;
+use Quantum\Database\Runtime\DatabaseExecutionScope;
 use Quantum\Database\Schema\SchemaManager;
+use Quantum\Database\Transaction\TransactionManager;
 use Quantum\Database\Transaction\TransactionException;
 use Quantum\Http\Request;
 use Quantum\HttpKernel\HttpKernel;
 use Quantum\Routing\Router;
 use VoltStack\Framework\Application;
+use VoltStack\Runtime\Context\RuntimeContext;
+use VoltStack\Runtime\Context\ScopeManager;
 
 final class DatabaseTransactionManagerTest extends TestCase
 {
@@ -135,6 +140,68 @@ final class DatabaseTransactionManagerTest extends TestCase
         self::assertTrue($payload['active_transaction']);
         self::assertSame(1, $payload['depth']);
         self::assertSame(0, DatabaseTransactionScopeCapture::$countAfterScope);
+    }
+
+    public function test_runtime_scope_propagates_database_ownership_and_reports_cleanup_metadata(): void
+    {
+        $app = $this->makeApp();
+        $schema = $app->make(SchemaManager::class);
+        $schema->create('scope_transaction_items', function (\Quantum\Database\Schema\Builder\TableBlueprint $table): void {
+            $table->id();
+            $table->string('name');
+        }, true);
+
+        $capturedCleanup = null;
+        $capturedScopeId = null;
+
+        $app->onScopeEnd(function (Application $app, ?RuntimeContext $context) use (&$capturedCleanup, &$capturedScopeId): void {
+            $capturedCleanup = $context?->get('database.scope_cleanup');
+            $capturedScopeId = $context?->get('database.scope_id');
+        });
+
+        $scopeManager = $app->make(ScopeManager::class);
+        $runtimeContext = $scopeManager->begin(Request::create('/database/owned-cleanup'));
+
+        /** @var DatabaseExecutionScope $scope */
+        $scope = $app->make(DatabaseExecutionScope::class);
+        /** @var ConnectionManager $connections */
+        $connections = $app->make(ConnectionManager::class);
+        /** @var TransactionManager $transactions */
+        $transactions = $app->make(TransactionManager::class);
+        $db = $app->make(DatabaseQueryManager::class);
+
+        $transactions->begin();
+        $db->table('scope_transaction_items')->insert(['name' => 'owned']);
+
+        $contexts = $transactions->snapshotContexts();
+        $leases = $connections->snapshotLeases();
+
+        self::assertCount(1, $contexts);
+        self::assertSame($scope->id(), $contexts[0]['scope_id']);
+        self::assertSame($runtimeContext->requestId(), $contexts[0]['runtime_request_id']);
+        self::assertCount(1, $leases);
+        self::assertSame($scope->id(), $leases[0]['scope_id']);
+        self::assertSame($runtimeContext->requestId(), $leases[0]['runtime_request_id']);
+        self::assertTrue($leases[0]['connected']);
+
+        $scopeManager->end();
+
+        self::assertSame([], $transactions->snapshotContexts());
+        self::assertSame([], $connections->snapshotLeases());
+        self::assertSame(0, $this->countRows($this->databasePath, 'scope_transaction_items'));
+        self::assertIsArray($capturedCleanup);
+        self::assertTrue($capturedCleanup['successful']);
+        self::assertSame($scope->id(), $capturedScopeId);
+        self::assertSame(1, $capturedCleanup['rolled_back_transactions']);
+        self::assertSame(1, $capturedCleanup['disconnected_connections']);
+        self::assertSame([], $capturedCleanup['skipped_transactions']);
+        self::assertSame([], $capturedCleanup['skipped_connections']);
+        self::assertCount(1, $capturedCleanup['transactions']);
+        self::assertSame($scope->id(), $capturedCleanup['transactions'][0]['scope_id']);
+        self::assertSame($runtimeContext->requestId(), $capturedCleanup['transactions'][0]['runtime_request_id']);
+        self::assertCount(1, $capturedCleanup['connections']);
+        self::assertSame($scope->id(), $capturedCleanup['connections'][0]['scope_id']);
+        self::assertSame($runtimeContext->requestId(), $capturedCleanup['connections'][0]['runtime_request_id']);
     }
 
     private function makeApp(): Application

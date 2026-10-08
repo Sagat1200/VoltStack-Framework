@@ -140,6 +140,7 @@ final class DatabaseServiceProvider extends ServiceProvider
         $this->app->scoped(ConnectionManager::class, fn(Application $app): ConnectionManager => new ConnectionManager(
             $app->make(ConnectionDefinitionRegistry::class),
             $app->make(ConnectionFactory::class),
+            RuntimeContext::current() !== null ? $app->make(DatabaseExecutionScope::class) : null,
         ));
         $this->app->scoped(ConnectionManagerInterface::class, fn(Application $app): ConnectionManagerInterface => $app->make(ConnectionManager::class));
         $this->app->scoped(StatementExecutor::class, fn(Application $app): StatementExecutor => new StatementExecutor(
@@ -188,6 +189,7 @@ final class DatabaseServiceProvider extends ServiceProvider
         $this->app->scoped(TransactionManager::class, fn(Application $app): TransactionManager => new TransactionManager(
             $app->make(ConnectionManagerInterface::class),
             $app->make(DatabaseTelemetryEmitter::class),
+            RuntimeContext::current() !== null ? $app->make(DatabaseExecutionScope::class) : null,
         ));
         $this->app->scoped(TransactionManagerInterface::class, fn(Application $app): TransactionManagerInterface => $app->make(TransactionManager::class));
         $this->app->scoped(IdentityMap::class);

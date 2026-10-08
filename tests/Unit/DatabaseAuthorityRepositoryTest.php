@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
+use Quantum\Authorization\Consistency\VersionedAuthorizationConsistency;
 use Quantum\Authorization\Authority\DatabaseAuthorityRepository;
 use Quantum\Authorization\Authority\Scope;
+use Quantum\Cache\FileVersionAuthority;
 use Quantum\Config\ConfigRepository;
 use Quantum\Database\Contracts\DatabaseInterface;
 use VoltStack\Framework\Application;
@@ -78,6 +80,33 @@ final class DatabaseAuthorityRepositoryTest extends TestCase
             ['global', 'tenant:acme'],
             array_values(array_map(static fn (Scope $scope): string => (string) $scope, $scopes)),
         );
+
+        $database->connection()->disconnect();
+    }
+
+    public function test_database_repository_supports_listing_mutating_and_invalidating_grants(): void
+    {
+        $app = $this->makeApplication();
+        $database = $app->make(DatabaseInterface::class);
+        $this->seedAuthorityTables($database);
+        $consistency = new VersionedAuthorizationConsistency(new FileVersionAuthority(
+            $this->basePath . DIRECTORY_SEPARATOR . 'consistency',
+        ));
+
+        $repository = new DatabaseAuthorityRepository($database, null, [], $consistency);
+        $before = $consistency->authorityVersion('u_1', 'tenant:acme');
+
+        $rows = $repository->listGrants([
+            'principal_id' => 'u_1',
+            'scope' => 'tenant:acme',
+        ]);
+
+        self::assertCount(2, $rows);
+        self::assertTrue($repository->grantPermission('u_1', 'posts.archive', 'tenant:acme'));
+        self::assertFalse($repository->grantPermission('u_1', 'posts.archive', 'tenant:acme'));
+        self::assertTrue($repository->revokeRole('u_1', 'admin', 'tenant:acme'));
+        self::assertFalse($repository->revokeRole('u_1', 'admin', 'tenant:acme'));
+        self::assertNotSame($before, $consistency->authorityVersion('u_1', 'tenant:acme'));
 
         $database->connection()->disconnect();
     }

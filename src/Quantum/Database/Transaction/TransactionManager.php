@@ -6,6 +6,7 @@ namespace Quantum\Database\Transaction;
 
 use Quantum\Database\Contracts\ConnectionManagerInterface;
 use Quantum\Database\Contracts\TransactionManagerInterface;
+use Quantum\Database\Runtime\DatabaseExecutionScope;
 use Quantum\Database\Telemetry\DatabaseTelemetryEmitter;
 use Throwable;
 
@@ -19,6 +20,7 @@ final class TransactionManager implements TransactionManagerInterface
     public function __construct(
         private readonly ConnectionManagerInterface $connections,
         private readonly DatabaseTelemetryEmitter $telemetry,
+        private readonly ?DatabaseExecutionScope $scope = null,
     ) {
     }
 
@@ -34,6 +36,8 @@ final class TransactionManager implements TransactionManagerInterface
             $context = $this->contexts[$target] = new TransactionContext(
                 TransactionId::generate(),
                 $target,
+                $this->scope?->id(),
+                $this->scope?->runtimeRequestId(),
             );
 
             $this->telemetry->transactionBegan($context);
@@ -158,6 +162,73 @@ final class TransactionManager implements TransactionManagerInterface
         $this->commit($context->connectionName());
 
         return $result;
+    }
+
+    /**
+     * @return list<array{
+     *     connection: string,
+     *     transaction_id: string,
+     *     state: string,
+     *     depth: int,
+     *     scope_id: ?string,
+     *     runtime_request_id: ?string
+     * }>
+     */
+    public function snapshotContexts(): array
+    {
+        return array_values(array_map(
+            static fn (TransactionContext $context): array => [
+                'connection' => $context->connectionName(),
+                'transaction_id' => $context->id()->value,
+                'state' => $context->state()->value,
+                'depth' => $context->depth(),
+                'scope_id' => $context->scopeId(),
+                'runtime_request_id' => $context->runtimeRequestId(),
+            ],
+            $this->contexts,
+        ));
+    }
+
+    /**
+     * @return array{rolled_back: int, skipped: list<string>, errors: list<Throwable>}
+     */
+    public function rollbackOpenTransactionsOwned(?string $scopeId = null): array
+    {
+        $rolledBack = 0;
+        $skipped = [];
+        $errors = [];
+
+        foreach (array_keys($this->contexts) as $connectionName) {
+            $context = $this->contexts[$connectionName] ?? null;
+
+            if (
+                $scopeId !== null
+                && $context !== null
+                && $context->scopeId() !== $scopeId
+            ) {
+                $skipped[] = $connectionName;
+
+                continue;
+            }
+
+            while (isset($this->contexts[$connectionName]) && $this->contexts[$connectionName]->isActive()) {
+                try {
+                    $this->rollback($connectionName);
+                    $rolledBack++;
+                } catch (Throwable $exception) {
+                    $errors[] = $exception;
+                    unset($this->contexts[$connectionName]);
+
+                    break;
+                }
+            }
+        }
+
+        return [
+            'rolled_back' => $rolledBack,
+            'skipped' => $skipped,
+            'errors' => $errors,
+        ];
     }
 
     private function requireContext(string $connectionName): TransactionContext

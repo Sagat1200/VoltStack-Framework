@@ -16,6 +16,9 @@ use Quantum\Authorization\Bridges\ControllerSecurityPlannerBridge;
 use Quantum\Authorization\Consistency\VersionedAuthorizationConsistency;
 use Quantum\Authorization\Console\Commands\AuthorizationConsistencyInvalidateCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationConsistencyReportCommand;
+use Quantum\Authorization\Console\Commands\AuthorizationAuthorityGrantCommand;
+use Quantum\Authorization\Console\Commands\AuthorizationAuthorityListCommand;
+use Quantum\Authorization\Console\Commands\AuthorizationAuthorityRevokeCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationManifestClearCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationManifestCompileCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationRelationshipsListCommand;
@@ -23,6 +26,7 @@ use Quantum\Authorization\Console\Commands\AuthorizationRelationshipsRevokeComma
 use Quantum\Authorization\Contracts\AbilityNormalizerInterface;
 use Quantum\Authorization\Contracts\AuthorizationConsistencyInterface;
 use Quantum\Authorization\Contracts\AuthorityMemoizationCacheInterface;
+use Quantum\Authorization\Contracts\AuthorityAdministrationInterface;
 use Quantum\Authorization\Contracts\AuthorityRepositoryInterface;
 use Quantum\Authorization\Contracts\AuthorizationContextFactoryInterface;
 use Quantum\Authorization\Contracts\AuthorizationManagerInterface;
@@ -270,6 +274,19 @@ final class AuthorizationServiceProvider extends ServiceProvider
                 }
             },
         );
+
+        $this->app->scoped(
+            AuthorityAdministrationInterface::class,
+            function (Application $app): AuthorityAdministrationInterface {
+                $repository = $app->make(self::INNER_AUTHORITY_REPOSITORY);
+
+                if (! $repository instanceof AuthorityAdministrationInterface) {
+                    throw new \RuntimeException('The configured authority repository does not support administrative operations.');
+                }
+
+                return $repository;
+            },
+        );
     }
 
     private function makeConfiguredAuthorityRepository(Application $app): AuthorityRepositoryInterface
@@ -279,8 +296,8 @@ final class AuthorizationServiceProvider extends ServiceProvider
         $driver = strtolower(trim((string) $app->config('authorization.authority.driver', 'memory')));
 
         return match ($driver) {
-            'database', 'db', 'dbal' => $this->makeDatabaseAuthorityRepository($app) ?? new InMemoryAuthorityRepository($seed),
-            default => new InMemoryAuthorityRepository($seed),
+            'database', 'db', 'dbal' => $this->makeDatabaseAuthorityRepository($app) ?? new InMemoryAuthorityRepository($seed, $this->resolveConsistency($app)),
+            default => new InMemoryAuthorityRepository($seed, $this->resolveConsistency($app)),
         };
     }
 
@@ -296,6 +313,7 @@ final class AuthorizationServiceProvider extends ServiceProvider
                 $database,
                 is_string($connection) && trim($connection) !== '' ? $connection : null,
                 is_array($tables) ? $tables : [],
+                $this->resolveConsistency($app),
             );
         } catch (\Throwable) {
             return null;
@@ -580,6 +598,9 @@ final class AuthorizationServiceProvider extends ServiceProvider
     public function commands(): array
     {
         return [
+            AuthorizationAuthorityListCommand::class,
+            AuthorizationAuthorityGrantCommand::class,
+            AuthorizationAuthorityRevokeCommand::class,
             AuthorizationConsistencyInvalidateCommand::class,
             AuthorizationConsistencyReportCommand::class,
             AuthorizationManifestCompileCommand::class,

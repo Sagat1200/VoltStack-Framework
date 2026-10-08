@@ -12,8 +12,10 @@ use Quantum\Console\Commands\CacheClearCommand;
 use Quantum\Console\Commands\ConfigReleaseCheckCommand;
 use Quantum\Console\Commands\ConfigStatusCommand;
 use Quantum\Console\Commands\ExceptionCompileCommand;
+use Quantum\Console\Commands\ExceptionDoctorCommand;
 use Quantum\Console\Commands\ExceptionReleaseCheckCommand;
 use Quantum\Console\Commands\ExceptionStatusCommand;
+use Quantum\Console\Commands\ExceptionValidateCommand;
 use Quantum\Console\Commands\MakeActionCommand;
 use Quantum\Console\Commands\MakeComponentCommand;
 use Quantum\Console\Commands\MakeLayoutCommand;
@@ -62,8 +64,10 @@ final class ConsoleApplicationTest extends TestCase
         self::assertStringContainsString('bootstrap:benchmark', $output->stdout());
         self::assertStringContainsString('bootstrap:status', $output->stdout());
         self::assertStringContainsString('exceptions:compile', $output->stdout());
+        self::assertStringContainsString('exceptions:doctor', $output->stdout());
         self::assertStringContainsString('exceptions:release-check', $output->stdout());
         self::assertStringContainsString('exceptions:status', $output->stdout());
+        self::assertStringContainsString('exceptions:validate', $output->stdout());
         self::assertStringContainsString('config:release-check', $output->stdout());
         self::assertStringContainsString('config:status', $output->stdout());
         self::assertStringContainsString('runtime:budget-calibrate', $output->stdout());
@@ -175,10 +179,11 @@ final class ConsoleApplicationTest extends TestCase
 
         self::assertSame(0, $exitCode);
         self::assertStringContainsString('Command: runtime:status', $output->stdout());
-        self::assertStringContainsString('Usage: php volt runtime:status [--driver=frankenphp] [--max-requests=1] [--require-published-config] [--emit-telemetry] [--strict] [--json]', $output->stdout());
+        self::assertStringContainsString('Usage: php volt runtime:status [--driver=frankenphp] [--max-requests=1] [--require-published-config] [--emit-telemetry] [--strict] [--strict-rollout] [--json]', $output->stdout());
         self::assertStringContainsString('--driver=', $output->stdout());
         self::assertStringContainsString('--max-requests=', $output->stdout());
         self::assertStringContainsString('--require-published-config', $output->stdout());
+        self::assertStringContainsString('--strict-rollout', $output->stdout());
         self::assertStringContainsString('--json', $output->stdout());
     }
 
@@ -239,6 +244,24 @@ final class ConsoleApplicationTest extends TestCase
         self::assertStringContainsString('--json', $output->stdout());
     }
 
+    public function test_it_renders_help_for_exception_doctor_command(): void
+    {
+        $output = new Output();
+        $application = $this->application($output);
+
+        $exitCode = $application->run([
+            'volt',
+            'help',
+            'exceptions:doctor',
+        ]);
+
+        self::assertSame(0, $exitCode);
+        self::assertStringContainsString('Command: exceptions:doctor', $output->stdout());
+        self::assertStringContainsString('Usage: php volt exceptions:doctor [--strict] [--json]', $output->stdout());
+        self::assertStringContainsString('--strict', $output->stdout());
+        self::assertStringContainsString('--json', $output->stdout());
+    }
+
     public function test_it_renders_help_for_exception_release_check_command(): void
     {
         $output = new Output();
@@ -274,6 +297,23 @@ final class ConsoleApplicationTest extends TestCase
         self::assertStringContainsString('Command: exceptions:status', $output->stdout());
         self::assertStringContainsString('Usage: php volt exceptions:status [--strict] [--json]', $output->stdout());
         self::assertStringContainsString('--strict', $output->stdout());
+        self::assertStringContainsString('--json', $output->stdout());
+    }
+
+    public function test_it_renders_help_for_exception_validate_command(): void
+    {
+        $output = new Output();
+        $application = $this->application($output);
+
+        $exitCode = $application->run([
+            'volt',
+            'help',
+            'exceptions:validate',
+        ]);
+
+        self::assertSame(0, $exitCode);
+        self::assertStringContainsString('Command: exceptions:validate', $output->stdout());
+        self::assertStringContainsString('Usage: php volt exceptions:validate [--json]', $output->stdout());
         self::assertStringContainsString('--json', $output->stdout());
     }
 
@@ -474,8 +514,10 @@ final class ConsoleApplicationTest extends TestCase
                 new BootstrapReleaseCheckCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new BootstrapStatusCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new ExceptionCompileCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
+                new ExceptionDoctorCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new ExceptionReleaseCheckCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new ExceptionStatusCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
+                new ExceptionValidateCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new RuntimeBudgetCalibrateCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new RuntimeReleasePipelineCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new RuntimeSmokeCheckCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),

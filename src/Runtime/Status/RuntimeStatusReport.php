@@ -22,6 +22,7 @@ final readonly class RuntimeStatusReport
         private bool $drainControl,
         private bool $nativeHttp,
         private RuntimeBudgetBaseline $recommendedBudget,
+        private RuntimeRolloutReadinessReport $rolloutReadiness,
         private ?RuntimeBudgetCalibrationArtifact $activeCalibration = null,
         private array $supportedDrivers = [],
         private array $alerts = [],
@@ -68,6 +69,11 @@ final readonly class RuntimeStatusReport
         return $this->recommendedBudget;
     }
 
+    public function rolloutReadiness(): RuntimeRolloutReadinessReport
+    {
+        return $this->rolloutReadiness;
+    }
+
     public function activeCalibration(): ?RuntimeBudgetCalibrationArtifact
     {
         return $this->activeCalibration;
@@ -109,6 +115,7 @@ final readonly class RuntimeStatusReport
             'drain_control' => $this->drainControl,
             'native_http' => $this->nativeHttp,
             'recommended_budget' => $this->recommendedBudget->toArray(),
+            'rollout_readiness' => $this->rolloutReadiness->toArray(),
             'active_calibration' => $this->activeCalibration?->toArray(),
             'supported_drivers' => $this->supportedDrivers,
             'alerts' => $this->alerts,

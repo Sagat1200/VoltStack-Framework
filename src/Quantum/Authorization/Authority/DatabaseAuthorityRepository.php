@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace Quantum\Authorization\Authority;
 
 use PDO;
+use Quantum\Authorization\Contracts\AuthorityAdministrationInterface;
+use Quantum\Authorization\Contracts\AuthorizationConsistencyInterface;
 use Quantum\Authorization\Contracts\AuthorityRepositoryInterface;
 use Quantum\Database\Contracts\DatabaseInterface;
 
@@ -20,7 +22,7 @@ use Quantum\Database\Contracts\DatabaseInterface;
  * La resolución efectiva preserva la misma semántica observable que
  * InMemoryAuthorityRepository: grants directos del scope actual + ancestros.
  */
-final class DatabaseAuthorityRepository implements AuthorityRepositoryInterface
+final class DatabaseAuthorityRepository implements AuthorityAdministrationInterface, AuthorityRepositoryInterface
 {
     public const DEFAULT_ROLE_GRANTS_TABLE = 'authorization_role_grants';
     public const DEFAULT_PERMISSION_GRANTS_TABLE = 'authorization_permission_grants';
@@ -38,6 +40,7 @@ final class DatabaseAuthorityRepository implements AuthorityRepositoryInterface
         private readonly DatabaseInterface $database,
         private readonly ?string $connectionName = null,
         array $tables = [],
+        private readonly ?AuthorizationConsistencyInterface $consistency = null,
     ) {
         $this->tables = [
             'role_grants' => $this->normalizeTableName($tables['role_grants'] ?? self::DEFAULT_ROLE_GRANTS_TABLE),
@@ -114,6 +117,138 @@ final class DatabaseAuthorityRepository implements AuthorityRepositoryInterface
         }
 
         return false;
+    }
+
+    public function listGrants(array $filters = []): array
+    {
+        $principalFilter = $this->normalizeOptionalString($filters['principal_id'] ?? null);
+        $scopeFilter = $this->normalizeOptionalScopeName($filters['scope'] ?? null);
+        $typeFilter = strtolower(trim((string) ($filters['type'] ?? 'all')));
+        $valueFilter = $this->normalizeOptionalString($filters['value'] ?? null);
+        $rows = [];
+
+        if ($typeFilter === 'all' || $typeFilter === 'role') {
+            $rows = [...$rows, ...$this->fetchGrantRows(
+                table: $this->tables['role_grants'],
+                valueColumn: 'role_name',
+                type: 'role',
+                principalFilter: $principalFilter,
+                scopeFilter: $scopeFilter,
+                valueFilter: $valueFilter,
+            )];
+        }
+
+        if ($typeFilter === 'all' || $typeFilter === 'permission') {
+            $rows = [...$rows, ...$this->fetchGrantRows(
+                table: $this->tables['permission_grants'],
+                valueColumn: 'permission_name',
+                type: 'permission',
+                principalFilter: $principalFilter,
+                scopeFilter: $scopeFilter,
+                valueFilter: $valueFilter,
+            )];
+        }
+
+        usort($rows, static function (array $left, array $right): int {
+            $leftKey = $left['principal_id'] . '|' . $left['scope'] . '|' . $left['type'] . '|' . $left['value'];
+            $rightKey = $right['principal_id'] . '|' . $right['scope'] . '|' . $right['type'] . '|' . $right['value'];
+
+            return $leftKey <=> $rightKey;
+        });
+
+        return $rows;
+    }
+
+    public function grantRole(string $principalId, Role|string $role, Scope|string $scope = Scope::GLOBAL): bool
+    {
+        $roleName = ($role instanceof Role ? $role : new Role($role))->name;
+        $scopeName = $this->normalizeScopeName($scope);
+
+        if ($this->grantExists($this->tables['role_grants'], 'role_name', $principalId, $scopeName, $roleName)) {
+            return false;
+        }
+
+        $statement = $this->pdo()->prepare(sprintf(
+            'INSERT INTO %s (principal_id, scope, role_name) VALUES (:principal_id, :scope, :value)',
+            $this->tables['role_grants'],
+        ));
+        $statement->execute([
+            ':principal_id' => $principalId,
+            ':scope' => $scopeName,
+            ':value' => $roleName,
+        ]);
+
+        $this->consistency?->invalidateAuthority(trim($principalId), $scopeName);
+
+        return true;
+    }
+
+    public function grantPermission(string $principalId, Permission|string $permission, Scope|string $scope = Scope::GLOBAL): bool
+    {
+        $permissionName = ($permission instanceof Permission ? $permission : Permission::from($permission))->name;
+        $scopeName = $this->normalizeScopeName($scope);
+
+        if ($this->grantExists($this->tables['permission_grants'], 'permission_name', $principalId, $scopeName, $permissionName)) {
+            return false;
+        }
+
+        $statement = $this->pdo()->prepare(sprintf(
+            'INSERT INTO %s (principal_id, scope, permission_name) VALUES (:principal_id, :scope, :value)',
+            $this->tables['permission_grants'],
+        ));
+        $statement->execute([
+            ':principal_id' => $principalId,
+            ':scope' => $scopeName,
+            ':value' => $permissionName,
+        ]);
+
+        $this->consistency?->invalidateAuthority(trim($principalId), $scopeName);
+
+        return true;
+    }
+
+    public function revokeRole(string $principalId, Role|string $role, Scope|string $scope = Scope::GLOBAL): bool
+    {
+        $roleName = ($role instanceof Role ? $role : new Role($role))->name;
+        $scopeName = $this->normalizeScopeName($scope);
+        $statement = $this->pdo()->prepare(sprintf(
+            'DELETE FROM %s WHERE principal_id = :principal_id AND scope = :scope AND role_name = :value',
+            $this->tables['role_grants'],
+        ));
+        $statement->execute([
+            ':principal_id' => $principalId,
+            ':scope' => $scopeName,
+            ':value' => $roleName,
+        ]);
+        $deleted = $statement->rowCount() > 0;
+
+        if ($deleted) {
+            $this->consistency?->invalidateAuthority(trim($principalId), $scopeName);
+        }
+
+        return $deleted;
+    }
+
+    public function revokePermission(string $principalId, Permission|string $permission, Scope|string $scope = Scope::GLOBAL): bool
+    {
+        $permissionName = ($permission instanceof Permission ? $permission : Permission::from($permission))->name;
+        $scopeName = $this->normalizeScopeName($scope);
+        $statement = $this->pdo()->prepare(sprintf(
+            'DELETE FROM %s WHERE principal_id = :principal_id AND scope = :scope AND permission_name = :value',
+            $this->tables['permission_grants'],
+        ));
+        $statement->execute([
+            ':principal_id' => $principalId,
+            ':scope' => $scopeName,
+            ':value' => $permissionName,
+        ]);
+        $deleted = $statement->rowCount() > 0;
+
+        if ($deleted) {
+            $this->consistency?->invalidateAuthority(trim($principalId), $scopeName);
+        }
+
+        return $deleted;
     }
 
     /**
@@ -227,6 +362,70 @@ final class DatabaseAuthorityRepository implements AuthorityRepositoryInterface
         return array_values(array_unique(array_map('strval', $rows)));
     }
 
+    /**
+     * @return list<array{principal_id:string,scope:string,type:string,value:string}>
+     */
+    private function fetchGrantRows(
+        string $table,
+        string $valueColumn,
+        string $type,
+        ?string $principalFilter,
+        ?string $scopeFilter,
+        ?string $valueFilter,
+    ): array {
+        $conditions = [];
+        $params = [];
+
+        if ($principalFilter !== null) {
+            $conditions[] = 'principal_id = :principal_id';
+            $params[':principal_id'] = $principalFilter;
+        }
+
+        if ($scopeFilter !== null) {
+            $conditions[] = 'scope = :scope';
+            $params[':scope'] = $scopeFilter;
+        }
+
+        if ($valueFilter !== null) {
+            $conditions[] = sprintf('%s = :value', $valueColumn);
+            $params[':value'] = $valueFilter;
+        }
+
+        $statement = $this->pdo()->prepare(sprintf(
+            'SELECT principal_id, scope, %s AS value FROM %s%s ORDER BY principal_id ASC, scope ASC, value ASC',
+            $valueColumn,
+            $table,
+            $conditions === [] ? '' : ' WHERE ' . implode(' AND ', $conditions),
+        ));
+        $statement->execute($params);
+
+        /** @var list<array{principal_id:string,scope:string,value:string}> $rows */
+        $rows = $statement->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+        return array_map(static fn (array $row): array => [
+            'principal_id' => (string) ($row['principal_id'] ?? ''),
+            'scope' => (string) ($row['scope'] ?? ''),
+            'type' => $type,
+            'value' => (string) ($row['value'] ?? ''),
+        ], $rows);
+    }
+
+    private function grantExists(string $table, string $valueColumn, string $principalId, string $scopeName, string $value): bool
+    {
+        $statement = $this->pdo()->prepare(sprintf(
+            'SELECT COUNT(*) FROM %s WHERE principal_id = :principal_id AND scope = :scope AND %s = :value',
+            $table,
+            $valueColumn,
+        ));
+        $statement->execute([
+            ':principal_id' => $principalId,
+            ':scope' => $scopeName,
+            ':value' => $value,
+        ]);
+
+        return ((int) $statement->fetchColumn()) > 0;
+    }
+
     private function pdo(): PDO
     {
         return $this->database->connection($this->connectionName)->pdo();
@@ -235,6 +434,26 @@ final class DatabaseAuthorityRepository implements AuthorityRepositoryInterface
     private function normalizeScopeName(Scope|string $scope): string
     {
         return (string) ($scope instanceof Scope ? $scope : new Scope($scope));
+    }
+
+    private function normalizeOptionalString(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $normalized = trim($value);
+
+        return $normalized === '' ? null : $normalized;
+    }
+
+    private function normalizeOptionalScopeName(mixed $value): ?string
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        return (string) ($value instanceof Scope ? $value : new Scope((string) $value));
     }
 
     private function normalizeTableName(string $table): string

@@ -18,17 +18,23 @@ use Quantum\Auth\Contracts\AuthenticationSessionRepositoryInterface;
 use Quantum\Auth\Contracts\AuthenticatorInterface;
 use Quantum\Auth\Contracts\AuthenticatorResolverInterface;
 use Quantum\Auth\Contracts\DistributedThrottleCounterInterface;
+use Quantum\Auth\Contracts\DistributedPasswordGovernanceProviderInterface;
 use Quantum\Auth\Contracts\IdentityProviderInterface;
 use Quantum\Auth\Contracts\InventoryReconcilerInterface;
+use Quantum\Auth\Contracts\MutableIdentityProviderInterface;
 use Quantum\Auth\Contracts\OidcJwksCacheInterface;
 use Quantum\Auth\Contracts\OidcSignatureVerifierInterface;
 use Quantum\Auth\Contracts\OidcWellKnownClientInterface;
 use Quantum\Auth\Contracts\OperationAssurancePolicyInterface;
 use Quantum\Auth\Contracts\OpaqueTokenRepositoryInterface;
 use Quantum\Auth\Contracts\PasskeyCredentialStoreInterface;
+use Quantum\Auth\Contracts\PasswordLifecycleAwareProviderInterface;
 use Quantum\Auth\Contracts\PasskeyCryptoVerifierInterface;
 use Quantum\Auth\Contracts\PasswordPolicyInterface;
+use Quantum\Auth\Contracts\PasswordRehashingIdentityProviderInterface;
 use Quantum\Auth\Contracts\RefreshTokenRotationStoreInterface;
+use Quantum\Auth\Contracts\RecoveryManagerInterface;
+use Quantum\Auth\Contracts\RecoveryTokenRepositoryInterface;
 use Quantum\Auth\Contracts\RiskAdaptivePolicyInterface;
 use Quantum\Auth\Contracts\SessionRepositoryDriverFactoryInterface;
 use Quantum\Auth\Contracts\ThrottleDistributedStorageInterface;
@@ -51,6 +57,9 @@ use Quantum\Auth\Passkeys\PasskeyAssertionCeremony;
 use Quantum\Auth\Passkeys\PasskeyAuthenticator;
 use Quantum\Auth\Passkeys\RelyingPartyConfig;
 use Quantum\Auth\Passwords\PasswordPolicy;
+use Quantum\Auth\Recovery\FileRecoveryTokenRepository;
+use Quantum\Auth\Recovery\InMemoryRecoveryTokenRepository;
+use Quantum\Auth\Recovery\RecoveryManager;
 use Quantum\Auth\Runtime\AuthenticationOrchestrator;
 use Quantum\Auth\Runtime\AuthenticationPolicyEngine;
 use Quantum\Auth\Runtime\AuthenticationPolicyRuleInterface;
@@ -86,6 +95,10 @@ final class AuthenticationServiceProvider extends ServiceProvider
     {
         $this->app->scoped(AuthenticationContextAccessor::class);
         $this->app->scoped(IdentityProviderInterface::class, LocalIdentityProvider::class);
+        $this->app->scoped(MutableIdentityProviderInterface::class, static fn (Application $app): MutableIdentityProviderInterface => $app->make(IdentityProviderInterface::class));
+        $this->app->scoped(PasswordRehashingIdentityProviderInterface::class, static fn (Application $app): PasswordRehashingIdentityProviderInterface => $app->make(IdentityProviderInterface::class));
+        $this->app->scoped(PasswordLifecycleAwareProviderInterface::class, static fn (Application $app): PasswordLifecycleAwareProviderInterface => $app->make(IdentityProviderInterface::class));
+        $this->app->scoped(DistributedPasswordGovernanceProviderInterface::class, static fn (Application $app): DistributedPasswordGovernanceProviderInterface => $app->make(IdentityProviderInterface::class));
         $this->app->scoped(PasswordPolicyInterface::class, PasswordPolicy::class);
         $this->app->scoped(InventoryReconcilerInterface::class, static function (Application $app): InventoryReconcilerInterface {
             return new InventoryReconciler(
@@ -171,6 +184,48 @@ final class AuthenticationServiceProvider extends ServiceProvider
             }
 
             return new InMemoryOpaqueTokenRepository();
+        });
+
+        $this->app->singleton(RecoveryTokenRepositoryInterface::class, function (Application $app): RecoveryTokenRepositoryInterface {
+            $driver = strtolower(trim((string) $app->config('auth.recovery.password_reset.driver', 'memory')));
+
+            if ($driver === 'file') {
+                $configuredPath = $app->config('auth.recovery.password_reset.storage_path');
+                $storagePath = is_string($configuredPath) && trim($configuredPath) !== ''
+                    ? trim($configuredPath)
+                    : null;
+
+                if ($storagePath === null) {
+                    try {
+                        $storagePath = $app->storagePath('framework/auth/recovery/password-reset');
+                    } catch (\Throwable) {
+                        $storagePath = null;
+                    }
+                }
+
+                $directory = is_string($storagePath) && trim($storagePath) !== ''
+                    ? $storagePath
+                    : (sys_get_temp_dir() . '/voltstack-auth-recovery');
+
+                return new FileRecoveryTokenRepository($directory);
+            }
+
+            return new InMemoryRecoveryTokenRepository();
+        });
+
+        $this->app->scoped(RecoveryManagerInterface::class, static function (Application $app): RecoveryManagerInterface {
+            return new RecoveryManager(
+                $app->make(IdentityProviderInterface::class),
+                $app->make(PasswordPolicyInterface::class),
+                $app->make(MutableIdentityProviderInterface::class),
+                $app->make(PasswordRehashingIdentityProviderInterface::class),
+                $app->make(RecoveryTokenRepositoryInterface::class),
+                $app->make(AuthenticationSessionRepositoryInterface::class),
+                $app->make(OpaqueTokenRepositoryInterface::class),
+                $app->make(ConfigRepository::class),
+                $app->make(PasswordLifecycleAwareProviderInterface::class),
+                $app->make(DistributedPasswordGovernanceProviderInterface::class),
+            );
         });
 
         $this->app->scoped(AuthenticatorInterface::class, fn(Application $app) => new PasswordAuthenticator(

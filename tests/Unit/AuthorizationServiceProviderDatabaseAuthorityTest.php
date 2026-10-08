@@ -7,6 +7,7 @@ namespace VoltStack\Test\Unit;
 use PHPUnit\Framework\TestCase;
 use Quantum\Authorization\Authority\CachedAuthorityRepository;
 use Quantum\Authorization\Authority\DatabaseAuthorityRepository;
+use Quantum\Authorization\Contracts\AuthorityAdministrationInterface;
 use Quantum\Authorization\Contracts\AuthorityRepositoryInterface;
 use Quantum\Config\ConfigRepository;
 use VoltStack\Framework\Application;
@@ -84,6 +85,18 @@ final class AuthorizationServiceProviderDatabaseAuthorityTest extends TestCase
         $inner->setAccessible(true);
 
         self::assertInstanceOf(DatabaseAuthorityRepository::class, $inner->getValue($repository));
+    }
+
+    public function test_database_driver_exposes_administrative_authority_binding(): void
+    {
+        $app = $this->makeApplication();
+        /** @var ConfigRepository $config */
+        $config = $app->make(ConfigRepository::class);
+        $config->set('authorization.authority.driver', 'database');
+
+        $admin = $app->make(AuthorityAdministrationInterface::class);
+
+        self::assertInstanceOf(DatabaseAuthorityRepository::class, $admin);
     }
 
     private function makeApplication(): Application

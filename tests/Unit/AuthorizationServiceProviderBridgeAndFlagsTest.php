@@ -9,6 +9,7 @@ use Quantum\Authorization\Authority\CachedAuthorityRepository;
 use Quantum\Authorization\Authority\InMemoryAuthorityRepository;
 use Quantum\Authorization\Authority\RequestScopedAuthorityMemoizationCache;
 use Quantum\Authorization\Bridges\ControllerSecurityPlannerBridge;
+use Quantum\Authorization\Contracts\AuthorityAdministrationInterface;
 use Quantum\Authorization\Contracts\AuthorityMemoizationCacheInterface;
 use Quantum\Authorization\Contracts\AuthorityRepositoryInterface;
 use Quantum\Authorization\Contracts\AuthorizationConsistencyInterface;
@@ -58,6 +59,7 @@ final class AuthorizationServiceProviderBridgeAndFlagsTest extends TestCase
         $cacheBinding = $app->make(AuthorityMemoizationCacheInterface::class);
         self::assertInstanceOf(RequestScopedAuthorityMemoizationCache::class, $cacheBinding);
         self::assertInstanceOf(AuthorizationConsistencyInterface::class, $app->make(AuthorizationConsistencyInterface::class));
+        self::assertInstanceOf(AuthorityAdministrationInterface::class, $app->make(AuthorityAdministrationInterface::class));
     }
 
     public function test_memoize_disabled_uses_in_memory_without_decorator(): void

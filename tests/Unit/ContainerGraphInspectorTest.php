@@ -172,6 +172,68 @@ final class ContainerGraphInspectorTest extends TestCase
 
         self::assertSame([], $issues);
     }
+
+    public function test_it_reports_indirect_scope_capture_through_registered_transient_services(): void
+    {
+        $container = new Container();
+        $container->singleton(GraphSingletonRetainsRequestTransitively::class, GraphSingletonRetainsRequestTransitively::class);
+        $container->bind(GraphTransientBridgeToRequest::class, GraphTransientBridgeToRequest::class);
+        $container->scopedFor(GraphRequestScopedDependency::class, GraphRequestScopedDependency::class, 'request');
+        $container->scopedFor(GraphRequestRetainsTenantTransitively::class, GraphRequestRetainsTenantTransitively::class, 'request');
+        $container->bind(GraphTransientBridgeToTenant::class, GraphTransientBridgeToTenant::class);
+        $container->scopedFor(GraphTenantScopedDependency::class, GraphTenantScopedDependency::class, 'tenant');
+
+        $graph = (new ContainerGraphInspector())->inspect($container);
+
+        $issues = array_values(array_filter(
+            $graph->issues(),
+            static fn(object $issue): bool => $issue->code === 'scope_capture_violation'
+        ));
+
+        $byService = [];
+
+        foreach ($issues as $issue) {
+            $byService[$issue->service][] = $issue;
+        }
+
+        self::assertCount(1, $byService[GraphSingletonRetainsRequestTransitively::class] ?? []);
+        self::assertSame(
+            GraphRequestScopedDependency::class,
+            $byService[GraphSingletonRetainsRequestTransitively::class][0]->subject,
+        );
+        self::assertStringContainsString(GraphTransientBridgeToRequest::class, $byService[GraphSingletonRetainsRequestTransitively::class][0]->message);
+
+        self::assertCount(1, $byService[GraphRequestRetainsTenantTransitively::class] ?? []);
+        self::assertSame(
+            GraphTenantScopedDependency::class,
+            $byService[GraphRequestRetainsTenantTransitively::class][0]->subject,
+        );
+        self::assertStringContainsString(GraphTransientBridgeToTenant::class, $byService[GraphRequestRetainsTenantTransitively::class][0]->message);
+    }
+
+    public function test_it_does_not_propagate_scope_capture_through_registered_singleton_boundaries(): void
+    {
+        $container = new Container();
+        $container->singleton(GraphSingletonParentOfSingleton::class, GraphSingletonParentOfSingleton::class);
+        $container->singleton(GraphSingletonRetainsRequest::class, GraphSingletonRetainsRequest::class);
+        $container->scopedFor(GraphRequestScopedDependency::class, GraphRequestScopedDependency::class, 'request');
+
+        $graph = (new ContainerGraphInspector())->inspect($container);
+
+        $issues = array_values(array_filter(
+            $graph->issues(),
+            static fn(object $issue): bool => $issue->code === 'scope_capture_violation'
+        ));
+
+        $byService = [];
+
+        foreach ($issues as $issue) {
+            $byService[$issue->service][] = $issue;
+        }
+
+        self::assertArrayHasKey(GraphSingletonRetainsRequest::class, $byService);
+        self::assertArrayNotHasKey(GraphSingletonParentOfSingleton::class, $byService);
+    }
 }
 
 final class GraphDependency
@@ -248,6 +310,41 @@ final class GraphRequestRetainsTenant
 final class GraphTenantRetainsRequest
 {
     public function __construct(public readonly GraphRequestScopedDependency $dependency)
+    {
+    }
+}
+
+final class GraphTransientBridgeToRequest
+{
+    public function __construct(public readonly GraphRequestScopedDependency $dependency)
+    {
+    }
+}
+
+final class GraphTransientBridgeToTenant
+{
+    public function __construct(public readonly GraphTenantScopedDependency $dependency)
+    {
+    }
+}
+
+final class GraphSingletonRetainsRequestTransitively
+{
+    public function __construct(public readonly GraphTransientBridgeToRequest $dependency)
+    {
+    }
+}
+
+final class GraphRequestRetainsTenantTransitively
+{
+    public function __construct(public readonly GraphTransientBridgeToTenant $dependency)
+    {
+    }
+}
+
+final class GraphSingletonParentOfSingleton
+{
+    public function __construct(public readonly GraphSingletonRetainsRequest $dependency)
     {
     }
 }

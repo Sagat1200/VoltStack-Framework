@@ -11,6 +11,7 @@ use Quantum\Database\ORM\Contracts\EntityRepositoryInterface;
 use Quantum\Database\ORM\Metadata\EntityAssociationMetadata;
 use Quantum\Database\ORM\Metadata\EntityMetadata;
 use Quantum\Database\ORM\Metadata\EntityMetadataRegistry;
+use Quantum\Database\ORM\Planning\AssociationFetchPlanCompiler;
 use Quantum\Database\Query\Builder\DatabaseQueryManager;
 use RuntimeException;
 
@@ -368,7 +369,7 @@ final class EntityManager implements EntityManagerInterface
             }
         }
 
-        foreach ($this->groupAssociationPaths($metadata, $associationNames) as $associationName => $nestedAssociationPaths) {
+        foreach ($this->fetchPlanCompiler()->groupPaths($metadata, $associationNames) as $associationName => $nestedAssociationPaths) {
             $loadedTargets = $this->preloadAssociationBatch(
                 $entities,
                 $metadata,
@@ -396,50 +397,9 @@ final class EntityManager implements EntityManagerInterface
         $this->preloadAssociations($entities, $metadata->eagerAssociationNames());
     }
 
-    /**
-     * @param list<string> $associationNames
-     * @return array<string, list<string>>
-     */
-    private function groupAssociationPaths(EntityMetadata $metadata, array $associationNames): array
+    private function fetchPlanCompiler(): AssociationFetchPlanCompiler
     {
-        $grouped = [];
-
-        foreach ($associationNames as $associationPath) {
-            $normalized = trim($associationPath);
-            if ($normalized === '') {
-                continue;
-            }
-
-            $segments = array_values(array_filter(
-                explode('.', $normalized),
-                static fn(string $segment): bool => $segment !== '',
-            ));
-
-            if ($segments === []) {
-                continue;
-            }
-
-            $rootAssociation = array_shift($segments);
-            if ($rootAssociation === null || ! $metadata->hasAssociation($rootAssociation)) {
-                throw new RuntimeException(sprintf(
-                    'Cannot preload unknown association path [%s] on [%s].',
-                    $normalized,
-                    $metadata->className,
-                ));
-            }
-
-            $grouped[$rootAssociation] ??= [];
-            if ($segments === []) {
-                continue;
-            }
-
-            $tailPath = implode('.', $segments);
-            if (! in_array($tailPath, $grouped[$rootAssociation], true)) {
-                $grouped[$rootAssociation][] = $tailPath;
-            }
-        }
-
-        return $grouped;
+        return new AssociationFetchPlanCompiler($this->metadata);
     }
 
     /**

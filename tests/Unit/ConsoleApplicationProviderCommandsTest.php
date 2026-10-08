@@ -5,10 +5,12 @@ declare(strict_types=1);
 namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
+use Quantum\Config\ConfigRepository;
 use Quantum\Console\Command;
 use Quantum\Console\ConsoleApplication;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
+use VoltStack\Framework\Application;
 use VoltStack\Framework\ServiceProvider;
 
 final class ConsoleApplicationProviderCommandsTest extends TestCase
@@ -38,21 +40,7 @@ PHP
 
     protected function tearDown(): void
     {
-        $appConfig = $this->basePath . DIRECTORY_SEPARATOR . 'config' . DIRECTORY_SEPARATOR . 'app.php';
-
-        if (is_file($appConfig)) {
-            unlink($appConfig);
-        }
-
-        $configDirectory = $this->basePath . DIRECTORY_SEPARATOR . 'config';
-
-        if (is_dir($configDirectory)) {
-            rmdir($configDirectory);
-        }
-
-        if (is_dir($this->basePath)) {
-            rmdir($this->basePath);
-        }
+        $this->deleteDirectory($this->basePath);
 
         parent::tearDown();
     }
@@ -68,6 +56,85 @@ PHP
 
         self::assertSame(0, $exitCode);
         self::assertStringContainsString('frontend:install', $output->stdout());
+    }
+
+    public function test_it_can_require_published_configuration_for_provider_command_discovery(): void
+    {
+        $this->publishCurrentConfiguration();
+
+        $output = new Output();
+        $application = new ConsoleApplication($this->basePath, [], $output);
+
+        $exitCode = $application->run([
+            'volt',
+            '--require-published-config',
+        ]);
+
+        self::assertSame(0, $exitCode);
+        self::assertStringContainsString('frontend:install', $output->stdout());
+    }
+
+    public function test_it_fails_provider_command_discovery_when_published_configuration_is_required_but_missing(): void
+    {
+        $output = new Output();
+        $application = new ConsoleApplication($this->basePath, [], $output);
+
+        $exitCode = $application->run([
+            'volt',
+            '--require-published-config',
+        ]);
+
+        self::assertSame(1, $exitCode);
+        self::assertStringContainsString('Published configuration is required for bootstrap', $output->stderr());
+    }
+
+    private function publishCurrentConfiguration(): string
+    {
+        $app = new Application($this->basePath);
+        $repository = $app->make(ConfigRepository::class);
+        $repository->loadPath($this->basePath . DIRECTORY_SEPARATOR . 'config');
+
+        $codec = $app->configSnapshotCodec();
+        $baseSnapshot = $repository->snapshot(provenance: $repository->provenance());
+        $publishedSnapshot = $repository->snapshot(
+            provenance: $baseSnapshot->provenance(),
+            configId: $codec->configId($baseSnapshot),
+        );
+
+        $artifact = $app->configManifestStore()->publish($publishedSnapshot);
+        $app->configManifestStore()->activateGeneration($artifact->generationId());
+
+        return $artifact->generationId();
+    }
+
+    private function deleteDirectory(string $path): void
+    {
+        if (! is_dir($path)) {
+            return;
+        }
+
+        $items = scandir($path);
+
+        if (! is_array($items)) {
+            return;
+        }
+
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+
+            $target = $path . DIRECTORY_SEPARATOR . $item;
+
+            if (is_file($target) || is_link($target)) {
+                @unlink($target);
+                continue;
+            }
+
+            $this->deleteDirectory($target);
+        }
+
+        @rmdir($path);
     }
 }
 

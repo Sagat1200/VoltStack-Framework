@@ -206,64 +206,143 @@ final class ContainerGraphInspector
     private function validateScopeCaptures(array $services, array $aliases): array
     {
         $issues = [];
+        $reported = [];
 
         foreach ($services as $service) {
             if (! in_array($service->lifetime, ['singleton', 'scoped'], true)) {
                 continue;
             }
 
-            foreach ($service->dependencies as $dependency) {
-                $target = $this->normalizeAbstract($dependency->abstract, $aliases);
-                $dependencyNode = $services[$target] ?? null;
-
-                if ($dependencyNode === null || $dependencyNode->lifetime !== 'scoped') {
-                    continue;
-                }
-
-                if ($service->lifetime === 'singleton') {
-                    $issues[] = new ValidationIssue(
-                        'scope_capture_violation',
-                        sprintf(
-                            'Service [%s] is a singleton and cannot retain scoped dependency [%s]%s.',
-                            $service->abstract,
-                            $dependencyNode->abstract,
-                            $dependencyNode->scopeKind !== null
-                                ? sprintf(' with scope [%s]', $dependencyNode->scopeKind)
-                                : '',
-                        ),
-                        $service->abstract,
-                        $dependencyNode->abstract,
-                    );
-                    continue;
-                }
-
-                $serviceScopeKind = $this->scopeKindFromNode($service);
-                $dependencyScopeKind = $this->scopeKindFromNode($dependencyNode);
-
-                if ($serviceScopeKind === null || $dependencyScopeKind === null) {
-                    continue;
-                }
-
-                if ($serviceScopeKind->canRetain($dependencyScopeKind)) {
-                    continue;
-                }
-
-                $issues[] = new ValidationIssue(
-                    'scope_capture_violation',
-                    sprintf(
-                        'Scoped service [%s] with scope [%s] cannot statically retain dependency [%s] with scope [%s].',
-                        $service->abstract,
-                        $serviceScopeKind->value,
-                        $dependencyNode->abstract,
-                        $dependencyScopeKind->value,
-                    ),
-                    $service->abstract,
-                    $dependencyNode->abstract,
-                );
-            }
+            $this->walkForScopeCaptures(
+                root: $service,
+                current: $service,
+                services: $services,
+                aliases: $aliases,
+                activePath: [$service->abstract],
+                visitedTransients: [],
+                reported: $reported,
+                issues: $issues,
+            );
         }
 
         return $issues;
+    }
+
+    /**
+     * @param array<string, ServiceNode> $services
+     * @param array<string, string> $aliases
+     * @param list<string> $activePath
+     * @param array<string, bool> $visitedTransients
+     * @param array<string, bool> $reported
+     * @param list<ValidationIssue> $issues
+     */
+    private function walkForScopeCaptures(
+        ServiceNode $root,
+        ServiceNode $current,
+        array $services,
+        array $aliases,
+        array $activePath,
+        array $visitedTransients,
+        array &$reported,
+        array &$issues,
+    ): void {
+        foreach ($current->dependencies as $dependency) {
+            $target = $this->normalizeAbstract($dependency->abstract, $aliases);
+            $dependencyNode = $services[$target] ?? null;
+
+            if ($dependencyNode === null) {
+                continue;
+            }
+
+            if ($dependencyNode->lifetime === 'scoped') {
+                $issue = $this->scopeCaptureIssue($root, $dependencyNode, [...$activePath, $dependencyNode->abstract]);
+
+                if ($issue === null) {
+                    continue;
+                }
+
+                $signature = $issue->service . '->' . ($issue->subject ?? '');
+
+                if (($reported[$signature] ?? false) === true) {
+                    continue;
+                }
+
+                $reported[$signature] = true;
+                $issues[] = $issue;
+                continue;
+            }
+
+            if ($dependencyNode->lifetime !== 'transient') {
+                continue;
+            }
+
+            if (($visitedTransients[$dependencyNode->abstract] ?? false) === true) {
+                continue;
+            }
+
+            $visitedTransients[$dependencyNode->abstract] = true;
+
+            $this->walkForScopeCaptures(
+                root: $root,
+                current: $dependencyNode,
+                services: $services,
+                aliases: $aliases,
+                activePath: [...$activePath, $dependencyNode->abstract],
+                visitedTransients: $visitedTransients,
+                reported: $reported,
+                issues: $issues,
+            );
+        }
+    }
+
+    /**
+     * @param list<string> $path
+     */
+    private function scopeCaptureIssue(ServiceNode $service, ServiceNode $dependencyNode, array $path): ?ValidationIssue
+    {
+        $pathDescription = implode(' -> ', $path);
+
+        if ($service->lifetime === 'singleton') {
+            return new ValidationIssue(
+                'scope_capture_violation',
+                sprintf(
+                    'Service [%s] is a singleton and cannot statically retain scoped dependency [%s]%s via path [%s].',
+                    $service->abstract,
+                    $dependencyNode->abstract,
+                    $dependencyNode->scopeKind !== null
+                        ? sprintf(' with scope [%s]', $dependencyNode->scopeKind)
+                        : '',
+                    $pathDescription,
+                ),
+                $service->abstract,
+                $dependencyNode->abstract,
+            );
+        }
+
+        $serviceScopeKind = $this->scopeKindFromNode($service);
+        $dependencyScopeKind = $this->scopeKindFromNode($dependencyNode);
+
+        if ($serviceScopeKind === null || $dependencyScopeKind === null) {
+            return null;
+        }
+
+        if ($serviceScopeKind->canRetain($dependencyScopeKind)) {
+            return null;
+        }
+
+        return new ValidationIssue(
+            'scope_capture_violation',
+            sprintf(
+                'Scoped service [%s] with scope [%s] cannot statically retain dependency [%s] with scope [%s] via path [%s].',
+                $service->abstract,
+                $serviceScopeKind->value,
+                $dependencyNode->abstract,
+                $dependencyScopeKind->value,
+                $pathDescription,
+            ),
+            $service->abstract,
+            $dependencyNode->abstract,
+        );
     }
 
     /**

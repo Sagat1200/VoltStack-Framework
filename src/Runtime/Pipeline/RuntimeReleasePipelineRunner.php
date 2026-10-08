@@ -9,6 +9,7 @@ use Quantum\Bootstrap\Manifest\BootstrapManifestStore;
 use Quantum\Bootstrap\Release\BootstrapReleaseChecker;
 use Quantum\Compilation\Build;
 use Quantum\Compilation\BuildManifest;
+use Quantum\Config\Publication\PublishedConfigurationRequiredException;
 use RuntimeException;
 use VoltStack\Framework\Application;
 use VoltStack\Runtime\Budget\RuntimeBudget;
@@ -45,7 +46,7 @@ final class RuntimeReleasePipelineRunner
         bool $rollbackOnFailure = true,
         bool $emitPhaseTelemetry = false,
     ): RuntimeReleasePipelineReport {
-        $app = $this->bootstrapCurrentApplication();
+        $app = $this->bootstrapCurrentApplication($requirePublishedConfig);
         $driver = $this->resolveDriver($app, $driver);
         $artifactDirectory = $this->normalizeArtifactDirectory($artifactDirectory);
         $bootstrapBefore = $this->currentBootstrapBuild($artifactDirectory);
@@ -178,7 +179,7 @@ final class RuntimeReleasePipelineRunner
         );
     }
 
-    private function bootstrapCurrentApplication(): Application
+    private function bootstrapCurrentApplication(bool $requirePublishedConfig = false): Application
     {
         $bootstrapPath = $this->basePath . DIRECTORY_SEPARATOR . 'bootstrap' . DIRECTORY_SEPARATOR . 'app.php';
 
@@ -195,7 +196,28 @@ final class RuntimeReleasePipelineRunner
             throw new RuntimeException('The application bootstrap file must return a VoltStack application instance.');
         }
 
+        if ($requirePublishedConfig) {
+            $this->assertPublishedConfiguration($app);
+        }
+
         return $app;
+    }
+
+    private function assertPublishedConfiguration(Application $app): void
+    {
+        $status = $app->configStatusInspector()->inspect($app);
+
+        if (! $status->hasActiveGeneration()) {
+            throw new PublishedConfigurationRequiredException(
+                'Published configuration is required for runtime release pipeline, but no active configuration generation exists.',
+            );
+        }
+
+        if (! $status->publishedMatchesEffective()) {
+            throw new PublishedConfigurationRequiredException(
+                'Published configuration is required for runtime release pipeline, but the effective snapshot differs from the active generation.',
+            );
+        }
     }
 
     private function resolveDriver(Application $app, ?string $driver): string

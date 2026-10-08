@@ -29,10 +29,12 @@ final class RuntimeTelemetryEmitter
                 'concurrent' => $report->concurrent(),
                 'budget_source' => $report->recommendedBudget()->source(),
                 'has_active_calibration' => $report->activeCalibration() !== null,
+                'rollout_ready' => $report->rolloutReadiness()->ready(),
+                'rollout_strategy' => $report->rolloutReadiness()->strategy(),
             ],
             alerts: array_map(
                 static fn(string $message): array => ['message' => $message],
-                $report->alerts(),
+                [...$report->alerts(), ...$report->rolloutReadiness()->gaps()],
             ),
         ));
     }

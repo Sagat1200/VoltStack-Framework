@@ -7,6 +7,8 @@ namespace Quantum\Database\ORM;
 use Closure;
 use Quantum\Database\ORM\Metadata\EntityAssociationMetadata;
 use Quantum\Database\ORM\Metadata\EntityMetadata;
+use Quantum\Database\ORM\Planning\AssociationFetchPlan;
+use Quantum\Database\ORM\Planning\AssociationFetchPlanCompiler;
 use Quantum\Database\Query\Builder\DatabaseQueryManager;
 use Quantum\Database\Query\Builder\SelectQueryBuilder;
 use RuntimeException;
@@ -226,7 +228,7 @@ final class EntityQuery
         }
 
         foreach ($associations as $association) {
-            $normalized = $this->normalizePreloadAssociationPath($association);
+            $normalized = $this->fetchPlanCompiler()->normalizePath($this->metadata, $association);
             if ($normalized === '') {
                 continue;
             }
@@ -2039,77 +2041,9 @@ final class EntityQuery
     /**
      * @return list<string>
      */
-    private function remainingPreloadedAssociations(): array
-    {
-        if ($this->joinedAssociations === []) {
-            return $this->preloadedAssociations;
-        }
-
-        return array_values(array_filter(
-            $this->preloadedAssociations,
-            function (string $association): bool {
-                [$rootAssociation] = $this->splitAssociationPath($association);
-
-                return ! isset($this->joinedAssociations[$rootAssociation]);
-            },
-        ));
-    }
-
-    /**
-     * @return list<string>
-     */
     private function associationsToPreload(): array
     {
-        $configured = $this->metadata->eagerAssociationNames();
-        if ($this->joinedAssociations !== []) {
-            $configured = array_values(array_filter(
-                $configured,
-                fn(string $association): bool => ! isset($this->joinedAssociations[$association]),
-            ));
-        }
-
-        return array_values(array_unique(array_merge(
-            $this->remainingPreloadedAssociations(),
-            $configured,
-        )));
-    }
-
-    private function normalizePreloadAssociationPath(string $associationPath): string
-    {
-        $normalized = trim($associationPath);
-        if ($normalized === '') {
-            return '';
-        }
-
-        $segments = array_values(array_filter(
-            explode('.', $normalized),
-            static fn(string $segment): bool => trim($segment) !== '',
-        ));
-
-        if ($segments === []) {
-            return '';
-        }
-
-        $metadata = $this->metadata;
-        $resolved = [];
-
-        foreach ($segments as $segment) {
-            $segment = trim($segment);
-            if (! $metadata->hasAssociation($segment)) {
-                throw new RuntimeException(sprintf(
-                    'Cannot preload unknown association path [%s] from [%s] at segment [%s].',
-                    $normalized,
-                    $metadata->className,
-                    $segment,
-                ));
-            }
-
-            $association = $metadata->association($segment);
-            $resolved[] = $association->name;
-            $metadata = $this->manager->metadata->for($association->targetEntity);
-        }
-
-        return implode('.', $resolved);
+        return $this->compiledFetchPlan()->preloadPaths();
     }
 
     /**
@@ -2121,7 +2055,7 @@ final class EntityQuery
             return;
         }
 
-        foreach ($this->nestedPreloadPathsForJoinedRoots() as $associationName => $nestedAssociationPaths) {
+        foreach ($this->compiledFetchPlan()->joinedNestedPaths() as $associationName => $nestedAssociationPaths) {
             $association = $this->joinedAssociations[$associationName]['association'];
             $targets = [];
 
@@ -2158,36 +2092,18 @@ final class EntityQuery
         }
     }
 
-    /**
-     * @return array<string, list<string>>
-     */
-    private function nestedPreloadPathsForJoinedRoots(): array
+    private function compiledFetchPlan(): AssociationFetchPlan
     {
-        $nested = [];
-
-        foreach ($this->preloadedAssociations as $associationPath) {
-            [$rootAssociation, $tailPath] = $this->splitAssociationPath($associationPath);
-            if (! isset($this->joinedAssociations[$rootAssociation]) || $tailPath === null) {
-                continue;
-            }
-
-            $nested[$rootAssociation] ??= [];
-            if (! in_array($tailPath, $nested[$rootAssociation], true)) {
-                $nested[$rootAssociation][] = $tailPath;
-            }
-        }
-
-        return $nested;
+        return $this->fetchPlanCompiler()->compile(
+            $this->metadata,
+            $this->preloadedAssociations,
+            array_keys($this->joinedAssociations),
+        );
     }
 
-    /**
-     * @return array{0:string,1:?string}
-     */
-    private function splitAssociationPath(string $associationPath): array
+    private function fetchPlanCompiler(): AssociationFetchPlanCompiler
     {
-        $segments = explode('.', $associationPath, 2);
-
-        return [$segments[0], $segments[1] ?? null];
+        return new AssociationFetchPlanCompiler($this->manager->metadata);
     }
 
     /**

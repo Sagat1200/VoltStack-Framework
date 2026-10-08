@@ -6,11 +6,13 @@ namespace VoltStack\Framework\Tests\Unit;
 
 use PHPUnit\Framework\TestCase;
 use Quantum\Authorization\Ability\Ability;
+use Quantum\Authorization\Consistency\VersionedAuthorizationConsistency;
 use Quantum\Authorization\Authority\AttributeDefinition;
 use Quantum\Authorization\Authority\InMemoryAuthorityRepository;
 use Quantum\Authorization\Authority\Permission;
 use Quantum\Authorization\Authority\Role;
 use Quantum\Authorization\Authority\Scope;
+use Quantum\Cache\LocalVersionAuthority;
 
 final class AuthorityModelAndRepositoryTest extends TestCase
 {
@@ -153,5 +155,31 @@ final class AuthorityModelAndRepositoryTest extends TestCase
         $repository->revokeAll('u1');
 
         self::assertFalse($repository->hasPermission('u1', 'admin'));
+    }
+
+    public function test_list_grants_and_mutations_are_available_for_operational_authority_management(): void
+    {
+        $consistency = new VersionedAuthorizationConsistency(new LocalVersionAuthority());
+        $repository = new InMemoryAuthorityRepository([
+            ['principal_id' => 'u1', 'scope' => 'tenant:acme', 'roles' => ['admin'], 'permissions' => ['posts.publish']],
+        ], $consistency);
+
+        $before = $consistency->authorityVersion('u1', 'tenant:acme');
+        $rows = $repository->listGrants(['principal_id' => 'u1', 'scope' => 'tenant:acme']);
+
+        self::assertCount(2, $rows);
+        self::assertSame(
+            ['permission:posts.publish', 'role:admin'],
+            array_values(array_map(
+                static fn (array $row): string => $row['type'] . ':' . $row['value'],
+                $rows,
+            )),
+        );
+
+        self::assertTrue($repository->grantPermission('u1', 'posts.archive', 'tenant:acme'));
+        self::assertFalse($repository->grantPermission('u1', 'posts.archive', 'tenant:acme'));
+        self::assertTrue($repository->revokeRole('u1', 'admin', 'tenant:acme'));
+        self::assertFalse($repository->revokeRole('u1', 'admin', 'tenant:acme'));
+        self::assertNotSame($before, $consistency->authorityVersion('u1', 'tenant:acme'));
     }
 }

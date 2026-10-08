@@ -189,6 +189,8 @@ PHP
         self::assertStringContainsString('Recommended total budget: 80.000 ms', $output->stdout());
         self::assertStringContainsString('Recommended request budget: 30.000 ms', $output->stdout());
         self::assertStringContainsString('Budget source: config', $output->stdout());
+        self::assertStringContainsString('Rollout ready: yes', $output->stdout());
+        self::assertStringContainsString('Rollout strategy: progressive-drain', $output->stdout());
         self::assertStringContainsString('Supported drivers: frankenphp, sapi', $output->stdout());
         self::assertStringContainsString('Telemetry: emitted', $output->stdout());
 
@@ -196,6 +198,8 @@ PHP
         self::assertIsString($telemetry);
         self::assertStringContainsString('"type":"runtime_status"', $telemetry);
         self::assertStringContainsString('"budget_source":"config"', $telemetry);
+        self::assertStringContainsString('"rollout_ready":true', $telemetry);
+        self::assertStringContainsString('"rollout_strategy":"progressive-drain"', $telemetry);
     }
 
     public function test_runtime_status_command_can_require_published_configuration_when_generation_matches_effective_snapshot(): void
@@ -320,6 +324,8 @@ PHP
         self::assertSame(80, $decoded['report']['recommended_budget']['total_budget_ms'] ?? null);
         self::assertSame(30, $decoded['report']['recommended_budget']['request_budget_ms'] ?? null);
         self::assertSame('config', $decoded['report']['recommended_budget']['source'] ?? null);
+        self::assertSame(true, $decoded['report']['rollout_readiness']['ready'] ?? null);
+        self::assertSame('progressive-drain', $decoded['report']['rollout_readiness']['strategy'] ?? null);
     }
 
     public function test_runtime_status_command_uses_the_active_published_calibration_when_no_config_budget_exists(): void
@@ -381,6 +387,50 @@ PHP
         self::assertEquals(61.0, $decoded['report']['recommended_budget']['total_budget_ms'] ?? null);
         self::assertEquals(29.0, $decoded['report']['recommended_budget']['request_budget_ms'] ?? null);
         self::assertSame($artifact->generationId(), $decoded['report']['active_calibration']['generation_id'] ?? null);
+        self::assertSame(true, $decoded['report']['rollout_readiness']['ready'] ?? null);
+        self::assertSame('progressive-drain', $decoded['report']['rollout_readiness']['strategy'] ?? null);
+    }
+
+    public function test_runtime_status_command_flags_persistent_runtime_without_empirical_or_config_budget_as_not_ready_for_rollout(): void
+    {
+        file_put_contents(
+            $this->basePath . DIRECTORY_SEPARATOR . 'config' . DIRECTORY_SEPARATOR . 'runtime.php',
+            <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+return [
+    'driver' => 'frankenphp',
+];
+PHP
+        );
+
+        $command = new RuntimeStatusCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'runtime:status',
+                '--driver=frankenphp',
+                '--strict-rollout',
+                '--json',
+            ]),
+            $output,
+        );
+
+        self::assertSame(1, $exitCode);
+
+        $decoded = json_decode(trim($output->stdout()), true);
+        self::assertIsArray($decoded);
+        self::assertSame(false, $decoded['report']['rollout_readiness']['ready'] ?? null);
+        self::assertSame('progressive-drain', $decoded['report']['rollout_readiness']['strategy'] ?? null);
+        self::assertSame('adapter-default', $decoded['report']['rollout_readiness']['budget_source'] ?? null);
+        self::assertContains(
+            'No existe budget runtime configurado o calibrado para un rollout persistente controlado.',
+            $decoded['report']['rollout_readiness']['gaps'] ?? [],
+        );
     }
 
     public function test_runtime_status_command_can_require_published_configuration(): void

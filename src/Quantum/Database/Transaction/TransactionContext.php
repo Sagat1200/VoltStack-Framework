@@ -18,6 +18,8 @@ final class TransactionContext
     public function __construct(
         private readonly TransactionId $id,
         private readonly string $connectionName,
+        private readonly ?string $scopeId = null,
+        private readonly ?string $runtimeRequestId = null,
     ) {
     }
 
@@ -29,6 +31,16 @@ final class TransactionContext
     public function connectionName(): string
     {
         return $this->connectionName;
+    }
+
+    public function scopeId(): ?string
+    {
+        return $this->scopeId;
+    }
+
+    public function runtimeRequestId(): ?string
+    {
+        return $this->runtimeRequestId;
     }
 
     public function depth(): int

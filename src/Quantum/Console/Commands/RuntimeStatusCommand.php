@@ -27,7 +27,7 @@ final class RuntimeStatusCommand extends Command
 
     public function usage(): string
     {
-        return 'runtime:status [--driver=frankenphp] [--max-requests=1] [--require-published-config] [--emit-telemetry] [--strict] [--json]';
+        return 'runtime:status [--driver=frankenphp] [--max-requests=1] [--require-published-config] [--emit-telemetry] [--strict] [--strict-rollout] [--json]';
     }
 
     public function category(): string
@@ -43,6 +43,7 @@ final class RuntimeStatusCommand extends Command
             '--require-published-config' => 'Exige una generation activa y sin drift antes de inspeccionar el runtime.',
             '--emit-telemetry' => 'Emite una senal de telemetry con el estado del runtime.',
             '--strict' => 'Devuelve exit code 1 si el reporte contiene alertas.',
+            '--strict-rollout' => 'Devuelve exit code 1 si el runtime no esta listo para rollout segun sus budgets/capacidades.',
             '--json' => 'Emite un payload JSON estable con el reporte de status.',
         ];
     }
@@ -95,6 +96,14 @@ final class RuntimeStatusCommand extends Command
                     '  Budget source: %s',
                     $report->recommendedBudget()->source()
                 ));
+                $output->writeln(sprintf(
+                    '  Rollout ready: %s',
+                    $report->rolloutReadiness()->ready() ? 'yes' : 'no'
+                ));
+                $output->writeln(sprintf(
+                    '  Rollout strategy: %s',
+                    $report->rolloutReadiness()->strategy()
+                ));
                 if ($report->activeCalibration() !== null) {
                     $output->writeln(sprintf(
                         '  Active calibration generation: %s',
@@ -115,12 +124,24 @@ final class RuntimeStatusCommand extends Command
                     }
                 }
 
+                if ($report->rolloutReadiness()->gaps() !== []) {
+                    $output->writeln('  Rollout gaps:');
+
+                    foreach ($report->rolloutReadiness()->gaps() as $gap) {
+                        $output->writeln(sprintf('    - %s', $gap));
+                    }
+                }
+
                 if ($input->hasOption('emit-telemetry')) {
                     $output->writeln('  Telemetry: emitted');
                 }
             }
 
             if ($input->hasOption('strict') && ! $report->healthy()) {
+                return 1;
+            }
+
+            if ($input->hasOption('strict-rollout') && ! $report->rolloutReadiness()->ready()) {
                 return 1;
             }
 

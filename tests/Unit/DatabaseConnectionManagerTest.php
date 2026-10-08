@@ -6,10 +6,17 @@ namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
 use Quantum\Config\ConfigRepository;
+use Quantum\Database\Config\DatabaseConfiguration;
 use Quantum\Database\Connection\Connection;
+use Quantum\Database\Connection\ConnectionFactory;
 use Quantum\Database\Connection\ConnectionDefinitionRegistry;
 use Quantum\Database\Connection\ConnectionManager;
+use Quantum\Database\Contracts\ConnectionInterface;
 use Quantum\Database\Contracts\ConnectionManagerInterface;
+use Quantum\Database\Dialect\DialectResolver;
+use Quantum\Database\Driver\DriverRegistry;
+use Quantum\Database\Platform\PlatformResolver;
+use Quantum\Database\Runtime\DatabaseExecutionScope;
 use VoltStack\Framework\Application;
 
 final class DatabaseConnectionManagerTest extends TestCase
@@ -54,6 +61,73 @@ final class DatabaseConnectionManagerTest extends TestCase
         self::assertSame('sqlite', $connection->platform()->id());
         self::assertSame('sqlite', $connection->dialect()->id());
         self::assertSame($connection, $manager->connection('analytics'));
+    }
+
+    public function test_disconnect_all_owned_only_disconnects_connections_that_match_the_target_scope(): void
+    {
+        $scope = new DatabaseExecutionScope(
+            'scope-a',
+            'request-a',
+            microtime(true),
+            new DatabaseConfiguration(),
+        );
+        $manager = new ConnectionManager(
+            new ConnectionDefinitionRegistry(new DatabaseConfiguration()),
+            new ConnectionFactory(new DriverRegistry(), new PlatformResolver(), new DialectResolver()),
+            $scope,
+        );
+
+        $owned = $this->createMock(ConnectionInterface::class);
+        $owned->expects(self::once())->method('disconnect');
+        $owned->method('isConnected')->willReturn(true);
+
+        $legacy = $this->createMock(ConnectionInterface::class);
+        $legacy->expects(self::never())->method('disconnect');
+        $legacy->method('isConnected')->willReturn(true);
+
+        $foreign = $this->createMock(ConnectionInterface::class);
+        $foreign->expects(self::never())->method('disconnect');
+        $foreign->method('isConnected')->willReturn(true);
+
+        $reflection = new \ReflectionClass($manager);
+        $connections = $reflection->getProperty('connections');
+        $connections->setAccessible(true);
+        $connections->setValue($manager, [
+            'owned' => $owned,
+            'legacy' => $legacy,
+            'foreign' => $foreign,
+        ]);
+
+        $leases = $reflection->getProperty('leases');
+        $leases->setAccessible(true);
+        $leases->setValue($manager, [
+            'owned' => [
+                'name' => 'owned',
+                'scope_id' => 'scope-a',
+                'runtime_request_id' => 'request-a',
+                'opened_at' => microtime(true),
+            ],
+            'legacy' => [
+                'name' => 'legacy',
+                'scope_id' => null,
+                'runtime_request_id' => null,
+                'opened_at' => microtime(true),
+            ],
+            'foreign' => [
+                'name' => 'foreign',
+                'scope_id' => 'scope-b',
+                'runtime_request_id' => 'request-b',
+                'opened_at' => microtime(true),
+            ],
+        ]);
+
+        $report = $manager->disconnectAllOwned('scope-a');
+
+        self::assertSame(1, $report['disconnected']);
+        self::assertSame(['legacy', 'foreign'], $report['skipped']);
+        self::assertSame([], $report['errors']);
+        self::assertSame(['legacy', 'foreign'], array_keys($connections->getValue($manager)));
+        self::assertSame(['legacy', 'foreign'], array_keys($leases->getValue($manager)));
     }
 
     private function deleteDirectory(string $path): void

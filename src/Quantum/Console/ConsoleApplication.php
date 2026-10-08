@@ -17,8 +17,10 @@ use Quantum\Console\Commands\ControllerCompileClearCommand;
 use Quantum\Console\Commands\ControllerCompileCommand;
 use Quantum\Console\Commands\ControllerCompileWarmupCommand;
 use Quantum\Console\Commands\ExceptionCompileCommand;
+use Quantum\Console\Commands\ExceptionDoctorCommand;
 use Quantum\Console\Commands\ExceptionReleaseCheckCommand;
 use Quantum\Console\Commands\ExceptionStatusCommand;
+use Quantum\Console\Commands\ExceptionValidateCommand;
 use Quantum\Console\Commands\ConfigReleaseCheckCommand;
 use Quantum\Console\Commands\ConfigStatusCommand;
 use Quantum\Console\Commands\MakeActionCommand;
@@ -55,6 +57,10 @@ final class ConsoleApplication
 
     private readonly Output $output;
 
+    private bool $configuredCommandsRegistered = false;
+
+    private bool $shouldDiscoverConfiguredCommands = false;
+
     /**
      * @param iterable<int, Command> $commands
      */
@@ -72,6 +78,7 @@ final class ConsoleApplication
         }
 
         if (! $registered) {
+            $this->shouldDiscoverConfiguredCommands = true;
             $this->add(new ServeCommand($basePath));
             $this->add(new RouteListCommand($basePath));
             $this->add(new RouteCacheCommand($basePath));
@@ -93,8 +100,10 @@ final class ConsoleApplication
             $this->add(new ControllerCompileClearCommand($basePath));
             $this->add(new ControllerCompileWarmupCommand($basePath));
             $this->add(new ExceptionCompileCommand($basePath));
+            $this->add(new ExceptionDoctorCommand($basePath));
             $this->add(new ExceptionReleaseCheckCommand($basePath));
             $this->add(new ExceptionStatusCommand($basePath));
+            $this->add(new ExceptionValidateCommand($basePath));
             $this->add(new ConfigReleaseCheckCommand($basePath));
             $this->add(new ConfigStatusCommand($basePath));
             $this->add(new BootstrapBenchmarkCommand($basePath));
@@ -104,7 +113,6 @@ final class ConsoleApplication
             $this->add(new RuntimeReleasePipelineCommand($basePath));
             $this->add(new RuntimeSmokeCheckCommand($basePath));
             $this->add(new RuntimeStatusCommand($basePath));
-            $this->registerConfiguredCommands();
         }
     }
 
@@ -130,6 +138,14 @@ final class ConsoleApplication
     {
         $input = Input::fromArgv($argv);
         $output = $this->output;
+
+        try {
+            $this->registerConfiguredCommands($this->requiresPublishedConfig($input));
+        } catch (Throwable $exception) {
+            $output->error(sprintf('VoltStack console error: %s', $exception->getMessage()));
+
+            return 1;
+        }
 
         if ($input->command() === null || $input->command() === 'list') {
             $this->renderGeneralHelp($output, $input->script());
@@ -341,29 +357,40 @@ final class ConsoleApplication
         return $names;
     }
 
-    private function registerConfiguredCommands(): void
+    private function registerConfiguredCommands(bool $requirePublishedConfig = false): void
     {
+        if ($this->configuredCommandsRegistered || ! $this->shouldDiscoverConfiguredCommands) {
+            return;
+        }
+
         $configPath = $this->basePath . DIRECTORY_SEPARATOR . 'config';
 
         if (! is_dir($configPath)) {
+            $this->configuredCommandsRegistered = true;
             return;
         }
 
         $app = new Application($this->basePath);
         $bootstrapper = new Bootstrapper($app);
-        $bootstrapper->loadConfiguration();
+        if ($requirePublishedConfig) {
+            $bootstrapper->loadPublishedConfiguration();
+        } else {
+            $bootstrapper->loadConfiguration();
+        }
+
+        $configuredProviders = [];
 
         foreach ((array) $app->config('app.providers', []) as $providerClass) {
             if (! is_string($providerClass) || trim($providerClass) === '') {
                 continue;
             }
 
-            $provider = $app->register($providerClass);
+            $configuredProviders[] = $app->register($providerClass);
         }
 
         $registered = [];
 
-        foreach ($app->getProviders() as $provider) {
+        foreach ($configuredProviders as $provider) {
             foreach ($provider->commands() as $commandClass) {
                 if (isset($registered[$commandClass])) {
                     continue;
@@ -373,6 +400,23 @@ final class ConsoleApplication
                 $registered[$commandClass] = true;
             }
         }
+
+        $this->configuredCommandsRegistered = true;
+    }
+
+    private function requiresPublishedConfig(Input $input): bool
+    {
+        if ($input->hasOption('require-published-config')) {
+            return true;
+        }
+
+        foreach ($input->rawTokens() as $token) {
+            if ($token === '--require-published-config') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

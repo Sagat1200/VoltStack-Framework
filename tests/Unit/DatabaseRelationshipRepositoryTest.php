@@ -70,6 +70,30 @@ final class DatabaseRelationshipRepositoryTest extends TestCase
         $database->connection()->disconnect();
     }
 
+    public function test_database_repository_lists_and_revokes_relationships_by_key(): void
+    {
+        $app = $this->makeApplication();
+        $database = $app->make(DatabaseInterface::class);
+        $this->seedRelationshipTable($database, [
+            ['principal_id' => 'u_3', 'relation' => 'owner', 'resource_key' => 'string:doc-3', 'scope' => 'tenant:acme'],
+            ['principal_id' => 'u_3', 'relation' => 'viewer', 'resource_key' => 'string:doc-4', 'scope' => 'global'],
+        ]);
+
+        $repository = new DatabaseRelationshipRepository($database);
+        $listed = $repository->listRelationships([
+            'principal_id' => 'u_3',
+            'relation' => 'owner',
+            'scope' => 'tenant:acme',
+        ]);
+
+        self::assertCount(1, $listed);
+        self::assertSame('string:doc-3', $listed[0]['resource_key']);
+        self::assertTrue($repository->revokeRelationshipByKey('u_3', 'owner', 'string:doc-3', 'tenant:acme'));
+        self::assertFalse($repository->hasRelationship('u_3', 'owner', 'doc-3', 'tenant:acme'));
+
+        $database->connection()->disconnect();
+    }
+
     private function makeApplication(): Application
     {
         $app = new Application($this->basePath);

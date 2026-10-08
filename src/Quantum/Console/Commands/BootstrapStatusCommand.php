@@ -45,53 +45,56 @@ final class BootstrapStatusCommand extends Command
 
     public function handle(Input $input, Output $output): int
     {
-        $app = $this->bootstrapApplication();
-        $report = (new BootstrapStatusInspector($this->basePath))->inspect(
-            $app,
-            is_string($input->option('artifact-dir')) ? $input->option('artifact-dir') : null,
-        );
+        $artifactDirectory = is_string($input->option('artifact-dir')) ? $input->option('artifact-dir') : null;
 
-        if ($input->hasOption('emit-telemetry')) {
-            (new BootstrapTelemetryEmitter($app->make(TelemetryManagerInterface::class)))->emitStatus($report);
-        }
+        return $this->runInCommandRuntime(function ($app) use ($artifactDirectory, $input, $output): int {
+            $report = (new BootstrapStatusInspector($this->basePath))->inspect(
+                $app,
+                $artifactDirectory,
+            );
 
-        if ($input->hasOption('json')) {
-            $payload = [
-                'command' => $this->name(),
-                'telemetry_emitted' => $input->hasOption('emit-telemetry'),
-                'report' => $report->toArray(),
-            ];
+            if ($input->hasOption('emit-telemetry')) {
+                (new BootstrapTelemetryEmitter($app->make(TelemetryManagerInterface::class)))->emitStatus($report);
+            }
 
-            $output->writeln((string) json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
-        } else {
-            $output->writeln('Bootstrap status:');
-            $output->writeln(sprintf('  Environment: %s', $report->environment()));
-            $output->writeln(sprintf('  Booted: %s', $report->booted() ? 'yes' : 'no'));
-            $output->writeln(sprintf('  Providers: %d', $report->providerCount()));
-            $output->writeln(sprintf('  Artifact dir: %s', $report->artifactDirectory()));
-            $output->writeln(sprintf('  Active generation: %s', $report->hasActiveGeneration() ? 'yes' : 'no'));
-            $output->writeln(sprintf('  Generation id: %s', $report->generationId() ?? '-'));
-            $output->writeln(sprintf('  Manifest path: %s', $report->manifestPath() ?? '-'));
-            $output->writeln(sprintf('  Fingerprint: %s', $report->fingerprint() ?? '-'));
-            $output->writeln(sprintf('  Schema: %s', $report->schemaVersion() !== null ? (string) $report->schemaVersion() : '-'));
+            if ($input->hasOption('json')) {
+                $payload = [
+                    'command' => $this->name(),
+                    'telemetry_emitted' => $input->hasOption('emit-telemetry'),
+                    'report' => $report->toArray(),
+                ];
 
-            if ($report->alerts() !== []) {
-                $output->writeln('  Alerts:');
+                $output->writeln((string) json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+            } else {
+                $output->writeln('Bootstrap status:');
+                $output->writeln(sprintf('  Environment: %s', $report->environment()));
+                $output->writeln(sprintf('  Booted: %s', $report->booted() ? 'yes' : 'no'));
+                $output->writeln(sprintf('  Providers: %d', $report->providerCount()));
+                $output->writeln(sprintf('  Artifact dir: %s', $report->artifactDirectory()));
+                $output->writeln(sprintf('  Active generation: %s', $report->hasActiveGeneration() ? 'yes' : 'no'));
+                $output->writeln(sprintf('  Generation id: %s', $report->generationId() ?? '-'));
+                $output->writeln(sprintf('  Manifest path: %s', $report->manifestPath() ?? '-'));
+                $output->writeln(sprintf('  Fingerprint: %s', $report->fingerprint() ?? '-'));
+                $output->writeln(sprintf('  Schema: %s', $report->schemaVersion() !== null ? (string) $report->schemaVersion() : '-'));
 
-                foreach ($report->alerts() as $alert) {
-                    $output->writeln(sprintf('    - %s', $alert));
+                if ($report->alerts() !== []) {
+                    $output->writeln('  Alerts:');
+
+                    foreach ($report->alerts() as $alert) {
+                        $output->writeln(sprintf('    - %s', $alert));
+                    }
+                }
+
+                if ($input->hasOption('emit-telemetry')) {
+                    $output->writeln('  Telemetry: emitted');
                 }
             }
 
-            if ($input->hasOption('emit-telemetry')) {
-                $output->writeln('  Telemetry: emitted');
+            if ($input->hasOption('strict') && ! $report->healthy()) {
+                return 1;
             }
-        }
 
-        if ($input->hasOption('strict') && ! $report->healthy()) {
-            return 1;
-        }
-
-        return 0;
+            return 0;
+        });
     }
 }

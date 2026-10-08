@@ -46,67 +46,68 @@ final class RuntimeStatusCommand extends Command
 
     public function handle(Input $input, Output $output): int
     {
-        $app = $this->bootstrapApplication();
         $maxRequests = max(1, (int) ($input->option('max-requests', '1')));
         $driver = is_string($input->option('driver')) ? $input->option('driver') : null;
-        $report = (new RuntimeStatusInspector())->inspect($app, $driver, $maxRequests);
+        return $this->runInCommandRuntime(function ($app) use ($driver, $input, $maxRequests, $output): int {
+            $report = (new RuntimeStatusInspector())->inspect($app, $driver, $maxRequests);
 
-        if ($input->hasOption('emit-telemetry')) {
-            (new RuntimeTelemetryEmitter($app->make(TelemetryManagerInterface::class)))->emitStatus($report);
-        }
+            if ($input->hasOption('emit-telemetry')) {
+                (new RuntimeTelemetryEmitter($app->make(TelemetryManagerInterface::class)))->emitStatus($report);
+            }
 
-        if ($input->hasOption('json')) {
-            $payload = [
-                'command' => $this->name(),
-                'telemetry_emitted' => $input->hasOption('emit-telemetry'),
-                'report' => $report->toArray(),
-            ];
+            if ($input->hasOption('json')) {
+                $payload = [
+                    'command' => $this->name(),
+                    'telemetry_emitted' => $input->hasOption('emit-telemetry'),
+                    'report' => $report->toArray(),
+                ];
 
-            $output->writeln((string) json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
-        } else {
-            $output->writeln('Runtime status:');
-            $output->writeln(sprintf('  Driver: %s', $report->driver()));
-            $output->writeln(sprintf('  Max requests: %d', $report->maxRequests()));
-            $output->writeln(sprintf('  Persistent: %s', $report->persistent() ? 'yes' : 'no'));
-            $output->writeln(sprintf('  Concurrent: %s', $report->concurrent() ? 'yes' : 'no'));
-            $output->writeln(sprintf('  Streaming: %s', $report->streaming() ? 'yes' : 'no'));
-            $output->writeln(sprintf('  Drain control: %s', $report->drainControl() ? 'yes' : 'no'));
-            $output->writeln(sprintf('  Native HTTP: %s', $report->nativeHttp() ? 'yes' : 'no'));
-            $output->writeln(sprintf(
-                '  Recommended total budget: %s',
-                $report->recommendedBudget()->totalMaximumMs() !== null
-                    ? sprintf('%.3f ms', $report->recommendedBudget()->totalMaximumMs())
-                    : '-'
-            ));
-            $output->writeln(sprintf(
-                '  Recommended request budget: %s',
-                $report->recommendedBudget()->requestMaximumMs() !== null
-                    ? sprintf('%.3f ms', $report->recommendedBudget()->requestMaximumMs())
-                    : '-'
-            ));
-            $output->writeln(sprintf(
-                '  Budget source: %s',
-                $report->recommendedBudget()->source()
-            ));
-            $output->writeln(sprintf('  Supported drivers: %s', implode(', ', $report->supportedDrivers())));
+                $output->writeln((string) json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
+            } else {
+                $output->writeln('Runtime status:');
+                $output->writeln(sprintf('  Driver: %s', $report->driver()));
+                $output->writeln(sprintf('  Max requests: %d', $report->maxRequests()));
+                $output->writeln(sprintf('  Persistent: %s', $report->persistent() ? 'yes' : 'no'));
+                $output->writeln(sprintf('  Concurrent: %s', $report->concurrent() ? 'yes' : 'no'));
+                $output->writeln(sprintf('  Streaming: %s', $report->streaming() ? 'yes' : 'no'));
+                $output->writeln(sprintf('  Drain control: %s', $report->drainControl() ? 'yes' : 'no'));
+                $output->writeln(sprintf('  Native HTTP: %s', $report->nativeHttp() ? 'yes' : 'no'));
+                $output->writeln(sprintf(
+                    '  Recommended total budget: %s',
+                    $report->recommendedBudget()->totalMaximumMs() !== null
+                        ? sprintf('%.3f ms', $report->recommendedBudget()->totalMaximumMs())
+                        : '-'
+                ));
+                $output->writeln(sprintf(
+                    '  Recommended request budget: %s',
+                    $report->recommendedBudget()->requestMaximumMs() !== null
+                        ? sprintf('%.3f ms', $report->recommendedBudget()->requestMaximumMs())
+                        : '-'
+                ));
+                $output->writeln(sprintf(
+                    '  Budget source: %s',
+                    $report->recommendedBudget()->source()
+                ));
+                $output->writeln(sprintf('  Supported drivers: %s', implode(', ', $report->supportedDrivers())));
 
-            if ($report->alerts() !== []) {
-                $output->writeln('  Alerts:');
+                if ($report->alerts() !== []) {
+                    $output->writeln('  Alerts:');
 
-                foreach ($report->alerts() as $alert) {
-                    $output->writeln(sprintf('    - %s', $alert));
+                    foreach ($report->alerts() as $alert) {
+                        $output->writeln(sprintf('    - %s', $alert));
+                    }
+                }
+
+                if ($input->hasOption('emit-telemetry')) {
+                    $output->writeln('  Telemetry: emitted');
                 }
             }
 
-            if ($input->hasOption('emit-telemetry')) {
-                $output->writeln('  Telemetry: emitted');
+            if ($input->hasOption('strict') && ! $report->healthy()) {
+                return 1;
             }
-        }
 
-        if ($input->hasOption('strict') && ! $report->healthy()) {
-            return 1;
-        }
-
-        return 0;
+            return 0;
+        });
     }
 }

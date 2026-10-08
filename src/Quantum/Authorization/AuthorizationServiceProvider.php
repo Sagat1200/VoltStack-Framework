@@ -15,6 +15,8 @@ use Quantum\Authorization\Authority\RequestScopedAuthorityMemoizationCache;
 use Quantum\Authorization\Bridges\ControllerSecurityPlannerBridge;
 use Quantum\Authorization\Console\Commands\AuthorizationManifestClearCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationManifestCompileCommand;
+use Quantum\Authorization\Console\Commands\AuthorizationRelationshipsListCommand;
+use Quantum\Authorization\Console\Commands\AuthorizationRelationshipsRevokeCommand;
 use Quantum\Authorization\Contracts\AbilityNormalizerInterface;
 use Quantum\Authorization\Contracts\AuthorityMemoizationCacheInterface;
 use Quantum\Authorization\Contracts\AuthorityRepositoryInterface;
@@ -24,6 +26,7 @@ use Quantum\Authorization\Contracts\AuthorizationMetadataResolverInterface;
 use Quantum\Authorization\Contracts\AuthorizationPlannerInterface;
 use Quantum\Authorization\Contracts\AuthorizationRequestEnricherInterface;
 use Quantum\Authorization\Contracts\PrincipalResolverInterface;
+use Quantum\Authorization\Contracts\RelationshipAdministrationInterface;
 use Quantum\Authorization\Contracts\RelationshipRepositoryInterface;
 use Quantum\Authorization\Contracts\SubjectResolverInterface;
 use Quantum\Authorization\Contracts\TenantScopeResolverInterface;
@@ -304,6 +307,18 @@ final class AuthorizationServiceProvider extends ServiceProvider
                 return $this->makeConfiguredRelationshipRepository($app);
             },
         );
+        $this->app->scoped(
+            RelationshipAdministrationInterface::class,
+            function (Application $app): RelationshipAdministrationInterface {
+                $repository = $app->make(RelationshipRepositoryInterface::class);
+
+                if (! $repository instanceof RelationshipAdministrationInterface) {
+                    throw new \RuntimeException('The configured relationship repository does not support administrative operations.');
+                }
+
+                return $repository;
+            },
+        );
     }
 
     private function makeConfiguredRelationshipRepository(Application $app): RelationshipRepositoryInterface
@@ -477,6 +492,8 @@ final class AuthorizationServiceProvider extends ServiceProvider
         return [
             AuthorizationManifestCompileCommand::class,
             AuthorizationManifestClearCommand::class,
+            AuthorizationRelationshipsListCommand::class,
+            AuthorizationRelationshipsRevokeCommand::class,
         ];
     }
 

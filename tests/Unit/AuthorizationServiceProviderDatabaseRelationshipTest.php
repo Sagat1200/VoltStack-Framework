@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
+use Quantum\Authorization\Contracts\RelationshipAdministrationInterface;
 use Quantum\Authorization\Contracts\RelationshipRepositoryInterface;
 use Quantum\Authorization\Relationship\DatabaseRelationshipRepository;
 use Quantum\Config\ConfigRepository;
@@ -54,8 +55,10 @@ final class AuthorizationServiceProviderDatabaseRelationshipTest extends TestCas
         $config->set('authorization.relationships.driver', 'database');
 
         $repository = $app->make(RelationshipRepositoryInterface::class);
+        $admin = $app->make(RelationshipAdministrationInterface::class);
 
         self::assertInstanceOf(DatabaseRelationshipRepository::class, $repository);
+        self::assertInstanceOf(DatabaseRelationshipRepository::class, $admin);
     }
 
     private function makeApplication(): Application

@@ -9,6 +9,7 @@ use Quantum\Console\Commands\BootstrapReleaseCheckCommand;
 use Quantum\Console\Commands\BootstrapStatusCommand;
 use Quantum\Console\Commands\BootstrapBenchmarkCommand;
 use Quantum\Console\Commands\CacheClearCommand;
+use Quantum\Console\Commands\ConfigStatusCommand;
 use Quantum\Console\Commands\MakeActionCommand;
 use Quantum\Console\Commands\MakeComponentCommand;
 use Quantum\Console\Commands\MakeLayoutCommand;
@@ -55,6 +56,7 @@ final class ConsoleApplicationTest extends TestCase
         self::assertStringContainsString('bootstrap:release-check', $output->stdout());
         self::assertStringContainsString('bootstrap:benchmark', $output->stdout());
         self::assertStringContainsString('bootstrap:status', $output->stdout());
+        self::assertStringContainsString('config:status', $output->stdout());
         self::assertStringContainsString('runtime:budget-calibrate', $output->stdout());
         self::assertStringContainsString('runtime:smoke-check', $output->stdout());
         self::assertStringContainsString('runtime:status', $output->stdout());
@@ -166,6 +168,25 @@ final class ConsoleApplicationTest extends TestCase
         self::assertStringContainsString('Usage: php volt runtime:status [--driver=frankenphp] [--max-requests=1] [--emit-telemetry] [--strict] [--json]', $output->stdout());
         self::assertStringContainsString('--driver=', $output->stdout());
         self::assertStringContainsString('--max-requests=', $output->stdout());
+        self::assertStringContainsString('--json', $output->stdout());
+    }
+
+    public function test_it_renders_help_for_config_status_command(): void
+    {
+        $output = new Output();
+        $application = $this->application($output);
+
+        $exitCode = $application->run([
+            'volt',
+            'help',
+            'config:status',
+        ]);
+
+        self::assertSame(0, $exitCode);
+        self::assertStringContainsString('Command: config:status', $output->stdout());
+        self::assertStringContainsString('Usage: php volt config:status [--emit-telemetry] [--strict] [--json]', $output->stdout());
+        self::assertStringContainsString('--emit-telemetry', $output->stdout());
+        self::assertStringContainsString('--strict', $output->stdout());
         self::assertStringContainsString('--json', $output->stdout());
     }
 
@@ -316,6 +337,7 @@ final class ConsoleApplicationTest extends TestCase
                 new CacheClearCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new ViewCacheCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new ViewClearCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
+                new ConfigStatusCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new BootstrapBenchmarkCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new BootstrapReleaseCheckCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new BootstrapStatusCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),

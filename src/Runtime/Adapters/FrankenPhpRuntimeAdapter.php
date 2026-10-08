@@ -7,6 +7,9 @@ namespace VoltStack\Runtime\Adapters;
 use Quantum\Bootstrap\ApplicationPlan;
 use Quantum\Http\Request;
 use Quantum\Exceptions\Enums\WorkerDisposition;
+use Quantum\Transport\Bridges\Http\HttpResponseTransformer;
+use Quantum\Transport\Contracts\ResponseTransportManagerInterface;
+use Quantum\Transport\Runtime\TransportContext;
 use Iterator;
 use Traversable;
 use VoltStack\Runtime\Context\WorkerContext;
@@ -56,6 +59,12 @@ final class FrankenPhpRuntimeAdapter implements RuntimeAdapterInterface
                 return 1;
             }
 
+            if (! $this->emitResponse($session, $result->response(), $request)) {
+                $session->lifecycle()->request(WorkerDisposition::Terminate);
+
+                return 1;
+            }
+
             if (! $session->canAcceptMoreRequests()) {
                 break;
             }
@@ -64,6 +73,31 @@ final class FrankenPhpRuntimeAdapter implements RuntimeAdapterInterface
         }
 
         return 0;
+    }
+
+    private function emitResponse(\VoltStack\Runtime\WorkerSession $session, ?\Quantum\Http\Response $response, Request $request): bool
+    {
+        if ($response === null) {
+            return true;
+        }
+
+        /** @var HttpResponseTransformer $transformer */
+        $transformer = $session->app()->make(HttpResponseTransformer::class);
+        /** @var ResponseTransportManagerInterface $manager */
+        $manager = $session->app()->make(ResponseTransportManagerInterface::class);
+
+        $transportResponse = $transformer->transform($response);
+        $transportContext = new TransportContext(
+            request: $request,
+            attributes: [
+                'runtime.driver' => $session->context()->driver(),
+                'runtime.worker_id' => $session->context()->workerId(),
+                'runtime.handled_requests' => $session->handledRequests(),
+            ],
+        );
+        $transportResult = $manager->send($transportResponse, $transportContext);
+
+        return $transportResult->completed && $transportResult->exception === null;
     }
 
     /**

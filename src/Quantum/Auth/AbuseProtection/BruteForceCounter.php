@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Quantum\Auth\AbuseProtection;
 
+use Quantum\Auth\Contracts\DistributedThrottleCounterInterface;
+
 final class BruteForceCounter
 {
     public const WINDOW_1M = 60;
@@ -15,11 +17,20 @@ final class BruteForceCounter
      */
     private array $buckets = [];
 
+    public function __construct(
+        private readonly ?DistributedThrottleCounterInterface $distributed = null,
+    ) {
+    }
+
     /**
      * @return array{1m: int, 5m: int, 15m: int}
      */
     public function currentCounts(string $key, ?int $nowTs = null): array
     {
+        if ($this->distributed instanceof DistributedThrottleCounterInterface) {
+            return $this->currentCountsDistributed($key, $nowTs);
+        }
+
         $now = $nowTs ?? time();
         $this->purgeExpired($key, $now);
 
@@ -49,6 +60,15 @@ final class BruteForceCounter
 
     public function increment(string $key, ?int $nowTs = null): void
     {
+        if ($this->distributed instanceof DistributedThrottleCounterInterface) {
+            $now = $nowTs ?? time();
+            $this->distributed->increment($this->distributedBucketKey($key, '1m'), self::WINDOW_1M, $now);
+            $this->distributed->increment($this->distributedBucketKey($key, '5m'), self::WINDOW_5M, $now);
+            $this->distributed->increment($this->distributedBucketKey($key, '15m'), self::WINDOW_15M, $now);
+
+            return;
+        }
+
         $now = $nowTs ?? time();
         if (! isset($this->buckets[$key])) {
             $this->buckets[$key] = [];
@@ -59,7 +79,34 @@ final class BruteForceCounter
 
     public function reset(string $key): void
     {
+        if ($this->distributed instanceof DistributedThrottleCounterInterface) {
+            $this->distributed->reset($this->distributedBucketKey($key, '1m'));
+            $this->distributed->reset($this->distributedBucketKey($key, '5m'));
+            $this->distributed->reset($this->distributedBucketKey($key, '15m'));
+
+            return;
+        }
+
         unset($this->buckets[$key]);
+    }
+
+    /**
+     * @return array{1m: int, 5m: int, 15m: int}
+     */
+    private function currentCountsDistributed(string $key, ?int $nowTs = null): array
+    {
+        $now = $nowTs ?? time();
+
+        return [
+            '1m' => $this->distributed->currentCount($this->distributedBucketKey($key, '1m'), $now),
+            '5m' => $this->distributed->currentCount($this->distributedBucketKey($key, '5m'), $now),
+            '15m' => $this->distributed->currentCount($this->distributedBucketKey($key, '15m'), $now),
+        ];
+    }
+
+    private function distributedBucketKey(string $key, string $window): string
+    {
+        return $key . '|window:' . $window;
     }
 
     private function purgeExpired(string $key, int $nowTs): void

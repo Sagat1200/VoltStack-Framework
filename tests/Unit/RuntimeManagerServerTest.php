@@ -8,6 +8,11 @@ use PHPUnit\Framework\TestCase;
 use Quantum\Bootstrap\ApplicationBuilder;
 use Quantum\Http\Request;
 use Quantum\Http\Response;
+use Quantum\Transport\Contracts\PreparedTransportResponseInterface;
+use Quantum\Transport\Contracts\TransportEmitterInterface;
+use Quantum\Transport\Runtime\TransportContext;
+use Quantum\Transport\Runtime\TransportResult;
+use Quantum\Transport\Testing\InMemoryTransportEmitter;
 use RuntimeException;
 use VoltStack\Framework\Application;
 use VoltStack\Framework\Contracts\Kernel as KernelContract;
@@ -75,6 +80,8 @@ PHP
     {
         $app = new Application($this->basePath);
         $app->instance(KernelContract::class, new TestRuntimeManagerKernel());
+        $emitter = new InMemoryTransportEmitter();
+        $app->instance(TransportEmitterInterface::class, $emitter);
 
         $plan = ApplicationBuilder::create($this->basePath)
             ->withEnvironment('testing')
@@ -96,6 +103,9 @@ PHP
         self::assertSame(['/first', '/second'], TestRuntimeManagerKernel::$handledPaths);
         self::assertTrue($manager->adapter('frankenphp')->capabilities()->persistent());
         self::assertFalse($manager->adapter('frankenphp')->capabilities()->concurrent());
+        self::assertCount(2, $emitter->emitted());
+        self::assertSame('runtime:/first', $emitter->emitted()[0]['response']->payload());
+        self::assertSame('runtime:/second', $emitter->emitted()[1]['response']->payload());
     }
 
     public function test_runtime_manager_server_returns_non_zero_when_worker_must_terminate(): void
@@ -126,6 +136,7 @@ PHP
     {
         $app = new Application($this->basePath);
         $app->instance(KernelContract::class, new TestRuntimeManagerKernel());
+        $app->instance(TransportEmitterInterface::class, new InMemoryTransportEmitter());
 
         $plan = ApplicationBuilder::create($this->basePath)
             ->withEnvironment('testing')
@@ -145,6 +156,31 @@ PHP
 
         self::assertSame(0, $exitCode);
         self::assertSame(['/first', '/second'], TestRuntimeManagerKernel::$handledPaths);
+    }
+
+    public function test_runtime_manager_server_requests_termination_when_transport_emission_fails(): void
+    {
+        $app = new Application($this->basePath);
+        $app->instance(KernelContract::class, new TestRuntimeManagerKernel());
+        $app->instance(TransportEmitterInterface::class, new TestFailingTransportEmitter());
+
+        $plan = ApplicationBuilder::create($this->basePath)
+            ->withEnvironment('testing')
+            ->withProfile('worker')
+            ->build();
+
+        /** @var RuntimeManagerServer $manager */
+        $manager = $app->make(RuntimeManagerServer::class);
+        $exitCode = $manager->run($plan, RuntimeConfiguration::frankenphp(
+            maxRequests: 2,
+            requestSource: [
+                Request::create('/first'),
+                Request::create('/second'),
+            ],
+        ));
+
+        self::assertSame(1, $exitCode);
+        self::assertSame(['/first'], TestRuntimeManagerKernel::$handledPaths);
     }
 
     private function deleteDirectory(string $path): void
@@ -218,5 +254,13 @@ final class TestFailingRuntimeManagerKernel implements KernelContract
 
     public function pushMiddleware(callable|string|\Quantum\HttpKernel\Contracts\MiddlewareInterface $middleware): void
     {
+    }
+}
+
+final class TestFailingTransportEmitter implements TransportEmitterInterface
+{
+    public function emit(PreparedTransportResponseInterface $response, TransportContext $context): TransportResult
+    {
+        throw new RuntimeException('transport emitter failed');
     }
 }

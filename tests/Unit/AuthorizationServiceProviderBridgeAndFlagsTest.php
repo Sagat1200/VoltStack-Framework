@@ -12,6 +12,7 @@ use Quantum\Authorization\Bridges\ControllerSecurityPlannerBridge;
 use Quantum\Authorization\Contracts\AuthorityMemoizationCacheInterface;
 use Quantum\Authorization\Contracts\AuthorityRepositoryInterface;
 use Quantum\Authorization\Contracts\AuthorizationManagerInterface;
+use Quantum\Authorization\Contracts\RelationshipAdministrationInterface;
 use Quantum\Authorization\Contracts\RelationshipRepositoryInterface;
 use Quantum\Authorization\Contracts\TenantScopeResolverInterface;
 use Quantum\Authorization\Core\AuthorizationManager;
@@ -154,8 +155,10 @@ final class AuthorizationServiceProviderBridgeAndFlagsTest extends TestCase
         ]);
 
         $repository = $app->make(RelationshipRepositoryInterface::class);
+        $admin = $app->make(RelationshipAdministrationInterface::class);
 
         self::assertInstanceOf(InMemoryRelationshipRepository::class, $repository);
+        self::assertInstanceOf(InMemoryRelationshipRepository::class, $admin);
         self::assertTrue($repository->hasRelationship('42', 'owner', 'doc-1'));
     }
 

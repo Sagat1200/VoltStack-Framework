@@ -62,12 +62,14 @@ use Quantum\Auth\Runtime\TrustedDeviceEnrollmentLimitRule;
 use Quantum\Auth\Runtime\SessionRepositoryDriverFactory;
 use Quantum\Auth\Runtime\TrustedDeviceRepositoryDriverFactory;
 use Quantum\Auth\AbuseProtection\ConfigBasedAdaptiveRiskPolicy;
+use Quantum\Auth\AbuseProtection\DatabaseDistributedThrottleCounter;
 use Quantum\Auth\Sessions\FileAuthenticationSessionRepository;
 use Quantum\Auth\Sessions\InMemoryAuthenticationSessionRepository;
 use Quantum\Auth\Tokens\BearerTokenService;
 use Quantum\Auth\Tokens\FileOpaqueTokenRepository;
 use Quantum\Auth\Tokens\InMemoryOpaqueTokenRepository;
 use Quantum\Config\ConfigRepository;
+use Quantum\Database\Contracts\ConnectionManagerInterface;
 use Quantum\HttpKernel\MiddlewareAliasRegistry;
 use Quantum\Middlewares\AuthMiddleware;
 use Quantum\Middlewares\BearerAuthMiddleware;
@@ -407,9 +409,20 @@ final class AuthenticationServiceProvider extends ServiceProvider
                     : ['1m' => 5, '5m' => 10, '15m' => 20];
                 $retryAfter = $config->get('auth.throttle.retry_after_seconds', 60);
                 $retryInt = is_numeric($retryAfter) ? (int) $retryAfter : 60;
+                $distributedCounter = null;
+                if ((bool) $config->get('auth.throttle.distributed.enabled', false)) {
+                    try {
+                        $candidate = $app->make(DistributedThrottleCounterInterface::class);
+                        if ($candidate instanceof DistributedThrottleCounterInterface) {
+                            $distributedCounter = $candidate;
+                        }
+                    } catch (\Throwable) {
+                        $distributedCounter = null;
+                    }
+                }
 
                 return new \Quantum\Auth\AbuseProtection\ThrottleEngineV1(
-                    bruteForceCounter: new \Quantum\Auth\AbuseProtection\BruteForceCounter(),
+                    bruteForceCounter: new \Quantum\Auth\AbuseProtection\BruteForceCounter($distributedCounter),
                     bloomFilter: new \Quantum\Auth\AbuseProtection\CredentialStuffingBloomFilter(),
                     thresholds: $thresholdsArr,
                     retryAfterSeconds: $retryInt,
@@ -592,7 +605,20 @@ final class AuthenticationServiceProvider extends ServiceProvider
             if (! (bool) $config->get('auth.throttle.distributed.enabled', false)) {
                 return null;
             }
-            return null;
+            $driver = strtolower(trim((string) $config->get('auth.throttle.distributed.driver', 'database')));
+
+            try {
+                return match ($driver) {
+                    'database', 'db', 'dbal', '' => new DatabaseDistributedThrottleCounter(
+                        connections: $app->make(ConnectionManagerInterface::class),
+                        connectionName: self::nullableString($config->get('auth.throttle.distributed.database.connection')),
+                        table: self::nonEmptyString($config->get('auth.throttle.distributed.database.table'), 'auth_throttle_events'),
+                    ),
+                    default => null,
+                };
+            } catch (\Throwable) {
+                return null;
+            }
         });
 
         $this->app->scoped(ThrottleDistributedStorageInterface::class, static function (Application $app): ?ThrottleDistributedStorageInterface {
@@ -782,5 +808,27 @@ final class AuthenticationServiceProvider extends ServiceProvider
         $this->app->make(MiddlewareAliasRegistry::class)->alias('auth.bearer', BearerAuthMiddleware::class);
         $this->app->make(MiddlewareAliasRegistry::class)->alias('guest', GuestMiddleware::class);
         $this->app->make(MiddlewareAliasRegistry::class)->alias('mfa', MfaMiddleware::class);
+    }
+
+    private static function nullableString(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $trimmed = trim($value);
+
+        return $trimmed !== '' ? $trimmed : null;
+    }
+
+    private static function nonEmptyString(mixed $value, string $default): string
+    {
+        if (! is_string($value)) {
+            return $default;
+        }
+
+        $trimmed = trim($value);
+
+        return $trimmed !== '' ? $trimmed : $default;
     }
 }

@@ -5,12 +5,13 @@ declare(strict_types=1);
 namespace Quantum\Authorization\Relationship;
 
 use Quantum\Authorization\Authority\Scope;
+use Quantum\Authorization\Contracts\RelationshipAdministrationInterface;
 use Quantum\Authorization\Contracts\RelationshipRepositoryInterface;
 
-final class InMemoryRelationshipRepository implements RelationshipRepositoryInterface
+final class InMemoryRelationshipRepository implements RelationshipAdministrationInterface, RelationshipRepositoryInterface
 {
     /**
-     * @var array<string, true>
+     * @var array<string, array{principal_id:string,relation:string,resource_key:string,scope:string}>
      */
     private array $relationships = [];
 
@@ -40,7 +41,12 @@ final class InMemoryRelationshipRepository implements RelationshipRepositoryInte
             $scope = $entry['scope'] ?? Scope::GLOBAL;
             $scopeString = $this->normalizeScope($scope);
 
-            $this->relationships[$this->key($principalId, $relation, $resourceKey, $scopeString)] = true;
+            $this->relationships[$this->key($principalId, $relation, $resourceKey, $scopeString)] = [
+                'principal_id' => $principalId,
+                'relation' => $relation,
+                'resource_key' => $resourceKey,
+                'scope' => $scopeString,
+            ];
         }
     }
 
@@ -67,6 +73,62 @@ final class InMemoryRelationshipRepository implements RelationshipRepositoryInte
         }
 
         return false;
+    }
+
+    public function listRelationships(array $filters = []): array
+    {
+        $principalId = isset($filters['principal_id']) && is_string($filters['principal_id']) ? trim($filters['principal_id']) : null;
+        $relation = isset($filters['relation']) && is_string($filters['relation']) ? trim($filters['relation']) : null;
+        $scope = $filters['scope'] ?? null;
+        $normalizedScope = $scope === null ? null : $this->normalizeScope($scope instanceof Scope || is_string($scope) ? $scope : null);
+
+        $records = array_values(array_filter(
+            $this->relationships,
+            static function (array $record) use ($principalId, $relation, $normalizedScope): bool {
+                if ($principalId !== null && $principalId !== '' && $record['principal_id'] !== $principalId) {
+                    return false;
+                }
+
+                if ($relation !== null && $relation !== '' && $record['relation'] !== $relation) {
+                    return false;
+                }
+
+                if ($normalizedScope !== null && $record['scope'] !== $normalizedScope) {
+                    return false;
+                }
+
+                return true;
+            },
+        ));
+
+        usort($records, static function (array $left, array $right): int {
+            return [$left['principal_id'], $left['relation'], $left['scope'], $left['resource_key']]
+                <=> [$right['principal_id'], $right['relation'], $right['scope'], $right['resource_key']];
+        });
+
+        return $records;
+    }
+
+    public function revokeRelationshipByKey(
+        string $principalId,
+        string $relation,
+        string $resourceKey,
+        Scope|string $scope = Scope::GLOBAL,
+    ): bool {
+        $key = $this->key(
+            trim($principalId),
+            trim($relation),
+            trim($resourceKey),
+            $this->normalizeScope($scope),
+        );
+
+        if (! isset($this->relationships[$key])) {
+            return false;
+        }
+
+        unset($this->relationships[$key]);
+
+        return true;
     }
 
     private function key(string $principalId, string $relation, string $resourceKey, string $scope): string

@@ -34,4 +34,23 @@ final class InMemoryRelationshipRepositoryTest extends TestCase
         self::assertTrue($repository->hasRelationship('user-2', 'owner', 'doc-2', new Scope('tenant:acme')));
         self::assertFalse($repository->hasRelationship('user-1', 'owner', 'doc-1', new Scope('tenant:other')));
     }
+
+    public function test_it_lists_and_revokes_relationships_by_resource_key(): void
+    {
+        $repository = new InMemoryRelationshipRepository([
+            ['principal_id' => 'user-1', 'relation' => 'owner', 'resource' => 'doc-1', 'scope' => 'tenant:acme'],
+            ['principal_id' => 'user-1', 'relation' => 'viewer', 'resource' => 'doc-2', 'scope' => 'global'],
+        ]);
+
+        $listed = $repository->listRelationships([
+            'principal_id' => 'user-1',
+            'relation' => 'owner',
+            'scope' => 'tenant:acme',
+        ]);
+
+        self::assertCount(1, $listed);
+        self::assertSame('string:doc-1', $listed[0]['resource_key']);
+        self::assertTrue($repository->revokeRelationshipByKey('user-1', 'owner', 'string:doc-1', 'tenant:acme'));
+        self::assertFalse($repository->hasRelationship('user-1', 'owner', 'doc-1', 'tenant:acme'));
+    }
 }

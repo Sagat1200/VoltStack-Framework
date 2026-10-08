@@ -67,9 +67,11 @@ final class RuntimeSmokeCheckCommand extends Command
         );
 
         if ($input->hasOption('emit-telemetry')) {
-            (new RuntimeSmokeTelemetryEmitter(
-                $this->bootstrapApplication()->make(TelemetryManagerInterface::class),
-            ))->emit($report);
+            $this->runInCommandRuntime(function ($app) use ($report): void {
+                (new RuntimeSmokeTelemetryEmitter(
+                    $app->make(TelemetryManagerInterface::class),
+                ))->emit($report);
+            });
         }
 
         if ($input->hasOption('json')) {

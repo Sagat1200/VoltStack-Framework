@@ -65,9 +65,11 @@ final class RuntimeBudgetCalibrateCommand extends Command
         );
 
         if ($input->hasOption('emit-telemetry')) {
-            (new RuntimeBudgetCalibrationTelemetryEmitter(
-                $this->bootstrapApplication()->make(TelemetryManagerInterface::class),
-            ))->emit($report);
+            $this->runInCommandRuntime(function ($app) use ($report): void {
+                (new RuntimeBudgetCalibrationTelemetryEmitter(
+                    $app->make(TelemetryManagerInterface::class),
+                ))->emit($report);
+            });
         }
 
         if ($input->hasOption('json')) {

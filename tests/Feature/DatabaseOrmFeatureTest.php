@@ -1614,12 +1614,156 @@ final class DatabaseOrmFeatureTest extends TestCase
             try {
                 $em->query(OrmBlogPost::class)
                     ->join('comments', 'c')
-                    ->partial('title', 'comments.body')
-                    ->firstPartial();
-                self::fail('Relational partial hydration must reject joined to-many associations.');
+                    ->partialManaged('title', 'comments.body')
+                    ->firstPartialManaged();
+                self::fail('Managed relational partial hydration must still reject joined to-many associations.');
             } catch (RuntimeException $exception) {
-                self::assertStringContainsString('joined to-many association', $exception->getMessage());
+                self::assertStringContainsString('detached-only', $exception->getMessage());
             }
+        } finally {
+            $scope->end();
+        }
+    }
+
+    public function test_entity_query_partial_relational_hydration_supports_joined_to_many_associations_in_detached_mode(): void
+    {
+        $app = $this->makeApp();
+        $scope = $app->make(ScopeManager::class);
+        $scope->begin(Request::create('/database/orm/partial-relational-hydration-to-many', 'GET'));
+
+        try {
+            $database = $app->make(DatabaseInterface::class);
+            $database->schema()->create('orm_blog_posts', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('title');
+                $table->boolean('published');
+            }, true);
+            $database->schema()->create('orm_blog_comments', function (TableBlueprint $table): void {
+                $table->id();
+                $table->integer('post_id');
+                $table->string('body');
+            }, true);
+            $database->schema()->create('orm_students', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+            }, true);
+            $database->schema()->create('orm_courses', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('title');
+            }, true);
+            $database->schema()->create('orm_student_courses', function (TableBlueprint $table): void {
+                $table->integer('student_id');
+                $table->integer('course_id');
+            }, true);
+
+            $em = $database->entityManager();
+
+            $alpha = new OrmBlogPost();
+            $alpha->title = 'Alpha';
+            $alpha->published = true;
+
+            $beta = new OrmBlogPost();
+            $beta->title = 'Beta';
+            $beta->published = false;
+
+            $gamma = new OrmBlogPost();
+            $gamma->title = 'Gamma';
+            $gamma->published = true;
+
+            $em->persist($alpha);
+            $em->persist($beta);
+            $em->persist($gamma);
+            $em->flush();
+
+            $commentA = new OrmBlogComment();
+            $commentA->body = 'A-1';
+            $commentA->post = $alpha;
+
+            $commentB = new OrmBlogComment();
+            $commentB->body = 'A-2';
+            $commentB->post = $alpha;
+
+            $commentC = new OrmBlogComment();
+            $commentC->body = 'B-1';
+            $commentC->post = $beta;
+
+            $student = new OrmStudent();
+            $student->name = 'Ada';
+
+            $courseA = new OrmCourse();
+            $courseA->title = 'Compilers';
+
+            $courseB = new OrmCourse();
+            $courseB->title = 'Runtime Systems';
+
+            $student->courses = [$courseA, $courseB];
+            $courseA->students = [$student];
+            $courseB->students = [$student];
+
+            $em->persist($commentA);
+            $em->persist($commentB);
+            $em->persist($commentC);
+            $em->persist($student);
+            $em->persist($courseA);
+            $em->persist($courseB);
+            $em->flush();
+            $em->clear();
+
+            $partialPosts = $em->query(OrmBlogPost::class)
+                ->leftJoin('comments', 'c')
+                ->partial('title', 'comments.body')
+                ->orderBy('title')
+                ->getPartial();
+
+            self::assertCount(3, $partialPosts);
+            self::assertSame(EntityState::Detached, $em->state($partialPosts[0]));
+            self::assertFalse($em->contains($partialPosts[0]));
+            self::assertSame('Alpha', $partialPosts[0]->title);
+            self::assertCount(2, $partialPosts[0]->comments);
+            self::assertSame(['A-1', 'A-2'], array_map(
+                static fn(OrmBlogComment $comment): string => $comment->body,
+                $partialPosts[0]->comments,
+            ));
+            self::assertSame($partialPosts[0], $partialPosts[0]->comments[0]->post);
+            self::assertFalse($this->isPropertyInitialized($partialPosts[0]->comments[0], 'postId'));
+            self::assertSame('Beta', $partialPosts[1]->title);
+            self::assertCount(1, $partialPosts[1]->comments);
+            self::assertSame('Gamma', $partialPosts[2]->title);
+            self::assertSame([], $partialPosts[2]->comments);
+
+            $windowedPost = $em->query(OrmBlogPost::class)
+                ->join('comments', 'c')
+                ->partial('title', 'comments.body')
+                ->orderBy('title')
+                ->limit(1)
+                ->getPartial();
+            self::assertCount(1, $windowedPost);
+            self::assertSame('Alpha', $windowedPost[0]->title);
+            self::assertCount(2, $windowedPost[0]->comments);
+
+            $offsetPost = $em->query(OrmBlogPost::class)
+                ->join('comments', 'c')
+                ->partial('title', 'comments.body')
+                ->orderBy('title')
+                ->offset(1)
+                ->firstPartial();
+            self::assertInstanceOf(OrmBlogPost::class, $offsetPost);
+            self::assertSame('Beta', $offsetPost->title);
+            self::assertCount(1, $offsetPost->comments);
+            self::assertSame('B-1', $offsetPost->comments[0]->body);
+
+            $partialStudents = $em->query(OrmStudent::class)
+                ->join('courses', 'c')
+                ->partial('name', 'courses.title')
+                ->getPartial();
+            self::assertCount(1, $partialStudents);
+            self::assertSame('Ada', $partialStudents[0]->name);
+            self::assertCount(2, $partialStudents[0]->courses);
+            self::assertSame(['Compilers', 'Runtime Systems'], array_map(
+                static fn(OrmCourse $course): string => $course->title,
+                $partialStudents[0]->courses,
+            ));
+            self::assertSame([], $partialStudents[0]->courses[0]->students);
         } finally {
             $scope->end();
         }

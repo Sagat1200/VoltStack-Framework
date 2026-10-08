@@ -419,6 +419,18 @@ final class CacheRepositoryBaselineTest extends TestCase
         self::assertArrayNotHasKey('value', $explain['lookup']);
         self::assertSame('memory', $explain['lookup']['metadata']['source_level'] ?? null);
         self::assertSame('v1', $explain['lookup']['metadata']['versions']['namespace'] ?? null);
+        self::assertSame('lookup', $explain['plan']['operation'] ?? null);
+        self::assertSame('product:42', $explain['plan']['logical_key'] ?? null);
+        self::assertStringContainsString('tag[featured=v1]:v1:catalog:product:42', (string) ($explain['plan']['normalized_key'] ?? ''));
+        self::assertSame('tag_invalidation', $explain['plan']['clear_strategy'] ?? null);
+        self::assertSame('catalog.tag.featured', $explain['plan']['invalidation_scopes']['tags']['featured'] ?? null);
+        self::assertSame('relative', $explain['policies']['default_ttl']['mode'] ?? null);
+        self::assertSame(60, $explain['policies']['default_ttl']['remaining_seconds'] ?? null);
+        self::assertFalse($explain['policies']['uses_marshaller'] ?? true);
+        self::assertTrue($explain['policies']['uses_namespace_versions'] ?? false);
+        self::assertTrue($explain['policies']['uses_tag_versions'] ?? false);
+        self::assertTrue($explain['policies']['inspectable_store'] ?? false);
+        self::assertSame('memory', $explain['policies']['source_level'] ?? null);
         self::assertSame('tag[featured=v1]:v1:catalog', $explain['diagnostics']['storage_namespace'] ?? null);
         self::assertSame('catalog.tag.featured', $explain['diagnostics']['invalidation_scopes']['tags']['featured'] ?? null);
     }
@@ -436,6 +448,13 @@ final class CacheRepositoryBaselineTest extends TestCase
         self::assertArrayHasKey('metadata', $explain['lookup']);
         self::assertNull($explain['lookup']['metadata']);
         self::assertFalse($explain['lookup']['value_exposed'] ?? true);
+        self::assertSame('lookup', $explain['plan']['operation'] ?? null);
+        self::assertSame('missing-key', $explain['plan']['normalized_key'] ?? null);
+        self::assertSame('store_flush', $explain['plan']['clear_strategy'] ?? null);
+        self::assertSame('forever', $explain['policies']['default_ttl']['mode'] ?? null);
+        self::assertFalse($explain['policies']['uses_namespace_versions'] ?? true);
+        self::assertFalse($explain['policies']['uses_tag_versions'] ?? true);
+        self::assertTrue($explain['policies']['inspectable_store'] ?? false);
     }
 
     public function test_pull_returns_value_and_removes_the_key(): void

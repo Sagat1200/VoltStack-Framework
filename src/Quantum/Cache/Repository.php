@@ -190,11 +190,14 @@ final class Repository
     public function explain(string $key): array
     {
         $lookup = $this->lookup($key);
+        $normalizedKey = $this->normalizeKey($key);
 
         return [
             'key' => $key,
-            'normalized_key' => $this->normalizeKey($key),
+            'normalized_key' => $normalizedKey,
             'lookup' => $this->lookupSnapshot($lookup),
+            'plan' => $this->explainPlan($key, $normalizedKey),
+            'policies' => $this->policySnapshot(),
             'diagnostics' => $this->diagnosticsSnapshot(),
         ];
     }
@@ -656,6 +659,37 @@ final class Repository
             'ttl_remaining_ms' => $metadata->ttlRemainingMs,
             'versions' => $metadata->versions,
             'source_level' => $metadata->sourceLevel,
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function explainPlan(string $key, string $normalizedKey): array
+    {
+        return [
+            'operation' => 'lookup',
+            'logical_key' => $key,
+            'normalized_key' => $normalizedKey,
+            'storage_namespace' => $this->storageNamespace(),
+            'context_fingerprint' => $this->contextFingerprint($this->context()),
+            'clear_strategy' => $this->clearStrategy(),
+            'invalidation_scopes' => $this->invalidationScopes(),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function policySnapshot(): array
+    {
+        return [
+            'default_ttl' => $this->describeTtl($this->defaultTtl),
+            'uses_marshaller' => $this->marshaller !== null,
+            'uses_namespace_versions' => $this->versionAuthority !== null && $this->versionScope !== null && trim($this->versionScope) !== '',
+            'uses_tag_versions' => $this->versionAuthority !== null && $this->tagNames !== [],
+            'inspectable_store' => $this->store instanceof InspectableStoreInterface,
+            'source_level' => $this->store instanceof InspectableStoreInterface ? $this->store->sourceLevel() : 'store',
         ];
     }
 

@@ -7,7 +7,9 @@ namespace Quantum\Console\Commands;
 use Quantum\Console\Command;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
+use Quantum\Config\Publication\PublishedConfigurationRequiredException;
 use Quantum\Telemetry\Contracts\TelemetryManagerInterface;
+use VoltStack\Framework\Application;
 use VoltStack\Runtime\Status\RuntimeStatusInspector;
 use VoltStack\Runtime\Telemetry\RuntimeTelemetryEmitter;
 
@@ -25,7 +27,7 @@ final class RuntimeStatusCommand extends Command
 
     public function usage(): string
     {
-        return 'runtime:status [--driver=frankenphp] [--max-requests=1] [--emit-telemetry] [--strict] [--json]';
+        return 'runtime:status [--driver=frankenphp] [--max-requests=1] [--require-published-config] [--emit-telemetry] [--strict] [--json]';
     }
 
     public function category(): string
@@ -38,6 +40,7 @@ final class RuntimeStatusCommand extends Command
         return [
             '--driver=' => 'Driver runtime a inspeccionar.',
             '--max-requests=' => 'Cantidad maxima de requests por worker para la inspeccion.',
+            '--require-published-config' => 'Exige una generation activa y sin drift antes de inspeccionar el runtime.',
             '--emit-telemetry' => 'Emite una senal de telemetry con el estado del runtime.',
             '--strict' => 'Devuelve exit code 1 si el reporte contiene alertas.',
             '--json' => 'Emite un payload JSON estable con el reporte de status.',
@@ -49,6 +52,10 @@ final class RuntimeStatusCommand extends Command
         $maxRequests = max(1, (int) ($input->option('max-requests', '1')));
         $driver = is_string($input->option('driver')) ? $input->option('driver') : null;
         return $this->runInCommandRuntime(function ($app) use ($driver, $input, $maxRequests, $output): int {
+            if ($input->hasOption('require-published-config')) {
+                $this->assertPublishedConfiguration($app);
+            }
+
             $report = (new RuntimeStatusInspector())->inspect($app, $driver, $maxRequests);
 
             if ($input->hasOption('emit-telemetry')) {
@@ -119,5 +126,22 @@ final class RuntimeStatusCommand extends Command
 
             return 0;
         });
+    }
+
+    private function assertPublishedConfiguration(Application $app): void
+    {
+        $status = $app->configStatusInspector()->inspect($app);
+
+        if (! $status->hasActiveGeneration()) {
+            throw new PublishedConfigurationRequiredException(
+                'Published configuration is required for runtime status inspection, but no active configuration generation exists.',
+            );
+        }
+
+        if (! $status->publishedMatchesEffective()) {
+            throw new PublishedConfigurationRequiredException(
+                'Published configuration is required for runtime status inspection, but the effective snapshot differs from the active generation.',
+            );
+        }
     }
 }

@@ -30,6 +30,10 @@ use Quantum\Config\Publication\ConfigSnapshotCodec;
 use Quantum\Config\Reference\ConfigReferenceResolver;
 use Quantum\Config\Reference\EnvSecretValueResolver;
 use Quantum\Config\Reference\SecretValueResolverInterface;
+use Quantum\Config\Schema\Builtin\CacheConfigSchema;
+use Quantum\Config\Schema\Builtin\DatabaseConfigSchema;
+use Quantum\Config\Schema\Builtin\ExceptionsConfigSchema;
+use Quantum\Config\Schema\ConfigSchemaRegistry;
 use Quantum\Config\Scope\ConfigurationOverrideWriter;
 use Quantum\Config\Scope\ConfigurationScopeRegistry;
 use Quantum\Compilation\ArtifactStore;
@@ -288,6 +292,17 @@ class Application extends Container
             $this->singleton(ConfigReferenceResolver::class, fn(Application $app) => new ConfigReferenceResolver(
                 $app->make(SecretValueResolverInterface::class),
             ));
+        }
+
+        if (! isset($this->bindings[ConfigSchemaRegistry::class])) {
+            $this->singleton(ConfigSchemaRegistry::class, static function (): ConfigSchemaRegistry {
+                $registry = new ConfigSchemaRegistry();
+                $registry->register(CacheConfigSchema::build());
+                $registry->register(DatabaseConfigSchema::build());
+                $registry->register(ExceptionsConfigSchema::build());
+
+                return $registry;
+            });
         }
 
         if (! isset($this->bindings[ConfigRedactor::class])) {
@@ -954,6 +969,19 @@ class Application extends Container
                                 $app->make(ExceptionPlanStore::class)->currentPath(),
                             ));
                         }
+
+                        $expectedRuntime = is_string($exceptionConfig['runtime'] ?? null)
+                            ? trim((string) $exceptionConfig['runtime'])
+                            : '';
+
+                        if ($expectedRuntime === '') {
+                            $expectedRuntime = PHP_SAPI === 'cli' ? 'sapi' : 'frankenphp';
+                        }
+
+                        $plan->assertCompatibleWith(
+                            expectedRuntime: $expectedRuntime,
+                            expectedPhpRuntimeVersion: PHP_VERSION,
+                        );
 
                         return $plan;
                     }

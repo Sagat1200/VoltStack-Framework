@@ -20,6 +20,13 @@ final readonly class ExceptionCompilationPlan
         private array $spaVersions,
         private string $phpRuntimeVersion,
     ) {
+        if ($this->fingerprint === '') {
+            throw new ExceptionCompilationException('Exception compilation plan fingerprint must not be empty.');
+        }
+
+        if ($this->phpRuntimeVersion === '') {
+            throw new ExceptionCompilationException('Exception compilation plan PHP runtime version must not be empty.');
+        }
     }
 
     /**
@@ -84,6 +91,37 @@ final readonly class ExceptionCompilationPlan
         return (string) $this->config['runtime'];
     }
 
+    public function assertCompatibleWith(string $expectedRuntime, string $expectedPhpRuntimeVersion = PHP_VERSION): void
+    {
+        $schemaVersion = $this->config['schema_version'] ?? null;
+
+        if ($schemaVersion !== 1) {
+            throw new ExceptionCompilationException(sprintf(
+                'Published exception compilation plan schema version [%s] is incompatible; expected [1].',
+                is_scalar($schemaVersion) ? (string) $schemaVersion : get_debug_type($schemaVersion),
+            ));
+        }
+
+        $runtime = trim($this->runtime());
+        $expectedRuntime = trim($expectedRuntime);
+
+        if ($runtime === '' || $runtime !== $expectedRuntime) {
+            throw new ExceptionCompilationException(sprintf(
+                'Published exception compilation plan runtime [%s] is incompatible with configured runtime [%s].',
+                $runtime === '' ? '<empty>' : $runtime,
+                $expectedRuntime === '' ? '<empty>' : $expectedRuntime,
+            ));
+        }
+
+        if ($this->phpRuntimeVersion !== $expectedPhpRuntimeVersion) {
+            throw new ExceptionCompilationException(sprintf(
+                'Published exception compilation plan PHP runtime version [%s] is incompatible with current PHP version [%s].',
+                $this->phpRuntimeVersion,
+                $expectedPhpRuntimeVersion,
+            ));
+        }
+    }
+
     /**
      * @return array{
      *     schema_version:int,
@@ -115,14 +153,27 @@ final readonly class ExceptionCompilationPlan
      */
     public static function fromArray(array $payload): self
     {
+        $schemaVersion = $payload['schema_version'] ?? null;
         $config = $payload['config'] ?? null;
         $fingerprint = $payload['fingerprint'] ?? null;
+        $policyRevision = $payload['policy_revision'] ?? null;
         $catalogCodes = $payload['catalog_codes'] ?? null;
         $reporters = $payload['reporters'] ?? null;
         $spaVersions = $payload['spa_versions'] ?? null;
         $phpRuntimeVersion = $payload['php_runtime_version'] ?? null;
 
-        if (! is_array($config) || ! is_string($fingerprint) || ! is_array($catalogCodes) || ! is_array($reporters) || ! is_array($spaVersions) || ! is_string($phpRuntimeVersion)) {
+        if ($schemaVersion !== 1
+            || ! is_array($config)
+            || ! is_string($fingerprint)
+            || $fingerprint === ''
+            || ! is_string($policyRevision)
+            || $policyRevision === ''
+            || $policyRevision !== $fingerprint
+            || ! is_array($catalogCodes)
+            || ! is_array($reporters)
+            || ! is_array($spaVersions)
+            || ! is_string($phpRuntimeVersion)
+            || $phpRuntimeVersion === '') {
             throw new ExceptionCompilationException('The exception compilation artifact payload is invalid.');
         }
 

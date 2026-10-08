@@ -368,7 +368,7 @@ final class EntityManager implements EntityManagerInterface
             }
         }
 
-        foreach ($associationNames as $associationName) {
+        foreach ($this->groupAssociationPaths($metadata, $associationNames) as $associationName => $nestedAssociationPaths) {
             $loadedTargets = $this->preloadAssociationBatch(
                 $entities,
                 $metadata,
@@ -378,6 +378,13 @@ final class EntityManager implements EntityManagerInterface
                 $loadedTargets,
                 $metadata->association($associationName),
             );
+
+            if ($nestedAssociationPaths !== []) {
+                $this->preloadAssociations(
+                    $this->uniqueEntities($loadedTargets),
+                    $nestedAssociationPaths,
+                );
+            }
         }
     }
 
@@ -387,6 +394,74 @@ final class EntityManager implements EntityManagerInterface
     private function preloadConfiguredEagerAssociations(array $entities, EntityMetadata $metadata): void
     {
         $this->preloadAssociations($entities, $metadata->eagerAssociationNames());
+    }
+
+    /**
+     * @param list<string> $associationNames
+     * @return array<string, list<string>>
+     */
+    private function groupAssociationPaths(EntityMetadata $metadata, array $associationNames): array
+    {
+        $grouped = [];
+
+        foreach ($associationNames as $associationPath) {
+            $normalized = trim($associationPath);
+            if ($normalized === '') {
+                continue;
+            }
+
+            $segments = array_values(array_filter(
+                explode('.', $normalized),
+                static fn(string $segment): bool => $segment !== '',
+            ));
+
+            if ($segments === []) {
+                continue;
+            }
+
+            $rootAssociation = array_shift($segments);
+            if ($rootAssociation === null || ! $metadata->hasAssociation($rootAssociation)) {
+                throw new RuntimeException(sprintf(
+                    'Cannot preload unknown association path [%s] on [%s].',
+                    $normalized,
+                    $metadata->className,
+                ));
+            }
+
+            $grouped[$rootAssociation] ??= [];
+            if ($segments === []) {
+                continue;
+            }
+
+            $tailPath = implode('.', $segments);
+            if (! in_array($tailPath, $grouped[$rootAssociation], true)) {
+                $grouped[$rootAssociation][] = $tailPath;
+            }
+        }
+
+        return $grouped;
+    }
+
+    /**
+     * @param list<object> $entities
+     * @return list<object>
+     */
+    private function uniqueEntities(array $entities): array
+    {
+        $unique = [];
+        $seen = [];
+
+        foreach ($entities as $entity) {
+            $objectId = spl_object_id($entity);
+            if (isset($seen[$objectId])) {
+                continue;
+            }
+
+            $seen[$objectId] = true;
+            $unique[] = $entity;
+        }
+
+        return $unique;
     }
 
     /**

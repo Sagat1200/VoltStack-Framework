@@ -197,6 +197,144 @@ PHP);
         self::assertSame($publishedPlan->config(), $resolved->config());
     }
 
+    public function test_application_rejects_corrupted_published_plan_in_production(): void
+    {
+        $this->writeConfig('exceptions', <<<'PHP'
+<?php
+
+return [
+    'environment' => 'production',
+    'debug' => false,
+    'runtime' => 'sapi',
+    'compilation' => [
+        'required_in_production' => true,
+    ],
+];
+PHP);
+
+        $app = new Application($this->basePath);
+        $app->make(ConfigRepository::class)->loadPath($this->basePath . DIRECTORY_SEPARATOR . 'config');
+
+        $this->writePublishedPlanArtifact($app, <<<'PHP'
+<?php
+
+return 'corrupted';
+PHP);
+
+        $this->expectException(ExceptionCompilationException::class);
+        $this->expectExceptionMessage('invalid or corrupted');
+
+        $app->make(ExceptionCompilationPlan::class);
+    }
+
+    public function test_application_rejects_published_plan_with_incompatible_schema_version(): void
+    {
+        $this->writeConfig('exceptions', <<<'PHP'
+<?php
+
+return [
+    'environment' => 'production',
+    'debug' => false,
+    'runtime' => 'sapi',
+    'compilation' => [
+        'required_in_production' => true,
+    ],
+];
+PHP);
+
+        $compiler = new ExceptionPlanCompiler();
+        $payload = $compiler->compile([
+            'environment' => 'production',
+            'debug' => false,
+            'runtime' => 'sapi',
+            'compilation' => [
+                'required_in_production' => true,
+            ],
+        ])->toArray();
+        $payload['schema_version'] = 2;
+
+        $app = new Application($this->basePath);
+        $app->make(ConfigRepository::class)->loadPath($this->basePath . DIRECTORY_SEPARATOR . 'config');
+        $this->writePublishedPlanArtifact($app, "<?php\n\nreturn " . var_export($payload, true) . ";\n");
+
+        $this->expectException(ExceptionCompilationException::class);
+        $this->expectExceptionMessage('artifact payload is invalid');
+
+        $app->make(ExceptionCompilationPlan::class);
+    }
+
+    public function test_application_rejects_published_plan_with_incompatible_php_runtime_version(): void
+    {
+        $this->writeConfig('exceptions', <<<'PHP'
+<?php
+
+return [
+    'environment' => 'production',
+    'debug' => false,
+    'runtime' => 'sapi',
+    'compilation' => [
+        'required_in_production' => true,
+    ],
+];
+PHP);
+
+        $compiler = new ExceptionPlanCompiler();
+        $payload = $compiler->compile([
+            'environment' => 'production',
+            'debug' => false,
+            'runtime' => 'sapi',
+            'compilation' => [
+                'required_in_production' => true,
+            ],
+        ])->toArray();
+        $payload['php_runtime_version'] = '0.0.0';
+
+        $app = new Application($this->basePath);
+        $app->make(ConfigRepository::class)->loadPath($this->basePath . DIRECTORY_SEPARATOR . 'config');
+        $this->writePublishedPlanArtifact($app, "<?php\n\nreturn " . var_export($payload, true) . ";\n");
+
+        $this->expectException(ExceptionCompilationException::class);
+        $this->expectExceptionMessage('PHP runtime version [0.0.0] is incompatible');
+
+        $app->make(ExceptionCompilationPlan::class);
+    }
+
+    public function test_application_rejects_published_plan_with_incompatible_runtime_id(): void
+    {
+        $this->writeConfig('exceptions', <<<'PHP'
+<?php
+
+return [
+    'environment' => 'production',
+    'debug' => false,
+    'runtime' => 'sapi',
+    'compilation' => [
+        'required_in_production' => true,
+    ],
+];
+PHP);
+
+        $compiler = new ExceptionPlanCompiler();
+        $payload = $compiler->compile([
+            'environment' => 'production',
+            'debug' => false,
+            'runtime' => 'sapi',
+            'compilation' => [
+                'required_in_production' => true,
+            ],
+        ])->toArray();
+        $payload['config']['runtime'] = 'frankenphp';
+
+        $app = new Application($this->basePath);
+        $app->make(ConfigRepository::class)->loadPath($this->basePath . DIRECTORY_SEPARATOR . 'config');
+        $this->writePublishedPlanArtifact($app, "<?php\n\nreturn " . var_export($payload, true) . ";\n");
+
+        $this->expectException(ExceptionCompilationException::class);
+        $this->expectExceptionMessage('runtime [frankenphp] is incompatible with configured runtime [sapi]');
+
+        $app->make(ExceptionCompilationPlan::class);
+    }
+
     public function test_application_applies_rendering_configuration_to_transport_mapper_binding(): void
     {
         $this->writeConfig('exceptions', <<<'PHP'
@@ -244,6 +382,18 @@ PHP);
         }
 
         file_put_contents($configPath . DIRECTORY_SEPARATOR . $name . '.php', $contents);
+    }
+
+    private function writePublishedPlanArtifact(Application $app, string $contents): void
+    {
+        $path = $app->make(ExceptionPlanStore::class)->currentPath();
+        $directory = dirname($path);
+
+        if (! is_dir($directory) && ! mkdir($directory, 0777, true) && ! is_dir($directory)) {
+            throw new RuntimeException(sprintf('Unable to create published plan directory [%s].', $directory));
+        }
+
+        file_put_contents($path, $contents);
     }
 
     private function descriptor(string $code): \Quantum\Exceptions\Model\ExceptionDescriptor

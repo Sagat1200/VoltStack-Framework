@@ -8,6 +8,7 @@ use Quantum\Container\AliasResolver;
 use Closure;
 use Quantum\Container\Binding;
 use Quantum\Container\Container;
+use Quantum\Container\ScopeKind;
 use ReflectionClass;
 use ReflectionNamedType;
 use ReflectionType;
@@ -34,6 +35,7 @@ final class ContainerGraphInspector
         }
 
         array_push($issues, ...$this->validateResolvableDependencies($services, $aliases));
+        array_push($issues, ...$this->validateScopeCaptures($services, $aliases));
         array_push($issues, ...$this->detectRegisteredCycles($services, $aliases));
 
         return new ContainerGraph(
@@ -189,6 +191,74 @@ final class ContainerGraphInspector
                     ),
                     $service->abstract,
                     $target,
+                );
+            }
+        }
+
+        return $issues;
+    }
+
+    /**
+     * @param array<string, ServiceNode> $services
+     * @param array<string, string> $aliases
+     * @return list<ValidationIssue>
+     */
+    private function validateScopeCaptures(array $services, array $aliases): array
+    {
+        $issues = [];
+
+        foreach ($services as $service) {
+            if (! in_array($service->lifetime, ['singleton', 'scoped'], true)) {
+                continue;
+            }
+
+            foreach ($service->dependencies as $dependency) {
+                $target = $this->normalizeAbstract($dependency->abstract, $aliases);
+                $dependencyNode = $services[$target] ?? null;
+
+                if ($dependencyNode === null || $dependencyNode->lifetime !== 'scoped') {
+                    continue;
+                }
+
+                if ($service->lifetime === 'singleton') {
+                    $issues[] = new ValidationIssue(
+                        'scope_capture_violation',
+                        sprintf(
+                            'Service [%s] is a singleton and cannot retain scoped dependency [%s]%s.',
+                            $service->abstract,
+                            $dependencyNode->abstract,
+                            $dependencyNode->scopeKind !== null
+                                ? sprintf(' with scope [%s]', $dependencyNode->scopeKind)
+                                : '',
+                        ),
+                        $service->abstract,
+                        $dependencyNode->abstract,
+                    );
+                    continue;
+                }
+
+                $serviceScopeKind = $this->scopeKindFromNode($service);
+                $dependencyScopeKind = $this->scopeKindFromNode($dependencyNode);
+
+                if ($serviceScopeKind === null || $dependencyScopeKind === null) {
+                    continue;
+                }
+
+                if ($serviceScopeKind->canRetain($dependencyScopeKind)) {
+                    continue;
+                }
+
+                $issues[] = new ValidationIssue(
+                    'scope_capture_violation',
+                    sprintf(
+                        'Scoped service [%s] with scope [%s] cannot statically retain dependency [%s] with scope [%s].',
+                        $service->abstract,
+                        $serviceScopeKind->value,
+                        $dependencyNode->abstract,
+                        $dependencyScopeKind->value,
+                    ),
+                    $service->abstract,
+                    $dependencyNode->abstract,
                 );
             }
         }
@@ -360,5 +430,14 @@ final class ContainerGraphInspector
     private function normalizeAbstract(string $abstract, array $aliases): string
     {
         return $this->aliasResolver->normalize($abstract, $aliases);
+    }
+
+    private function scopeKindFromNode(ServiceNode $node): ?ScopeKind
+    {
+        if ($node->lifetime !== 'scoped' || $node->scopeKind === null || $node->scopeKind === '') {
+            return null;
+        }
+
+        return ScopeKind::fromName($node->scopeKind);
     }
 }

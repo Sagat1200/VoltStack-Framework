@@ -35,6 +35,32 @@ final readonly class VersionedAuthorizationConsistency implements AuthorizationC
         return $this->invalidateDomain('relationships', $principalId, $scope);
     }
 
+    public function driver(): string
+    {
+        return $this->versions::class;
+    }
+
+    public function namespace(): string
+    {
+        return $this->namespace;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    public function describeAuthority(?string $principalId = null, Scope|string|null $scope = null): array
+    {
+        return $this->describeDomain('authority', $principalId, $scope);
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    public function describeRelationships(?string $principalId = null, Scope|string|null $scope = null): array
+    {
+        return $this->describeDomain('relationships', $principalId, $scope);
+    }
+
     private function compositeVersion(string $domain, string $principalId, Scope|string $scope): string
     {
         $principalId = trim($principalId);
@@ -74,6 +100,41 @@ final readonly class VersionedAuthorizationConsistency implements AuthorizationC
 
         if ($normalizedPrincipal !== '' && $normalizedScope !== null) {
             $result['principal_scope'] = $this->versions->bump($this->principalScopeScope($domain, $normalizedPrincipal, $normalizedScope));
+        }
+
+        return $result;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function describeDomain(string $domain, ?string $principalId, Scope|string|null $scope): array
+    {
+        $normalizedPrincipal = is_string($principalId) ? trim($principalId) : '';
+        $normalizedScope = $scope === null ? null : $this->normalizeScope($scope);
+
+        $result = [
+            'global' => $this->versions->currentVersion($this->globalScope($domain)),
+        ];
+
+        if ($normalizedPrincipal !== '') {
+            $result['principal'] = $this->versions->currentVersion($this->principalScope($domain, $normalizedPrincipal));
+        }
+
+        if ($normalizedScope !== null) {
+            $result['scope'] = $this->versions->currentVersion($this->scopeScope($domain, $normalizedScope));
+        }
+
+        if ($normalizedPrincipal !== '' && $normalizedScope !== null) {
+            $result['principal_scope'] = $this->versions->currentVersion(
+                $this->principalScopeScope($domain, $normalizedPrincipal, $normalizedScope),
+            );
+            $result['composite'] = implode('|', [
+                $result['global'],
+                $result['principal'],
+                $result['scope'],
+                $result['principal_scope'],
+            ]);
         }
 
         return $result;

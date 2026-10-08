@@ -15,6 +15,7 @@ use Quantum\Config\Schema\ConfigSchemaRegistry;
 use Quantum\Config\Validation\ConfigValidator;
 use Quantum\Database\Config\FrameworkDatabaseConfigurationProvider;
 use Quantum\Exceptions\Compilation\ExceptionPlanCompiler;
+use VoltStack\Framework\Application;
 
 final class ConfigSchemaValidationTest extends TestCase
 {
@@ -277,6 +278,18 @@ final class ConfigSchemaValidationTest extends TestCase
         self::assertSame(['exceptions.log', 'exceptions.telemetry'], $plan->config()['reporting']['reporters']);
         self::assertSame(['authorization.denied', 'validation.failed'], $plan->config()['reporting']['ignore_codes']);
         self::assertSame(['predicate.alpha', 'predicate.beta'], $plan->config()['rules'][0]['predicates']);
+    }
+
+    public function test_application_registers_builtin_exception_schema_in_registry(): void
+    {
+        $app = new Application(sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-config-schema-app');
+
+        $registry = $app->make(ConfigSchemaRegistry::class);
+
+        self::assertTrue($registry->has('cache'));
+        self::assertTrue($registry->has('database'));
+        self::assertTrue($registry->has('exceptions'));
+        self::assertSame('exceptions', $registry->get('exceptions')->namespace());
     }
 
     public function test_schema_root_must_be_map(): void

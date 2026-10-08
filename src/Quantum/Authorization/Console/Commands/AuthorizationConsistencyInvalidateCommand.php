@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quantum\Authorization\Console\Commands;
 
+use Quantum\Authorization\Consistency\VersionedAuthorizationConsistency;
 use Quantum\Authorization\Contracts\AuthorizationConsistencyInterface;
 use Quantum\Console\Command;
 use Quantum\Console\Input;
@@ -90,6 +91,11 @@ final class AuthorizationConsistencyInvalidateCommand extends Command
 
         if ($input->hasOption('verbose')) {
             $output->writeln(sprintf('Driver de consistencia: %s', $consistency::class));
+
+            if ($consistency instanceof VersionedAuthorizationConsistency) {
+                $output->writeln(sprintf('Backend de versiones: %s', $consistency->driver()));
+                $output->writeln(sprintf('Namespace: %s', $consistency->namespace()));
+            }
         }
 
         $output->writeln(sprintf('Invalidacion ejecutada sobre dominio: %s', $domain));

@@ -234,6 +234,74 @@ final class ExplicitScopeContainerTest extends TestCase
         self::assertSame('root', $container->currentScopeKind());
     }
 
+    public function test_execution_state_activation_restores_the_previous_scope_stack_when_the_inner_slot_closes(): void
+    {
+        $container = new Container();
+
+        $container->enterRequestScope();
+        $outerScopeId = $container->currentScopeId();
+
+        $executionSlot = $container->activateExecutionState();
+
+        self::assertSame('root', $container->currentScopeKind());
+        self::assertFalse($container->hasActiveScope());
+
+        $container->enterJobScope();
+        self::assertSame('job', $container->currentScopeKind());
+
+        $container->deactivateExecutionState($executionSlot);
+
+        self::assertSame('request', $container->currentScopeKind());
+        self::assertSame($outerScopeId, $container->currentScopeId());
+    }
+
+    public function test_worker_scoped_bindings_are_reused_across_execution_slots_through_the_shared_root_frame(): void
+    {
+        $container = new Container();
+        $sequence = 0;
+
+        $container->scopedFor('worker.service', function () use (&$sequence): object {
+            return (object) ['id' => ++$sequence];
+        }, 'worker');
+
+        $first = $container->make('worker.service');
+        $executionSlot = $container->activateExecutionState();
+
+        try {
+            $second = $container->make('worker.service');
+
+            self::assertSame($first, $second);
+            self::assertSame(1, $second->id);
+        } finally {
+            $container->deactivateExecutionState($executionSlot);
+        }
+    }
+
+    public function test_binding_resolution_stack_is_isolated_per_execution_slot(): void
+    {
+        $container = new Container();
+
+        $container->scopedFor('request.service', static fn(): object => new \stdClass(), 'request');
+        $container->singleton('singleton.service', function (Container $container): object {
+            $executionSlot = $container->activateExecutionState();
+
+            try {
+                $container->enterRequestScope();
+                $container->make('request.service');
+            } finally {
+                if ($container->hasActiveScope()) {
+                    $container->leaveScope();
+                }
+
+                $container->deactivateExecutionState($executionSlot);
+            }
+
+            return new \stdClass();
+        });
+
+        self::assertInstanceOf(\stdClass::class, $container->make('singleton.service'));
+    }
+
     public function test_unknown_scope_names_are_classified_as_generic_scope_kind(): void
     {
         $container = new Container();

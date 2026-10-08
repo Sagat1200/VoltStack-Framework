@@ -8,8 +8,10 @@ use Quantum\Bootstrap\Budget\BootstrapBudget;
 use Quantum\Console\Command;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
+use Quantum\Telemetry\Contracts\TelemetryManagerInterface;
 use VoltStack\Runtime\Budget\RuntimeBudget;
 use VoltStack\Runtime\Pipeline\RuntimeReleasePipelineRunner;
+use VoltStack\Runtime\Telemetry\RuntimeReleasePipelineTelemetryEmitter;
 
 final class RuntimeReleasePipelineCommand extends Command
 {
@@ -25,7 +27,7 @@ final class RuntimeReleasePipelineCommand extends Command
 
     public function usage(): string
     {
-        return 'runtime:release-pipeline [--driver=frankenphp] [--profile=release] [--artifact-dir=storage/framework/bootstrap] [--requests=/,GET:/health] [--bootstrap-budget-total-ms=250] [--phase-budgets=DISCOVERING:25,BOOTING:50] [--runtime-budget-total-ms=50] [--runtime-budget-request-ms=25] [--require-published-config] [--publish-calibration] [--calibration-dir=storage/framework/runtime-budget] [--warmup=2] [--iterations=10] [--multiplier=1.25] [--emit-phase-telemetry] [--no-rollback] [--json]';
+        return 'runtime:release-pipeline [--driver=frankenphp] [--profile=release] [--artifact-dir=storage/framework/bootstrap] [--requests=/,GET:/health] [--bootstrap-budget-total-ms=250] [--phase-budgets=DISCOVERING:25,BOOTING:50] [--runtime-budget-total-ms=50] [--runtime-budget-request-ms=25] [--require-published-config] [--publish-calibration] [--calibration-dir=storage/framework/runtime-budget] [--warmup=2] [--iterations=10] [--multiplier=1.25] [--emit-phase-telemetry] [--emit-telemetry] [--no-rollback] [--json]';
     }
 
     public function category(): string
@@ -51,6 +53,7 @@ final class RuntimeReleasePipelineCommand extends Command
             '--iterations=' => 'Cantidad de corridas medidas para la calibracion opcional.',
             '--multiplier=' => 'Factor de seguridad aplicado a la calibracion opcional.',
             '--emit-phase-telemetry' => 'Activa telemetry de fases del release-check bootstrap.',
+            '--emit-telemetry' => 'Emite telemetry con el reporte consolidado del pipeline runtime.',
             '--no-rollback' => 'Desactiva el rollback automatico de bootstrap/calibracion cuando el pipeline falla.',
             '--json' => 'Emite un payload JSON estable con el resultado del pipeline.',
         ];
@@ -86,9 +89,18 @@ final class RuntimeReleasePipelineCommand extends Command
             emitPhaseTelemetry: $input->hasOption('emit-phase-telemetry'),
         );
 
+        if ($input->hasOption('emit-telemetry')) {
+            $this->runInCommandRuntime(function ($app) use ($report): void {
+                (new RuntimeReleasePipelineTelemetryEmitter(
+                    $app->make(TelemetryManagerInterface::class),
+                ))->emit($report);
+            });
+        }
+
         if ($input->hasOption('json')) {
             $payload = [
                 'command' => $this->name(),
+                'telemetry_emitted' => $input->hasOption('emit-telemetry'),
                 'report' => $report->toArray(),
             ];
 
@@ -117,6 +129,14 @@ final class RuntimeReleasePipelineCommand extends Command
                     ? ($report->rollback()->bootstrapRolledBack() || $report->rollback()->calibrationRolledBack() ? 'performed' : 'requested')
                     : 'not-needed'
             ));
+            $output->writeln(sprintf(
+                '  Drain required: %s',
+                $report->drain()->required() ? 'yes' : 'no'
+            ));
+            $output->writeln(sprintf(
+                '  Drain action: %s',
+                $report->drain()->action()
+            ));
 
             if ($report->violations() !== []) {
                 $output->writeln('  Violations:');
@@ -124,6 +144,10 @@ final class RuntimeReleasePipelineCommand extends Command
                 foreach ($report->violations() as $violation) {
                     $output->writeln(sprintf('    - %s', $violation));
                 }
+            }
+
+            if ($input->hasOption('emit-telemetry')) {
+                $output->writeln('  Telemetry: emitted');
             }
         }
 

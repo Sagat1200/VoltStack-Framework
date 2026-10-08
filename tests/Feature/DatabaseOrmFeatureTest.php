@@ -767,6 +767,117 @@ final class DatabaseOrmFeatureTest extends TestCase
         }
     }
 
+    public function test_entity_query_supports_nested_preload_paths_for_root_and_joined_associations(): void
+    {
+        $app = $this->makeApp();
+        $scope = $app->make(ScopeManager::class);
+        $scope->begin(Request::create('/database/orm/preloads-nested', 'GET'));
+
+        try {
+            $database = $app->make(DatabaseInterface::class);
+            $database->schema()->create('orm_blog_posts', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('title');
+                $table->boolean('published');
+            }, true);
+            $database->schema()->create('orm_blog_comments', function (TableBlueprint $table): void {
+                $table->id();
+                $table->integer('post_id');
+                $table->string('body');
+            }, true);
+            $database->schema()->create('orm_account_users', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+            }, true);
+            $database->schema()->create('orm_user_profiles', function (TableBlueprint $table): void {
+                $table->id();
+                $table->integer('user_id')->nullable();
+                $table->string('bio');
+            }, true);
+
+            $em = $database->entityManager();
+
+            $alpha = new OrmBlogPost();
+            $alpha->title = 'Alpha';
+            $alpha->published = true;
+
+            $beta = new OrmBlogPost();
+            $beta->title = 'Beta';
+            $beta->published = true;
+
+            $em->persist($alpha);
+            $em->persist($beta);
+            $em->flush();
+
+            $commentA1 = new OrmBlogComment();
+            $commentA1->body = 'Alpha #1';
+            $commentA1->post = $alpha;
+
+            $commentA2 = new OrmBlogComment();
+            $commentA2->body = 'Alpha #2';
+            $commentA2->post = $alpha;
+
+            $commentB1 = new OrmBlogComment();
+            $commentB1->body = 'Beta #1';
+            $commentB1->post = $beta;
+
+            $em->persist($commentA1);
+            $em->persist($commentA2);
+            $em->persist($commentB1);
+
+            $ada = new OrmAccountUser();
+            $ada->name = 'Ada';
+
+            $grace = new OrmAccountUser();
+            $grace->name = 'Grace';
+
+            $em->persist($ada);
+            $em->persist($grace);
+            $em->flush();
+
+            $adaProfile = new OrmUserProfile();
+            $adaProfile->bio = 'Architect';
+            $adaProfile->user = $ada;
+            $ada->profile = $adaProfile;
+
+            $em->persist($adaProfile);
+            $em->flush();
+            $em->clear();
+
+            $posts = $em->query(OrmBlogPost::class)
+                ->with('comments.post')
+                ->orderBy('title')
+                ->get();
+
+            self::assertCount(2, $posts);
+            self::assertSame('Alpha', $posts[0]->title);
+            self::assertSame('Beta', $posts[1]->title);
+            self::assertCount(2, $posts[0]->comments);
+            self::assertCount(1, $posts[1]->comments);
+            usort($posts[0]->comments, static fn(OrmBlogComment $a, OrmBlogComment $b): int => strcmp($a->body, $b->body));
+            self::assertSame($posts[0], $posts[0]->comments[0]->post);
+            self::assertSame($posts[0], $posts[0]->comments[1]->post);
+            self::assertSame($posts[1], $posts[1]->comments[0]->post);
+
+            $em->clear();
+
+            $users = $em->query(OrmAccountUser::class)
+                ->leftJoin('profile', 'pr')
+                ->with('profile.user')
+                ->orderBy('name')
+                ->get();
+
+            self::assertCount(2, $users);
+            self::assertSame('Ada', $users[0]->name);
+            self::assertInstanceOf(OrmUserProfile::class, $users[0]->profile);
+            self::assertSame($users[0], $users[0]->profile->user);
+            self::assertSame('Grace', $users[1]->name);
+            self::assertNull($users[1]->profile);
+        } finally {
+            $scope->end();
+        }
+    }
+
     public function test_entity_query_can_join_to_one_associations_via_metadata_for_filters_and_projections(): void
     {
         $app = $this->makeApp();

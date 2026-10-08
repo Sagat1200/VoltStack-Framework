@@ -14,9 +14,9 @@ final class ScopeStack
      */
     private array $frames = [];
 
-    public function __construct()
+    public function __construct(?ScopeFrame $rootFrame = null)
     {
-        $this->frames[] = new ScopeFrame(
+        $this->frames[] = $rootFrame ?? new ScopeFrame(
             id: $this->newId(),
             name: 'root',
             kind: ScopeKind::Root,

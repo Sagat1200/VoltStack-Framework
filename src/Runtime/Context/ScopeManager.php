@@ -12,6 +12,7 @@ final class ScopeManager
 {
     private ?RuntimeContext $context = null;
     private ?string $contextSlotId = null;
+    private ?string $executionSlotId = null;
 
     public function __construct(private readonly Application $app) {}
 
@@ -92,6 +93,11 @@ final class ScopeManager
      */
     private function beginUnitScope(ScopeKind $scopeKind, Request $request, array $metadata): RuntimeContext
     {
+        RuntimeContext::deactivate($this->contextSlotId);
+        $this->contextSlotId = null;
+        $this->app->deactivateExecutionState($this->executionSlotId);
+        $this->executionSlotId = $this->app->activateExecutionState();
+
         while ($this->app->hasActiveScope()) {
             $this->app->leaveScope();
         }
@@ -114,7 +120,6 @@ final class ScopeManager
             ],
         );
 
-        RuntimeContext::deactivate($this->contextSlotId);
         $this->contextSlotId = RuntimeContext::activate($context);
         $this->context = $context;
 
@@ -132,6 +137,8 @@ final class ScopeManager
         RuntimeContext::deactivate($this->contextSlotId);
         $this->contextSlotId = null;
         $this->app->leaveScope();
+        $this->app->deactivateExecutionState($this->executionSlotId);
+        $this->executionSlotId = null;
     }
 
     public function current(): ?RuntimeContext

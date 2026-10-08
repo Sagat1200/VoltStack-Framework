@@ -15,6 +15,7 @@ use Quantum\Authorization\Authority\RequestScopedAuthorityMemoizationCache;
 use Quantum\Authorization\Bridges\ControllerSecurityPlannerBridge;
 use Quantum\Authorization\Consistency\VersionedAuthorizationConsistency;
 use Quantum\Authorization\Console\Commands\AuthorizationConsistencyInvalidateCommand;
+use Quantum\Authorization\Console\Commands\AuthorizationConsistencyReportCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationManifestClearCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationManifestCompileCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationRelationshipsListCommand;
@@ -57,6 +58,7 @@ use Quantum\Authorization\Relationship\RelationshipEvaluator;
 use Quantum\Authorization\Subject\SubjectResolver;
 use Quantum\Config\ConfigRepository;
 use Quantum\Cache\Contracts\VersionAuthorityInterface;
+use Quantum\Cache\FileVersionAuthority;
 use Quantum\Database\Contracts\DatabaseInterface;
 use Quantum\Http\Request;
 use Quantum\Metadata\MetadataMergeStrategy;
@@ -322,13 +324,31 @@ final class AuthorizationServiceProvider extends ServiceProvider
             AuthorizationConsistencyInterface::class,
             function (Application $app): AuthorizationConsistencyInterface {
                 $namespace = $app->config('authorization.consistency.namespace', 'authorization.consistency');
+                $driver = strtolower(trim((string) $app->config('authorization.consistency.driver', 'local')));
+                $versions = match ($driver) {
+                    'file', 'filesystem', 'shared' => new FileVersionAuthority(
+                        $this->resolveConsistencyFilePath($app),
+                    ),
+                    default => $app->make(VersionAuthorityInterface::class),
+                };
 
                 return new VersionedAuthorizationConsistency(
-                    $app->make(VersionAuthorityInterface::class),
+                    $versions,
                     is_string($namespace) && trim($namespace) !== '' ? trim($namespace) : 'authorization.consistency',
                 );
             },
         );
+    }
+
+    private function resolveConsistencyFilePath(Application $app): string
+    {
+        $configured = $app->config('authorization.consistency.file.path');
+
+        if (is_string($configured) && trim($configured) !== '') {
+            return trim($configured);
+        }
+
+        return $app->storagePath('framework/authorization/consistency');
     }
 
     private function registerRelationshipRepository(): void
@@ -561,6 +581,7 @@ final class AuthorizationServiceProvider extends ServiceProvider
     {
         return [
             AuthorizationConsistencyInvalidateCommand::class,
+            AuthorizationConsistencyReportCommand::class,
             AuthorizationManifestCompileCommand::class,
             AuthorizationManifestClearCommand::class,
             AuthorizationRelationshipsListCommand::class,
@@ -585,6 +606,10 @@ final class AuthorizationServiceProvider extends ServiceProvider
             'consistency' => [
                 'enabled' => true,
                 'namespace' => 'authorization.consistency',
+                'driver' => 'local',
+                'file' => [
+                    'path' => null,
+                ],
             ],
             'authority' => [
                 'enabled' => true,

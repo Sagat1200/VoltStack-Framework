@@ -56,6 +56,9 @@ final class RuntimeReleasePipelineRunner
             bootstrapGenerationBefore: $bootstrapBefore?->id,
             calibrationGenerationBefore: $calibrationBefore?->id,
         );
+        $drain = RuntimeReleasePipelineDrainReport::idle(
+            supported: $this->supportsDrainControl($app, $driver),
+        );
 
         $releaseCheck = (new BootstrapReleaseChecker($this->basePath))->run(
             profile: $profile,
@@ -83,6 +86,7 @@ final class RuntimeReleasePipelineRunner
                     bootstrapBefore: $bootstrapBefore,
                     calibrationBefore: $calibrationBefore,
                 ),
+                drain: $this->drainForFailure($app, $driver, 'bootstrap_release'),
             );
         }
 
@@ -113,6 +117,7 @@ final class RuntimeReleasePipelineRunner
                     bootstrapBefore: $bootstrapBefore,
                     calibrationBefore: $calibrationBefore,
                 ),
+                drain: $this->drainForFailure($app, $driver, 'runtime_smoke'),
             );
         }
 
@@ -149,6 +154,7 @@ final class RuntimeReleasePipelineRunner
                         bootstrapBefore: $bootstrapBefore,
                         calibrationBefore: $calibrationBefore,
                     ),
+                    drain: $this->drainForFailure($app, $driver, 'runtime_calibration'),
                 );
             }
 
@@ -168,6 +174,7 @@ final class RuntimeReleasePipelineRunner
             calibration: $calibration,
             publishedCalibration: $publishedCalibration,
             rollback: $rollback,
+            drain: $drain,
         );
     }
 
@@ -316,5 +323,43 @@ final class RuntimeReleasePipelineRunner
     {
         return preg_match('/^[A-Za-z]:\\\\/', $path) === 1
             || str_starts_with($path, DIRECTORY_SEPARATOR);
+    }
+
+    private function supportsDrainControl(Application $app, string $driver): bool
+    {
+        return $this->capabilities($app, $driver)->drainControl();
+    }
+
+    private function drainForFailure(
+        Application $app,
+        string $driver,
+        string $failedStage,
+    ): RuntimeReleasePipelineDrainReport {
+        $capabilities = $this->capabilities($app, $driver);
+
+        if ($failedStage === 'bootstrap_release' || ! $capabilities->persistent()) {
+            return RuntimeReleasePipelineDrainReport::idle(
+                supported: $capabilities->drainControl(),
+            );
+        }
+
+        return new RuntimeReleasePipelineDrainReport(
+            supported: $capabilities->drainControl(),
+            required: true,
+            action: $capabilities->drainControl() ? 'drain' : 'terminate',
+            reason: sprintf(
+                'El pipeline fallo en %s sobre un runtime persistente.',
+                $failedStage,
+            ),
+            failedStage: $failedStage,
+        );
+    }
+
+    private function capabilities(Application $app, string $driver): \VoltStack\Runtime\RuntimeCapabilities
+    {
+        /** @var RuntimeManager $manager */
+        $manager = $app->make(RuntimeManager::class);
+
+        return $manager->adapter($driver)->capabilities();
     }
 }

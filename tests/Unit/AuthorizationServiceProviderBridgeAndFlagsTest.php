@@ -37,6 +37,8 @@ final class AuthorizationServiceProviderBridgeAndFlagsTest extends TestCase
         self::assertSame('tenant:', $config->get('authorization.authority.scope_resolution.tenant_scope_prefix'));
         self::assertTrue($config->get('authorization.consistency.enabled'));
         self::assertSame('authorization.consistency', $config->get('authorization.consistency.namespace'));
+        self::assertSame('local', $config->get('authorization.consistency.driver'));
+        self::assertNull($config->get('authorization.consistency.file.path'));
         self::assertFalse($config->get('authorization.controllers_security.bridge.enabled'));
         self::assertFalse($config->get('authorization.relationships.evaluate'));
         self::assertSame('memory', $config->get('authorization.relationships.driver'));
@@ -177,5 +179,64 @@ final class AuthorizationServiceProviderBridgeAndFlagsTest extends TestCase
         self::assertArrayHasKey('final', $explained);
         self::assertArrayHasKey('stages', $explained);
         self::assertArrayHasKey('evaluated_at', $explained);
+    }
+
+    public function test_file_consistency_driver_shares_versions_across_application_instances(): void
+    {
+        $basePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-authz-consistency-' . uniqid('', true);
+        @mkdir($basePath, 0777, true);
+
+        try {
+            $sharedPath = $basePath . DIRECTORY_SEPARATOR . 'shared-consistency';
+
+            $appA = new Application($basePath . DIRECTORY_SEPARATOR . 'app-a');
+            $appA->make(ConfigRepository::class)->set('authorization.consistency.driver', 'file');
+            $appA->make(ConfigRepository::class)->set('authorization.consistency.file.path', $sharedPath);
+
+            $appB = new Application($basePath . DIRECTORY_SEPARATOR . 'app-b');
+            $appB->make(ConfigRepository::class)->set('authorization.consistency.driver', 'file');
+            $appB->make(ConfigRepository::class)->set('authorization.consistency.file.path', $sharedPath);
+
+            $consistencyA = $appA->make(AuthorizationConsistencyInterface::class);
+            $consistencyB = $appB->make(AuthorizationConsistencyInterface::class);
+
+            $before = $consistencyB->authorityVersion('u_1', 'tenant:acme');
+            $consistencyA->invalidateAuthority('u_1', 'tenant:acme');
+            $after = $consistencyB->authorityVersion('u_1', 'tenant:acme');
+
+            self::assertNotSame($before, $after);
+        } finally {
+            $this->removeDirectory($basePath);
+        }
+    }
+
+    private function removeDirectory(string $directory): void
+    {
+        if (! is_dir($directory)) {
+            return;
+        }
+
+        $items = scandir($directory);
+
+        if ($items === false) {
+            return;
+        }
+
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+
+            $path = $directory . DIRECTORY_SEPARATOR . $item;
+
+            if (is_dir($path)) {
+                $this->removeDirectory($path);
+                continue;
+            }
+
+            @unlink($path);
+        }
+
+        @rmdir($directory);
     }
 }

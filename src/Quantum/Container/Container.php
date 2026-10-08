@@ -32,12 +32,17 @@ class Container implements ContainerInterface
 
     protected ?ParameterResolver $parameterResolver = null;
 
-    protected ?ScopeStack $scopeStack = null;
+    /**
+     * @var array<string, ContainerExecutionState>
+     */
+    protected array $executionStates = [];
 
     /**
-     * @var list<Binding>
+     * @var list<string>
      */
-    protected array $bindingResolutionStack = [];
+    protected array $executionStateStack = [];
+
+    protected ?ScopeFrame $sharedRootScopeFrame = null;
 
     public function bind(string $abstract, mixed $concrete = null, bool $shared = false): void
     {
@@ -120,14 +125,14 @@ class Container implements ContainerInterface
 
         $this->assertScopedDependencyCompatibility($binding);
         if ($binding !== null) {
-            $this->bindingResolutionStack[] = $binding;
+            $this->currentExecutionState()->pushBindingResolution($binding);
         }
 
         try {
             $object = $this->resolve($concrete, $parameters);
         } finally {
             if ($binding !== null) {
-                array_pop($this->bindingResolutionStack);
+                $this->currentExecutionState()->popBindingResolution();
             }
         }
 
@@ -160,6 +165,34 @@ class Container implements ContainerInterface
     public function enterScope(string $name = 'scope'): string
     {
         return $this->scopeStack()->enter($name)->id();
+    }
+
+    public function activateExecutionState(): string
+    {
+        $this->initializeDefaultExecutionState();
+
+        $slotId = bin2hex(random_bytes(12));
+        $this->executionStates[$slotId] = new ContainerExecutionState(
+            new ScopeStack($this->sharedRootScopeFrame),
+        );
+        $this->executionStateStack[] = $slotId;
+
+        return $slotId;
+    }
+
+    public function deactivateExecutionState(?string $slotId): void
+    {
+        if ($slotId === null || $slotId === 'default') {
+            return;
+        }
+
+        unset($this->executionStates[$slotId]);
+        $this->executionStateStack = array_values(array_filter(
+            $this->executionStateStack,
+            static fn (string $activeSlotId): bool => $activeSlotId !== $slotId,
+        ));
+
+        $this->initializeDefaultExecutionState();
     }
 
     public function enterWorkerScope(): string
@@ -336,7 +369,30 @@ class Container implements ContainerInterface
 
     protected function scopeStack(): ScopeStack
     {
-        return $this->scopeStack ??= new ScopeStack();
+        return $this->currentExecutionState()->scopeStack();
+    }
+
+    protected function currentExecutionState(): ContainerExecutionState
+    {
+        $this->initializeDefaultExecutionState();
+
+        return $this->executionStates[$this->executionStateStack[array_key_last($this->executionStateStack)]];
+    }
+
+    protected function initializeDefaultExecutionState(): void
+    {
+        if (isset($this->executionStates['default'])) {
+            if ($this->executionStateStack === []) {
+                $this->executionStateStack[] = 'default';
+            }
+
+            return;
+        }
+
+        $defaultState = new ContainerExecutionState(new ScopeStack());
+        $this->executionStates['default'] = $defaultState;
+        $this->executionStateStack[] = 'default';
+        $this->sharedRootScopeFrame = $defaultState->scopeStack()->root();
     }
 
     protected function scopeFrameForScopedBinding(Binding $binding, bool $requireActiveFrame = true): ?ScopeFrame
@@ -419,8 +475,10 @@ class Container implements ContainerInterface
 
     protected function nearestRetainingBinding(): ?Binding
     {
-        for ($index = count($this->bindingResolutionStack) - 1; $index >= 0; $index--) {
-            $binding = $this->bindingResolutionStack[$index];
+        $bindingResolutionStack = $this->currentExecutionState()->bindingResolutionStack();
+
+        for ($index = count($bindingResolutionStack) - 1; $index >= 0; $index--) {
+            $binding = $bindingResolutionStack[$index];
 
             if ($binding->storesResolvedInstance()) {
                 return $binding;

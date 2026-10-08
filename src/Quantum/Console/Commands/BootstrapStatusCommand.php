@@ -9,7 +9,9 @@ use Quantum\Bootstrap\Telemetry\BootstrapTelemetryEmitter;
 use Quantum\Console\Command;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
+use Quantum\Config\Publication\PublishedConfigurationRequiredException;
 use Quantum\Telemetry\Contracts\TelemetryManagerInterface;
+use VoltStack\Framework\Application;
 
 final class BootstrapStatusCommand extends Command
 {
@@ -25,7 +27,7 @@ final class BootstrapStatusCommand extends Command
 
     public function usage(): string
     {
-        return 'bootstrap:status [--artifact-dir=storage/framework/bootstrap] [--emit-telemetry] [--strict] [--json]';
+        return 'bootstrap:status [--artifact-dir=storage/framework/bootstrap] [--require-published-config] [--emit-telemetry] [--strict] [--json]';
     }
 
     public function category(): string
@@ -37,6 +39,7 @@ final class BootstrapStatusCommand extends Command
     {
         return [
             '--artifact-dir=' => 'Directorio raiz de artifacts del bootstrap a inspeccionar.',
+            '--require-published-config' => 'Exige una generation activa y sin drift antes de inspeccionar el bootstrap.',
             '--emit-telemetry' => 'Emite una senal de telemetry con el estado del bootstrap.',
             '--strict' => 'Devuelve exit code 1 si el reporte contiene alertas.',
             '--json' => 'Emite un payload JSON estable con el reporte de status.',
@@ -48,6 +51,10 @@ final class BootstrapStatusCommand extends Command
         $artifactDirectory = is_string($input->option('artifact-dir')) ? $input->option('artifact-dir') : null;
 
         return $this->runInCommandRuntime(function ($app) use ($artifactDirectory, $input, $output): int {
+            if ($input->hasOption('require-published-config')) {
+                $this->assertPublishedConfiguration($app);
+            }
+
             $report = (new BootstrapStatusInspector($this->basePath))->inspect(
                 $app,
                 $artifactDirectory,
@@ -96,5 +103,22 @@ final class BootstrapStatusCommand extends Command
 
             return 0;
         });
+    }
+
+    private function assertPublishedConfiguration(Application $app): void
+    {
+        $status = $app->configStatusInspector()->inspect($app);
+
+        if (! $status->hasActiveGeneration()) {
+            throw new PublishedConfigurationRequiredException(
+                'Published configuration is required for bootstrap status inspection, but no active configuration generation exists.',
+            );
+        }
+
+        if (! $status->publishedMatchesEffective()) {
+            throw new PublishedConfigurationRequiredException(
+                'Published configuration is required for bootstrap status inspection, but the effective snapshot differs from the active generation.',
+            );
+        }
     }
 }

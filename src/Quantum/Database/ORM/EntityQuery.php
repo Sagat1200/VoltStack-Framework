@@ -226,17 +226,9 @@ final class EntityQuery
         }
 
         foreach ($associations as $association) {
-            $normalized = trim($association);
+            $normalized = $this->normalizePreloadAssociationPath($association);
             if ($normalized === '') {
                 continue;
-            }
-
-            if (! $this->metadata->hasAssociation($normalized)) {
-                throw new RuntimeException(sprintf(
-                    'Cannot preload unknown association [%s::$%s].',
-                    $this->metadata->className,
-                    $normalized,
-                ));
             }
 
             if (! in_array($normalized, $this->preloadedAssociations, true)) {
@@ -401,6 +393,7 @@ final class EntityQuery
                 ? $this->hydrateJoinedEntityRows($this->queryForJoinedToManyEntityHydration()->get()->rows())
                 : $this->hydrateJoinedEntitiesForRootIdentifiers($windowIdentifiers);
             $this->manager->preloadAssociations($entities, $this->associationsToPreload());
+            $this->preloadNestedAssociationsForJoinedRoots($entities);
 
             return $entities;
         }
@@ -413,6 +406,7 @@ final class EntityQuery
         }
 
         $this->manager->preloadAssociations($entities, $this->associationsToPreload());
+        $this->preloadNestedAssociationsForJoinedRoots($entities);
 
         return $entities;
     }
@@ -432,6 +426,7 @@ final class EntityQuery
 
             $entity = $entities[0];
             $this->manager->preloadAssociations([$entity], $this->associationsToPreload());
+            $this->preloadNestedAssociationsForJoinedRoots([$entity]);
 
             return $entity;
         }
@@ -444,6 +439,7 @@ final class EntityQuery
 
         $entity = $this->hydrateEntityRow($row);
         $this->manager->preloadAssociations([$entity], $this->associationsToPreload());
+        $this->preloadNestedAssociationsForJoinedRoots([$entity]);
 
         return $entity;
     }
@@ -2051,7 +2047,11 @@ final class EntityQuery
 
         return array_values(array_filter(
             $this->preloadedAssociations,
-            fn(string $association): bool => ! isset($this->joinedAssociations[$association]),
+            function (string $association): bool {
+                [$rootAssociation] = $this->splitAssociationPath($association);
+
+                return ! isset($this->joinedAssociations[$rootAssociation]);
+            },
         ));
     }
 
@@ -2072,6 +2072,144 @@ final class EntityQuery
             $this->remainingPreloadedAssociations(),
             $configured,
         )));
+    }
+
+    private function normalizePreloadAssociationPath(string $associationPath): string
+    {
+        $normalized = trim($associationPath);
+        if ($normalized === '') {
+            return '';
+        }
+
+        $segments = array_values(array_filter(
+            explode('.', $normalized),
+            static fn(string $segment): bool => trim($segment) !== '',
+        ));
+
+        if ($segments === []) {
+            return '';
+        }
+
+        $metadata = $this->metadata;
+        $resolved = [];
+
+        foreach ($segments as $segment) {
+            $segment = trim($segment);
+            if (! $metadata->hasAssociation($segment)) {
+                throw new RuntimeException(sprintf(
+                    'Cannot preload unknown association path [%s] from [%s] at segment [%s].',
+                    $normalized,
+                    $metadata->className,
+                    $segment,
+                ));
+            }
+
+            $association = $metadata->association($segment);
+            $resolved[] = $association->name;
+            $metadata = $this->manager->metadata->for($association->targetEntity);
+        }
+
+        return implode('.', $resolved);
+    }
+
+    /**
+     * @param list<object> $entities
+     */
+    private function preloadNestedAssociationsForJoinedRoots(array $entities): void
+    {
+        if ($entities === [] || $this->joinedAssociations === [] || $this->preloadedAssociations === []) {
+            return;
+        }
+
+        foreach ($this->nestedPreloadPathsForJoinedRoots() as $associationName => $nestedAssociationPaths) {
+            $association = $this->joinedAssociations[$associationName]['association'];
+            $targets = [];
+
+            foreach ($entities as $entity) {
+                $value = $this->readAssociationValue($entity, $association);
+
+                if ($association->isToMany()) {
+                    if (! is_array($value)) {
+                        continue;
+                    }
+
+                    foreach ($value as $target) {
+                        if (is_object($target)) {
+                            $targets[] = $target;
+                        }
+                    }
+
+                    continue;
+                }
+
+                if (is_object($value)) {
+                    $targets[] = $value;
+                }
+            }
+
+            if ($targets === []) {
+                continue;
+            }
+
+            $this->manager->preloadAssociations(
+                $this->uniqueEntities($targets),
+                $nestedAssociationPaths,
+            );
+        }
+    }
+
+    /**
+     * @return array<string, list<string>>
+     */
+    private function nestedPreloadPathsForJoinedRoots(): array
+    {
+        $nested = [];
+
+        foreach ($this->preloadedAssociations as $associationPath) {
+            [$rootAssociation, $tailPath] = $this->splitAssociationPath($associationPath);
+            if (! isset($this->joinedAssociations[$rootAssociation]) || $tailPath === null) {
+                continue;
+            }
+
+            $nested[$rootAssociation] ??= [];
+            if (! in_array($tailPath, $nested[$rootAssociation], true)) {
+                $nested[$rootAssociation][] = $tailPath;
+            }
+        }
+
+        return $nested;
+    }
+
+    /**
+     * @return array{0:string,1:?string}
+     */
+    private function splitAssociationPath(string $associationPath): array
+    {
+        $segments = explode('.', $associationPath, 2);
+
+        return [$segments[0], $segments[1] ?? null];
+    }
+
+    /**
+     * @param list<object> $entities
+     * @return list<object>
+     */
+    private function uniqueEntities(array $entities): array
+    {
+        $unique = [];
+        $seen = [];
+
+        foreach ($entities as $entity) {
+            $objectId = spl_object_id($entity);
+            if (isset($seen[$objectId])) {
+                continue;
+            }
+
+            $seen[$objectId] = true;
+            $unique[] = $entity;
+        }
+
+        return $unique;
     }
 
     private function joinedResultKey(string $associationName, string $column): string

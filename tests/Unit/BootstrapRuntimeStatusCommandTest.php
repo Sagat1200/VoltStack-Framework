@@ -9,6 +9,8 @@ use Quantum\Bootstrap\ApplicationBuilder;
 use Quantum\Bootstrap\Manifest\BootstrapManifestStore;
 use Quantum\Console\Commands\BootstrapStatusCommand;
 use Quantum\Console\Commands\RuntimeStatusCommand;
+use Quantum\Config\ConfigRepository;
+use Quantum\Config\Publication\PublishedConfigurationRequiredException;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
 use Quantum\Compilation\BuildManifest;
@@ -87,6 +89,7 @@ PHP
         );
 
         $escapedBasePath = $this->exportValue($this->basePath);
+        $driftMarkerPath = $this->exportValue($this->basePath . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'config-drift.marker');
 
         file_put_contents(
             $this->basePath . DIRECTORY_SEPARATOR . 'bootstrap' . DIRECTORY_SEPARATOR . 'app.php',
@@ -101,6 +104,11 @@ use VoltStack\Framework\Application;
 \$app = new Application({$escapedBasePath});
 \$bootstrapper = new Bootstrapper(\$app);
 \$bootstrapper->loadConfiguration();
+
+if (is_file({$driftMarkerPath})) {
+    \$app->make(\\Quantum\\Config\\ConfigRepository::class)->set('app.name', 'Drifted after bootstrap');
+}
+
 \$app->boot();
 
 return \$app;
@@ -188,6 +196,31 @@ PHP
         self::assertIsString($telemetry);
         self::assertStringContainsString('"type":"runtime_status"', $telemetry);
         self::assertStringContainsString('"budget_source":"config"', $telemetry);
+    }
+
+    public function test_runtime_status_command_can_require_published_configuration_when_generation_matches_effective_snapshot(): void
+    {
+        $this->publishCurrentConfiguration();
+
+        $command = new RuntimeStatusCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'runtime:status',
+                '--driver=frankenphp',
+                '--require-published-config',
+                '--json',
+            ]),
+            $output,
+        );
+
+        self::assertSame(0, $exitCode);
+        $decoded = json_decode(trim($output->stdout()), true);
+        self::assertIsArray($decoded);
+        self::assertSame('runtime:status', $decoded['command'] ?? null);
+        self::assertSame('frankenphp', $decoded['report']['driver'] ?? null);
     }
 
     public function test_bootstrap_status_command_can_render_stable_json_output(): void
@@ -350,6 +383,49 @@ PHP
         self::assertSame($artifact->generationId(), $decoded['report']['active_calibration']['generation_id'] ?? null);
     }
 
+    public function test_runtime_status_command_can_require_published_configuration(): void
+    {
+        $command = new RuntimeStatusCommand($this->basePath);
+        $output = new Output();
+
+        $this->expectException(PublishedConfigurationRequiredException::class);
+        $this->expectExceptionMessage('Published configuration is required for runtime status inspection');
+
+        $command->handle(
+            Input::fromArgv([
+                'volt',
+                'runtime:status',
+                '--driver=frankenphp',
+                '--require-published-config',
+                '--json',
+            ]),
+            $output,
+        );
+    }
+
+    public function test_runtime_status_command_fails_when_required_published_configuration_has_drift(): void
+    {
+        $this->publishCurrentConfiguration();
+        $this->createConfigDriftMarker();
+
+        $command = new RuntimeStatusCommand($this->basePath);
+        $output = new Output();
+
+        $this->expectException(PublishedConfigurationRequiredException::class);
+        $this->expectExceptionMessage('effective snapshot differs from the active generation');
+
+        $command->handle(
+            Input::fromArgv([
+                'volt',
+                'runtime:status',
+                '--driver=frankenphp',
+                '--require-published-config',
+                '--json',
+            ]),
+            $output,
+        );
+    }
+
     public function test_bootstrap_status_command_strict_mode_fails_when_no_active_generation_exists(): void
     {
         $command = new BootstrapStatusCommand($this->basePath);
@@ -368,9 +444,107 @@ PHP
         self::assertStringContainsString('No hay una generacion bootstrap activa.', $output->stdout());
     }
 
+    public function test_bootstrap_status_command_can_require_published_configuration_when_generation_matches_effective_snapshot(): void
+    {
+        $this->publishCurrentConfiguration();
+
+        $command = new BootstrapStatusCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'bootstrap:status',
+                '--require-published-config',
+                '--json',
+            ]),
+            $output,
+        );
+
+        self::assertSame(0, $exitCode);
+        $decoded = json_decode(trim($output->stdout()), true);
+        self::assertIsArray($decoded);
+        self::assertSame('bootstrap:status', $decoded['command'] ?? null);
+        self::assertSame(true, $decoded['report']['booted'] ?? null);
+    }
+
+    public function test_bootstrap_status_command_can_require_published_configuration(): void
+    {
+        $command = new BootstrapStatusCommand($this->basePath);
+        $output = new Output();
+
+        $this->expectException(PublishedConfigurationRequiredException::class);
+        $this->expectExceptionMessage('Published configuration is required for bootstrap status inspection');
+
+        $command->handle(
+            Input::fromArgv([
+                'volt',
+                'bootstrap:status',
+                '--require-published-config',
+                '--json',
+            ]),
+            $output,
+        );
+    }
+
+    public function test_bootstrap_status_command_fails_when_required_published_configuration_has_drift(): void
+    {
+        $this->publishCurrentConfiguration();
+        $this->createConfigDriftMarker();
+
+        $command = new BootstrapStatusCommand($this->basePath);
+        $output = new Output();
+
+        $this->expectException(PublishedConfigurationRequiredException::class);
+        $this->expectExceptionMessage('effective snapshot differs from the active generation');
+
+        $command->handle(
+            Input::fromArgv([
+                'volt',
+                'bootstrap:status',
+                '--require-published-config',
+                '--json',
+            ]),
+            $output,
+        );
+    }
+
     private function exportValue(string $value): string
     {
         return var_export($value, true);
+    }
+
+    private function publishCurrentConfiguration(): string
+    {
+        $app = new Application($this->basePath);
+        $repository = $app->make(ConfigRepository::class);
+        $repository->loadPath($this->basePath . DIRECTORY_SEPARATOR . 'config');
+
+        $codec = $app->configSnapshotCodec();
+        $baseSnapshot = $repository->snapshot(provenance: $repository->provenance());
+        $publishedSnapshot = $repository->snapshot(
+            provenance: $baseSnapshot->provenance(),
+            configId: $codec->configId($baseSnapshot),
+        );
+
+        $artifact = $app->configManifestStore()->publish($publishedSnapshot);
+        $app->configManifestStore()->activateGeneration($artifact->generationId());
+
+        return $artifact->generationId();
+    }
+
+    private function createConfigDriftMarker(): void
+    {
+        $directory = $this->basePath . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework';
+
+        if (! is_dir($directory)) {
+            mkdir($directory, 0777, true);
+        }
+
+        file_put_contents(
+            $directory . DIRECTORY_SEPARATOR . 'config-drift.marker',
+            'drift',
+        );
     }
 
     private function deleteDirectory(string $path): void

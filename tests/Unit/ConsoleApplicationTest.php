@@ -11,6 +11,9 @@ use Quantum\Console\Commands\BootstrapBenchmarkCommand;
 use Quantum\Console\Commands\CacheClearCommand;
 use Quantum\Console\Commands\ConfigReleaseCheckCommand;
 use Quantum\Console\Commands\ConfigStatusCommand;
+use Quantum\Console\Commands\ExceptionCompileCommand;
+use Quantum\Console\Commands\ExceptionReleaseCheckCommand;
+use Quantum\Console\Commands\ExceptionStatusCommand;
 use Quantum\Console\Commands\MakeActionCommand;
 use Quantum\Console\Commands\MakeComponentCommand;
 use Quantum\Console\Commands\MakeLayoutCommand;
@@ -58,6 +61,9 @@ final class ConsoleApplicationTest extends TestCase
         self::assertStringContainsString('bootstrap:release-check', $output->stdout());
         self::assertStringContainsString('bootstrap:benchmark', $output->stdout());
         self::assertStringContainsString('bootstrap:status', $output->stdout());
+        self::assertStringContainsString('exceptions:compile', $output->stdout());
+        self::assertStringContainsString('exceptions:release-check', $output->stdout());
+        self::assertStringContainsString('exceptions:status', $output->stdout());
         self::assertStringContainsString('config:release-check', $output->stdout());
         self::assertStringContainsString('config:status', $output->stdout());
         self::assertStringContainsString('runtime:budget-calibrate', $output->stdout());
@@ -169,9 +175,10 @@ final class ConsoleApplicationTest extends TestCase
 
         self::assertSame(0, $exitCode);
         self::assertStringContainsString('Command: runtime:status', $output->stdout());
-        self::assertStringContainsString('Usage: php volt runtime:status [--driver=frankenphp] [--max-requests=1] [--emit-telemetry] [--strict] [--json]', $output->stdout());
+        self::assertStringContainsString('Usage: php volt runtime:status [--driver=frankenphp] [--max-requests=1] [--require-published-config] [--emit-telemetry] [--strict] [--json]', $output->stdout());
         self::assertStringContainsString('--driver=', $output->stdout());
         self::assertStringContainsString('--max-requests=', $output->stdout());
+        self::assertStringContainsString('--require-published-config', $output->stdout());
         self::assertStringContainsString('--json', $output->stdout());
     }
 
@@ -211,6 +218,62 @@ final class ConsoleApplicationTest extends TestCase
         self::assertStringContainsString('--allow-missing-generation', $output->stdout());
         self::assertStringContainsString('--allow-drift', $output->stdout());
         self::assertStringContainsString('--emit-telemetry', $output->stdout());
+        self::assertStringContainsString('--json', $output->stdout());
+    }
+
+    public function test_it_renders_help_for_exception_compile_command(): void
+    {
+        $output = new Output();
+        $application = $this->application($output);
+
+        $exitCode = $application->run([
+            'volt',
+            'help',
+            'exceptions:compile',
+        ]);
+
+        self::assertSame(0, $exitCode);
+        self::assertStringContainsString('Command: exceptions:compile', $output->stdout());
+        self::assertStringContainsString('Usage: php volt exceptions:compile [--check-only] [--json]', $output->stdout());
+        self::assertStringContainsString('--check-only', $output->stdout());
+        self::assertStringContainsString('--json', $output->stdout());
+    }
+
+    public function test_it_renders_help_for_exception_release_check_command(): void
+    {
+        $output = new Output();
+        $application = $this->application($output);
+
+        $exitCode = $application->run([
+            'volt',
+            'help',
+            'exceptions:release-check',
+        ]);
+
+        self::assertSame(0, $exitCode);
+        self::assertStringContainsString('Command: exceptions:release-check', $output->stdout());
+        self::assertStringContainsString('Usage: php volt exceptions:release-check [--allow-missing-plan] [--allow-drift] [--allow-incompatible-plan] [--json]', $output->stdout());
+        self::assertStringContainsString('--allow-missing-plan', $output->stdout());
+        self::assertStringContainsString('--allow-drift', $output->stdout());
+        self::assertStringContainsString('--allow-incompatible-plan', $output->stdout());
+        self::assertStringContainsString('--json', $output->stdout());
+    }
+
+    public function test_it_renders_help_for_exception_status_command(): void
+    {
+        $output = new Output();
+        $application = $this->application($output);
+
+        $exitCode = $application->run([
+            'volt',
+            'help',
+            'exceptions:status',
+        ]);
+
+        self::assertSame(0, $exitCode);
+        self::assertStringContainsString('Command: exceptions:status', $output->stdout());
+        self::assertStringContainsString('Usage: php volt exceptions:status [--strict] [--json]', $output->stdout());
+        self::assertStringContainsString('--strict', $output->stdout());
         self::assertStringContainsString('--json', $output->stdout());
     }
 
@@ -268,8 +331,9 @@ final class ConsoleApplicationTest extends TestCase
 
         self::assertSame(0, $exitCode);
         self::assertStringContainsString('Command: runtime:release-pipeline', $output->stdout());
-        self::assertStringContainsString('Usage: php volt runtime:release-pipeline [--driver=frankenphp] [--profile=release] [--artifact-dir=storage/framework/bootstrap] [--requests=/,GET:/health] [--bootstrap-budget-total-ms=250] [--phase-budgets=DISCOVERING:25,BOOTING:50] [--runtime-budget-total-ms=50] [--runtime-budget-request-ms=25] [--require-published-config] [--publish-calibration] [--calibration-dir=storage/framework/runtime-budget] [--warmup=2] [--iterations=10] [--multiplier=1.25] [--emit-phase-telemetry] [--no-rollback] [--json]', $output->stdout());
+        self::assertStringContainsString('Usage: php volt runtime:release-pipeline [--driver=frankenphp] [--profile=release] [--artifact-dir=storage/framework/bootstrap] [--requests=/,GET:/health] [--bootstrap-budget-total-ms=250] [--phase-budgets=DISCOVERING:25,BOOTING:50] [--runtime-budget-total-ms=50] [--runtime-budget-request-ms=25] [--require-published-config] [--publish-calibration] [--calibration-dir=storage/framework/runtime-budget] [--warmup=2] [--iterations=10] [--multiplier=1.25] [--emit-phase-telemetry] [--emit-telemetry] [--no-rollback] [--json]', $output->stdout());
         self::assertStringContainsString('--publish-calibration', $output->stdout());
+        self::assertStringContainsString('--emit-telemetry', $output->stdout());
         self::assertStringContainsString('--no-rollback', $output->stdout());
     }
 
@@ -309,6 +373,25 @@ final class ConsoleApplicationTest extends TestCase
         self::assertStringContainsString('--artifact-dir=', $output->stdout());
         self::assertStringContainsString('--phase-budgets=', $output->stdout());
         self::assertStringContainsString('--require-published-config', $output->stdout());
+    }
+
+    public function test_it_renders_help_for_bootstrap_status_command(): void
+    {
+        $output = new Output();
+        $application = $this->application($output);
+
+        $exitCode = $application->run([
+            'volt',
+            'help',
+            'bootstrap:status',
+        ]);
+
+        self::assertSame(0, $exitCode);
+        self::assertStringContainsString('Command: bootstrap:status', $output->stdout());
+        self::assertStringContainsString('Usage: php volt bootstrap:status [--artifact-dir=storage/framework/bootstrap] [--require-published-config] [--emit-telemetry] [--strict] [--json]', $output->stdout());
+        self::assertStringContainsString('--artifact-dir=', $output->stdout());
+        self::assertStringContainsString('--require-published-config', $output->stdout());
+        self::assertStringContainsString('--strict', $output->stdout());
     }
 
     public function test_it_resolves_help_for_aliases(): void
@@ -384,11 +467,15 @@ final class ConsoleApplicationTest extends TestCase
                 new CacheClearCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new ViewCacheCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new ViewClearCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
+                new ExceptionCompileCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new ConfigReleaseCheckCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new ConfigStatusCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new BootstrapBenchmarkCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new BootstrapReleaseCheckCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new BootstrapStatusCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
+                new ExceptionCompileCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
+                new ExceptionReleaseCheckCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
+                new ExceptionStatusCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new RuntimeBudgetCalibrateCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new RuntimeReleasePipelineCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new RuntimeSmokeCheckCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),

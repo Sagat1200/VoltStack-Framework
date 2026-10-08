@@ -121,6 +121,57 @@ final class ContainerGraphInspectorTest extends TestCase
         self::assertStringContainsString(GraphCycleA::class, $cycles[0]->message);
         self::assertStringContainsString(GraphCycleB::class, $cycles[0]->message);
     }
+
+    public function test_it_reports_static_lifetime_and_scope_capture_violations_for_registered_services(): void
+    {
+        $container = new Container();
+        $container->singleton(GraphSingletonRetainsRequest::class, GraphSingletonRetainsRequest::class);
+        $container->scopedFor(GraphRequestScopedDependency::class, GraphRequestScopedDependency::class, 'request');
+        $container->scopedFor(GraphRequestRetainsTenant::class, GraphRequestRetainsTenant::class, 'request');
+        $container->scopedFor(GraphTenantScopedDependency::class, GraphTenantScopedDependency::class, 'tenant');
+        $container->scopedFor(GraphTenantRetainsRequest::class, GraphTenantRetainsRequest::class, 'tenant');
+
+        $graph = (new ContainerGraphInspector())->inspect($container);
+
+        $issues = array_values(array_filter(
+            $graph->issues(),
+            static fn(object $issue): bool => $issue->code === 'scope_capture_violation'
+        ));
+
+        self::assertCount(2, $issues);
+
+        $byService = [];
+
+        foreach ($issues as $issue) {
+            $byService[$issue->service] = $issue;
+        }
+
+        self::assertArrayHasKey(GraphSingletonRetainsRequest::class, $byService);
+        self::assertSame(GraphRequestScopedDependency::class, $byService[GraphSingletonRetainsRequest::class]->subject);
+        self::assertStringContainsString('singleton', $byService[GraphSingletonRetainsRequest::class]->message);
+        self::assertStringContainsString('request', $byService[GraphSingletonRetainsRequest::class]->message);
+
+        self::assertArrayHasKey(GraphRequestRetainsTenant::class, $byService);
+        self::assertSame(GraphTenantScopedDependency::class, $byService[GraphRequestRetainsTenant::class]->subject);
+        self::assertStringContainsString('request', $byService[GraphRequestRetainsTenant::class]->message);
+        self::assertStringContainsString('tenant', $byService[GraphRequestRetainsTenant::class]->message);
+    }
+
+    public function test_it_does_not_report_static_scope_capture_for_compatible_registered_scopes(): void
+    {
+        $container = new Container();
+        $container->scopedFor(GraphTenantRetainsRequest::class, GraphTenantRetainsRequest::class, 'tenant');
+        $container->scopedFor(GraphRequestScopedDependency::class, GraphRequestScopedDependency::class, 'request');
+
+        $graph = (new ContainerGraphInspector())->inspect($container);
+
+        $issues = array_values(array_filter(
+            $graph->issues(),
+            static fn(object $issue): bool => $issue->code === 'scope_capture_violation'
+        ));
+
+        self::assertSame([], $issues);
+    }
 }
 
 final class GraphDependency
@@ -168,6 +219,35 @@ final class GraphCycleA
 final class GraphCycleB
 {
     public function __construct(public readonly GraphCycleA $a)
+    {
+    }
+}
+
+final class GraphRequestScopedDependency
+{
+}
+
+final class GraphTenantScopedDependency
+{
+}
+
+final class GraphSingletonRetainsRequest
+{
+    public function __construct(public readonly GraphRequestScopedDependency $dependency)
+    {
+    }
+}
+
+final class GraphRequestRetainsTenant
+{
+    public function __construct(public readonly GraphTenantScopedDependency $dependency)
+    {
+    }
+}
+
+final class GraphTenantRetainsRequest
+{
+    public function __construct(public readonly GraphRequestScopedDependency $dependency)
     {
     }
 }

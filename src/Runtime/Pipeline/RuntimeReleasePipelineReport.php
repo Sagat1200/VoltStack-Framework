@@ -19,6 +19,7 @@ final readonly class RuntimeReleasePipelineReport
         private ?RuntimeBudgetCalibrationReport $calibration,
         private ?RuntimeBudgetCalibrationArtifact $publishedCalibration,
         private RuntimeReleasePipelineRollbackReport $rollback,
+        private RuntimeReleasePipelineDrainReport $drain,
     ) {
     }
 
@@ -55,6 +56,11 @@ final readonly class RuntimeReleasePipelineReport
     public function rollback(): RuntimeReleasePipelineRollbackReport
     {
         return $this->rollback;
+    }
+
+    public function drain(): RuntimeReleasePipelineDrainReport
+    {
+        return $this->drain;
     }
 
     public function passed(): bool
@@ -133,6 +139,7 @@ final readonly class RuntimeReleasePipelineReport
             'calibration' => $this->calibration?->toArray(),
             'published_calibration' => $this->publishedCalibration?->toArray(),
             'rollback' => $this->rollback->toArray(),
+            'drain' => $this->drain->toArray(),
             'violations' => $this->violations(),
         ];
     }

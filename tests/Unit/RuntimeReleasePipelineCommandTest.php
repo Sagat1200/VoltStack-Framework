@@ -20,12 +20,15 @@ final class RuntimeReleasePipelineCommandTest extends TestCase
 
     private string $artifactDirectory;
 
+    private string $telemetryPath;
+
     protected function setUp(): void
     {
         parent::setUp();
 
         $this->basePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-runtime-release-pipeline-' . uniqid('', true);
         $this->artifactDirectory = $this->basePath . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'framework' . DIRECTORY_SEPARATOR . 'bootstrap';
+        $this->telemetryPath = $this->basePath . DIRECTORY_SEPARATOR . 'storage' . DIRECTORY_SEPARATOR . 'telemetry' . DIRECTORY_SEPARATOR . 'runtime-release-pipeline.jsonl';
 
         mkdir($this->basePath . DIRECTORY_SEPARATOR . 'bootstrap', 0777, true);
         mkdir($this->basePath . DIRECTORY_SEPARATOR . 'config', 0777, true);
@@ -55,6 +58,20 @@ declare(strict_types=1);
 return [
     'driver' => 'frankenphp',
     'smoke_requests' => ['GET:/ok', 'GET:/health'],
+];
+PHP
+        );
+
+        file_put_contents(
+            $this->basePath . DIRECTORY_SEPARATOR . 'config' . DIRECTORY_SEPARATOR . 'telemetry.php',
+            <<<PHP
+<?php
+
+declare(strict_types=1);
+
+return [
+    'exporter' => 'jsonl',
+    'jsonl_path' => {$this->exportValue($this->telemetryPath)},
 ];
 PHP
         );
@@ -134,6 +151,8 @@ PHP
         self::assertSame(true, $decoded['report']['release_check']['passed'] ?? null);
         self::assertSame(true, $decoded['report']['smoke_check']['passed'] ?? null);
         self::assertSame(false, $decoded['report']['rollback']['triggered'] ?? null);
+        self::assertSame(false, $decoded['report']['drain']['required'] ?? null);
+        self::assertSame('none', $decoded['report']['drain']['action'] ?? null);
         self::assertNotEmpty($decoded['report']['release_check']['generation_id'] ?? null);
     }
 
@@ -162,6 +181,9 @@ PHP
         self::assertSame(true, $decoded['report']['rollback']['triggered'] ?? null);
         self::assertSame(true, $decoded['report']['rollback']['bootstrap']['rolled_back'] ?? null);
         self::assertSame($initialGeneration, $decoded['report']['rollback']['bootstrap']['generation_active'] ?? null);
+        self::assertSame(true, $decoded['report']['drain']['required'] ?? null);
+        self::assertSame('drain', $decoded['report']['drain']['action'] ?? null);
+        self::assertSame('runtime_smoke', $decoded['report']['drain']['failed_stage'] ?? null);
 
         $current = (new BuildManifest($this->artifactDirectory))->current();
         self::assertNotNull($current);
@@ -206,6 +228,31 @@ PHP
         );
     }
 
+    public function test_runtime_release_pipeline_command_can_emit_telemetry(): void
+    {
+        $command = new RuntimeReleasePipelineCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'runtime:release-pipeline',
+                '--requests=GET:/missing',
+                '--emit-telemetry',
+            ]),
+            $output,
+        );
+
+        self::assertSame(1, $exitCode);
+        self::assertStringContainsString('Telemetry: emitted', $output->stdout());
+
+        $telemetry = file_get_contents($this->telemetryPath);
+        self::assertIsString($telemetry);
+        self::assertStringContainsString('"type":"runtime_release_pipeline"', $telemetry);
+        self::assertStringContainsString('"drain_required":true', $telemetry);
+        self::assertStringContainsString('"drain_action":"drain"', $telemetry);
+    }
+
     private function publishBootstrapGeneration(string $profile): string
     {
         $plan = ApplicationBuilder::create($this->basePath)
@@ -222,6 +269,11 @@ PHP
         $store->activateGeneration($artifact->generationId());
 
         return $artifact->generationId();
+    }
+
+    private function exportValue(string $value): string
+    {
+        return var_export($value, true);
     }
 
     private function deleteDirectory(string $path): void

@@ -128,8 +128,30 @@ use Quantum\Controllers\Security\Worker\PolicyEvaluationSandbox;
 use Quantum\Controllers\Security\Policy\Composition\PolicyBuilder;
 use Quantum\Controllers\Security\Policy\Composition\PolicyExpressionResolver;
 use Quantum\Validation\Validator;
+use Quantum\Exceptions\Bridges\CompositeTransportMapper;
+use Quantum\Exceptions\Bridges\Console\CliTransportMapper;
+use Quantum\Exceptions\Bridges\Http\HttpTransportMapper;
+use Quantum\Exceptions\Bridges\TransportExceptionRenderer;
+use Quantum\Exceptions\Compilation\ExceptionCompilationPlan;
+use Quantum\Exceptions\Compilation\ExceptionCompilationException;
+use Quantum\Exceptions\Compilation\ExceptionPlanCompiler;
+use Quantum\Exceptions\Compilation\ExceptionPlanStore;
 use Quantum\Exceptions\Bridges\Runtime\ExceptionRuntimeBridge;
 use Quantum\Exceptions\Bridges\Runtime\ManagedExceptionRuntimeBridge;
+use Quantum\Exceptions\Contracts\ExceptionManagerInterface;
+use Quantum\Exceptions\Contracts\ExceptionNormalizerInterface;
+use Quantum\Exceptions\Contracts\ExceptionRendererInterface;
+use Quantum\Exceptions\Contracts\SemanticExceptionMapperInterface;
+use Quantum\Exceptions\Contracts\TransportMapperInterface;
+use Quantum\Exceptions\Core\ExceptionManager;
+use Quantum\Exceptions\Mapping\DeterministicSemanticExceptionMapper;
+use Quantum\Exceptions\Normalization\ThrowableNormalizer;
+use Quantum\Exceptions\Reporting\EventDispatcherExceptionReporter;
+use Quantum\Exceptions\Reporting\ExceptionReporterPipeline;
+use Quantum\Exceptions\Reporting\ExceptionReportingPolicy;
+use Quantum\Exceptions\Reporting\StructuredErrorLogReporter;
+use Quantum\Exceptions\Reporting\TelemetryExceptionReporter;
+use Quantum\Exceptions\Runtime\ExceptionRuntimeLimits;
 use Quantum\Exceptions\Runtime\ExceptionScopeLifecycleManager;
 use Quantum\View\Cache\CompiledViewStore;
 use Quantum\View\Compilers\ViewCompiler;
@@ -825,7 +847,16 @@ class Application extends Container
         }
 
         if (! isset($this->bindings[ExceptionScopeLifecycleManager::class])) {
-            $this->scopedFor(ExceptionScopeLifecycleManager::class, ExceptionScopeLifecycleManager::class, 'worker');
+            $this->scopedFor(
+                ExceptionScopeLifecycleManager::class,
+                fn(Application $app) => new ExceptionScopeLifecycleManager(
+                    limits: new ExceptionRuntimeLimits(
+                        maxOccurrences: (int) (($app->make(ExceptionCompilationPlan::class)->config()['limits']['occurrences_per_scope'] ?? 128)),
+                        maxHandlingDepth: (int) (($app->make(ExceptionCompilationPlan::class)->config()['limits']['handling_depth'] ?? 2)),
+                    ),
+                ),
+                'worker',
+            );
         }
 
         if (! isset($this->bindings[ExceptionRuntimeBridge::class])) {
@@ -891,9 +922,158 @@ class Application extends Container
             ));
         }
 
+        if (! isset($this->bindings[ExceptionPlanCompiler::class])) {
+            $this->singleton(ExceptionPlanCompiler::class, static fn(): ExceptionPlanCompiler => new ExceptionPlanCompiler());
+        }
+
+        if (! isset($this->bindings[ExceptionPlanStore::class])) {
+            $this->singleton(ExceptionPlanStore::class, static fn(Application $app): ExceptionPlanStore => new ExceptionPlanStore(
+                $app->storagePath('framework/exceptions'),
+            ));
+        }
+
+        if (! isset($this->bindings[ExceptionCompilationPlan::class])) {
+            $this->singleton(ExceptionCompilationPlan::class, static function (Application $app): ExceptionCompilationPlan {
+                /** @var ConfigRepository $config */
+                $config = $app->make(ConfigRepository::class);
+                $rawConfig = $app->config('exceptions', []);
+                $exceptionConfig = is_array($rawConfig) ? $rawConfig : [];
+
+                if ($config->has('exceptions')) {
+                    $environment = is_string($exceptionConfig['environment'] ?? null)
+                        ? trim((string) $exceptionConfig['environment'])
+                        : 'production';
+                    $requiredInProduction = $exceptionConfig['compilation']['required_in_production'] ?? true;
+
+                    if ($environment === 'production' && $requiredInProduction === true) {
+                        $plan = $app->make(ExceptionPlanStore::class)->load();
+
+                        if ($plan === null) {
+                            throw new ExceptionCompilationException(sprintf(
+                                'A published exception compilation plan is required in production at [%s].',
+                                $app->make(ExceptionPlanStore::class)->currentPath(),
+                            ));
+                        }
+
+                        return $plan;
+                    }
+                }
+
+                return $app
+                    ->make(ExceptionPlanCompiler::class)
+                    ->compile($exceptionConfig);
+            });
+        }
+
+        if (! isset($this->bindings[ExceptionNormalizerInterface::class])) {
+            $this->singleton(ExceptionNormalizerInterface::class, static function (Application $app): ExceptionNormalizerInterface {
+                $limits = $app->make(ExceptionCompilationPlan::class)->config()['limits'] ?? [];
+
+                return new ThrowableNormalizer(
+                    maxCauses: (int) ($limits['causes'] ?? 8),
+                    maxFramesPerCause: (int) ($limits['frames_per_cause'] ?? 32),
+                    messageBytes: (int) ($limits['message_bytes'] ?? 2048),
+                    snapshotBytes: (int) ($limits['snapshot_bytes'] ?? 32768),
+                    projectRoots: [$app->basePath()],
+                );
+            });
+        }
+
+        if (! isset($this->bindings[SemanticExceptionMapperInterface::class])) {
+            $this->singleton(
+                SemanticExceptionMapperInterface::class,
+                static fn(): SemanticExceptionMapperInterface => DeterministicSemanticExceptionMapper::standard(),
+            );
+        }
+
+        if (! isset($this->bindings[ExceptionReportingPolicy::class])) {
+            $this->singleton(ExceptionReportingPolicy::class, static function (Application $app): ExceptionReportingPolicy {
+                $compiledPlan = $app->make(ExceptionCompilationPlan::class);
+                $reporting = $compiledPlan->config()['reporting'] ?? [];
+
+                return new ExceptionReportingPolicy(
+                    revision: $compiledPlan->policyRevision(),
+                    ignoredCodes: is_array($reporting['ignore_codes'] ?? null) ? $reporting['ignore_codes'] : [],
+                    sampleRate: (float) ($reporting['sample_rate'] ?? 1.0),
+                );
+            });
+        }
+
+        if (! isset($this->bindings[ExceptionReporterPipeline::class])) {
+            $this->singleton(ExceptionReporterPipeline::class, static function (Application $app): ExceptionReporterPipeline {
+                $reporting = $app->make(ExceptionCompilationPlan::class)->config()['reporting'] ?? [];
+                $enabled = ($reporting['enabled'] ?? true) === true;
+                $reporters = [];
+
+                if ($enabled) {
+                    foreach ((array) ($reporting['reporters'] ?? []) as $reporterId) {
+                        if (! is_string($reporterId) || $reporterId === '') {
+                            continue;
+                        }
+
+                        $reporter = match ($reporterId) {
+                            'exceptions.events' => new EventDispatcherExceptionReporter(
+                                $app->make(ControllerEventDispatcherInterface::class),
+                            ),
+                            'exceptions.telemetry' => new TelemetryExceptionReporter(
+                                $app->make(TelemetryManagerInterface::class),
+                            ),
+                            'exceptions.log' => new StructuredErrorLogReporter(),
+                            default => null,
+                        };
+
+                        if ($reporter !== null) {
+                            $reporters[] = $reporter;
+                        }
+                    }
+                }
+
+                return new ExceptionReporterPipeline(
+                    reporters: $reporters,
+                    policy: $app->make(ExceptionReportingPolicy::class),
+                );
+            });
+        }
+
+        if (! isset($this->bindings[TransportMapperInterface::class])) {
+            $this->singleton(TransportMapperInterface::class, static function (Application $app): TransportMapperInterface {
+                $rendering = $app->make(ExceptionCompilationPlan::class)->config()['rendering'] ?? [];
+
+                return new CompositeTransportMapper(
+                    http: new HttpTransportMapper(
+                        cacheControl: is_string($rendering['cache_control'] ?? null) ? $rendering['cache_control'] : 'no-store',
+                        supportedSpaVersions: is_array($rendering['spa_versions'] ?? null) ? $rendering['spa_versions'] : [1],
+                        apiFormat: is_string($rendering['api_format'] ?? null) ? $rendering['api_format'] : 'problem_json',
+                        browserFormat: is_string($rendering['browser_format'] ?? null) ? $rendering['browser_format'] : 'html',
+                    ),
+                    cli: new CliTransportMapper(),
+                );
+            });
+        }
+
+        if (! isset($this->bindings[ExceptionRendererInterface::class])) {
+            $this->singleton(
+                ExceptionRendererInterface::class,
+                static fn(): ExceptionRendererInterface => new TransportExceptionRenderer(),
+            );
+        }
+
+        if (! isset($this->bindings[ExceptionManagerInterface::class])) {
+            $this->singleton(ExceptionManagerInterface::class, static function (Application $app): ExceptionManagerInterface {
+                return new ExceptionManager(
+                    normalizer: $app->make(ExceptionNormalizerInterface::class),
+                    semanticMapper: $app->make(SemanticExceptionMapperInterface::class),
+                    reporterPipeline: $app->make(ExceptionReporterPipeline::class),
+                    transportMapper: $app->make(TransportMapperInterface::class),
+                    renderer: $app->make(ExceptionRendererInterface::class),
+                );
+            });
+        }
+
         if (! isset($this->bindings[QuantumExceptionHandlerInterface::class])) {
             $this->singleton(QuantumExceptionHandlerInterface::class, static function (Application $app): QuantumExceptionHandlerInterface {
                 $handler = new QuantumExceptionHandler();
+                $exceptionPlan = $app->make(ExceptionCompilationPlan::class);
                 try {
                     /** @var array<string, mixed> $errorResponsesConfig */
                     $errorResponsesConfig = $app->config('controller_security.error_responses', []);
@@ -916,7 +1096,7 @@ class Application extends Container
                 if (!($shutdownHandlerRegistered ?? false)) {
                     $shutdownHandlerRegistered = true;
                     $debugMode = (bool) ($app->config('app.debug', false) === true
-                        || $app->config('exceptions.debug', false) === true
+                        || $exceptionPlan->debug()
                         || (\defined('APP_DEBUG') && constant('APP_DEBUG') === true));
                     register_shutdown_function(static function () use ($debugMode): void {
                         $last = error_get_last();

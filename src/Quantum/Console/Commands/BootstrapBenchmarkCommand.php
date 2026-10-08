@@ -26,7 +26,7 @@ final class BootstrapBenchmarkCommand extends Command
 
     public function usage(): string
     {
-        return 'bootstrap:benchmark [--profile=release] [--artifact-dir=storage/framework/bootstrap/benchmark] [--budget-total-ms=250] [--phase-budgets=DISCOVERING:25,BOOTING:50] [--emit-telemetry] [--json]';
+        return 'bootstrap:benchmark [--profile=release] [--artifact-dir=storage/framework/bootstrap/benchmark] [--budget-total-ms=250] [--phase-budgets=DISCOVERING:25,BOOTING:50] [--require-published-config] [--emit-telemetry] [--json]';
     }
 
     public function category(): string
@@ -41,6 +41,7 @@ final class BootstrapBenchmarkCommand extends Command
             '--artifact-dir=' => 'Directorio de artifacts a reutilizar durante el benchmark.',
             '--budget-total-ms=' => 'Budget total maximo permitido por corrida de bootstrap.',
             '--phase-budgets=' => 'Lista separada por comas PHASE:MS para budgets por fase.',
+            '--require-published-config' => 'Exige una generation activa y sin drift antes de correr cold/warm.',
             '--emit-telemetry' => 'Emite telemetry de fases y del benchmark comparativo.',
             '--json' => 'Emite un payload JSON estable con el reporte del benchmark.',
         ];
@@ -60,6 +61,7 @@ final class BootstrapBenchmarkCommand extends Command
             artifactDirectory: $artifactDirectory,
             budget: $budget,
             emitPhaseTelemetry: $input->hasOption('emit-telemetry'),
+            requirePublishedConfig: $input->hasOption('require-published-config'),
         );
 
         if ($input->hasOption('emit-telemetry')) {

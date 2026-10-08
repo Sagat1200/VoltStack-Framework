@@ -10,6 +10,7 @@ use Quantum\Bootstrap\Budget\BootstrapBudget;
 use Quantum\Bootstrap\Budget\BootstrapBudgetEvaluator;
 use Quantum\Bootstrap\Config\BootstrapConfiguration;
 use Quantum\Bootstrap\Context\BootstrapContext;
+use Quantum\Config\Publication\PublishedConfigurationRequiredException;
 use RuntimeException;
 use VoltStack\Framework\Application;
 
@@ -24,8 +25,9 @@ final class BootstrapReleaseChecker
         ?string $artifactDirectory = null,
         ?BootstrapBudget $budget = null,
         bool $emitPhaseTelemetry = false,
+        bool $requirePublishedConfig = false,
     ): BootstrapReleaseCheckReport {
-        $sourceApp = $this->bootstrapCurrentApplication();
+        $sourceApp = $this->bootstrapCurrentApplication($requirePublishedConfig);
         $environment = (string) $sourceApp->config('app.env', 'local');
         $runtimeDriver = (string) $sourceApp->config('runtime.driver', 'frankenphp');
         $providers = array_values(array_filter(
@@ -48,6 +50,7 @@ final class BootstrapReleaseChecker
                 ],
                 operational: [
                     'emit_phase_telemetry' => $emitPhaseTelemetry,
+                    'require_published_config' => $requirePublishedConfig,
                 ],
             ))
             ->build();
@@ -71,7 +74,7 @@ final class BootstrapReleaseChecker
         );
     }
 
-    private function bootstrapCurrentApplication(): Application
+    private function bootstrapCurrentApplication(bool $requirePublishedConfig = false): Application
     {
         $bootstrapPath = $this->basePath . DIRECTORY_SEPARATOR . 'bootstrap' . DIRECTORY_SEPARATOR . 'app.php';
 
@@ -88,7 +91,28 @@ final class BootstrapReleaseChecker
             throw new RuntimeException('The application bootstrap file must return a VoltStack application instance.');
         }
 
+        if ($requirePublishedConfig) {
+            $this->assertPublishedConfiguration($app);
+        }
+
         return $app;
+    }
+
+    private function assertPublishedConfiguration(Application $app): void
+    {
+        $status = $app->configStatusInspector()->inspect($app);
+
+        if (! $status->hasActiveGeneration()) {
+            throw new PublishedConfigurationRequiredException(
+                'Published configuration is required for bootstrap release checks, but no active configuration generation exists.',
+            );
+        }
+
+        if (! $status->publishedMatchesEffective()) {
+            throw new PublishedConfigurationRequiredException(
+                'Published configuration is required for bootstrap release checks, but the effective snapshot differs from the active generation.',
+            );
+        }
     }
 
     private function normalizeArtifactDirectory(?string $artifactDirectory): string

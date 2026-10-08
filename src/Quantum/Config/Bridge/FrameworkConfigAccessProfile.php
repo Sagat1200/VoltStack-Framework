@@ -23,6 +23,7 @@ final class FrameworkConfigAccessProfile
         $registry->static('controller_compilation.paths', 'Artifact stores');
         $registry->static('controller_compilation.artifacts.format', 'Artifact stores');
         $registry->static('controller_compilation.cache', 'CompiledControllerFactory');
+        $registry->static('exceptions', 'ExceptionCompilationPlan');
         $registry->scoped('controller_security.authorization.max_policy_evaluations', 'ControllerSecurityContextFactoryInterface', 'request');
 
         return $registry;

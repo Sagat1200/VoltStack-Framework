@@ -28,6 +28,7 @@ final class RuntimeTelemetryEmitter
                 'persistent' => $report->persistent(),
                 'concurrent' => $report->concurrent(),
                 'budget_source' => $report->recommendedBudget()->source(),
+                'has_active_calibration' => $report->activeCalibration() !== null,
             ],
             alerts: array_map(
                 static fn(string $message): array => ['message' => $message],

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace VoltStack\Runtime\Status;
 
+use VoltStack\Runtime\Budget\RuntimeBudgetCalibrationArtifact;
 use VoltStack\Runtime\Budget\RuntimeBudgetBaseline;
 
 final readonly class RuntimeStatusReport
@@ -21,6 +22,7 @@ final readonly class RuntimeStatusReport
         private bool $drainControl,
         private bool $nativeHttp,
         private RuntimeBudgetBaseline $recommendedBudget,
+        private ?RuntimeBudgetCalibrationArtifact $activeCalibration = null,
         private array $supportedDrivers = [],
         private array $alerts = [],
     ) {
@@ -66,6 +68,11 @@ final readonly class RuntimeStatusReport
         return $this->recommendedBudget;
     }
 
+    public function activeCalibration(): ?RuntimeBudgetCalibrationArtifact
+    {
+        return $this->activeCalibration;
+    }
+
     /**
      * @return list<string>
      */
@@ -102,6 +109,7 @@ final readonly class RuntimeStatusReport
             'drain_control' => $this->drainControl,
             'native_http' => $this->nativeHttp,
             'recommended_budget' => $this->recommendedBudget->toArray(),
+            'active_calibration' => $this->activeCalibration?->toArray(),
             'supported_drivers' => $this->supportedDrivers,
             'alerts' => $this->alerts,
         ];

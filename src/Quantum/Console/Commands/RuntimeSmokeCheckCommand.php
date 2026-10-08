@@ -26,7 +26,7 @@ final class RuntimeSmokeCheckCommand extends Command
 
     public function usage(): string
     {
-        return 'runtime:smoke-check [--driver=frankenphp] [--profile=release] [--artifact-dir=storage/framework/bootstrap] [--requests=/,GET:/health] [--budget-total-ms=50] [--budget-request-ms=25] [--emit-telemetry] [--json]';
+        return 'runtime:smoke-check [--driver=frankenphp] [--profile=release] [--artifact-dir=storage/framework/bootstrap] [--requests=/,GET:/health] [--budget-total-ms=50] [--budget-request-ms=25] [--require-published-config] [--emit-telemetry] [--json]';
     }
 
     public function category(): string
@@ -43,6 +43,7 @@ final class RuntimeSmokeCheckCommand extends Command
             '--requests=' => 'Lista separada por comas con requests tipo / o METHOD:/path.',
             '--budget-total-ms=' => 'Budget total maximo permitido para el smoke-check runtime.',
             '--budget-request-ms=' => 'Budget maximo permitido por request.',
+            '--require-published-config' => 'Exige una generation activa y sin drift antes de ejecutar el smoke-check.',
             '--emit-telemetry' => 'Emite telemetry con el reporte del smoke-check runtime.',
             '--json' => 'Emite un payload JSON estable con el reporte del smoke-check.',
         ];
@@ -64,6 +65,7 @@ final class RuntimeSmokeCheckCommand extends Command
             requestDefinitions: $this->parseRequests($input),
             budget: $budget,
             artifactDirectory: $artifactDirectory,
+            requirePublishedConfig: $input->hasOption('require-published-config'),
         );
 
         if ($input->hasOption('emit-telemetry')) {

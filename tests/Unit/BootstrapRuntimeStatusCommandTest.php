@@ -12,6 +12,10 @@ use Quantum\Console\Commands\RuntimeStatusCommand;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
 use Quantum\Compilation\BuildManifest;
+use VoltStack\Framework\Application;
+use VoltStack\Runtime\Budget\RuntimeBudgetBaseline;
+use VoltStack\Runtime\Budget\RuntimeBudgetCalibrationReport;
+use VoltStack\Runtime\Budget\RuntimeBudgetCalibrationStoreResolver;
 
 final class BootstrapRuntimeStatusCommandTest extends TestCase
 {
@@ -283,6 +287,67 @@ PHP
         self::assertSame(80, $decoded['report']['recommended_budget']['total_budget_ms'] ?? null);
         self::assertSame(30, $decoded['report']['recommended_budget']['request_budget_ms'] ?? null);
         self::assertSame('config', $decoded['report']['recommended_budget']['source'] ?? null);
+    }
+
+    public function test_runtime_status_command_uses_the_active_published_calibration_when_no_config_budget_exists(): void
+    {
+        file_put_contents(
+            $this->basePath . DIRECTORY_SEPARATOR . 'config' . DIRECTORY_SEPARATOR . 'runtime.php',
+            <<<'PHP'
+<?php
+
+declare(strict_types=1);
+
+return [
+    'driver' => 'frankenphp',
+];
+PHP
+        );
+
+        $app = require $this->basePath . DIRECTORY_SEPARATOR . 'bootstrap' . DIRECTORY_SEPARATOR . 'app.php';
+        self::assertInstanceOf(Application::class, $app);
+
+        $store = (new RuntimeBudgetCalibrationStoreResolver())->resolveForDriver($app, 'frankenphp');
+        $artifact = $store->publish(new RuntimeBudgetCalibrationReport(
+            driver: 'frankenphp',
+            profile: 'release',
+            requestDefinitions: ['GET:/health'],
+            warmupIterations: 1,
+            measuredIterations: 3,
+            safetyMultiplier: 1.25,
+            currentBaseline: new RuntimeBudgetBaseline('frankenphp', 50.0, 25.0, 'adapter-default'),
+            recommendedBudget: new RuntimeBudgetBaseline('frankenphp', 61.0, 29.0, 'empirical-calibration'),
+            samples: [
+                ['iteration' => 1, 'total_duration_ms' => 30.0, 'max_request_duration_ms' => 14.0, 'request_count' => 1],
+                ['iteration' => 2, 'total_duration_ms' => 41.0, 'max_request_duration_ms' => 20.0, 'request_count' => 1],
+                ['iteration' => 3, 'total_duration_ms' => 48.8, 'max_request_duration_ms' => 23.2, 'request_count' => 1],
+            ],
+            failures: [],
+            totalStats: ['min' => 30.0, 'avg' => 39.933, 'p95' => 48.8, 'max' => 48.8],
+            requestStats: ['min' => 14.0, 'avg' => 19.066, 'p95' => 23.2, 'max' => 23.2],
+        ));
+        $store->activateGeneration($artifact->generationId());
+
+        $command = new RuntimeStatusCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'runtime:status',
+                '--driver=frankenphp',
+                '--json',
+            ]),
+            $output,
+        );
+
+        self::assertSame(0, $exitCode);
+        $decoded = json_decode(trim($output->stdout()), true);
+        self::assertIsArray($decoded);
+        self::assertSame('published-calibration', $decoded['report']['recommended_budget']['source'] ?? null);
+        self::assertEquals(61.0, $decoded['report']['recommended_budget']['total_budget_ms'] ?? null);
+        self::assertEquals(29.0, $decoded['report']['recommended_budget']['request_budget_ms'] ?? null);
+        self::assertSame($artifact->generationId(), $decoded['report']['active_calibration']['generation_id'] ?? null);
     }
 
     public function test_bootstrap_status_command_strict_mode_fails_when_no_active_generation_exists(): void

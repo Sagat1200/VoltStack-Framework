@@ -6,6 +6,8 @@ namespace VoltStack\Runtime\Status;
 
 use InvalidArgumentException;
 use VoltStack\Framework\Application;
+use VoltStack\Runtime\Budget\RuntimeBudgetCalibrationArtifact;
+use VoltStack\Runtime\Budget\RuntimeBudgetCalibrationStoreResolver;
 use VoltStack\Runtime\Budget\RuntimeBudgetBaseline;
 use VoltStack\Runtime\Budget\RuntimeBudgetBaselineResolver;
 use VoltStack\Runtime\RuntimeManager;
@@ -18,6 +20,7 @@ final class RuntimeStatusInspector
         $manager = $app->make(RuntimeManager::class);
         $driver = strtolower(trim($driver ?? (string) $app->config('runtime.driver', 'frankenphp')));
         $alerts = [];
+        $activeCalibration = $this->activeCalibration($app, $driver);
 
         try {
             $adapter = $manager->adapter($driver);
@@ -38,6 +41,7 @@ final class RuntimeStatusInspector
                     requestMaximumMs: null,
                     source: 'unavailable',
                 ),
+                activeCalibration: $activeCalibration,
                 supportedDrivers: $manager->drivers(),
                 alerts: ['El driver runtime solicitado no esta registrado.'],
             );
@@ -56,8 +60,24 @@ final class RuntimeStatusInspector
             drainControl: $capabilities->drainControl(),
             nativeHttp: $capabilities->nativeHttp(),
             recommendedBudget: $recommendedBudget,
+            activeCalibration: $activeCalibration,
             supportedDrivers: $manager->drivers(),
             alerts: $alerts,
         );
+    }
+
+    private function activeCalibration(Application $app, string $driver): ?RuntimeBudgetCalibrationArtifact
+    {
+        $artifact = (new RuntimeBudgetCalibrationStoreResolver())
+            ->resolveForDriver($app, $driver)
+            ->currentArtifact();
+
+        if ($artifact === null) {
+            return null;
+        }
+
+        return strtolower($artifact->driver()) === strtolower($driver)
+            ? $artifact
+            : null;
     }
 }

@@ -6,6 +6,7 @@ namespace VoltStack\Runtime\Smoke;
 
 use InvalidArgumentException;
 use Quantum\Bootstrap\Status\BootstrapStatusInspector;
+use Quantum\Config\Publication\PublishedConfigurationRequiredException;
 use Quantum\Http\Request;
 use RuntimeException;
 use VoltStack\Framework\Application;
@@ -31,8 +32,9 @@ final class RuntimeSmokeChecker
         ?RuntimeBudget $budget = null,
         ?string $artifactDirectory = null,
         bool $useBudgetBaseline = true,
+        bool $requirePublishedConfig = false,
     ): RuntimeSmokeCheckReport {
-        $app = $this->bootstrapCurrentApplication();
+        $app = $this->bootstrapCurrentApplication($requirePublishedConfig);
         $driver = $this->resolveDriver($app, $driver);
         $requests = $this->normalizeRequests($requestDefinitions !== []
             ? $requestDefinitions
@@ -87,7 +89,7 @@ final class RuntimeSmokeChecker
         );
     }
 
-    private function bootstrapCurrentApplication(): Application
+    private function bootstrapCurrentApplication(bool $requirePublishedConfig = false): Application
     {
         $bootstrapPath = $this->basePath . DIRECTORY_SEPARATOR . 'bootstrap' . DIRECTORY_SEPARATOR . 'app.php';
 
@@ -104,7 +106,28 @@ final class RuntimeSmokeChecker
             throw new RuntimeException('The application bootstrap file must return a VoltStack application instance.');
         }
 
+        if ($requirePublishedConfig) {
+            $this->assertPublishedConfiguration($app);
+        }
+
         return $app;
+    }
+
+    private function assertPublishedConfiguration(Application $app): void
+    {
+        $status = $app->configStatusInspector()->inspect($app);
+
+        if (! $status->hasActiveGeneration()) {
+            throw new PublishedConfigurationRequiredException(
+                'Published configuration is required for runtime checks, but no active configuration generation exists.',
+            );
+        }
+
+        if (! $status->publishedMatchesEffective()) {
+            throw new PublishedConfigurationRequiredException(
+                'Published configuration is required for runtime checks, but the effective snapshot differs from the active generation.',
+            );
+        }
     }
 
     private function resolveDriver(Application $app, ?string $driver): string

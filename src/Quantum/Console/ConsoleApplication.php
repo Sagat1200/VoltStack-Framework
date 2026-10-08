@@ -27,6 +27,7 @@ use Quantum\Console\Commands\MakeViewCommand;
 use Quantum\Console\Commands\RouteCacheCommand;
 use Quantum\Console\Commands\RouteClearCommand;
 use Quantum\Console\Commands\RouteListCommand;
+use Quantum\Console\Commands\RuntimeReleasePipelineCommand;
 use Quantum\Console\Commands\RuntimeSmokeCheckCommand;
 use Quantum\Console\Commands\RuntimeBudgetCalibrateCommand;
 use Quantum\Console\Commands\RuntimeStatusCommand;
@@ -94,6 +95,7 @@ final class ConsoleApplication
             $this->add(new BootstrapReleaseCheckCommand($basePath));
             $this->add(new BootstrapStatusCommand($basePath));
             $this->add(new RuntimeBudgetCalibrateCommand($basePath));
+            $this->add(new RuntimeReleasePipelineCommand($basePath));
             $this->add(new RuntimeSmokeCheckCommand($basePath));
             $this->add(new RuntimeStatusCommand($basePath));
             $this->registerConfiguredCommands();

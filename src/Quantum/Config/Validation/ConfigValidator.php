@@ -63,6 +63,7 @@ final class ConfigValidator
         return match ($node->type()) {
             'string' => $this->validateString($value, $path),
             'integer' => $this->validateInteger($value, $path),
+            'number' => $this->validateNumber($value, $path),
             'boolean' => $this->validateBoolean($value, $path),
             'enum' => $this->validateEnum($node, $value, $path),
             'map' => $this->validateMap($node, $value, $path),
@@ -85,6 +86,15 @@ final class ConfigValidator
     {
         if (! is_int($value)) {
             return $this->fail($path, 'invalid_type', sprintf('Configuration path [%s] must be an integer.', $path));
+        }
+
+        return $value;
+    }
+
+    private function validateNumber(mixed $value, string $path): mixed
+    {
+        if (! is_int($value) && ! is_float($value)) {
+            return $this->fail($path, 'invalid_type', sprintf('Configuration path [%s] must be a number.', $path));
         }
 
         return $value;

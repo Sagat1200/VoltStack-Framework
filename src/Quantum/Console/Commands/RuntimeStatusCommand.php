@@ -88,6 +88,16 @@ final class RuntimeStatusCommand extends Command
                     '  Budget source: %s',
                     $report->recommendedBudget()->source()
                 ));
+                if ($report->activeCalibration() !== null) {
+                    $output->writeln(sprintf(
+                        '  Active calibration generation: %s',
+                        $report->activeCalibration()->generationId()
+                    ));
+                    $output->writeln(sprintf(
+                        '  Active calibration fingerprint: %s',
+                        $report->activeCalibration()->fingerprint()
+                    ));
+                }
                 $output->writeln(sprintf('  Supported drivers: %s', implode(', ', $report->supportedDrivers())));
 
                 if ($report->alerts() !== []) {

@@ -31,6 +31,18 @@ final class RuntimeBudgetBaselineResolver
             }
         }
 
+        $calibration = (new RuntimeBudgetCalibrationStoreResolver())
+            ->resolveForDriver($app, $driver)
+            ->currentArtifact();
+
+        if ($calibration !== null) {
+            $recommended = $calibration->recommendedBudget();
+
+            if ($recommended->totalMaximumMs() !== null || $recommended->requestMaximumMs() !== null) {
+                return $recommended;
+            }
+        }
+
         if ($driver === 'frankenphp') {
             return new RuntimeBudgetBaseline(
                 driver: $driver,

@@ -24,6 +24,7 @@ final class RuntimeBudgetCalibrator
         int $measuredIterations = 10,
         float $safetyMultiplier = 1.25,
         ?string $artifactDirectory = null,
+        bool $requirePublishedConfig = false,
     ): RuntimeBudgetCalibrationReport {
         if ($warmupIterations < 0) {
             throw new InvalidArgumentException('warmupIterations no puede ser negativo.');
@@ -47,6 +48,7 @@ final class RuntimeBudgetCalibrator
                 budget: null,
                 artifactDirectory: $artifactDirectory,
                 useBudgetBaseline: false,
+                requirePublishedConfig: $requirePublishedConfig,
             );
         }
 
@@ -62,6 +64,7 @@ final class RuntimeBudgetCalibrator
                 budget: null,
                 artifactDirectory: $artifactDirectory,
                 useBudgetBaseline: false,
+                requirePublishedConfig: $requirePublishedConfig,
             );
 
             $currentBaseline ??= $report->budgetBaseline();

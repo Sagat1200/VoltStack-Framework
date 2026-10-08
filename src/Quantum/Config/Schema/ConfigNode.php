@@ -42,6 +42,14 @@ final readonly class ConfigNode
         return new self('integer', $required, $nullable, $default);
     }
 
+    public static function number(
+        bool $required = false,
+        bool $nullable = false,
+        mixed $default = MissingValue::Token,
+    ): self {
+        return new self('number', $required, $nullable, $default);
+    }
+
     public static function boolean(
         bool $required = false,
         bool $nullable = false,

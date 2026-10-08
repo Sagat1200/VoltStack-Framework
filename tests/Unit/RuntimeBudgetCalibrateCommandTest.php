@@ -206,6 +206,26 @@ PHP
         self::assertStringContainsString('"type":"runtime_budget_calibration"', $telemetry);
     }
 
+    public function test_runtime_budget_calibrate_command_can_require_published_configuration(): void
+    {
+        $command = new RuntimeBudgetCalibrateCommand($this->basePath);
+        $output = new Output();
+
+        $this->expectException(\Quantum\Config\Publication\PublishedConfigurationRequiredException::class);
+        $this->expectExceptionMessage('Published configuration is required for runtime checks');
+
+        $command->handle(
+            Input::fromArgv([
+                'volt',
+                'runtime:budget-calibrate',
+                '--iterations=2',
+                '--require-published-config',
+                '--json',
+            ]),
+            $output,
+        );
+    }
+
     private function exportValue(string $value): string
     {
         return var_export($value, true);

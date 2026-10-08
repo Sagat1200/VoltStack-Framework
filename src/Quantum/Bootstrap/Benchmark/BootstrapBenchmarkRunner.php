@@ -18,6 +18,7 @@ final class BootstrapBenchmarkRunner
         ?string $artifactDirectory = null,
         ?BootstrapBudget $budget = null,
         bool $emitPhaseTelemetry = false,
+        bool $requirePublishedConfig = false,
     ): BootstrapBenchmarkReport {
         $artifactDirectory = $this->normalizeArtifactDirectory($artifactDirectory);
         $this->deleteDirectory($artifactDirectory);
@@ -28,12 +29,14 @@ final class BootstrapBenchmarkRunner
             artifactDirectory: $artifactDirectory,
             budget: $budget,
             emitPhaseTelemetry: $emitPhaseTelemetry,
+            requirePublishedConfig: $requirePublishedConfig,
         );
         $warm = $checker->run(
             profile: $profile,
             artifactDirectory: $artifactDirectory,
             budget: $budget,
             emitPhaseTelemetry: $emitPhaseTelemetry,
+            requirePublishedConfig: $requirePublishedConfig,
         );
 
         return new BootstrapBenchmarkReport(

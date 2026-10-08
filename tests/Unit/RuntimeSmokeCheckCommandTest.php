@@ -223,6 +223,26 @@ PHP
         self::assertStringContainsString('"reuse_guard_passed":true', $telemetry);
     }
 
+    public function test_runtime_smoke_check_command_can_require_published_configuration(): void
+    {
+        $command = new RuntimeSmokeCheckCommand($this->basePath);
+        $output = new Output();
+
+        $this->expectException(\Quantum\Config\Publication\PublishedConfigurationRequiredException::class);
+        $this->expectExceptionMessage('Published configuration is required for runtime checks');
+
+        $command->handle(
+            Input::fromArgv([
+                'volt',
+                'runtime:smoke-check',
+                '--requests=GET:/ok',
+                '--require-published-config',
+                '--json',
+            ]),
+            $output,
+        );
+    }
+
     public function test_runtime_smoke_check_command_fails_when_a_request_materializes_a_new_bootstrap_generation(): void
     {
         $basePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-runtime-smoke-check-rebuild-' . uniqid('', true);

@@ -26,7 +26,7 @@ final class BootstrapReleaseCheckCommand extends Command
 
     public function usage(): string
     {
-        return 'bootstrap:release-check [--profile=release] [--artifact-dir=storage/framework/bootstrap] [--budget-total-ms=250] [--phase-budgets=DISCOVERING:25,BOOTING:50] [--emit-telemetry] [--json]';
+        return 'bootstrap:release-check [--profile=release] [--artifact-dir=storage/framework/bootstrap] [--budget-total-ms=250] [--phase-budgets=DISCOVERING:25,BOOTING:50] [--require-published-config] [--emit-telemetry] [--json]';
     }
 
     public function category(): string
@@ -41,6 +41,7 @@ final class BootstrapReleaseCheckCommand extends Command
             '--artifact-dir=' => 'Directorio de artifacts a usar/publicar durante el release-check.',
             '--budget-total-ms=' => 'Budget total maximo permitido para el bootstrap.',
             '--phase-budgets=' => 'Lista separada por comas PHASE:MS para budgets por fase.',
+            '--require-published-config' => 'Exige una generation activa y sin drift antes de ejecutar el release-check.',
             '--emit-telemetry' => 'Emite telemetry de fases y reporte budget del release-check.',
             '--json' => 'Emite un payload JSON estable con el reporte del release-check.',
         ];
@@ -60,6 +61,7 @@ final class BootstrapReleaseCheckCommand extends Command
             artifactDirectory: $artifactDirectory,
             budget: $budget,
             emitPhaseTelemetry: $input->hasOption('emit-telemetry'),
+            requirePublishedConfig: $input->hasOption('require-published-config'),
         );
 
         if ($input->hasOption('emit-telemetry')) {

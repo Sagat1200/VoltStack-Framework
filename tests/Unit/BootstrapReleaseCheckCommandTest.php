@@ -180,6 +180,25 @@ PHP
         self::assertStringContainsString('"type":"bootstrap_budget"', $telemetry);
     }
 
+    public function test_release_check_command_can_require_published_configuration(): void
+    {
+        $command = new BootstrapReleaseCheckCommand($this->basePath);
+        $output = new Output();
+
+        $this->expectException(\Quantum\Config\Publication\PublishedConfigurationRequiredException::class);
+        $this->expectExceptionMessage('Published configuration is required for bootstrap release checks');
+
+        $command->handle(
+            Input::fromArgv([
+                'volt',
+                'bootstrap:release-check',
+                '--require-published-config',
+                '--json',
+            ]),
+            $output,
+        );
+    }
+
     private function exportValue(string $value): string
     {
         return var_export($value, true);

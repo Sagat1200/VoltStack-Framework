@@ -14,7 +14,24 @@ final class HttpTransportMapper implements TransportMapperInterface
     private const MAX_ACCEPT_LENGTH = 4096;
     private const MAX_ACCEPT_VALUES = 32;
     private const SPA_MEDIA_TYPE = 'application/vnd.voltstack.spa-error+json';
-    private const SPA_VERSION = 1;
+
+    /**
+     * @param list<int> $supportedSpaVersions
+     */
+    public function __construct(
+        private readonly string $cacheControl = 'no-store',
+        private readonly array $supportedSpaVersions = [1],
+        private readonly string $apiFormat = 'problem_json',
+        private readonly string $browserFormat = 'html',
+    ) {
+        if ($this->cacheControl === '') {
+            throw new \InvalidArgumentException('HttpTransportMapper cacheControl must not be empty.');
+        }
+
+        if ($this->supportedSpaVersions === []) {
+            throw new \InvalidArgumentException('HttpTransportMapper requires at least one supported SPA version.');
+        }
+    }
 
     public function map(ExceptionDescriptor $descriptor, TransportContext $context): TransportPlan
     {
@@ -23,7 +40,7 @@ final class HttpTransportMapper implements TransportMapperInterface
         }
 
         $headers = [
-            'Cache-Control' => 'no-store',
+            'Cache-Control' => $this->cacheControl,
             'X-Content-Type-Options' => 'nosniff',
         ];
 
@@ -66,7 +83,7 @@ final class HttpTransportMapper implements TransportMapperInterface
         }
 
         if (in_array($profile, ['api', 'problem', 'problem_json'], true)) {
-            return ['target' => 'http.problem_json'];
+            return ['target' => $this->apiTarget()];
         }
 
         if (in_array($profile, ['json', 'legacy_json'], true)) {
@@ -74,7 +91,7 @@ final class HttpTransportMapper implements TransportMapperInterface
         }
 
         if (in_array($profile, ['html', 'web', 'browser'], true)) {
-            return ['target' => 'http.html'];
+            return ['target' => $this->browserTarget()];
         }
 
         $negotiated = $this->negotiateAccept($context->accept, false);
@@ -83,7 +100,7 @@ final class HttpTransportMapper implements TransportMapperInterface
             return ['target' => $negotiated];
         }
 
-        return ['target' => 'http.html'];
+        return ['target' => $this->browserTarget()];
     }
 
     /**
@@ -249,9 +266,11 @@ final class HttpTransportMapper implements TransportMapperInterface
      */
     private function resolveSpaTarget(ExceptionDescriptor $descriptor, TransportContext $context): array
     {
-        if ($context->spaVersion !== self::SPA_VERSION || ! $this->supportsSpaAccept($context->accept)) {
+        $supportedVersion = $this->supportedSpaVersions[0];
+
+        if ($context->spaVersion !== $supportedVersion || ! $this->supportsSpaAccept($context->accept)) {
             return [
-                'target' => 'http.problem_json',
+                'target' => $this->apiTarget(),
                 'status' => 406,
                 'metadata' => [
                     'problem_code' => 'spa.protocol_unsupported',
@@ -259,7 +278,7 @@ final class HttpTransportMapper implements TransportMapperInterface
                     'problem_detail' => 'The requested SPA protocol version is not supported.',
                     'problem_status' => 406,
                     'problem_extensions' => [
-                        'supported_versions' => [self::SPA_VERSION],
+                        'supported_versions' => $this->supportedSpaVersions,
                     ],
                 ],
             ];
@@ -273,7 +292,7 @@ final class HttpTransportMapper implements TransportMapperInterface
             'status' => $this->statusFor($descriptor),
             'spa_action' => $action,
             'metadata' => [
-                'spa_version' => self::SPA_VERSION,
+                'spa_version' => $supportedVersion,
                 'request_id' => $this->stringOrNull($descriptor->contextSummary['request_id'] ?? null),
                 'operation_id' => $this->stringOrNull($descriptor->contextSummary['operation_id'] ?? null),
                 'navigation_id' => $this->stringOrNull($descriptor->contextSummary['navigation_id'] ?? null),
@@ -309,6 +328,16 @@ final class HttpTransportMapper implements TransportMapperInterface
         }
 
         return false;
+    }
+
+    private function apiTarget(): string
+    {
+        return $this->apiFormat === 'json' ? 'http.json' : 'http.problem_json';
+    }
+
+    private function browserTarget(): string
+    {
+        return $this->browserFormat === 'json' ? 'http.json' : 'http.html';
     }
 
     private function targetScopeFor(ExceptionDescriptor $descriptor): string

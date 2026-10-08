@@ -21,6 +21,7 @@ use Quantum\Console\Commands\RouteCacheCommand;
 use Quantum\Console\Commands\RouteClearCommand;
 use Quantum\Console\Commands\RouteListCommand;
 use Quantum\Console\Commands\RuntimeBudgetCalibrateCommand;
+use Quantum\Console\Commands\RuntimeReleasePipelineCommand;
 use Quantum\Console\Commands\RuntimeSmokeCheckCommand;
 use Quantum\Console\Commands\RuntimeStatusCommand;
 use Quantum\Console\Commands\ServeCommand;
@@ -60,6 +61,7 @@ final class ConsoleApplicationTest extends TestCase
         self::assertStringContainsString('config:release-check', $output->stdout());
         self::assertStringContainsString('config:status', $output->stdout());
         self::assertStringContainsString('runtime:budget-calibrate', $output->stdout());
+        self::assertStringContainsString('runtime:release-pipeline', $output->stdout());
         self::assertStringContainsString('runtime:smoke-check', $output->stdout());
         self::assertStringContainsString('runtime:status', $output->stdout());
         self::assertStringContainsString('[aliases: routes]', $output->stdout());
@@ -225,10 +227,11 @@ final class ConsoleApplicationTest extends TestCase
 
         self::assertSame(0, $exitCode);
         self::assertStringContainsString('Command: runtime:smoke-check', $output->stdout());
-        self::assertStringContainsString('Usage: php volt runtime:smoke-check [--driver=frankenphp] [--profile=release] [--artifact-dir=storage/framework/bootstrap] [--requests=/,GET:/health] [--budget-total-ms=50] [--budget-request-ms=25] [--emit-telemetry] [--json]', $output->stdout());
+        self::assertStringContainsString('Usage: php volt runtime:smoke-check [--driver=frankenphp] [--profile=release] [--artifact-dir=storage/framework/bootstrap] [--requests=/,GET:/health] [--budget-total-ms=50] [--budget-request-ms=25] [--require-published-config] [--emit-telemetry] [--json]', $output->stdout());
         self::assertStringContainsString('--artifact-dir=', $output->stdout());
         self::assertStringContainsString('--requests=', $output->stdout());
         self::assertStringContainsString('--budget-request-ms=', $output->stdout());
+        self::assertStringContainsString('--require-published-config', $output->stdout());
     }
 
     public function test_it_renders_help_for_runtime_budget_calibrate_command(): void
@@ -244,10 +247,30 @@ final class ConsoleApplicationTest extends TestCase
 
         self::assertSame(0, $exitCode);
         self::assertStringContainsString('Command: runtime:budget-calibrate', $output->stdout());
-        self::assertStringContainsString('Usage: php volt runtime:budget-calibrate [--driver=frankenphp] [--profile=release] [--artifact-dir=storage/framework/bootstrap] [--requests=/,GET:/health] [--warmup=2] [--iterations=10] [--multiplier=1.25] [--emit-telemetry] [--json]', $output->stdout());
+        self::assertStringContainsString('Usage: php volt runtime:budget-calibrate [--driver=frankenphp] [--profile=release] [--artifact-dir=storage/framework/bootstrap] [--calibration-dir=storage/framework/runtime-budget] [--requests=/,GET:/health] [--warmup=2] [--iterations=10] [--multiplier=1.25] [--require-published-config] [--publish] [--emit-telemetry] [--json]', $output->stdout());
         self::assertStringContainsString('--warmup=', $output->stdout());
         self::assertStringContainsString('--iterations=', $output->stdout());
         self::assertStringContainsString('--multiplier=', $output->stdout());
+        self::assertStringContainsString('--require-published-config', $output->stdout());
+        self::assertStringContainsString('--publish', $output->stdout());
+    }
+
+    public function test_it_renders_help_for_runtime_release_pipeline_command(): void
+    {
+        $output = new Output();
+        $application = $this->application($output);
+
+        $exitCode = $application->run([
+            'volt',
+            'help',
+            'runtime:release-pipeline',
+        ]);
+
+        self::assertSame(0, $exitCode);
+        self::assertStringContainsString('Command: runtime:release-pipeline', $output->stdout());
+        self::assertStringContainsString('Usage: php volt runtime:release-pipeline [--driver=frankenphp] [--profile=release] [--artifact-dir=storage/framework/bootstrap] [--requests=/,GET:/health] [--bootstrap-budget-total-ms=250] [--phase-budgets=DISCOVERING:25,BOOTING:50] [--runtime-budget-total-ms=50] [--runtime-budget-request-ms=25] [--require-published-config] [--publish-calibration] [--calibration-dir=storage/framework/runtime-budget] [--warmup=2] [--iterations=10] [--multiplier=1.25] [--emit-phase-telemetry] [--no-rollback] [--json]', $output->stdout());
+        self::assertStringContainsString('--publish-calibration', $output->stdout());
+        self::assertStringContainsString('--no-rollback', $output->stdout());
     }
 
     public function test_it_renders_help_for_bootstrap_release_check_command(): void
@@ -263,9 +286,10 @@ final class ConsoleApplicationTest extends TestCase
 
         self::assertSame(0, $exitCode);
         self::assertStringContainsString('Command: bootstrap:release-check', $output->stdout());
-        self::assertStringContainsString('Usage: php volt bootstrap:release-check [--profile=release] [--artifact-dir=storage/framework/bootstrap] [--budget-total-ms=250] [--phase-budgets=DISCOVERING:25,BOOTING:50] [--emit-telemetry] [--json]', $output->stdout());
+        self::assertStringContainsString('Usage: php volt bootstrap:release-check [--profile=release] [--artifact-dir=storage/framework/bootstrap] [--budget-total-ms=250] [--phase-budgets=DISCOVERING:25,BOOTING:50] [--require-published-config] [--emit-telemetry] [--json]', $output->stdout());
         self::assertStringContainsString('--phase-budgets=', $output->stdout());
         self::assertStringContainsString('--budget-total-ms=', $output->stdout());
+        self::assertStringContainsString('--require-published-config', $output->stdout());
     }
 
     public function test_it_renders_help_for_bootstrap_benchmark_command(): void
@@ -281,9 +305,10 @@ final class ConsoleApplicationTest extends TestCase
 
         self::assertSame(0, $exitCode);
         self::assertStringContainsString('Command: bootstrap:benchmark', $output->stdout());
-        self::assertStringContainsString('Usage: php volt bootstrap:benchmark [--profile=release] [--artifact-dir=storage/framework/bootstrap/benchmark] [--budget-total-ms=250] [--phase-budgets=DISCOVERING:25,BOOTING:50] [--emit-telemetry] [--json]', $output->stdout());
+        self::assertStringContainsString('Usage: php volt bootstrap:benchmark [--profile=release] [--artifact-dir=storage/framework/bootstrap/benchmark] [--budget-total-ms=250] [--phase-budgets=DISCOVERING:25,BOOTING:50] [--require-published-config] [--emit-telemetry] [--json]', $output->stdout());
         self::assertStringContainsString('--artifact-dir=', $output->stdout());
         self::assertStringContainsString('--phase-budgets=', $output->stdout());
+        self::assertStringContainsString('--require-published-config', $output->stdout());
     }
 
     public function test_it_resolves_help_for_aliases(): void
@@ -365,6 +390,7 @@ final class ConsoleApplicationTest extends TestCase
                 new BootstrapReleaseCheckCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new BootstrapStatusCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new RuntimeBudgetCalibrateCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
+                new RuntimeReleasePipelineCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new RuntimeSmokeCheckCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new RuntimeStatusCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
             ],

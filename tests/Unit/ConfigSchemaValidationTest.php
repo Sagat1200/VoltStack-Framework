@@ -8,11 +8,13 @@ use PHPUnit\Framework\TestCase;
 use Quantum\Config\ConfigRepository;
 use Quantum\Config\Schema\Builtin\CacheConfigSchema;
 use Quantum\Config\Schema\Builtin\DatabaseConfigSchema;
+use Quantum\Config\Schema\Builtin\ExceptionsConfigSchema;
 use Quantum\Config\Schema\ConfigNode;
 use Quantum\Config\Schema\ConfigSchema;
 use Quantum\Config\Schema\ConfigSchemaRegistry;
 use Quantum\Config\Validation\ConfigValidator;
 use Quantum\Database\Config\FrameworkDatabaseConfigurationProvider;
+use Quantum\Exceptions\Compilation\ExceptionPlanCompiler;
 
 final class ConfigSchemaValidationTest extends TestCase
 {
@@ -181,6 +183,100 @@ final class ConfigSchemaValidationTest extends TestCase
         self::assertSame('analytics', $configuration->defaultConnectionName);
         self::assertSame('pgsql', $configuration->connection('analytics')['driver'] ?? null);
         self::assertTrue($configuration->telemetryOption('enabled', false));
+    }
+
+    public function test_exceptions_schema_applies_defaults_and_accepts_current_shape(): void
+    {
+        $schema = ExceptionsConfigSchema::build();
+        $validator = new ConfigValidator();
+
+        $result = $validator->validate($schema, [
+            'environment' => 'development',
+            'reporting' => [
+                'sample_rate' => 0.5,
+                'reporters' => ['exceptions.log'],
+            ],
+            'rules' => [
+                [
+                    'id' => 'runtime',
+                    'exceptionType' => \RuntimeException::class,
+                    'serviceId' => 'exceptions.rule.runtime',
+                ],
+            ],
+        ]);
+
+        self::assertTrue($result->isValid());
+        self::assertSame(1, $result->data()['schema_version']);
+        self::assertFalse($result->data()['debug']);
+        self::assertSame(0.5, $result->data()['reporting']['sample_rate']);
+        self::assertSame('problem_json', $result->data()['rendering']['api_format']);
+        self::assertSame([1], $result->data()['rendering']['spa_versions']);
+        self::assertSame([], $result->data()['rules'][0]['predicates']);
+        self::assertFalse($result->data()['rules'][0]['exclusive']);
+    }
+
+    public function test_exceptions_schema_rejects_unknown_keys_and_string_debug(): void
+    {
+        $schema = ExceptionsConfigSchema::build();
+        $validator = new ConfigValidator();
+
+        $result = $validator->validate($schema, [
+            'debug' => 'true',
+            'unexpected' => true,
+            'rendering' => [
+                'unknown' => 'value',
+            ],
+        ]);
+
+        self::assertFalse($result->isValid());
+        self::assertCount(3, $result->violations());
+        self::assertSame('exceptions.debug', $result->violations()[0]->path());
+        self::assertSame('exceptions.rendering.unknown', $result->violations()[1]->path());
+        self::assertSame('exceptions.unexpected', $result->violations()[2]->path());
+    }
+
+    public function test_repository_can_validate_registered_exceptions_schema_and_compile_plan(): void
+    {
+        $repository = new ConfigRepository([
+            'exceptions' => [
+                'environment' => 'development',
+                'reporting' => [
+                    'reporters' => ['exceptions.telemetry', 'exceptions.log'],
+                    'ignore_codes' => ['validation.failed', 'authorization.denied'],
+                ],
+                'rendering' => [
+                    'spa_versions' => [1],
+                ],
+                'rules' => [
+                    [
+                        'id' => 'runtime',
+                        'exceptionType' => \RuntimeException::class,
+                        'priority' => 10,
+                        'serviceId' => 'exceptions.rule.runtime',
+                        'exclusive' => false,
+                        'predicates' => ['predicate.beta', 'predicate.alpha'],
+                    ],
+                ],
+            ],
+        ]);
+
+        $registry = new ConfigSchemaRegistry();
+        $registry->register(ExceptionsConfigSchema::build());
+
+        $result = $repository->validateRegistered('exceptions', $registry);
+
+        self::assertTrue($result->isValid());
+        self::assertSame('development', $result->data()['environment']);
+        self::assertSame(1.0, $result->data()['reporting']['sample_rate']);
+
+        $repository->set('exceptions', $result->data());
+
+        $plan = (new ExceptionPlanCompiler())->compile($result->data());
+
+        self::assertSame('development', $plan->environment());
+        self::assertSame(['exceptions.log', 'exceptions.telemetry'], $plan->config()['reporting']['reporters']);
+        self::assertSame(['authorization.denied', 'validation.failed'], $plan->config()['reporting']['ignore_codes']);
+        self::assertSame(['predicate.alpha', 'predicate.beta'], $plan->config()['rules'][0]['predicates']);
     }
 
     public function test_schema_root_must_be_map(): void

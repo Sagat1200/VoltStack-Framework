@@ -12,6 +12,13 @@ use VoltStack\Runtime\Context\ScopeManager;
 
 final class ScopeManagerCompatibilityTest extends TestCase
 {
+    protected function tearDown(): void
+    {
+        RuntimeContext::setCurrent(null);
+
+        parent::tearDown();
+    }
+
     public function test_scope_manager_opens_and_closes_an_explicit_request_scope(): void
     {
         $app = new Application(sys_get_temp_dir());
@@ -99,5 +106,55 @@ final class ScopeManagerCompatibilityTest extends TestCase
         self::assertIsString($requestId);
         self::assertSame('root', $app->currentScopeKind());
         self::assertNull(RuntimeContext::current());
+    }
+
+    public function test_runtime_context_activation_stack_restores_previous_context_when_top_slot_is_removed(): void
+    {
+        $outerContext = new RuntimeContext(
+            'outer-request',
+            Request::create('/outer'),
+            microtime(true),
+        );
+        $innerContext = new RuntimeContext(
+            'inner-request',
+            Request::create('/inner'),
+            microtime(true),
+        );
+
+        $outerSlot = RuntimeContext::activate($outerContext);
+        $innerSlot = RuntimeContext::activate($innerContext);
+
+        self::assertSame('inner-request', RuntimeContext::current()?->requestId());
+
+        RuntimeContext::deactivate($innerSlot);
+        self::assertSame('outer-request', RuntimeContext::current()?->requestId());
+
+        RuntimeContext::deactivate($outerSlot);
+        self::assertNull(RuntimeContext::current());
+    }
+
+    public function test_scope_manager_restores_previously_active_runtime_context_after_finishing_its_scope(): void
+    {
+        $outerContext = new RuntimeContext(
+            'outer-request',
+            Request::create('/outer'),
+            microtime(true),
+        );
+        $outerSlot = RuntimeContext::activate($outerContext);
+
+        try {
+            $app = new Application(sys_get_temp_dir());
+            $scopeManager = $app->make(ScopeManager::class);
+
+            $scopedContext = $scopeManager->beginRequest(Request::create('/scoped'));
+
+            self::assertSame($scopedContext->requestId(), RuntimeContext::current()?->requestId());
+
+            $scopeManager->end();
+
+            self::assertSame('outer-request', RuntimeContext::current()?->requestId());
+        } finally {
+            RuntimeContext::deactivate($outerSlot);
+        }
     }
 }

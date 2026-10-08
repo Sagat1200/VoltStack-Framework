@@ -175,6 +175,25 @@ PHP
         self::assertStringContainsString('"type":"bootstrap_phase"', $telemetry);
     }
 
+    public function test_bootstrap_benchmark_command_can_require_published_configuration(): void
+    {
+        $command = new BootstrapBenchmarkCommand($this->basePath);
+        $output = new Output();
+
+        $this->expectException(\Quantum\Config\Publication\PublishedConfigurationRequiredException::class);
+        $this->expectExceptionMessage('Published configuration is required for bootstrap release checks');
+
+        $command->handle(
+            Input::fromArgv([
+                'volt',
+                'bootstrap:benchmark',
+                '--require-published-config',
+                '--json',
+            ]),
+            $output,
+        );
+    }
+
     private function exportValue(string $value): string
     {
         return var_export($value, true);

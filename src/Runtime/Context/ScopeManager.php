@@ -11,6 +11,7 @@ use VoltStack\Framework\Application;
 final class ScopeManager
 {
     private ?RuntimeContext $context = null;
+    private ?string $contextSlotId = null;
 
     public function __construct(private readonly Application $app) {}
 
@@ -113,7 +114,8 @@ final class ScopeManager
             ],
         );
 
-        RuntimeContext::setCurrent($context);
+        RuntimeContext::deactivate($this->contextSlotId);
+        $this->contextSlotId = RuntimeContext::activate($context);
         $this->context = $context;
 
         $this->app->scopedInstance(Request::class, $request);
@@ -127,7 +129,8 @@ final class ScopeManager
     {
         $this->app->fireScopeEnd($this->context);
         $this->context = null;
-        RuntimeContext::setCurrent(null);
+        RuntimeContext::deactivate($this->contextSlotId);
+        $this->contextSlotId = null;
         $this->app->leaveScope();
     }
 

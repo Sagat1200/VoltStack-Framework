@@ -8,6 +8,7 @@ use Quantum\Console\Command;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
 use Quantum\Telemetry\Contracts\TelemetryManagerInterface;
+use VoltStack\Runtime\Budget\RuntimeBudgetCalibrationStoreResolver;
 use VoltStack\Runtime\Budget\RuntimeBudgetCalibrator;
 use VoltStack\Runtime\Telemetry\RuntimeBudgetCalibrationTelemetryEmitter;
 
@@ -25,7 +26,7 @@ final class RuntimeBudgetCalibrateCommand extends Command
 
     public function usage(): string
     {
-        return 'runtime:budget-calibrate [--driver=frankenphp] [--profile=release] [--artifact-dir=storage/framework/bootstrap] [--requests=/,GET:/health] [--warmup=2] [--iterations=10] [--multiplier=1.25] [--emit-telemetry] [--json]';
+        return 'runtime:budget-calibrate [--driver=frankenphp] [--profile=release] [--artifact-dir=storage/framework/bootstrap] [--calibration-dir=storage/framework/runtime-budget] [--requests=/,GET:/health] [--warmup=2] [--iterations=10] [--multiplier=1.25] [--require-published-config] [--publish] [--emit-telemetry] [--json]';
     }
 
     public function category(): string
@@ -39,10 +40,13 @@ final class RuntimeBudgetCalibrateCommand extends Command
             '--driver=' => 'Driver runtime a calibrar.',
             '--profile=' => 'Profile operativo asociado a la calibracion.',
             '--artifact-dir=' => 'Directorio bootstrap a inspeccionar durante la calibracion.',
+            '--calibration-dir=' => 'Directorio base donde se publican calibraciones runtime por driver.',
             '--requests=' => 'Lista separada por comas con requests tipo / o METHOD:/path.',
             '--warmup=' => 'Cantidad de corridas warmup previas a la medicion.',
             '--iterations=' => 'Cantidad de corridas medidas para calcular el budget recomendado.',
             '--multiplier=' => 'Factor de seguridad aplicado sobre el maximo observado.',
+            '--require-published-config' => 'Exige una generation activa y sin drift antes de calibrar.',
+            '--publish' => 'Publica y activa la calibracion recomendada como artefacto runtime del driver.',
             '--emit-telemetry' => 'Emite telemetry con el reporte de calibracion.',
             '--json' => 'Emite un payload JSON estable con el reporte de calibracion.',
         ];
@@ -53,6 +57,7 @@ final class RuntimeBudgetCalibrateCommand extends Command
         $driver = is_string($input->option('driver')) ? $input->option('driver') : null;
         $profile = is_string($input->option('profile')) ? $input->option('profile') : 'release';
         $artifactDirectory = is_string($input->option('artifact-dir')) ? $input->option('artifact-dir') : null;
+        $calibrationDirectory = is_string($input->option('calibration-dir')) ? $input->option('calibration-dir') : null;
 
         $report = (new RuntimeBudgetCalibrator($this->basePath))->run(
             driver: $driver,
@@ -62,7 +67,23 @@ final class RuntimeBudgetCalibrateCommand extends Command
             measuredIterations: $this->intOption($input, 'iterations', 10, 1),
             safetyMultiplier: $this->floatOption($input, 'multiplier', 1.25, 1.0),
             artifactDirectory: $artifactDirectory,
+            requirePublishedConfig: $input->hasOption('require-published-config'),
         );
+        $publishedArtifact = null;
+
+        if ($input->hasOption('publish')) {
+            $publishedArtifact = $this->runInCommandRuntime(function ($app) use ($report, $calibrationDirectory) {
+                $store = (new RuntimeBudgetCalibrationStoreResolver())->resolveForDriver(
+                    $app,
+                    $report->driver(),
+                    $calibrationDirectory,
+                );
+                $artifact = $store->publish($report);
+                $store->activateGeneration($artifact->generationId());
+
+                return $store->currentArtifact();
+            });
+        }
 
         if ($input->hasOption('emit-telemetry')) {
             $this->runInCommandRuntime(function ($app) use ($report): void {
@@ -76,6 +97,8 @@ final class RuntimeBudgetCalibrateCommand extends Command
             $payload = [
                 'command' => $this->name(),
                 'telemetry_emitted' => $input->hasOption('emit-telemetry'),
+                'published' => $publishedArtifact !== null,
+                'published_artifact' => $publishedArtifact?->toArray(),
                 'report' => $report->toArray(),
             ];
 
@@ -141,6 +164,17 @@ final class RuntimeBudgetCalibrateCommand extends Command
                         implode(' | ', $failure['violations']),
                     ));
                 }
+            }
+
+            if ($publishedArtifact !== null) {
+                $output->writeln(sprintf(
+                    '  Published calibration generation: %s',
+                    $publishedArtifact->generationId(),
+                ));
+                $output->writeln(sprintf(
+                    '  Published calibration path: %s',
+                    $publishedArtifact->manifestPath(),
+                ));
             }
 
             $output->writeln('  Suggested config:');

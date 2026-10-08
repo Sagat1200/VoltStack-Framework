@@ -114,8 +114,14 @@ final class ControllerSecurityDecisionEngine implements ControllerSecurityDecisi
         $denials = [];
         $challenges = [];
 
+        $hasExplicitPolicyIds = is_array($explicitPolicyIds) && count($explicitPolicyIds) > 0;
+        $hasExplicitSecurityMetadata = $hasExplicitPolicyIds
+            || $explicitPermissions
+            || $authRequired !== null
+            || $tenantRequired !== null;
+
         try {
-            $candidates = is_array($explicitPolicyIds) && count($explicitPolicyIds) > 0
+            $candidates = $hasExplicitPolicyIds
                 ? array_map(function (string $id): \Quantum\Controllers\Security\Contracts\ControllerSecurityPolicyInterface {
                     try {
                         return $this->registry->resolve($id);
@@ -134,7 +140,7 @@ final class ControllerSecurityDecisionEngine implements ControllerSecurityDecisi
                         }
                     }
                 }, $explicitPolicyIds)
-                : iterator_to_array($this->registry->all(), false);
+                : [];
         } catch (SecurityInfrastructureFailureException $e) {
             return SecurityDecision::deny(
                 policyId: 'security.infrastructure',
@@ -142,7 +148,7 @@ final class ControllerSecurityDecisionEngine implements ControllerSecurityDecisi
             );
         }
 
-        if (count($candidates) === 0 && ! is_array($permissions) && $denyByDefault) {
+        if ($hasExplicitSecurityMetadata && count($candidates) === 0 && ! is_array($permissions) && $denyByDefault) {
             return SecurityDecision::deny('security.deny_by_default', 'no_policy_registered_deny_by_default');
         }
 

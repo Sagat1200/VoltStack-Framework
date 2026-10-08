@@ -1399,12 +1399,24 @@ final class HttpKernelTest extends TestCase
         self::assertSame('internal', $runtimeAssetRoute->routeMetadata()->get('transport'));
         self::assertSame('volt.runtime.asset', $runtimeAssetRoute->routeMetadata()->get('endpoint'));
         self::assertSame('volt', $runtimeAssetRoute->routeMetadata()->get('protocol'));
+        self::assertSame([
+            'exposed' => true,
+            'policies' => ['framework.allow.internal_volt_transport'],
+        ], $runtimeAssetRoute->routeMetadata()->get('security'));
         self::assertSame('internal', $routesManifestRoute->routeMetadata()->get('transport'));
         self::assertSame('volt.routes.manifest', $routesManifestRoute->routeMetadata()->get('endpoint'));
         self::assertSame('volt', $routesManifestRoute->routeMetadata()->get('protocol'));
+        self::assertSame([
+            'exposed' => true,
+            'policies' => ['framework.allow.internal_volt_transport'],
+        ], $routesManifestRoute->routeMetadata()->get('security'));
         self::assertSame('internal', $protocolActionRoute->routeMetadata()->get('transport'));
         self::assertSame('volt.protocol.action', $protocolActionRoute->routeMetadata()->get('endpoint'));
         self::assertSame('volt', $protocolActionRoute->routeMetadata()->get('protocol'));
+        self::assertSame([
+            'exposed' => true,
+            'policies' => ['framework.allow.internal_volt_transport'],
+        ], $protocolActionRoute->routeMetadata()->get('security'));
     }
 
     public function test_it_exposes_the_current_runtime_http_verb_contract_through_internal_routes(): void
@@ -1910,6 +1922,23 @@ final class HttpKernelTest extends TestCase
         self::assertStringContainsString('data-volt-hydrate', $response->content());
         self::assertStringContainsString('"data-volt-hydrate"', $response->content());
         self::assertStringContainsString('"data-volt-hydrate",', $response->content());
+    }
+
+    public function test_internal_volt_assets_remain_accessible_when_controller_security_denies_by_default(): void
+    {
+        /** @var ConfigRepository $config */
+        $config = $this->app->make(ConfigRepository::class);
+        $config->set('controller_security.enabled', true);
+        $config->set('controller_security.defaults.deny_by_default', true);
+        $config->set('controller_security.controllers.explicit_exposure', true);
+
+        $runtimeAsset = $this->app->make(HttpKernel::class)->handle(Request::create('/_volt/runtime.js'));
+        $routesManifest = $this->app->make(HttpKernel::class)->handle(Request::create('/_volt/routes-manifest.json'));
+
+        self::assertSame(200, $runtimeAsset->statusCode(), $runtimeAsset->content());
+        self::assertSame('application/javascript; charset=UTF-8', $runtimeAsset->headers()['Content-Type']);
+        self::assertSame(200, $routesManifest->statusCode(), $routesManifest->content());
+        self::assertSame('application/json; charset=UTF-8', $routesManifest->headers()['Content-Type']);
     }
 
     public function test_it_serves_the_frontend_route_manifest_as_a_cacheable_json_asset(): void

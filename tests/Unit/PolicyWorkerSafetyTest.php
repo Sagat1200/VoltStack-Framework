@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
+use Quantum\Config\ConfigRepository;
 use Quantum\Controllers\Security\Context\AuthenticationStrength;
 use Quantum\Controllers\Security\Context\ControllerSecurityContext;
 use Quantum\Controllers\Security\Context\Principal;
@@ -22,6 +23,7 @@ use Quantum\Controllers\Security\Worker\HardenedControllerSecurityDecisionEngine
 use Quantum\Controllers\Security\Worker\PolicyEvaluationSandbox;
 use Quantum\Controllers\Security\ControllerTarget;
 use Quantum\Controllers\ControllerDefinition;
+use VoltStack\Framework\Application;
 
 final class PolicyWorkerSafetyTest extends TestCase
 {
@@ -70,6 +72,41 @@ final class PolicyWorkerSafetyTest extends TestCase
         self::assertSame(SecurityDecisionEffect::Deny, $decision->effect);
         self::assertSame('policy_worker_trust_failure', $decision->reasonCode);
         self::assertSame('terminate_trust_failure', $decision->obligations['worker_disposition'] ?? null);
+    }
+
+    public function test_hardened_engine_does_not_evaluate_registry_policies_without_explicit_security_metadata(): void
+    {
+        $denyPolicy = new class extends ControllerSecurityPolicy {
+            public int $calls = 0;
+            public function id(): string { return 'deny.global'; }
+            public function evaluate(SecurityEvaluationRequest $r): SecurityDecision
+            {
+                $this->calls++;
+
+                return $this->deny('global_policy_should_not_run');
+            }
+        };
+
+        $registry = new ControllerSecurityPolicyRegistry();
+        $registry->register($denyPolicy);
+        $registry->freeze();
+
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('controller_security', [
+            'enabled' => true,
+            'defaults' => ['deny_by_default' => true, 'fail_closed' => true],
+            'authorization' => ['max_policy_evaluations' => 64, 'abstain_as_deny' => true],
+            'policies' => [],
+        ]);
+
+        $sandbox = new PolicyEvaluationSandbox(circuitBreakerThreshold: 99);
+        $engine = new HardenedControllerSecurityDecisionEngine($registry, $sandbox, $app);
+
+        $decision = $engine->decide(new SecurityEvaluationRequest($this->createContext(), $this->createTarget(), 'read', 'resource:1', []));
+
+        self::assertSame(SecurityDecisionEffect::Deny, $decision->effect);
+        self::assertSame('no_explicit_decision_deny_by_default', $decision->reasonCode);
+        self::assertSame(0, $denyPolicy->calls);
     }
 
     public function test_recursion_prevention_blocks_recursive_policy(): void

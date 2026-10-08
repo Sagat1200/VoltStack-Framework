@@ -374,7 +374,7 @@ final class ControllerEngine
     {
         $meta = [];
         try {
-            $routeMeta = $match->route()->metadata();
+            $routeMeta = $match->metadata();
             if (method_exists($routeMeta, 'raw')) {
                 $raw = $routeMeta->raw();
             } elseif (method_exists($routeMeta, 'all')) {
@@ -493,7 +493,7 @@ final class ControllerEngine
         ];
 
         try {
-            $routeMeta = $match->route()->metadata();
+            $routeMeta = $match->metadata();
             $raw = method_exists($routeMeta, 'raw')
                 ? $routeMeta->raw()
                 : (method_exists($routeMeta, 'all') ? $routeMeta->all() : []);

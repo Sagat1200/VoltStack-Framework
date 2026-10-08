@@ -232,7 +232,7 @@ final class ControllerSecurityModelTest extends TestCase
 
         $d = $engine->decide($req);
         self::assertTrue($d->isDeny(), 'Expected deny, got: ' . $d->effect->name . ' / ' . $d->reasonCode);
-        self::assertSame('no_policy_registered_deny_by_default', $d->reasonCode);
+        self::assertSame('no_explicit_decision_deny_by_default', $d->reasonCode);
     }
 
     public function test_decision_engine_allow_by_default_when_configured_fail_open(): void
@@ -252,6 +252,41 @@ final class ControllerSecurityModelTest extends TestCase
         $d = $engine->decide($req);
         self::assertTrue($d->isAllow(), 'Expected allow, got: ' . $d->effect->name . ' / ' . $d->reasonCode);
         self::assertSame('no_explicit_decision_allow_by_default', $d->reasonCode);
+    }
+
+    public function test_decision_engine_does_not_evaluate_registry_policies_without_explicit_security_metadata(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(ConfigRepository::class)->set('controller_security', [
+            'enabled' => true,
+            'defaults' => ['deny_by_default' => true, 'fail_closed' => true],
+            'authorization' => ['max_policy_evaluations' => 64, 'abstain_as_deny' => true],
+            'policies' => [],
+        ]);
+
+        $denyPolicy = new class extends ControllerSecurityPolicy {
+            public int $calls = 0;
+            public function id(): string { return 'deny.global'; }
+            public function evaluate(SecurityEvaluationRequest $r): SecurityDecision
+            {
+                $this->calls++;
+
+                return $this->deny('global_policy_should_not_run');
+            }
+        };
+
+        $reg = new ControllerSecurityPolicyRegistry();
+        $reg->register($denyPolicy);
+
+        $engine = new ControllerSecurityDecisionEngine($reg, $app);
+        $ctx = $this->buildAnonymousContext();
+        $target = ControllerTarget::fromDefinition(new ControllerDefinition('X@y'));
+        $req = new SecurityEvaluationRequest($ctx, $target, 'y', 'resource:1', metadata: []);
+
+        $d = $engine->decide($req);
+        self::assertTrue($d->isDeny(), 'Expected deny, got: ' . $d->effect->name . ' / ' . $d->reasonCode);
+        self::assertSame('no_explicit_decision_deny_by_default', $d->reasonCode);
+        self::assertSame(0, $denyPolicy->calls);
     }
 
     public function test_decision_engine_short_circuits_on_first_explicit_deny_policy(): void

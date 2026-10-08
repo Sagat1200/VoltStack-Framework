@@ -123,7 +123,10 @@ use Quantum\Controllers\Security\Contracts\ControllerSecurityContextFactoryInter
 use Quantum\Controllers\Security\Contracts\ControllerSecurityDecisionEngineInterface;
 use Quantum\Controllers\Security\Contracts\ControllerSecurityManagerInterface;
 use Quantum\Controllers\Security\Contracts\ControllerSecurityPolicyRegistryInterface;
+use Quantum\Controllers\Security\Decision\SecurityDecision;
+use Quantum\Controllers\Security\Decision\SecurityEvaluationRequest;
 use Quantum\Controllers\Security\Engine\ControllerSecurityManager;
+use Quantum\Controllers\Security\Policy\ControllerSecurityPolicy;
 use Quantum\Controllers\Security\Policy\ControllerSecurityDecisionEngine;
 use Quantum\Controllers\Security\Policy\ControllerSecurityPolicyRegistry;
 use Quantum\Controllers\Security\Worker\ControllerWorkerDisposition;
@@ -1238,18 +1241,30 @@ HTML;
                     'transport' => 'internal',
                     'endpoint' => 'volt.runtime.asset',
                     'protocol' => 'volt',
+                    'security' => [
+                        'exposed' => true,
+                        'policies' => ['framework.allow.internal_volt_transport'],
+                    ],
                 ]);
                 $router->get('/_volt/routes-manifest.json', FrontendRouteManifestController::class)->meta([
                     'context' => 'spa',
                     'transport' => 'internal',
                     'endpoint' => 'volt.routes.manifest',
                     'protocol' => 'volt',
+                    'security' => [
+                        'exposed' => true,
+                        'policies' => ['framework.allow.internal_volt_transport'],
+                    ],
                 ]);
                 $router->post('/_volt/action', ProtocolController::class)->meta([
                     'context' => 'spa',
                     'transport' => 'internal',
                     'endpoint' => 'volt.protocol.action',
                     'protocol' => 'volt',
+                    'security' => [
+                        'exposed' => true,
+                        'policies' => ['framework.allow.internal_volt_transport'],
+                    ],
                 ]);
 
                 return $router;
@@ -1336,6 +1351,21 @@ HTML;
                 } catch (\Throwable) {
                 }
                 $registry = new ControllerSecurityPolicyRegistry($resolver);
+                $registry->register(new class extends ControllerSecurityPolicy {
+                    public function id(): string
+                    {
+                        return 'framework.allow.internal_volt_transport';
+                    }
+
+                    public function evaluate(SecurityEvaluationRequest $request): SecurityDecision
+                    {
+                        return SecurityDecision::allow(
+                            policyId: $this->id(),
+                            reasonCode: 'internal_volt_transport_allow',
+                            obligations: ['scope' => 'framework.internal.volt'],
+                        );
+                    }
+                });
                 $policiesConfig = $app->config('controller_security.policies', null);
                 if (is_array($policiesConfig)) {
                     foreach ($policiesConfig as $policyClassOrInstance) {

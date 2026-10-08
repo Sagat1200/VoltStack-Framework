@@ -1913,14 +1913,123 @@ final class DatabaseOrmFeatureTest extends TestCase
             self::assertNotNull($rawCourse);
             self::assertSame('Compilers managed', $rawCourse['title'] ?? null);
 
-            array_pop($managedPosts[0]->comments);
+            $removedCourse = array_shift($managedStudents[0]->courses);
+            self::assertInstanceOf(OrmCourse::class, $removedCourse);
 
-            try {
-                $em->flush();
-                self::fail('Managed partial to-many hydration must reject collection membership changes.');
-            } catch (RuntimeException $exception) {
-                self::assertStringContainsString('partially managed collection', $exception->getMessage());
-            }
+            $courseC = new OrmCourse();
+            $courseC->title = 'Databases';
+            $courseC->students = [$managedStudents[0]];
+            $managedStudents[0]->courses[] = $courseC;
+
+            $em->flush();
+
+            $memberships = $database->table('orm_student_courses')
+                ->where('student_id', $managedStudents[0]->id)
+                ->get()
+                ->rows();
+            self::assertCount(2, $memberships);
+
+            $removedMembership = $database->table('orm_student_courses')
+                ->where('student_id', $managedStudents[0]->id)
+                ->where('course_id', $removedCourse->id)
+                ->first();
+            self::assertNull($removedMembership);
+
+            $newCourseRow = $database->table('orm_courses')
+                ->where('title', 'Databases')
+                ->first();
+            self::assertNotNull($newCourseRow);
+
+            $newMembership = $database->table('orm_student_courses')
+                ->where('student_id', $managedStudents[0]->id)
+                ->where('course_id', $newCourseRow['id'] ?? null)
+                ->first();
+            self::assertNotNull($newMembership);
+        } finally {
+            $scope->end();
+        }
+    }
+
+    public function test_partial_managed_one_to_many_collections_support_structural_membership_when_runtime_can_sync_them(): void
+    {
+        $app = $this->makeApp();
+        $scope = $app->make(ScopeManager::class);
+        $scope->begin(Request::create('/database/orm/partial-managed-one-to-many-membership', 'GET'));
+
+        try {
+            $database = $app->make(DatabaseInterface::class);
+            $database->schema()->create('orm_cascade_posts', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('title');
+                $table->boolean('published');
+                $table->string('created_by')->nullable();
+                $table->string('created_at')->nullable();
+                $table->string('updated_at')->nullable();
+            }, true);
+            $database->schema()->create('orm_cascade_comments', function (TableBlueprint $table): void {
+                $table->id();
+                $table->integer('post_id');
+                $table->string('body');
+                $table->string('created_at')->nullable();
+            }, true);
+
+            $em = $database->entityManager();
+
+            $post = new OrmCascadePost();
+            $post->title = 'Partial Post';
+            $post->published = true;
+
+            $commentA = new OrmCascadeComment();
+            $commentA->body = 'Comment A';
+            $commentA->post = $post;
+
+            $commentB = new OrmCascadeComment();
+            $commentB->body = 'Comment B';
+            $commentB->post = $post;
+
+            $post->comments = [$commentA, $commentB];
+
+            $em->persist($post);
+            $em->flush();
+            $em->clear();
+
+            $managedPost = $em->query(OrmCascadePost::class)
+                ->join('comments', 'c')
+                ->partialManaged('title', 'comments.body')
+                ->firstPartialManaged();
+
+            self::assertInstanceOf(OrmCascadePost::class, $managedPost);
+            self::assertCount(2, $managedPost->comments);
+
+            $removedComment = array_pop($managedPost->comments);
+            self::assertInstanceOf(OrmCascadeComment::class, $removedComment);
+
+            $commentC = new OrmCascadeComment();
+            $commentC->body = 'Comment C';
+            $commentC->post = $managedPost;
+            $managedPost->comments[] = $commentC;
+
+            $em->flush();
+
+            $removedRow = $database->table('orm_cascade_comments')
+                ->where('id', $removedComment->id)
+                ->first();
+            self::assertNull($removedRow);
+
+            $addedRow = $database->table('orm_cascade_comments')
+                ->where('body', 'Comment C')
+                ->first();
+            self::assertNotNull($addedRow);
+            self::assertSame((string) $managedPost->id, (string) ($addedRow['post_id'] ?? ''));
+
+            $managedPost->comments = array_values($managedPost->comments);
+            $em->flush();
+
+            $allComments = $database->table('orm_cascade_comments')
+                ->where('post_id', $managedPost->id)
+                ->get()
+                ->rows();
+            self::assertCount(2, $allComments);
         } finally {
             $scope->end();
         }

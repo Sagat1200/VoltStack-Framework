@@ -240,7 +240,7 @@ final class EntityManager implements EntityManagerInterface
 
     public function flush(): void
     {
-        $this->assertNoUnsupportedPartialManagedCollectionChanges();
+        $this->assertPartialManagedCollectionChangesAreSupported();
 
         // Step 0: Apply CASCADE operations BFS (visited-guard against circular refs).
         $this->applyCascadesBeforeFlush(Cascade::PERSIST);
@@ -259,6 +259,7 @@ final class EntityManager implements EntityManagerInterface
             }
 
             $this->flushManyToManyMembershipChanges();
+            $this->refreshPartialManagedCollectionSnapshots();
 
             foreach ($this->unitOfWork->removedEntities() as $entity) {
                 $this->flushDelete($entity);
@@ -1004,21 +1005,13 @@ final class EntityManager implements EntityManagerInterface
     private function hasPendingManyToManyMembershipChanges(): bool
     {
         foreach ($this->unitOfWork->managedEntities() as $entity) {
-            if ($this->unitOfWork->isPartialManaged($entity)) {
-                continue;
-            }
-
             $metadata = $this->unitOfWork->metadataFor($entity);
             $key = $this->unitOfWork->keyFor($entity);
             if ($key === null) {
                 continue;
             }
 
-            foreach ($metadata->associations() as $association) {
-                if (! $association->isManyToMany() || ! $association->isOwningSide() || ! $association->usesJoinTable()) {
-                    continue;
-                }
-
+            foreach ($this->manyToManyAssociationsToSynchronize($entity, $metadata) as $association) {
                 if (
                     $this->currentManyToManyTargetIds($entity, $association)
                     !== $this->existingManyToManyTargetIds($association, $key->identifier)
@@ -1031,7 +1024,7 @@ final class EntityManager implements EntityManagerInterface
         return false;
     }
 
-    private function assertNoUnsupportedPartialManagedCollectionChanges(): void
+    private function assertPartialManagedCollectionChangesAreSupported(): void
     {
         foreach ($this->unitOfWork->managedEntities() as $entity) {
             if (! $this->unitOfWork->isPartialManaged($entity)) {
@@ -1040,16 +1033,23 @@ final class EntityManager implements EntityManagerInterface
 
             $metadata = $this->unitOfWork->metadataFor($entity);
             foreach ($this->unitOfWork->loadedPartialManagedToManyAssociations($entity) as $associationName) {
+                $association = $metadata->association($associationName);
                 $diff = $this->unitOfWork->collectionDiff($entity, $associationName);
                 if ($diff['removed'] === [] && $diff['added'] === []) {
                     continue;
                 }
 
-                throw new RuntimeException(sprintf(
-                    'Cannot mutate membership of partially managed collection [%s::$%s]; refresh or load the full entity before adding or removing collection items.',
-                    $metadata->className,
-                    $associationName,
-                ));
+                if ($association->isManyToMany() && ! $association->isOwningSide()) {
+                    throw new RuntimeException(sprintf(
+                        'Cannot mutate inverse ManyToMany partially managed collection [%s::$%s]; mutate the owning-side collection instead.',
+                        $metadata->className,
+                        $associationName,
+                    ));
+                }
+
+                if ($association->isOneToMany()) {
+                    $this->assertPartialManagedOneToManyMutationIsSynchronizable($entity, $association, $diff);
+                }
             }
         }
     }
@@ -1161,17 +1161,9 @@ final class EntityManager implements EntityManagerInterface
     private function collectOrphansForRemoval(): void
     {
         foreach ($this->unitOfWork->managedEntities() as $entity) {
-            if ($this->unitOfWork->isPartialManaged($entity)) {
-                continue;
-            }
+            $metadata = $this->unitOfWork->metadataFor($entity);
 
-            $metadata = $this->metadata->for($entity::class);
-
-            foreach ($metadata->associations() as $assoc) {
-                if (! $assoc->isOneToMany() || ! $assoc->orphanRemoval) {
-                    continue;
-                }
-
+            foreach ($this->orphanRemovalAssociationsToScan($entity, $metadata) as $assoc) {
                 $diff = $this->unitOfWork->collectionDiff($entity, $assoc->name);
                 foreach ($diff['removed'] as $orphan) {
                     // V1 constraint: orphanRemoval operates only on Managed
@@ -1181,7 +1173,7 @@ final class EntityManager implements EntityManagerInterface
                         continue;
                     }
 
-                    $this->remove($orphan);
+                    $this->unitOfWork->remove($orphan);
                 }
             }
         }
@@ -1435,22 +1427,14 @@ final class EntityManager implements EntityManagerInterface
     private function flushManyToManyMembershipChanges(): void
     {
         foreach ($this->unitOfWork->managedEntities() as $entity) {
-            if ($this->unitOfWork->isPartialManaged($entity)) {
-                continue;
-            }
-
             $metadata = $this->unitOfWork->metadataFor($entity);
             $key = $this->unitOfWork->keyFor($entity);
             if ($key === null) {
                 continue;
             }
 
-            foreach ($metadata->associations() as $association) {
-                if (! $association->isManyToMany() || ! $association->isOwningSide() || ! $association->usesJoinTable()) {
-                    continue;
-                }
-
-                $currentIds = $this->currentManyToManyTargetIds($entity, $association);
+            foreach ($this->manyToManyAssociationsToSynchronize($entity, $metadata) as $association) {
+                $currentIds = $this->currentManyToManyTargetIds($entity, $association, requireIdentifiers: true);
                 $existingIds = $this->existingManyToManyTargetIds($association, $key->identifier);
 
                 foreach (array_diff($existingIds, $currentIds) as $removedId) {
@@ -1469,6 +1453,27 @@ final class EntityManager implements EntityManagerInterface
             }
 
             $this->unitOfWork->snapshotOneToManyCollections($entity, $metadata);
+        }
+    }
+
+    private function refreshPartialManagedCollectionSnapshots(): void
+    {
+        foreach ($this->unitOfWork->managedEntities() as $entity) {
+            if (! $this->unitOfWork->isPartialManaged($entity)) {
+                continue;
+            }
+
+            $metadata = $this->unitOfWork->metadataFor($entity);
+            foreach ($this->unitOfWork->loadedPartialManagedToManyAssociations($entity) as $associationName) {
+                $diff = $this->unitOfWork->collectionDiff($entity, $associationName);
+                if ($diff['removed'] === [] && $diff['added'] === []) {
+                    continue;
+                }
+
+                $this->unitOfWork->snapshotOneToManyCollections($entity, $metadata);
+
+                break;
+            }
         }
     }
 
@@ -1527,12 +1532,25 @@ final class EntityManager implements EntityManagerInterface
     /**
      * @return list<int|string>
      */
-    private function currentManyToManyTargetIds(object $entity, EntityAssociationMetadata $association): array
+    private function currentManyToManyTargetIds(
+        object $entity,
+        EntityAssociationMetadata $association,
+        bool $requireIdentifiers = false,
+    ): array
     {
         $ids = [];
         foreach ($this->readAssociationTargets($entity, $association) as $target) {
             $targetId = $this->metadata->for($target::class)->identifierValue($target);
             if ($targetId === null) {
+                if ($requireIdentifiers) {
+                    throw new RuntimeException(sprintf(
+                        'Cannot synchronize ManyToMany collection [%s::$%s] because target [%s] has no persistent identifier yet.',
+                        $entity::class,
+                        $association->name,
+                        $target::class,
+                    ));
+                }
+
                 continue;
             }
 
@@ -1563,6 +1581,109 @@ final class EntityManager implements EntityManagerInterface
         }
 
         return array_values(array_unique($ids, SORT_REGULAR));
+    }
+
+    /**
+     * @return list<EntityAssociationMetadata>
+     */
+    private function manyToManyAssociationsToSynchronize(object $entity, EntityMetadata $metadata): array
+    {
+        if (! $this->unitOfWork->isPartialManaged($entity)) {
+            return array_values(array_filter(
+                $metadata->associations(),
+                static fn(EntityAssociationMetadata $association): bool => $association->isManyToMany()
+                    && $association->isOwningSide()
+                    && $association->usesJoinTable(),
+            ));
+        }
+
+        $associations = [];
+        foreach ($this->unitOfWork->loadedPartialManagedToManyAssociations($entity) as $associationName) {
+            $association = $metadata->association($associationName);
+            if (! $association->isManyToMany() || ! $association->isOwningSide() || ! $association->usesJoinTable()) {
+                continue;
+            }
+
+            $associations[] = $association;
+        }
+
+        return $associations;
+    }
+
+    /**
+     * @return list<EntityAssociationMetadata>
+     */
+    private function orphanRemovalAssociationsToScan(object $entity, EntityMetadata $metadata): array
+    {
+        if (! $this->unitOfWork->isPartialManaged($entity)) {
+            return array_values(array_filter(
+                $metadata->associations(),
+                static fn(EntityAssociationMetadata $association): bool => $association->isOneToMany()
+                    && $association->orphanRemoval,
+            ));
+        }
+
+        $associations = [];
+        foreach ($this->unitOfWork->loadedPartialManagedToManyAssociations($entity) as $associationName) {
+            $association = $metadata->association($associationName);
+            if (! $association->isOneToMany() || ! $association->orphanRemoval) {
+                continue;
+            }
+
+            $associations[] = $association;
+        }
+
+        return $associations;
+    }
+
+    /**
+     * @param array{removed: list<object>, added: list<object>} $diff
+     */
+    private function assertPartialManagedOneToManyMutationIsSynchronizable(
+        object $entity,
+        EntityAssociationMetadata $association,
+        array $diff,
+    ): void {
+        if ($association->mappedBy === null) {
+            return;
+        }
+
+        $targetMetadata = $this->metadata->for($association->targetEntity);
+        if (! $targetMetadata->hasAssociation($association->mappedBy)) {
+            return;
+        }
+
+        $owningAssociation = $targetMetadata->association($association->mappedBy);
+        $property = $owningAssociation->property;
+        $property->setAccessible(true);
+
+        foreach ($diff['added'] as $target) {
+            if ($property->getValue($target) !== $entity) {
+                throw new RuntimeException(sprintf(
+                    'Cannot add target to partially managed collection [%s::$%s] without updating owning side [%s::$%s].',
+                    $entity::class,
+                    $association->name,
+                    $target::class,
+                    $owningAssociation->name,
+                ));
+            }
+        }
+
+        if ($association->orphanRemoval) {
+            return;
+        }
+
+        foreach ($diff['removed'] as $target) {
+            if ($property->getValue($target) === $entity) {
+                throw new RuntimeException(sprintf(
+                    'Cannot remove target from partially managed collection [%s::$%s] while owning side [%s::$%s] still points to the same root.',
+                    $entity::class,
+                    $association->name,
+                    $target::class,
+                    $owningAssociation->name,
+                ));
+            }
+        }
     }
 
     private function deleteManyToManyMembershipsFor(object $entity, EntityMetadata $metadata, int|string $identifier): void

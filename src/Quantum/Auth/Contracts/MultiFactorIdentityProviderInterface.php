@@ -12,5 +12,10 @@ interface MultiFactorIdentityProviderInterface
 
     public function requiresSecondFactor(IdentityInterface $identity): bool;
 
-    public function verifySecondFactor(IdentityInterface $identity, string $secondFactor): bool;
+    /**
+     * @return list<string>
+     */
+    public function availableSecondFactorMethods(IdentityInterface $identity): array;
+
+    public function verifySecondFactor(IdentityInterface $identity, string $secondFactor, ?string $method = null): bool;
 }

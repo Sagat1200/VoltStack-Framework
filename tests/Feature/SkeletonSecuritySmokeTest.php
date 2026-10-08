@@ -10,6 +10,7 @@ use Quantum\Auth\Contracts\TransactionNonceStoreInterface;
 use Quantum\Auth\Controllers\PasskeyAssertionController;
 use Quantum\Auth\Identity\IdentityIdentifier;
 use Quantum\Auth\Identity\IdentityReference;
+use Quantum\Auth\Mfa\TotpVerifier;
 use Quantum\Auth\Passkeys\PasskeyCredentialRecord;
 use Quantum\Auth\Passkeys\Support\CoseKey;
 use Quantum\Auth\Support\AuthenticationHttpState;
@@ -99,12 +100,27 @@ final class SkeletonSecuritySmokeTest extends TestCase
             'policies' => [],
         ]);
         $this->app->make(ConfigRepository::class)->set('controller_compilation.enabled', false);
+        $this->app->make(ConfigRepository::class)->set('auth.mfa', [
+            'enabled' => true,
+            'totp' => [
+                'enabled' => true,
+                'period' => 30,
+                'digits' => 6,
+                'window' => 1,
+                'algorithm' => 'sha1',
+            ],
+            'recovery_codes' => [
+                'enabled' => true,
+            ],
+        ]);
         $this->app->make(ConfigRepository::class)->set('auth.providers.local.identities', [
             [
                 'id' => 9901,
                 'identifier' => 'session-admin@example.com',
                 'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
                 'mfa_code' => '654321',
+                'totp_secret' => 'JBSWY3DPEHPK3PXP',
+                'recovery_codes' => ['ABCD-EFGH', password_hash('ZXCVBN12', PASSWORD_DEFAULT)],
                 'type' => 'user',
                 'name' => 'Session Admin',
                 'roles' => ['admin'],
@@ -328,6 +344,20 @@ final class SkeletonSecuritySmokeTest extends TestCase
         } catch (\Throwable) {
             return null;
         }
+    }
+
+    /**
+     * @param array<int, array<string,mixed>> $methods
+     */
+    private function containsStepUpMethod(array $methods, string $type): bool
+    {
+        foreach ($methods as $method) {
+            if (($method['type'] ?? null) === $type) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function test_1_public_endpoint_returns_200_without_auth(): void
@@ -704,11 +734,11 @@ final class SkeletonSecuritySmokeTest extends TestCase
         $payload = $this->json($response);
         self::assertNotNull($payload);
         self::assertSame('challenge_required', $payload['operation']['decision'] ?? null);
-        self::assertSame(['second_factor'], $payload['challenge']['available_methods'] ?? null);
-        self::assertSame(['second_factor'], $payload['challenge']['recommended_methods'] ?? null);
+        self::assertSame(['second_factor', 'totp', 'recovery_code'], $payload['challenge']['available_methods'] ?? null);
+        self::assertSame(['second_factor', 'totp'], $payload['challenge']['recommended_methods'] ?? null);
         self::assertSame('/auth/tokens/protected-operation/step-up/challenge', $payload['challenge']['challenge_endpoint'] ?? null);
         self::assertSame('/auth/tokens/protected-operation/step-up/continue', $payload['challenge']['continuation_endpoint'] ?? null);
-        self::assertSame(['second_factor'], $response['headers']['X-Auth-Step-Up-Available-Methods'] ?? []);
+        self::assertSame(['second_factor,totp,recovery_code'], $response['headers']['X-Auth-Step-Up-Available-Methods'] ?? []);
         self::assertSame(['/auth/tokens/protected-operation/step-up/challenge'], $response['headers']['X-Auth-Step-Up-Challenge-Endpoint'] ?? []);
         self::assertSame(['/auth/tokens/protected-operation/step-up/continue'], $response['headers']['X-Auth-Step-Up-Continuation-Endpoint'] ?? []);
     }
@@ -785,7 +815,7 @@ final class SkeletonSecuritySmokeTest extends TestCase
         self::assertSame('30', $payload['current_assurance'] ?? null);
         self::assertSame('/auth/tokens/protected-operation/step-up/challenge', $payload['challenge_endpoint'] ?? null);
         self::assertSame('/auth/tokens/protected-operation/step-up/continue', $payload['continuation_endpoint'] ?? null);
-        self::assertSame(['second_factor'], $response['headers']['X-Auth-Step-Up-Available-Methods'] ?? []);
+        self::assertSame(['second_factor,totp,recovery_code'], $response['headers']['X-Auth-Step-Up-Available-Methods'] ?? []);
     }
 
     public function test_3m_protected_operation_step_up_challenge_advertises_passkey_controller_endpoints(): void
@@ -980,9 +1010,9 @@ final class SkeletonSecuritySmokeTest extends TestCase
             [
                 'roles' => ['user'],
                 'permissions' => ['dashboard:read'],
-                'risk_score' => 80,
-                'risk_level' => 'high',
-                'current_assurance' => 10,
+                'risk_score' => 40,
+                'risk_level' => 'medium',
+                'current_assurance' => 20,
                 'required_min_assurance' => 20,
                 'authentication_assurance_profile' => 'opaque_access_token',
                 'amr' => ['bearer'],
@@ -1048,9 +1078,9 @@ final class SkeletonSecuritySmokeTest extends TestCase
             [
                 'roles' => ['user'],
                 'permissions' => ['dashboard:read'],
-                'risk_score' => 80,
-                'risk_level' => 'high',
-                'current_assurance' => 10,
+                'risk_score' => 40,
+                'risk_level' => 'medium',
+                'current_assurance' => 20,
                 'required_min_assurance' => 20,
                 'authentication_assurance_profile' => 'opaque_access_token',
                 'amr' => ['bearer'],
@@ -1087,6 +1117,85 @@ final class SkeletonSecuritySmokeTest extends TestCase
         self::assertSame('passkey', $payload['step_up']['mechanism'] ?? null);
         self::assertSame('HardwareBacked', $payload['step_up']['current_strength'] ?? null);
         self::assertSame(40, $payload['step_up']['current_assurance'] ?? null);
+    }
+
+    public function test_3r_protected_operation_step_up_challenge_advertises_totp_and_recovery_code_methods(): void
+    {
+        $svc = $this->app->make(BearerTokenService::class);
+        $pair = $svc->issueTokenPair(
+            new IdentityReference(new IdentityIdentifier('session-admin@example.com'), 'user'),
+            'client-totp-challenge-01',
+            ['dashboard:read'],
+            null,
+            null,
+            [
+                'roles' => ['user'],
+                'permissions' => ['dashboard:read'],
+                'risk_score' => 80,
+                'risk_level' => 'high',
+                'current_assurance' => 10,
+                'required_min_assurance' => 20,
+                'authentication_assurance_profile' => 'opaque_access_token',
+                'amr' => ['bearer'],
+            ],
+        );
+
+        $response = $this->dispatch('/auth/tokens/protected-operation/step-up/challenge', [
+            'Authorization' => 'Bearer ' . $pair['access_token']->id->value,
+            'Accept' => 'application/json',
+        ]);
+
+        self::assertSame(200, $response['status'], $response['debugThrowable'] ?? '');
+        $payload = $this->json($response);
+        self::assertNotNull($payload);
+        self::assertContains('totp', $payload['challenge']['available_methods'] ?? []);
+        self::assertContains('recovery_code', $payload['challenge']['available_methods'] ?? []);
+
+        $methods = is_array($payload['challenge']['methods'] ?? null) ? $payload['challenge']['methods'] : [];
+        self::assertTrue($this->containsStepUpMethod($methods, 'totp'));
+        self::assertTrue($this->containsStepUpMethod($methods, 'recovery_code'));
+    }
+
+    public function test_3s_protected_operation_step_up_continue_with_totp_can_pass(): void
+    {
+        $svc = $this->app->make(BearerTokenService::class);
+        $pair = $svc->issueTokenPair(
+            new IdentityReference(new IdentityIdentifier('session-admin@example.com'), 'user'),
+            'client-totp-continue-01',
+            ['dashboard:read'],
+            null,
+            null,
+            [
+                'roles' => ['user'],
+                'permissions' => ['dashboard:read'],
+                'risk_score' => 40,
+                'risk_level' => 'medium',
+                'current_assurance' => 20,
+                'required_min_assurance' => 20,
+                'authentication_assurance_profile' => 'opaque_access_token',
+                'amr' => ['bearer'],
+            ],
+        );
+
+        $totp = (new TotpVerifier())->generate('JBSWY3DPEHPK3PXP');
+        self::assertNotSame('', $totp);
+
+        $response = $this->dispatch('/auth/tokens/protected-operation/step-up/continue', [
+            'Authorization' => 'Bearer ' . $pair['access_token']->id->value,
+            'Accept' => 'application/json',
+        ], [], 'POST', [
+            'mechanism' => 'totp',
+            'totp' => $totp,
+        ]);
+
+        self::assertSame(200, $response['status'], $response['debugThrowable'] ?? '');
+        $payload = $this->json($response);
+        self::assertNotNull($payload);
+        self::assertSame('passed', $payload['operation']['decision'] ?? null);
+        self::assertSame('completed', $payload['step_up']['decision'] ?? null);
+        self::assertSame('totp', $payload['step_up']['mechanism'] ?? null);
+        self::assertSame('MultiFactor', $payload['step_up']['current_strength'] ?? null);
+        self::assertSame(30, $payload['step_up']['current_assurance'] ?? null);
     }
 
     public function test_4_admin_mfa_fails_with_only_token_strength(): void

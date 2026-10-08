@@ -6,6 +6,7 @@ namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
 use Quantum\Auth\AuthenticationServiceProvider;
+use Quantum\Auth\Authenticators\TotpAuthenticator;
 use Quantum\Auth\Context\AuthenticationContext;
 use Quantum\Auth\Context\AuthenticationRequest;
 use Quantum\Auth\Contracts\AdaptiveRiskPolicyInterface;
@@ -144,5 +145,19 @@ final class Bloque083G2SpDiTest extends TestCase
             $resolver->resolve($operation),
         );
         self::assertSame(30, $policy->minimumAssuranceFor($operation));
+    }
+
+    public function test_totp_authenticator_resolves_when_mfa_totp_is_enabled(): void
+    {
+        $app = self::makeAppWithAuthConfig([
+            'mfa' => [
+                'enabled' => true,
+                'totp' => ['enabled' => true],
+            ],
+        ]);
+
+        $resolved = $app->make(TotpAuthenticator::class);
+
+        self::assertInstanceOf(TotpAuthenticator::class, $resolved);
     }
 }

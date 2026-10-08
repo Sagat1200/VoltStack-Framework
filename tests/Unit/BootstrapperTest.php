@@ -7,6 +7,7 @@ namespace VoltStack\Test\Unit;
 use Closure;
 use PHPUnit\Framework\TestCase;
 use Quantum\Bootstrap\Bootstrapper;
+use Quantum\Config\Publication\PublishedConfigurationRequiredException;
 use Quantum\Config\ConfigRepository;
 use Quantum\Http\Request;
 use Quantum\Http\Response;
@@ -291,6 +292,45 @@ PHP
         self::assertSame('local', $runtimeConfig->get('app.env'));
         self::assertSame('live-secret', $runtimeConfig->get('app.key'));
         self::assertSame($configPath . DIRECTORY_SEPARATOR . 'app.php', $runtimeConfig->provenance()['app']);
+    }
+
+    public function test_it_can_require_an_active_published_configuration_snapshot_explicitly(): void
+    {
+        $builderApp = new Application($this->basePath);
+        $builderConfig = $builderApp->make(ConfigRepository::class);
+        $builderConfig->set('app.name', 'Published Config');
+        $builderConfig->set('app.env', 'production');
+
+        $codec = $builderApp->configSnapshotCodec();
+        $baseSnapshot = $builderConfig->snapshot(provenance: [
+            'app' => 'published',
+        ]);
+        $artifact = $builderApp->configManifestStore()->publish($builderConfig->snapshot(
+            provenance: $baseSnapshot->provenance(),
+            configId: $codec->configId($baseSnapshot),
+        ));
+        $builderApp->configManifestStore()->activateGeneration($artifact->generationId());
+
+        $runtimeApp = new Application($this->basePath);
+        $bootstrapper = new Bootstrapper($runtimeApp);
+        $bootstrapper->loadPublishedConfiguration();
+
+        $runtimeConfig = $runtimeApp->make(ConfigRepository::class);
+
+        self::assertSame('Published Config', $runtimeConfig->get('app.name'));
+        self::assertSame('production', $runtimeConfig->get('app.env'));
+        self::assertSame(['app' => 'published'], $runtimeConfig->provenance());
+    }
+
+    public function test_it_throws_when_published_configuration_is_required_but_missing(): void
+    {
+        $runtimeApp = new Application($this->basePath);
+        $bootstrapper = new Bootstrapper($runtimeApp);
+
+        $this->expectException(PublishedConfigurationRequiredException::class);
+        $this->expectExceptionMessage('Published configuration is required for bootstrap');
+
+        $bootstrapper->loadPublishedConfiguration();
     }
 
     private function writeRouteFile(string $name, string $uri): string

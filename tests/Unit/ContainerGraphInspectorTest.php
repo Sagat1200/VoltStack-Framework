@@ -59,6 +59,7 @@ final class ContainerGraphInspectorTest extends TestCase
         $container->bind('graph.missing', 'Vendor\\Missing\\Service');
         $container->bind(GraphNeedsScalar::class, GraphNeedsScalar::class);
         $container->bind(GraphAbstractTarget::class, GraphAbstractTarget::class);
+        $container->bind(GraphNeedsContract::class, GraphNeedsContract::class);
 
         $graph = (new ContainerGraphInspector())->inspect($container);
 
@@ -81,6 +82,44 @@ final class ContainerGraphInspectorTest extends TestCase
         self::assertArrayHasKey('not_instantiable', $issuesByCode);
         self::assertSame(GraphAbstractTarget::class, $issuesByCode['not_instantiable'][0]->service);
         self::assertSame(GraphAbstractTarget::class, $issuesByCode['not_instantiable'][0]->subject);
+
+        self::assertArrayHasKey('unresolvable_dependency', $issuesByCode);
+        self::assertSame(GraphNeedsContract::class, $issuesByCode['unresolvable_dependency'][0]->service);
+        self::assertSame(GraphContract::class, $issuesByCode['unresolvable_dependency'][0]->subject);
+    }
+
+    public function test_it_does_not_report_contract_dependencies_when_a_binding_exists_for_the_contract(): void
+    {
+        $container = new Container();
+        $container->bind(GraphContract::class, GraphContractImplementation::class);
+        $container->bind(GraphNeedsContract::class, GraphNeedsContract::class);
+
+        $graph = (new ContainerGraphInspector())->inspect($container);
+
+        $unresolvable = array_values(array_filter(
+            $graph->issues(),
+            static fn(object $issue): bool => $issue->code === 'unresolvable_dependency'
+        ));
+
+        self::assertSame([], $unresolvable);
+    }
+
+    public function test_it_reports_static_cycles_between_registered_analyzable_services(): void
+    {
+        $container = new Container();
+        $container->bind(GraphCycleA::class, GraphCycleA::class);
+        $container->bind(GraphCycleB::class, GraphCycleB::class);
+
+        $graph = (new ContainerGraphInspector())->inspect($container);
+
+        $cycles = array_values(array_filter(
+            $graph->issues(),
+            static fn(object $issue): bool => $issue->code === 'dependency_cycle'
+        ));
+
+        self::assertCount(1, $cycles);
+        self::assertStringContainsString(GraphCycleA::class, $cycles[0]->message);
+        self::assertStringContainsString(GraphCycleB::class, $cycles[0]->message);
     }
 }
 
@@ -100,6 +139,35 @@ final class GraphConsumer
 final class GraphNeedsScalar
 {
     public function __construct(public readonly string $token)
+    {
+    }
+}
+
+interface GraphContract
+{
+}
+
+final class GraphContractImplementation implements GraphContract
+{
+}
+
+final class GraphNeedsContract
+{
+    public function __construct(public readonly GraphContract $contract)
+    {
+    }
+}
+
+final class GraphCycleA
+{
+    public function __construct(public readonly GraphCycleB $b)
+    {
+    }
+}
+
+final class GraphCycleB
+{
+    public function __construct(public readonly GraphCycleA $a)
     {
     }
 }

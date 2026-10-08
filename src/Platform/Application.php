@@ -128,6 +128,9 @@ use Quantum\Controllers\Security\Worker\PolicyEvaluationSandbox;
 use Quantum\Controllers\Security\Policy\Composition\PolicyBuilder;
 use Quantum\Controllers\Security\Policy\Composition\PolicyExpressionResolver;
 use Quantum\Validation\Validator;
+use Quantum\Exceptions\Bridges\Runtime\ExceptionRuntimeBridge;
+use Quantum\Exceptions\Bridges\Runtime\ManagedExceptionRuntimeBridge;
+use Quantum\Exceptions\Runtime\ExceptionScopeLifecycleManager;
 use Quantum\View\Cache\CompiledViewStore;
 use Quantum\View\Compilers\ViewCompiler;
 use Quantum\View\Directives\DirectiveRegistry;
@@ -144,6 +147,7 @@ use VoltStack\Runtime\Context\ScopeManager;
 use VoltStack\Runtime\Context\WorkerLifecycle;
 use VoltStack\Runtime\RequestRunner;
 use VoltStack\Runtime\Reset\ResetManager;
+use VoltStack\Runtime\RuntimeManager;
 use VoltStack\Runtime\RuntimeManagerServer;
 use VoltStack\Runtime\WorkerFactory;
 use VoltStack\Runtime\Hydration\Dehydrator;
@@ -820,6 +824,22 @@ class Application extends Container
             $this->scopedFor(ResetManager::class, ResetManager::class, 'worker');
         }
 
+        if (! isset($this->bindings[ExceptionScopeLifecycleManager::class])) {
+            $this->scopedFor(ExceptionScopeLifecycleManager::class, ExceptionScopeLifecycleManager::class, 'worker');
+        }
+
+        if (! isset($this->bindings[ExceptionRuntimeBridge::class])) {
+            $this->scopedFor(
+                ExceptionRuntimeBridge::class,
+                fn(Application $app) => new ManagedExceptionRuntimeBridge(
+                    app: $app,
+                    lifecycleManager: $app->make(ExceptionScopeLifecycleManager::class),
+                    resetManager: $app->make(ResetManager::class),
+                ),
+                'worker',
+            );
+        }
+
         if (! isset($this->bindings[RequestRunner::class])) {
             $this->scopedFor(RequestRunner::class, RequestRunner::class, 'worker');
         }
@@ -860,8 +880,15 @@ class Application extends Container
             $this->singleton(WorkerFactoryInterface::class, fn(Application $app) => new WorkerFactory($app));
         }
 
+        if (! isset($this->bindings[RuntimeManager::class])) {
+            $this->singleton(RuntimeManager::class, fn(Application $app) => RuntimeManager::createDefault($app));
+        }
+
         if (! isset($this->bindings[RuntimeManagerServer::class])) {
-            $this->singleton(RuntimeManagerServer::class, fn(Application $app) => RuntimeManagerServer::createDefault($app));
+            $this->singleton(RuntimeManagerServer::class, fn(Application $app) => new RuntimeManagerServer(
+                app: $app,
+                manager: $app->make(RuntimeManager::class),
+            ));
         }
 
         if (! isset($this->bindings[QuantumExceptionHandlerInterface::class])) {

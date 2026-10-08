@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use Quantum\Auth\Identity\GenericIdentity;
 use Quantum\Auth\Identity\IdentitySecurityState;
 use Quantum\Auth\Identity\LocalIdentityProvider;
+use Quantum\Auth\Mfa\TotpVerifier;
 use Quantum\Config\ConfigRepository;
 
 final class LocalIdentityProviderTest extends TestCase
@@ -400,5 +401,54 @@ final class LocalIdentityProviderTest extends TestCase
         self::assertSame(0, $meta['failed_attempts']);
         self::assertNull($meta['lockout_until']);
         self::assertSame(IdentitySecurityState::Active->value, $meta['security_state']);
+    }
+
+    public function test_it_supports_totp_and_recovery_codes_as_second_factor_methods(): void
+    {
+        $totpSecret = 'JBSWY3DPEHPK3PXP';
+        $recoveryHash = password_hash('ZXCVBN12', PASSWORD_DEFAULT);
+        $config = new ConfigRepository([
+            'auth' => [
+                'mfa' => [
+                    'totp' => [
+                        'enabled' => true,
+                        'period' => 30,
+                        'digits' => 6,
+                        'window' => 1,
+                    ],
+                    'recovery_codes' => [
+                        'enabled' => true,
+                    ],
+                ],
+                'providers' => [
+                    'local' => [
+                        'identities' => [
+                            [
+                                'id' => 97,
+                                'identifier' => 'totp@example.com',
+                                'password_hash' => password_hash('secret', PASSWORD_DEFAULT),
+                                'totp_secret' => $totpSecret,
+                                'recovery_codes' => ['ABCD-EFGH', $recoveryHash],
+                                'type' => 'user',
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $provider = new LocalIdentityProvider($config);
+        $identity = $provider->findByIdentifier('totp@example.com');
+        self::assertInstanceOf(GenericIdentity::class, $identity);
+
+        $code = (new TotpVerifier())->generate($totpSecret);
+
+        self::assertSame(['totp', 'recovery_code'], $provider->availableSecondFactorMethods($identity));
+        self::assertTrue($provider->supportsSecondFactor($identity));
+        self::assertTrue($provider->verifySecondFactor($identity, $code, 'totp'));
+        self::assertTrue($provider->verifySecondFactor($identity, 'ABCD-EFGH', 'recovery_code'));
+        self::assertFalse($provider->verifySecondFactor($identity, 'ABCD-EFGH', 'recovery_code'));
+        self::assertTrue($provider->verifySecondFactor($identity, 'ZXCV-BN12', 'recovery_code'));
+        self::assertFalse($provider->verifySecondFactor($identity, 'ZXCV-BN12', 'recovery_code'));
     }
 }

@@ -10,6 +10,7 @@ use Quantum\Auth\Contracts\MultiFactorIdentityProviderInterface;
 use Quantum\Auth\Contracts\MutableIdentityProviderInterface;
 use Quantum\Auth\Contracts\PasswordLifecycleAwareProviderInterface;
 use Quantum\Auth\Contracts\PasswordRehashingIdentityProviderInterface;
+use Quantum\Auth\Mfa\TotpVerifier;
 use Quantum\Auth\Passwords\PasswordRotationReceipt;
 use Quantum\Config\ConfigRepository;
 
@@ -153,20 +154,36 @@ final class LocalIdentityProvider implements IdentityProviderInterface, Password
 
     public function supportsSecondFactor(IdentityInterface $identity): bool
     {
+        return $this->availableSecondFactorMethods($identity) !== []
+            || $this->requiresSecondFactor($identity);
+    }
+
+    public function availableSecondFactorMethods(IdentityInterface $identity): array
+    {
         $entry = $this->entryForIdentity($identity);
 
         if ($entry === null) {
-            return false;
+            return [];
         }
+
+        $methods = [];
 
         if ($this->configuredSecondFactorCode($entry) !== null) {
-            return true;
+            $methods[] = 'second_factor';
         }
 
-        return $this->booleanEntryValue($entry, ['mfa_required', 'second_factor_required']);
+        if ($this->totpEnabled() && $this->configuredTotpSecret($entry) !== null) {
+            $methods[] = 'totp';
+        }
+
+        if ($this->recoveryCodesEnabled() && $this->configuredRecoveryCodes($entry) !== []) {
+            $methods[] = 'recovery_code';
+        }
+
+        return array_values(array_unique($methods));
     }
 
-    public function verifySecondFactor(IdentityInterface $identity, string $secondFactor): bool
+    public function verifySecondFactor(IdentityInterface $identity, string $secondFactor, ?string $method = null): bool
     {
         $entry = $this->entryForIdentity($identity);
 
@@ -174,13 +191,32 @@ final class LocalIdentityProvider implements IdentityProviderInterface, Password
             return false;
         }
 
-        $configuredCode = $this->configuredSecondFactorCode($entry);
+        $normalizedMethod = $this->normalizeSecondFactorMethod($method);
+        $normalizedCode = trim($secondFactor);
 
-        if ($configuredCode === null) {
-            return false;
+        return match ($normalizedMethod) {
+            'totp' => $this->verifyTotpCode($entry, $normalizedCode),
+            'recovery_code' => $this->consumeRecoveryCode($identity, $normalizedCode),
+            'second_factor' => $this->verifyGenericSecondFactor($identity, $entry, $normalizedCode),
+            default => false,
+        };
+    }
+
+    /**
+     * @param array<string, mixed> $entry
+     */
+    private function verifyGenericSecondFactor(IdentityInterface $identity, array $entry, string $secondFactor): bool
+    {
+        $configuredCode = $this->configuredSecondFactorCode($entry);
+        if ($configuredCode !== null && hash_equals($configuredCode, trim($secondFactor))) {
+            return true;
         }
 
-        return hash_equals($configuredCode, trim($secondFactor));
+        if ($this->verifyTotpCode($entry, $secondFactor)) {
+            return true;
+        }
+
+        return $this->consumeRecoveryCode($identity, $secondFactor);
     }
 
     public function passwordLifecycleMetadataFor(IdentityInterface $identity): array
@@ -682,7 +718,19 @@ final class LocalIdentityProvider implements IdentityProviderInterface, Password
         $attributes = [];
 
         foreach ($entry as $key => $value) {
-            if (in_array($key, ['password_hash', 'mfa_code', 'second_factor_code', 'otp_code'], true)) {
+            if (in_array($key, [
+                'password_hash',
+                'mfa_code',
+                'second_factor_code',
+                'otp_code',
+                'totp_secret',
+                'totp_secret_base32',
+                'mfa_totp_secret',
+                'otp_secret',
+                'recovery_codes',
+                'recovery_code_hashes',
+                'backup_codes',
+            ], true)) {
                 continue;
             }
 
@@ -820,6 +868,181 @@ final class LocalIdentityProvider implements IdentityProviderInterface, Password
         }
 
         return null;
+    }
+
+    /**
+     * @param array<string, mixed> $entry
+     */
+    private function configuredTotpSecret(array $entry): ?string
+    {
+        foreach (['totp_secret', 'totp_secret_base32', 'mfa_totp_secret', 'otp_secret'] as $key) {
+            $candidate = isset($entry[$key]) ? trim((string) $entry[$key]) : '';
+
+            if ($candidate !== '') {
+                return $candidate;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array<string, mixed> $entry
+     * @return list<string>
+     */
+    private function configuredRecoveryCodes(array $entry): array
+    {
+        foreach (['recovery_codes', 'recovery_code_hashes', 'backup_codes'] as $key) {
+            $candidate = $entry[$key] ?? null;
+            if (! is_array($candidate)) {
+                continue;
+            }
+
+            return array_values(array_filter(array_map(
+                static fn (mixed $value): string => is_string($value) ? trim($value) : '',
+                $candidate,
+            ), static fn (string $value): bool => $value !== ''));
+        }
+
+        return [];
+    }
+
+    /**
+     * @param array<string, mixed> $entry
+     */
+    private function verifyTotpCode(array $entry, string $code): bool
+    {
+        if (! $this->totpEnabled()) {
+            return false;
+        }
+
+        $secret = $this->configuredTotpSecret($entry);
+        if ($secret === null) {
+            return false;
+        }
+
+        return (new TotpVerifier())->verify(
+            base32Secret: $secret,
+            code: $code,
+            timestamp: time(),
+            period: $this->totpPeriod($entry),
+            digits: $this->totpDigits($entry),
+            window: $this->totpWindow(),
+            algorithm: $this->totpAlgorithm($entry),
+        );
+    }
+
+    private function consumeRecoveryCode(IdentityInterface $identity, string $providedCode): bool
+    {
+        if (! $this->recoveryCodesEnabled()) {
+            return false;
+        }
+
+        $normalizedProvided = $this->normalizeRecoveryCode($providedCode);
+        if ($normalizedProvided === '') {
+            return false;
+        }
+
+        $entry = $this->entryForIdentity($identity);
+        if ($entry === null) {
+            return false;
+        }
+
+        $plainMatched = false;
+        $hashedMatched = false;
+        $remaining = [];
+
+        foreach ($this->configuredRecoveryCodes($entry) as $candidate) {
+            if ($candidate === '') {
+                continue;
+            }
+
+            if (! $plainMatched && $this->normalizeRecoveryCode($candidate) === $normalizedProvided) {
+                $plainMatched = true;
+                continue;
+            }
+
+            if (! $hashedMatched && password_get_info($candidate)['algo'] !== null && password_verify($normalizedProvided, $candidate)) {
+                $hashedMatched = true;
+                continue;
+            }
+
+            $remaining[] = $candidate;
+        }
+
+        if (! $plainMatched && ! $hashedMatched) {
+            return false;
+        }
+
+        return $this->updateEntry($identity, static function (array $entry) use ($remaining): array {
+            $entry['recovery_codes'] = array_values($remaining);
+
+            return $entry;
+        });
+    }
+
+    private function normalizeSecondFactorMethod(?string $method): string
+    {
+        $normalized = strtolower(trim((string) $method));
+
+        return match ($normalized) {
+            'totp', 'otp' => 'totp',
+            'recovery_code', 'backup_code', 'recovery' => 'recovery_code',
+            'second_factor', 'mfa_code', 'code', '' => 'second_factor',
+            default => 'second_factor',
+        };
+    }
+
+    private function normalizeRecoveryCode(string $code): string
+    {
+        return strtoupper(preg_replace('/[^A-Z0-9]/i', '', trim($code)) ?? '');
+    }
+
+    /**
+     * @param array<string, mixed> $entry
+     */
+    private function totpPeriod(array $entry): int
+    {
+        $value = $entry['totp_period'] ?? $this->config->get('auth.mfa.totp.period', 30);
+
+        return is_numeric($value) ? max(1, (int) $value) : 30;
+    }
+
+    /**
+     * @param array<string, mixed> $entry
+     */
+    private function totpDigits(array $entry): int
+    {
+        $value = $entry['totp_digits'] ?? $this->config->get('auth.mfa.totp.digits', 6);
+
+        return is_numeric($value) ? max(6, (int) $value) : 6;
+    }
+
+    /**
+     * @param array<string, mixed> $entry
+     */
+    private function totpAlgorithm(array $entry): string
+    {
+        $value = $entry['totp_algorithm'] ?? $this->config->get('auth.mfa.totp.algorithm', 'sha1');
+
+        return is_string($value) && trim($value) !== '' ? trim($value) : 'sha1';
+    }
+
+    private function totpWindow(): int
+    {
+        $value = $this->config->get('auth.mfa.totp.window', 1);
+
+        return is_numeric($value) ? max(0, (int) $value) : 1;
+    }
+
+    private function totpEnabled(): bool
+    {
+        return (bool) $this->config->get('auth.mfa.totp.enabled', false);
+    }
+
+    private function recoveryCodesEnabled(): bool
+    {
+        return (bool) $this->config->get('auth.mfa.recovery_codes.enabled', false);
     }
 
     /**

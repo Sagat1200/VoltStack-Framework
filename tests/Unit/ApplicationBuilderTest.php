@@ -14,6 +14,8 @@ use Quantum\Bootstrap\Config\EnvReference;
 use Quantum\Bootstrap\Config\SecretReference;
 use Quantum\Bootstrap\Context\BootstrapContext;
 use Quantum\Bootstrap\Context\BuildContext;
+use Quantum\Config\ConfigRepository;
+use Quantum\Config\Publication\PublishedConfigurationRequiredException;
 use VoltStack\Framework\Application;
 use VoltStack\Framework\ServiceProvider;
 
@@ -43,20 +45,7 @@ PHP
 
     protected function tearDown(): void
     {
-        $configFile = $this->basePath . DIRECTORY_SEPARATOR . 'config' . DIRECTORY_SEPARATOR . 'app.php';
-
-        if (is_file($configFile)) {
-            unlink($configFile);
-        }
-
-        $configDirectory = $this->basePath . DIRECTORY_SEPARATOR . 'config';
-        if (is_dir($configDirectory)) {
-            rmdir($configDirectory);
-        }
-
-        if (is_dir($this->basePath)) {
-            rmdir($this->basePath);
-        }
+        $this->deleteDirectory($this->basePath);
 
         parent::tearDown();
     }
@@ -129,6 +118,53 @@ PHP
         self::assertSame('secret', $app->config('bootstrap.secrets.app_key.type'));
     }
 
+    public function test_bootstrap_plan_can_require_a_published_configuration_generation(): void
+    {
+        $publisherApp = new Application($this->basePath);
+        $publisherConfig = $publisherApp->make(ConfigRepository::class);
+        $publisherConfig->set('app.name', 'Published Builder Config');
+        $publisherConfig->set('app.env', 'production');
+
+        $codec = $publisherApp->configSnapshotCodec();
+        $baseSnapshot = $publisherConfig->snapshot(provenance: ['app' => 'published']);
+        $artifact = $publisherApp->configManifestStore()->publish($publisherConfig->snapshot(
+            provenance: $baseSnapshot->provenance(),
+            configId: $codec->configId($baseSnapshot),
+        ));
+        $publisherApp->configManifestStore()->activateGeneration($artifact->generationId());
+
+        $plan = ApplicationBuilder::create($this->basePath)
+            ->withEnvironment('production')
+            ->withBootstrapConfiguration(BootstrapConfiguration::fromSections(
+                operational: ['require_published_config' => true],
+            ))
+            ->build();
+
+        $app = new Application($this->basePath);
+        $bootstrapper = new Bootstrapper($app);
+        $bootstrapper->bootstrapPlan($plan);
+
+        self::assertSame('Published Builder Config', $app->config('app.name'));
+        self::assertSame('production', $app->environment());
+    }
+
+    public function test_bootstrap_plan_fails_when_it_requires_published_configuration_but_none_is_active(): void
+    {
+        $plan = ApplicationBuilder::create($this->basePath)
+            ->withBootstrapConfiguration(BootstrapConfiguration::fromSections(
+                operational: ['require_published_config' => true],
+            ))
+            ->build();
+
+        $app = new Application($this->basePath);
+        $bootstrapper = new Bootstrapper($app);
+
+        $this->expectException(PublishedConfigurationRequiredException::class);
+        $this->expectExceptionMessage('Published configuration is required for bootstrap');
+
+        $bootstrapper->bootstrapPlan($plan);
+    }
+
     public function test_build_and_bootstrap_context_named_constructors_capture_minimum_contract(): void
     {
         $buildContext = BuildContext::forEnvironment(
@@ -176,6 +212,36 @@ PHP
         self::assertSame('worker', $persistent->profile());
         self::assertSame('single', $single->executionMode());
         self::assertSame('web', $single->profile());
+    }
+
+    private function deleteDirectory(string $path): void
+    {
+        if (! is_dir($path)) {
+            return;
+        }
+
+        $items = scandir($path);
+
+        if ($items === false) {
+            return;
+        }
+
+        foreach ($items as $item) {
+            if ($item === '.' || $item === '..') {
+                continue;
+            }
+
+            $target = $path . DIRECTORY_SEPARATOR . $item;
+
+            if (is_file($target) || is_link($target)) {
+                @unlink($target);
+                continue;
+            }
+
+            $this->deleteDirectory($target);
+        }
+
+        @rmdir($path);
     }
 }
 

@@ -292,10 +292,11 @@ final class PasswordAuthenticator implements AuthenticatorInterface
         if ($this->identityProvider instanceof MultiFactorIdentityProviderInterface) {
             $requiresSecondFactor = $this->identityProvider->requiresSecondFactor($identity);
             $providedSecondFactor = $credentials->secondFactor;
+            $providedSecondFactorMethod = $credentials->secondFactorMethod;
             $supportsSecondFactor = $this->identityProvider->supportsSecondFactor($identity);
 
             if ($supportsSecondFactor && $providedSecondFactor !== null && $providedSecondFactor !== '') {
-                if (! $this->identityProvider->verifySecondFactor($identity, $providedSecondFactor)) {
+                if (! $this->identityProvider->verifySecondFactor($identity, $providedSecondFactor, $providedSecondFactorMethod)) {
                     return AuthenticationDecision::rejected([
                         'reason' => 'invalid_second_factor',
                         'authenticator' => 'password',
@@ -305,9 +306,14 @@ final class PasswordAuthenticator implements AuthenticatorInterface
                 }
 
                 $secondFactorSatisfied = true;
-                $contextAttributes['amr'] = ['pwd', 'mfa'];
+                $contextAttributes['amr'] = $providedSecondFactorMethod === 'totp'
+                    ? ['pwd', 'mfa', 'otp']
+                    : ($providedSecondFactorMethod === 'recovery_code'
+                        ? ['pwd', 'mfa', 'otp', 'recovery_code']
+                        : ['pwd', 'mfa']);
                 $contextAttributes['authentication_strength'] = AuthenticationStrength::MultiFactor->name;
                 $contextAttributes['authentication_assurance_profile'] = 'multi_factor';
+                $contextAttributes['second_factor_method'] = $providedSecondFactorMethod ?? 'second_factor';
             } elseif ($requiresSecondFactor && $trustedDevice === null) {
                 return AuthenticationDecision::rejected([
                     'reason' => 'second_factor_required',
@@ -397,6 +403,7 @@ final class PasswordAuthenticator implements AuthenticatorInterface
             ? $context->request->attribute('credentials', [])
             : [];
         $secondFactor = PasswordCredentials::secondFactorFromArray($credentials);
+        $secondFactorMethod = PasswordCredentials::secondFactorMethodFromArray($credentials);
 
         if ($secondFactor === null || trim($secondFactor) === '') {
             return AuthenticationDecision::rejected([
@@ -406,7 +413,7 @@ final class PasswordAuthenticator implements AuthenticatorInterface
             ]);
         }
 
-        if (! $this->identityProvider->verifySecondFactor($current->identity, $secondFactor)) {
+        if (! $this->identityProvider->verifySecondFactor($current->identity, $secondFactor, $secondFactorMethod)) {
             return AuthenticationDecision::rejected([
                 'reason' => 'invalid_second_factor',
                 'authenticator' => 'password',
@@ -415,11 +422,16 @@ final class PasswordAuthenticator implements AuthenticatorInterface
         }
 
         $attributes = array_merge($current->attributes, [
-            'amr' => ['pwd', 'mfa'],
+            'amr' => $secondFactorMethod === 'totp'
+                ? ['pwd', 'mfa', 'otp']
+                : ($secondFactorMethod === 'recovery_code'
+                    ? ['pwd', 'mfa', 'otp', 'recovery_code']
+                    : ['pwd', 'mfa']),
             'authentication_strength' => AuthenticationStrength::MultiFactor->name,
             'assurance_value' => AuthenticationStrength::MultiFactor->value,
             'assurance_name' => 'multi_factor',
             'authentication_assurance_profile' => 'multi_factor',
+            'second_factor_method' => $secondFactorMethod ?? 'second_factor',
         ]);
 
         return AuthenticationDecision::authenticated(

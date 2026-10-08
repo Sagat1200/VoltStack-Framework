@@ -529,16 +529,35 @@ final class BearerTokenOperationsController extends Controller
             $this->identityProvider instanceof MultiFactorIdentityProviderInterface
             && $this->identityProvider->supportsSecondFactor($currentContext->identity)
         ) {
-            $names[] = 'second_factor';
-            if ($requiredMinAssurance <= AuthenticationStrength::MultiFactor->value) {
-                $recommended[] = 'second_factor';
+            foreach ($this->identityProvider->availableSecondFactorMethods($currentContext->identity) as $method) {
+                $names[] = $method;
+                if ($requiredMinAssurance <= AuthenticationStrength::MultiFactor->value && $method !== 'recovery_code') {
+                    $recommended[] = $method;
+                }
+
+                $definitions[] = match ($method) {
+                    'totp' => [
+                        'type' => 'totp',
+                        'supported' => true,
+                        'can_satisfy_requirement' => $requiredMinAssurance <= AuthenticationStrength::MultiFactor->value,
+                        'mode' => 'step_up',
+                        'fields' => ['totp'],
+                    ],
+                    'recovery_code' => [
+                        'type' => 'recovery_code',
+                        'supported' => true,
+                        'can_satisfy_requirement' => $requiredMinAssurance <= AuthenticationStrength::MultiFactor->value,
+                        'mode' => 'step_up',
+                        'fields' => ['recovery_code'],
+                    ],
+                    default => [
+                        'type' => 'second_factor',
+                        'supported' => true,
+                        'can_satisfy_requirement' => $requiredMinAssurance <= AuthenticationStrength::MultiFactor->value,
+                        'fields' => ['second_factor'],
+                    ],
+                };
             }
-            $definitions[] = [
-                'type' => 'second_factor',
-                'supported' => true,
-                'can_satisfy_requirement' => $requiredMinAssurance <= AuthenticationStrength::MultiFactor->value,
-                'fields' => ['second_factor'],
-            ];
         }
 
         if ((bool) $this->config->get('auth.passkeys.enabled', false)) {
@@ -649,6 +668,12 @@ final class BearerTokenOperationsController extends Controller
         }
         if (is_array($credentials['passkey_assertion'] ?? null)) {
             return 'passkey';
+        }
+        if (is_string($credentials['totp'] ?? null) && trim((string) $credentials['totp']) !== '') {
+            return 'totp';
+        }
+        if (is_string($credentials['recovery_code'] ?? null) && trim((string) $credentials['recovery_code']) !== '') {
+            return 'recovery_code';
         }
         if (is_string($credentials['second_factor'] ?? null) && trim((string) $credentials['second_factor']) !== '') {
             return 'second_factor';

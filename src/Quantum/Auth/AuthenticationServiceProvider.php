@@ -8,6 +8,7 @@ use Quantum\Auth\Authenticators\BearerAuthenticator;
 use Quantum\Auth\Authenticators\OidcAuthenticator;
 use Quantum\Auth\Authenticators\PasswordAuthenticator;
 use Quantum\Auth\Authenticators\SessionAuthenticator;
+use Quantum\Auth\Authenticators\TotpAuthenticator;
 use Quantum\Auth\Context\AuthenticationContextAccessor;
 use Quantum\Auth\Contracts\AdaptiveRiskPolicyInterface;
 use Quantum\Auth\Contracts\AssuranceContextResolverInterface;
@@ -259,6 +260,39 @@ final class AuthenticationServiceProvider extends ServiceProvider
                         } else {
                             $c = new CompositeAuthenticatorResolver();
                             $c->addResolver($passkeyOnlyResolver, 900);
+                            $c->addResolver($base, 0);
+                            $base = $c;
+                        }
+                    }
+                }
+            } catch (\Throwable) {
+            }
+
+            try {
+                $config = $app->make(ConfigRepository::class);
+                $mfaEnabled = (bool) $config->get('auth.mfa.enabled', false);
+                $totpEnabled = (bool) $config->get('auth.mfa.totp.enabled', false);
+                $recoveryEnabled = (bool) $config->get('auth.mfa.recovery_codes.enabled', false);
+                if ($mfaEnabled && ($totpEnabled || $recoveryEnabled)) {
+                    $totpAuth = $app->make(TotpAuthenticator::class);
+                    if ($totpAuth instanceof TotpAuthenticator) {
+                        $totpOnlyResolver = new class($totpAuth) implements AuthenticatorResolverInterface {
+                            public function __construct(private readonly TotpAuthenticator $auth) {}
+                            /** @return list<TotpAuthenticator> */
+                            public function resolve(\Quantum\Auth\Runtime\AuthenticationOperationContext $context): array
+                            {
+                                if ($this->auth->supports($context)) {
+                                    return [$this->auth];
+                                }
+
+                                return [];
+                            }
+                        };
+                        if ($base instanceof CompositeAuthenticatorResolver) {
+                            $base->addResolver($totpOnlyResolver, 875);
+                        } else {
+                            $c = new CompositeAuthenticatorResolver();
+                            $c->addResolver($totpOnlyResolver, 875);
                             $c->addResolver($base, 0);
                             $base = $c;
                         }
@@ -612,6 +646,27 @@ final class AuthenticationServiceProvider extends ServiceProvider
                     $store,
                     $idp,
                 );
+            } catch (\Throwable) {
+                return null;
+            }
+        });
+
+        $this->app->scoped(TotpAuthenticator::class, static function (Application $app): ?TotpAuthenticator {
+            $config = $app->make(ConfigRepository::class);
+            $mfaEnabled = (bool) $config->get('auth.mfa.enabled', false);
+            $totpEnabled = (bool) $config->get('auth.mfa.totp.enabled', false);
+            $recoveryEnabled = (bool) $config->get('auth.mfa.recovery_codes.enabled', false);
+
+            if (! $mfaEnabled || (! $totpEnabled && ! $recoveryEnabled)) {
+                return null;
+            }
+
+            try {
+                $idp = $app->make(IdentityProviderInterface::class);
+
+                return $idp instanceof IdentityProviderInterface
+                    ? new TotpAuthenticator($idp)
+                    : null;
             } catch (\Throwable) {
                 return null;
             }

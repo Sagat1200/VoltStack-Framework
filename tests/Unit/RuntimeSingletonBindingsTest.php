@@ -10,6 +10,7 @@ use VoltStack\Runtime\Contracts\RuntimeAdapterInterface;
 use VoltStack\Runtime\Contracts\WorkerFactoryInterface;
 use VoltStack\Runtime\RuntimeCapabilities;
 use VoltStack\Runtime\RuntimeConfiguration;
+use VoltStack\Runtime\RuntimeManager;
 use VoltStack\Runtime\RuntimeManagerServer;
 
 final class RuntimeSingletonBindingsTest extends TestCase
@@ -36,24 +37,29 @@ final class RuntimeSingletonBindingsTest extends TestCase
         $app = new Application($this->basePath);
 
         $workerFactory = $app->make(WorkerFactoryInterface::class);
-        $runtimeManager = $app->make(RuntimeManagerServer::class);
+        $runtimeManager = $app->make(RuntimeManager::class);
+        $legacyManager = $app->make(RuntimeManagerServer::class);
 
         $app->enterScope('request');
 
         self::assertSame($workerFactory, $app->make(WorkerFactoryInterface::class));
-        self::assertSame($runtimeManager, $app->make(RuntimeManagerServer::class));
+        self::assertSame($runtimeManager, $app->make(RuntimeManager::class));
+        self::assertSame($legacyManager, $app->make(RuntimeManagerServer::class));
 
         $app->leaveScope();
         $app->flushScope();
 
         self::assertSame($workerFactory, $app->make(WorkerFactoryInterface::class));
-        self::assertSame($runtimeManager, $app->make(RuntimeManagerServer::class));
+        self::assertSame($runtimeManager, $app->make(RuntimeManager::class));
+        self::assertSame($legacyManager, $app->make(RuntimeManagerServer::class));
+        self::assertSame($runtimeManager, $legacyManager->manager());
     }
 
-    public function test_runtime_manager_server_preserves_registered_adapters_across_scope_changes(): void
+    public function test_runtime_manager_and_compatibility_facade_share_registered_adapters_across_scope_changes(): void
     {
         $app = new Application($this->basePath);
-        $manager = $app->make(RuntimeManagerServer::class);
+        $manager = $app->make(RuntimeManager::class);
+        $legacy = $app->make(RuntimeManagerServer::class);
 
         $manager->registerAdapter(new RuntimeSingletonTestAdapter());
 
@@ -61,11 +67,15 @@ final class RuntimeSingletonBindingsTest extends TestCase
         $app->leaveScope();
         $app->flushScope();
 
+        $reusedManager = $app->make(RuntimeManager::class);
         $reused = $app->make(RuntimeManagerServer::class);
 
-        self::assertSame($manager, $reused);
-        self::assertSame(['frankenphp', 'sapi', 'test-singleton'], $reused->drivers());
+        self::assertSame($manager, $reusedManager);
+        self::assertSame($manager, $legacy->manager());
+        self::assertSame($manager, $reused->manager());
+        self::assertSame(['frankenphp', 'sapi', 'test-singleton'], $reusedManager->drivers());
         self::assertSame('test-singleton', $reused->adapter('test-singleton')->id());
+        self::assertSame('test-singleton', $reusedManager->adapter('test-singleton')->id());
     }
 
     private function deleteDirectory(string $path): void

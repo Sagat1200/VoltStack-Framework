@@ -8,14 +8,14 @@ use InvalidArgumentException;
 use VoltStack\Framework\Application;
 use VoltStack\Runtime\Budget\RuntimeBudgetBaseline;
 use VoltStack\Runtime\Budget\RuntimeBudgetBaselineResolver;
-use VoltStack\Runtime\RuntimeManagerServer;
+use VoltStack\Runtime\RuntimeManager;
 
 final class RuntimeStatusInspector
 {
     public function inspect(Application $app, ?string $driver = null, int $maxRequests = 1): RuntimeStatusReport
     {
-        /** @var RuntimeManagerServer $manager */
-        $manager = $app->make(RuntimeManagerServer::class);
+        /** @var RuntimeManager $manager */
+        $manager = $app->make(RuntimeManager::class);
         $driver = strtolower(trim($driver ?? (string) $app->config('runtime.driver', 'frankenphp')));
         $alerts = [];
 

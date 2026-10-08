@@ -4,20 +4,28 @@ declare(strict_types=1);
 
 namespace Quantum\Container\Graph;
 
+use Quantum\Container\AliasResolver;
 use Closure;
 use Quantum\Container\Binding;
 use Quantum\Container\Container;
 use ReflectionClass;
 use ReflectionNamedType;
-use ReflectionParameter;
 use ReflectionType;
 
 final class ContainerGraphInspector
 {
+    private AliasResolver $aliasResolver;
+
+    public function __construct(?AliasResolver $aliasResolver = null)
+    {
+        $this->aliasResolver = $aliasResolver ?? new AliasResolver();
+    }
+
     public function inspect(Container $container): ContainerGraph
     {
         $services = [];
         $issues = [];
+        $aliases = $container->registeredAliases();
 
         foreach ($container->registeredBindings() as $abstract => $binding) {
             [$node, $serviceIssues] = $this->inspectBinding($binding);
@@ -25,9 +33,12 @@ final class ContainerGraphInspector
             array_push($issues, ...$serviceIssues);
         }
 
+        array_push($issues, ...$this->validateResolvableDependencies($services, $aliases));
+        array_push($issues, ...$this->detectRegisteredCycles($services, $aliases));
+
         return new ContainerGraph(
             $services,
-            $container->registeredAliases(),
+            $aliases,
             $issues,
         );
     }
@@ -144,6 +155,162 @@ final class ContainerGraphInspector
         return [$dependencies, $parameters, $issues];
     }
 
+    /**
+     * @param array<string, ServiceNode> $services
+     * @param array<string, string> $aliases
+     * @return list<ValidationIssue>
+     */
+    private function validateResolvableDependencies(array $services, array $aliases): array
+    {
+        $issues = [];
+
+        foreach ($services as $service) {
+            foreach ($service->dependencies as $dependency) {
+                $target = $this->normalizeAbstract($dependency->abstract, $aliases);
+
+                if (array_key_exists($target, $services)) {
+                    continue;
+                }
+
+                if (class_exists($target)) {
+                    $reflector = new ReflectionClass($target);
+
+                    if ($reflector->isInstantiable()) {
+                        continue;
+                    }
+                }
+
+                $issues[] = new ValidationIssue(
+                    'unresolvable_dependency',
+                    sprintf(
+                        'Service [%s] depends on [%s], but the target is neither a registered binding nor an instantiable class.',
+                        $service->abstract,
+                        $target,
+                    ),
+                    $service->abstract,
+                    $target,
+                );
+            }
+        }
+
+        return $issues;
+    }
+
+    /**
+     * @param array<string, ServiceNode> $services
+     * @param array<string, string> $aliases
+     * @return list<ValidationIssue>
+     */
+    private function detectRegisteredCycles(array $services, array $aliases): array
+    {
+        $issues = [];
+        $visited = [];
+        $activePath = [];
+        $reported = [];
+
+        foreach (array_keys($services) as $abstract) {
+            $this->walkForCycles($abstract, $services, $aliases, $visited, $activePath, $reported, $issues);
+        }
+
+        return $issues;
+    }
+
+    /**
+     * @param array<string, ServiceNode> $services
+     * @param array<string, string> $aliases
+     * @param array<string, bool> $visited
+     * @param list<string> $activePath
+     * @param array<string, bool> $reported
+     * @param list<ValidationIssue> $issues
+     */
+    private function walkForCycles(
+        string $abstract,
+        array $services,
+        array $aliases,
+        array &$visited,
+        array &$activePath,
+        array &$reported,
+        array &$issues,
+    ): void {
+        if (($visited[$abstract] ?? false) === true) {
+            return;
+        }
+
+        $position = array_search($abstract, $activePath, true);
+
+        if ($position !== false) {
+            $cycle = array_slice($activePath, $position);
+            $cycle[] = $abstract;
+            $signature = $this->cycleSignature($cycle);
+
+            if (($reported[$signature] ?? false) === false) {
+                $reported[$signature] = true;
+                $issues[] = new ValidationIssue(
+                    'dependency_cycle',
+                    sprintf(
+                        'A static dependency cycle was detected: %s.',
+                        implode(' -> ', $cycle),
+                    ),
+                    $abstract,
+                    implode(' -> ', $cycle),
+                );
+            }
+
+            return;
+        }
+
+        $service = $services[$abstract] ?? null;
+
+        if ($service === null || ! $service->analyzable) {
+            return;
+        }
+
+        $activePath[] = $abstract;
+
+        foreach ($service->dependencies as $dependency) {
+            $target = $this->normalizeAbstract($dependency->abstract, $aliases);
+
+            if (! array_key_exists($target, $services)) {
+                continue;
+            }
+
+            $this->walkForCycles($target, $services, $aliases, $visited, $activePath, $reported, $issues);
+        }
+
+        array_pop($activePath);
+        $visited[$abstract] = true;
+    }
+
+    /**
+     * @param list<string> $cycle
+     */
+    private function cycleSignature(array $cycle): string
+    {
+        if (count($cycle) <= 2) {
+            return implode('->', $cycle);
+        }
+
+        array_pop($cycle);
+        $best = null;
+        $count = count($cycle);
+
+        for ($offset = 0; $offset < $count; $offset++) {
+            $rotated = [];
+
+            for ($index = 0; $index < $count; $index++) {
+                $rotated[] = $cycle[($offset + $index) % $count];
+            }
+
+            $signature = implode('->', $rotated);
+
+            if ($best === null || strcmp($signature, $best) < 0) {
+                $best = $signature;
+            }
+        }
+
+        return (string) $best;
+    }
+
     private function concreteKind(mixed $concrete): string
     {
         if ($concrete instanceof Closure) {
@@ -185,5 +352,13 @@ final class ContainerGraphInspector
         }
 
         return method_exists($type, '__toString') ? (string) $type : $type::class;
+    }
+
+    /**
+     * @param array<string, string> $aliases
+     */
+    private function normalizeAbstract(string $abstract, array $aliases): string
+    {
+        return $this->aliasResolver->normalize($abstract, $aliases);
     }
 }

@@ -4,39 +4,40 @@ declare(strict_types=1);
 
 namespace VoltStack\Runtime;
 
-use InvalidArgumentException;
 use Quantum\Bootstrap\ApplicationPlan;
 use VoltStack\Framework\Application;
-use VoltStack\Runtime\Adapters\FrankenPhpRuntimeAdapter;
-use VoltStack\Runtime\Adapters\SapiRuntimeAdapter;
 use VoltStack\Runtime\Contracts\RuntimeAdapterInterface;
 use VoltStack\Runtime\Contracts\WorkerFactoryInterface;
 
 final class RuntimeManagerServer
 {
+    private readonly RuntimeManager $manager;
+
     /**
      * @param array<string, RuntimeAdapterInterface> $adapters
      */
     public function __construct(
-        private readonly Application $app,
-        private array $adapters = [],
-        private ?WorkerFactoryInterface $workerFactory = null,
+        Application $app,
+        array $adapters = [],
+        ?WorkerFactoryInterface $workerFactory = null,
+        ?RuntimeManager $manager = null,
     ) {
-        if ($this->adapters === []) {
-            foreach ([new FrankenPhpRuntimeAdapter(), new SapiRuntimeAdapter()] as $default) {
-                $this->adapters[$default->id()] = $default;
-            }
-        }
+        $this->manager = $manager ?? new RuntimeManager($app, $adapters, $workerFactory);
     }
 
     public static function createDefault(Application $app): self
     {
-        return new self($app);
+        return new self($app, manager: RuntimeManager::createDefault($app));
+    }
+
+    public function manager(): RuntimeManager
+    {
+        return $this->manager;
     }
 
     public function registerAdapter(RuntimeAdapterInterface $adapter): self
     {
-        $this->adapters[$adapter->id()] = $adapter;
+        $this->manager->registerAdapter($adapter);
 
         return $this;
     }
@@ -46,31 +47,16 @@ final class RuntimeManagerServer
      */
     public function drivers(): array
     {
-        return array_values(array_keys($this->adapters));
+        return $this->manager->drivers();
     }
 
     public function run(ApplicationPlan $plan, RuntimeConfiguration $configuration): int
     {
-        $adapter = $this->adapter($configuration->driver());
-
-        return $adapter->run(
-            plan: $plan,
-            factory: $this->workerFactory ?? $this->app->make(WorkerFactoryInterface::class),
-            configuration: $configuration,
-        );
+        return $this->manager->run($plan, $configuration);
     }
 
     public function adapter(string $driver): RuntimeAdapterInterface
     {
-        $driver = strtolower(trim($driver));
-
-        if ($driver === '' || ! isset($this->adapters[$driver])) {
-            throw new InvalidArgumentException(sprintf(
-                'Runtime adapter [%s] is not registered.',
-                $driver === '' ? '(empty)' : $driver,
-            ));
-        }
-
-        return $this->adapters[$driver];
+        return $this->manager->adapter($driver);
     }
 }

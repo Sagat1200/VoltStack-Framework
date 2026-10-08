@@ -122,6 +122,67 @@ final class CacheManager
         );
     }
 
+    public function planClear(?string $name = null): CacheInvalidationPlan
+    {
+        $name ??= (string) $this->config('default_pool', $this->config('default', 'file'));
+        $repository = $this->pool($name);
+        $diagnostics = $repository->diagnostics()->toArray();
+
+        return new CacheInvalidationPlan(
+            schemaVersion: 'cache.invalidation.plan.v1',
+            operationId: bin2hex(random_bytes(8)),
+            pool: $name,
+            action: 'clear',
+            dryRun: true,
+            applySupported: true,
+            scopeFingerprint: (string) ($diagnostics['context_fingerprint'] ?? ''),
+            outcome: 'planned',
+            effects: [
+                'scope_resolved',
+                'namespace_rotation_planned',
+            ],
+            warnings: $this->clearPlanWarnings($diagnostics),
+            target: [
+                'mode' => 'clear',
+                'clear_strategy' => $diagnostics['clear_strategy'] ?? 'store_flush',
+                'context' => $diagnostics['context'] ?? [],
+                'storage_namespace' => $diagnostics['storage_namespace'] ?? '',
+            ],
+            diagnostics: $diagnostics,
+        );
+    }
+
+    public function planInvalidateTags(string $name, array|string $tags): CacheInvalidationPlan
+    {
+        $repository = $this->pool($name)->tags($tags);
+        $diagnostics = $repository->diagnostics()->toArray();
+        $normalizedTags = CacheContext::normalizeTags($tags);
+
+        return new CacheInvalidationPlan(
+            schemaVersion: 'cache.invalidation.plan.v1',
+            operationId: bin2hex(random_bytes(8)),
+            pool: $name,
+            action: 'invalidate_tags',
+            dryRun: true,
+            applySupported: true,
+            scopeFingerprint: (string) ($diagnostics['context_fingerprint'] ?? ''),
+            outcome: 'planned',
+            effects: [
+                'scope_resolved',
+                'tag_invalidation_planned',
+            ],
+            warnings: $normalizedTags === [] ? ['empty_tag_selection'] : [],
+            target: [
+                'mode' => 'invalidate_tags',
+                'tags' => $normalizedTags,
+                'clear_strategy' => $diagnostics['clear_strategy'] ?? 'tag_invalidation',
+                'invalidation_scopes' => $diagnostics['invalidation_scopes']['tags'] ?? [],
+                'storage_namespace' => $diagnostics['storage_namespace'] ?? '',
+            ],
+            diagnostics: $diagnostics,
+        );
+    }
+
     private function resolveStore(string $name): StoreInterface
     {
         if (isset($this->resolvedStores[$name])) {
@@ -240,6 +301,21 @@ final class CacheManager
 
         if ($summary->defaultTtl === null) {
             $warnings[] = 'default_ttl_unset';
+        }
+
+        return $warnings;
+    }
+
+    /**
+     * @param array<string, mixed> $diagnostics
+     * @return array<int, string>
+     */
+    private function clearPlanWarnings(array $diagnostics): array
+    {
+        $warnings = [];
+
+        if (($diagnostics['clear_strategy'] ?? null) === 'store_flush') {
+            $warnings[] = 'physical_flush_fallback';
         }
 
         return $warnings;

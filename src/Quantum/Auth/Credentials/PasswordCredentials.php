@@ -10,6 +10,7 @@ final readonly class PasswordCredentials
         public string $identifier,
         public string $password,
         public ?string $secondFactor = null,
+        public ?string $secondFactorMethod = null,
     ) {}
 
     /**
@@ -19,7 +20,7 @@ final readonly class PasswordCredentials
     {
         $identifier = self::firstNonEmpty($credentials, ['identifier', 'email', 'username', 'login']);
         $password = isset($credentials['password']) ? trim((string) $credentials['password']) : '';
-        $secondFactor = self::firstOptionalNonEmpty($credentials, ['second_factor', 'mfa_code', 'otp', 'code']);
+        $secondFactor = self::secondFactorFromArray($credentials);
 
         if ($identifier === '' || $password === '') {
             return null;
@@ -29,6 +30,7 @@ final readonly class PasswordCredentials
             identifier: $identifier,
             password: $password,
             secondFactor: $secondFactor,
+            secondFactorMethod: self::secondFactorMethodFromArray($credentials),
         );
     }
 
@@ -37,7 +39,39 @@ final readonly class PasswordCredentials
      */
     public static function secondFactorFromArray(array $credentials): ?string
     {
-        return self::firstOptionalNonEmpty($credentials, ['second_factor', 'mfa_code', 'otp', 'code']);
+        return self::firstOptionalNonEmpty($credentials, [
+            'recovery_code',
+            'totp',
+            'second_factor',
+            'mfa_code',
+            'otp',
+            'code',
+        ]);
+    }
+
+    /**
+     * @param array<string, mixed> $credentials
+     */
+    public static function secondFactorMethodFromArray(array $credentials): ?string
+    {
+        $mechanism = isset($credentials['mechanism']) ? strtolower(trim((string) $credentials['mechanism'])) : '';
+        if (in_array($mechanism, ['totp', 'recovery_code', 'second_factor'], true)) {
+            return $mechanism;
+        }
+
+        if (self::firstOptionalNonEmpty($credentials, ['recovery_code']) !== null) {
+            return 'recovery_code';
+        }
+
+        if (self::firstOptionalNonEmpty($credentials, ['totp', 'otp']) !== null) {
+            return 'totp';
+        }
+
+        if (self::firstOptionalNonEmpty($credentials, ['second_factor', 'mfa_code', 'code']) !== null) {
+            return 'second_factor';
+        }
+
+        return null;
     }
 
     /**

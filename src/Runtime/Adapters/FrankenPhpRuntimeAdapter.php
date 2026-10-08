@@ -165,7 +165,7 @@ final class FrankenPhpRuntimeAdapter implements RuntimeAdapterInterface
         }
 
         /** @phpstan-ignore-next-line */
-        return \frankenphp_handle_request($handler);
+        return call_user_func('frankenphp_handle_request', $handler);
     }
 
     /**

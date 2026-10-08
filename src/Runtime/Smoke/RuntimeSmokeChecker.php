@@ -13,7 +13,7 @@ use VoltStack\Runtime\Budget\RuntimeBudgetBaselineResolver;
 use VoltStack\Runtime\Budget\RuntimeBudget;
 use VoltStack\Runtime\Budget\RuntimeBudgetEvaluator;
 use VoltStack\Runtime\RequestRunner;
-use VoltStack\Runtime\RuntimeManagerServer;
+use VoltStack\Runtime\RuntimeManager;
 
 final class RuntimeSmokeChecker
 {
@@ -111,8 +111,8 @@ final class RuntimeSmokeChecker
     {
         $driver = strtolower(trim($driver ?? (string) $app->config('runtime.driver', 'frankenphp')));
 
-        /** @var RuntimeManagerServer $manager */
-        $manager = $app->make(RuntimeManagerServer::class);
+        /** @var RuntimeManager $manager */
+        $manager = $app->make(RuntimeManager::class);
         $manager->adapter($driver);
 
         return $driver;

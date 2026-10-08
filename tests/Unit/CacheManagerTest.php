@@ -6,6 +6,7 @@ namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
 use Quantum\Cache\CachePoolDoctor;
+use Quantum\Cache\CacheInvalidationPlan;
 use Quantum\Cache\CachePoolSummary;
 use Quantum\Cache\CacheManager;
 use Quantum\Cache\Contracts\ClockInterface;
@@ -282,6 +283,89 @@ final class CacheManagerTest extends TestCase
         self::assertSame('disabled', $payload['pool'] ?? null);
         self::assertSame(['discard_store', 'default_ttl_unset'], $payload['warnings'] ?? null);
         self::assertSame('discard', $payload['configuration']['classification'] ?? null);
+    }
+
+    public function test_it_plans_pool_clear_with_stable_dry_run_payload(): void
+    {
+        $app = new Application($this->basePath);
+        $config = $app->make(ConfigRepository::class);
+        $config->set('cache.stores', [
+            'memory' => ['driver' => 'memory'],
+        ]);
+        $config->set('cache.pools', [
+            'runtime' => [
+                'store' => 'memory',
+                'prefix' => 'runtime',
+                'default_ttl' => 60,
+            ],
+        ]);
+        $config->set('cache.default_pool', 'runtime');
+
+        $plan = $app->make(CacheManager::class)->planClear();
+        $payload = $plan->toArray();
+
+        self::assertInstanceOf(CacheInvalidationPlan::class, $plan);
+        self::assertSame('cache.invalidation.plan.v1', $payload['schema_version'] ?? null);
+        self::assertSame('runtime', $payload['pool'] ?? null);
+        self::assertSame('clear', $payload['action'] ?? null);
+        self::assertTrue($payload['dry_run'] ?? false);
+        self::assertTrue($payload['apply_supported'] ?? false);
+        self::assertSame('planned', $payload['outcome'] ?? null);
+        self::assertSame(['scope_resolved', 'namespace_rotation_planned'], $payload['effects'] ?? null);
+        self::assertSame([], $payload['warnings'] ?? null);
+        self::assertSame('clear', $payload['target']['mode'] ?? null);
+        self::assertSame('namespace_rotation', $payload['target']['clear_strategy'] ?? null);
+        self::assertSame('runtime', $payload['target']['context']['key_prefix'] ?? null);
+        self::assertSame($payload['scope_fingerprint'] ?? null, $payload['diagnostics']['context_fingerprint'] ?? null);
+        self::assertSame($payload, $plan->jsonSerialize());
+    }
+
+    public function test_it_plans_tag_invalidation_with_normalized_tags_and_scopes(): void
+    {
+        $app = new Application($this->basePath);
+        $config = $app->make(ConfigRepository::class);
+        $config->set('cache.stores', [
+            'memory' => ['driver' => 'memory'],
+        ]);
+        $config->set('cache.pools', [
+            'catalog' => [
+                'store' => 'memory',
+                'prefix' => 'catalog',
+                'default_ttl' => 60,
+            ],
+        ]);
+
+        $payload = $app->make(CacheManager::class)->planInvalidateTags('catalog', [' featured ', 'seasonal', 'featured'])->toArray();
+
+        self::assertSame('catalog', $payload['pool'] ?? null);
+        self::assertSame('invalidate_tags', $payload['action'] ?? null);
+        self::assertSame(['scope_resolved', 'tag_invalidation_planned'], $payload['effects'] ?? null);
+        self::assertSame([], $payload['warnings'] ?? null);
+        self::assertSame(['featured', 'seasonal'], $payload['target']['tags'] ?? null);
+        self::assertSame('tag_invalidation', $payload['target']['clear_strategy'] ?? null);
+        self::assertSame('catalog.tag.featured', $payload['target']['invalidation_scopes']['featured'] ?? null);
+        self::assertSame('catalog.tag.seasonal', $payload['target']['invalidation_scopes']['seasonal'] ?? null);
+    }
+
+    public function test_it_warns_when_tag_invalidation_plan_receives_empty_selection(): void
+    {
+        $app = new Application($this->basePath);
+        $config = $app->make(ConfigRepository::class);
+        $config->set('cache.stores', [
+            'memory' => ['driver' => 'memory'],
+        ]);
+        $config->set('cache.pools', [
+            'catalog' => [
+                'store' => 'memory',
+                'prefix' => 'catalog',
+                'default_ttl' => 60,
+            ],
+        ]);
+
+        $payload = $app->make(CacheManager::class)->planInvalidateTags('catalog', [' ', ''])->toArray();
+
+        self::assertSame(['empty_tag_selection'], $payload['warnings'] ?? null);
+        self::assertSame([], $payload['target']['tags'] ?? null);
     }
 
     private function deleteDirectory(string $path): void

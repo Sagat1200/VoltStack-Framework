@@ -15,6 +15,7 @@ use Quantum\Bootstrap\Manifest\BootstrapBuildArtifact;
 use Quantum\Bootstrap\Manifest\BootstrapManifestStore;
 use Quantum\Bootstrap\Phase\BootstrapState;
 use Quantum\Bootstrap\Phase\BootstrapStateMachine;
+use Quantum\Config\Publication\PublishedConfigurationRequiredException;
 use Quantum\Bootstrap\Telemetry\BootstrapPhaseProfile;
 use Quantum\Bootstrap\Telemetry\BootstrapPhaseTelemetryEmitter;
 use Quantum\Compilation\BuildManifest;
@@ -73,7 +74,10 @@ final class Bootstrapper implements BootstrapperInterface
                     $this->app->instance(BootstrapContext::class, $context);
                 }
 
-                $this->loadConfiguration($plan->configDirectory());
+                $this->loadConfiguration(
+                    $plan->configDirectory(),
+                    $this->requiresPublishedConfiguration($plan),
+                );
             },
         );
 
@@ -183,7 +187,7 @@ final class Bootstrapper implements BootstrapperInterface
         );
     }
 
-    public function loadConfiguration(?string $configPath = null): void
+    public function loadConfiguration(?string $configPath = null, bool $requirePublished = false): void
     {
         /** @var ConfigRepository $config */
         $config = $this->app->make(ConfigRepository::class);
@@ -196,7 +200,19 @@ final class Bootstrapper implements BootstrapperInterface
             return;
         }
 
+        if ($requirePublished) {
+            throw new PublishedConfigurationRequiredException(sprintf(
+                'Published configuration is required for bootstrap, but no active configuration generation exists at [%s].',
+                $this->app->configManifestStore()->rootPath(),
+            ));
+        }
+
         $config->loadPath($configPath ?? $this->app->configPath());
+    }
+
+    public function loadPublishedConfiguration(?string $configPath = null): void
+    {
+        $this->loadConfiguration($configPath, true);
     }
 
     public function loadRoutes(string|callable $routes): void
@@ -238,6 +254,13 @@ final class Bootstrapper implements BootstrapperInterface
         $store->activateGeneration($artifact->generationId());
 
         return $artifact;
+    }
+
+    private function requiresPublishedConfiguration(ApplicationPlan $plan): bool
+    {
+        $operational = $plan->bootstrapConfiguration()->operational();
+
+        return ($operational['require_published_config'] ?? false) === true;
     }
 
     /**

@@ -11,8 +11,10 @@ use Quantum\Authorization\Authority\Permission;
 use Quantum\Authorization\Authority\RequestScopedAuthorityMemoizationCache;
 use Quantum\Authorization\Authority\Role;
 use Quantum\Authorization\Authority\Scope;
+use Quantum\Authorization\Consistency\VersionedAuthorizationConsistency;
 use Quantum\Authorization\Contracts\AuthorityMemoizationCacheInterface;
 use Quantum\Authorization\Contracts\AuthorityRepositoryInterface;
+use Quantum\Cache\LocalVersionAuthority;
 
 final class AuthorityMemoizationAndCacheTest extends TestCase
 {
@@ -128,6 +130,24 @@ final class AuthorityMemoizationAndCacheTest extends TestCase
         $cachedA->effectivePermissionsForPrincipal('u_1', $scope);
         $cachedB->effectivePermissionsForPrincipal('u_1', $scope);
 
+        self::assertSame(2, $inner->effectiveCalls);
+    }
+
+    public function test_version_bump_invalidates_memoized_entry_inside_same_cache_instance(): void
+    {
+        $inner = new SpyCountingInMemoryAuthorityRepository([]);
+        $consistency = new VersionedAuthorizationConsistency(new LocalVersionAuthority());
+        $cache = new RequestScopedAuthorityMemoizationCache($consistency);
+        $cached = new CachedAuthorityRepository($inner, $cache);
+        $scope = new Scope('tenant:acme');
+
+        $cached->effectivePermissionsForPrincipal('u_1', $scope);
+        $cached->effectivePermissionsForPrincipal('u_1', $scope);
+        self::assertSame(1, $inner->effectiveCalls);
+
+        $consistency->invalidateAuthority('u_1', $scope);
+
+        $cached->effectivePermissionsForPrincipal('u_1', $scope);
         self::assertSame(2, $inner->effectiveCalls);
     }
 }

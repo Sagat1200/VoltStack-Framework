@@ -23,10 +23,10 @@ final class WorkerFactory implements WorkerFactoryInterface
         /** @var BootstrapperInterface $bootstrapper */
         $bootstrapper = $this->app->make(BootstrapperInterface::class);
 
-        $bootstrapContext = BootstrapContext::forConsole(
+        $bootstrapContext = BootstrapContext::forRuntime(
             environment: $plan->environment() ?? 'local',
+            persistent: $this->runtimePersistsAcrossRequests($context),
             artifactPolicy: 'prefer-artifacts',
-            executionMode: 'worker',
             profile: $plan->profile(),
         );
 
@@ -39,5 +39,10 @@ final class WorkerFactory implements WorkerFactoryInterface
             workerLifecycle: $this->app->make(WorkerLifecycle::class),
             context: $context,
         );
+    }
+
+    private function runtimePersistsAcrossRequests(WorkerContext $context): bool
+    {
+        return $context->driver() !== 'sapi';
     }
 }

@@ -46,6 +46,20 @@ final readonly class BootstrapContext
         );
     }
 
+    public static function forRuntime(
+        string $environment,
+        bool $persistent = true,
+        string $artifactPolicy = 'prefer-artifacts',
+        ?string $profile = null,
+    ): self {
+        return self::forConsole(
+            environment: $environment,
+            artifactPolicy: $artifactPolicy,
+            executionMode: $persistent ? 'worker' : 'single',
+            profile: $profile,
+        );
+    }
+
     public function environment(): string
     {
         return $this->environment;

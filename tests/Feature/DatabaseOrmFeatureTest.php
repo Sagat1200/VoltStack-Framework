@@ -1611,15 +1611,6 @@ final class DatabaseOrmFeatureTest extends TestCase
             self::assertTrue($this->isPropertyInitialized($managedPartialComment->post, 'published'));
             self::assertTrue($managedPartialComment->post->published);
 
-            try {
-                $em->query(OrmBlogPost::class)
-                    ->join('comments', 'c')
-                    ->partialManaged('title', 'comments.body')
-                    ->firstPartialManaged();
-                self::fail('Managed relational partial hydration must still reject joined to-many associations.');
-            } catch (RuntimeException $exception) {
-                self::assertStringContainsString('detached-only', $exception->getMessage());
-            }
         } finally {
             $scope->end();
         }
@@ -1764,6 +1755,172 @@ final class DatabaseOrmFeatureTest extends TestCase
                 $partialStudents[0]->courses,
             ));
             self::assertSame([], $partialStudents[0]->courses[0]->students);
+        } finally {
+            $scope->end();
+        }
+    }
+
+    public function test_entity_query_partial_relational_hydration_supports_joined_to_many_associations_in_managed_mode(): void
+    {
+        $app = $this->makeApp();
+        $scope = $app->make(ScopeManager::class);
+        $scope->begin(Request::create('/database/orm/partial-relational-hydration-to-many-managed', 'GET'));
+
+        try {
+            $database = $app->make(DatabaseInterface::class);
+            $database->schema()->create('orm_blog_posts', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('title');
+                $table->boolean('published');
+            }, true);
+            $database->schema()->create('orm_blog_comments', function (TableBlueprint $table): void {
+                $table->id();
+                $table->integer('post_id');
+                $table->string('body');
+            }, true);
+            $database->schema()->create('orm_students', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+            }, true);
+            $database->schema()->create('orm_courses', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('title');
+            }, true);
+            $database->schema()->create('orm_student_courses', function (TableBlueprint $table): void {
+                $table->integer('student_id');
+                $table->integer('course_id');
+            }, true);
+
+            $em = $database->entityManager();
+
+            $alpha = new OrmBlogPost();
+            $alpha->title = 'Alpha';
+            $alpha->published = true;
+
+            $beta = new OrmBlogPost();
+            $beta->title = 'Beta';
+            $beta->published = false;
+
+            $gamma = new OrmBlogPost();
+            $gamma->title = 'Gamma';
+            $gamma->published = true;
+
+            $em->persist($alpha);
+            $em->persist($beta);
+            $em->persist($gamma);
+            $em->flush();
+
+            $commentA = new OrmBlogComment();
+            $commentA->body = 'A-1';
+            $commentA->post = $alpha;
+
+            $commentB = new OrmBlogComment();
+            $commentB->body = 'A-2';
+            $commentB->post = $alpha;
+
+            $commentC = new OrmBlogComment();
+            $commentC->body = 'B-1';
+            $commentC->post = $beta;
+
+            $student = new OrmStudent();
+            $student->name = 'Ada';
+
+            $courseA = new OrmCourse();
+            $courseA->title = 'Compilers';
+
+            $courseB = new OrmCourse();
+            $courseB->title = 'Runtime Systems';
+
+            $student->courses = [$courseA, $courseB];
+            $courseA->students = [$student];
+            $courseB->students = [$student];
+
+            $em->persist($commentA);
+            $em->persist($commentB);
+            $em->persist($commentC);
+            $em->persist($student);
+            $em->persist($courseA);
+            $em->persist($courseB);
+            $em->flush();
+            $em->clear();
+
+            $managedPosts = $em->query(OrmBlogPost::class)
+                ->leftJoin('comments', 'c')
+                ->partialManaged('title', 'comments.body')
+                ->orderBy('title')
+                ->getPartialManaged();
+
+            self::assertCount(3, $managedPosts);
+            self::assertSame(EntityState::Managed, $em->state($managedPosts[0]));
+            self::assertTrue($em->contains($managedPosts[0]));
+            self::assertSame('Alpha', $managedPosts[0]->title);
+            self::assertCount(2, $managedPosts[0]->comments);
+            self::assertTrue($em->contains($managedPosts[0]->comments[0]));
+            self::assertSame($managedPosts[0], $managedPosts[0]->comments[0]->post);
+            self::assertFalse($this->isPropertyInitialized($managedPosts[0], 'published'));
+            self::assertFalse($this->isPropertyInitialized($managedPosts[0]->comments[0], 'postId'));
+            self::assertSame([], $managedPosts[2]->comments);
+
+            $offsetPost = $em->query(OrmBlogPost::class)
+                ->join('comments', 'c')
+                ->partialManaged('title', 'comments.body')
+                ->orderBy('title')
+                ->offset(1)
+                ->firstPartialManaged();
+            self::assertInstanceOf(OrmBlogPost::class, $offsetPost);
+            self::assertSame($managedPosts[1], $offsetPost);
+            self::assertSame('Beta', $offsetPost->title);
+            self::assertCount(1, $offsetPost->comments);
+            self::assertSame('B-1', $offsetPost->comments[0]->body);
+
+            $managedPosts[0]->title = 'Alpha managed';
+            $managedPosts[0]->comments[0]->body = 'A-1 managed';
+            $em->flush();
+
+            $rawAlpha = $database->table('orm_blog_posts')
+                ->where('id', $managedPosts[0]->id)
+                ->first();
+            self::assertNotNull($rawAlpha);
+            self::assertSame('Alpha managed', $rawAlpha['title'] ?? null);
+            self::assertSame(1, $rawAlpha['published'] ?? null);
+
+            $rawComment = $database->table('orm_blog_comments')
+                ->where('id', $managedPosts[0]->comments[0]->id)
+                ->first();
+            self::assertNotNull($rawComment);
+            self::assertSame('A-1 managed', $rawComment['body'] ?? null);
+
+            $managedStudents = $em->query(OrmStudent::class)
+                ->join('courses', 'c')
+                ->partialManaged('name', 'courses.title')
+                ->getPartialManaged();
+            self::assertCount(1, $managedStudents);
+            self::assertSame(EntityState::Managed, $em->state($managedStudents[0]));
+            self::assertTrue($em->contains($managedStudents[0]));
+            self::assertCount(2, $managedStudents[0]->courses);
+            self::assertTrue($em->contains($managedStudents[0]->courses[0]));
+            self::assertSame(['Compilers', 'Runtime Systems'], array_map(
+                static fn(OrmCourse $course): string => $course->title,
+                $managedStudents[0]->courses,
+            ));
+
+            $managedStudents[0]->courses[0]->title = 'Compilers managed';
+            $em->flush();
+
+            $rawCourse = $database->table('orm_courses')
+                ->where('id', $managedStudents[0]->courses[0]->id)
+                ->first();
+            self::assertNotNull($rawCourse);
+            self::assertSame('Compilers managed', $rawCourse['title'] ?? null);
+
+            array_pop($managedPosts[0]->comments);
+
+            try {
+                $em->flush();
+                self::fail('Managed partial to-many hydration must reject collection membership changes.');
+            } catch (RuntimeException $exception) {
+                self::assertStringContainsString('partially managed collection', $exception->getMessage());
+            }
         } finally {
             $scope->end();
         }

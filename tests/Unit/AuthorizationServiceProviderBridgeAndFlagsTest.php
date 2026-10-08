@@ -11,6 +11,7 @@ use Quantum\Authorization\Authority\RequestScopedAuthorityMemoizationCache;
 use Quantum\Authorization\Bridges\ControllerSecurityPlannerBridge;
 use Quantum\Authorization\Contracts\AuthorityMemoizationCacheInterface;
 use Quantum\Authorization\Contracts\AuthorityRepositoryInterface;
+use Quantum\Authorization\Contracts\AuthorizationConsistencyInterface;
 use Quantum\Authorization\Contracts\AuthorizationManagerInterface;
 use Quantum\Authorization\Contracts\RelationshipAdministrationInterface;
 use Quantum\Authorization\Contracts\RelationshipRepositoryInterface;
@@ -34,6 +35,8 @@ final class AuthorizationServiceProviderBridgeAndFlagsTest extends TestCase
         self::assertFalse($config->get('authorization.authority.evaluate_attribute_conditions'));
         self::assertFalse($config->get('authorization.authority.scope_resolution.enabled'));
         self::assertSame('tenant:', $config->get('authorization.authority.scope_resolution.tenant_scope_prefix'));
+        self::assertTrue($config->get('authorization.consistency.enabled'));
+        self::assertSame('authorization.consistency', $config->get('authorization.consistency.namespace'));
         self::assertFalse($config->get('authorization.controllers_security.bridge.enabled'));
         self::assertFalse($config->get('authorization.relationships.evaluate'));
         self::assertSame('memory', $config->get('authorization.relationships.driver'));
@@ -52,6 +55,7 @@ final class AuthorizationServiceProviderBridgeAndFlagsTest extends TestCase
         self::assertInstanceOf(CachedAuthorityRepository::class, $repository);
         $cacheBinding = $app->make(AuthorityMemoizationCacheInterface::class);
         self::assertInstanceOf(RequestScopedAuthorityMemoizationCache::class, $cacheBinding);
+        self::assertInstanceOf(AuthorizationConsistencyInterface::class, $app->make(AuthorizationConsistencyInterface::class));
     }
 
     public function test_memoize_disabled_uses_in_memory_without_decorator(): void

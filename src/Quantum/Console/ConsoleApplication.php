@@ -16,6 +16,7 @@ use Quantum\Console\Commands\BootstrapBenchmarkCommand;
 use Quantum\Console\Commands\ControllerCompileClearCommand;
 use Quantum\Console\Commands\ControllerCompileCommand;
 use Quantum\Console\Commands\ControllerCompileWarmupCommand;
+use Quantum\Console\Commands\ConfigReleaseCheckCommand;
 use Quantum\Console\Commands\ConfigStatusCommand;
 use Quantum\Console\Commands\MakeActionCommand;
 use Quantum\Console\Commands\MakeComponentCommand;
@@ -87,6 +88,7 @@ final class ConsoleApplication
             $this->add(new ControllerCompileCommand($basePath));
             $this->add(new ControllerCompileClearCommand($basePath));
             $this->add(new ControllerCompileWarmupCommand($basePath));
+            $this->add(new ConfigReleaseCheckCommand($basePath));
             $this->add(new ConfigStatusCommand($basePath));
             $this->add(new BootstrapBenchmarkCommand($basePath));
             $this->add(new BootstrapReleaseCheckCommand($basePath));

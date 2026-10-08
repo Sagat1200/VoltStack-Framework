@@ -13,11 +13,14 @@ use Quantum\Authorization\Authority\DatabaseAuthorityRepository;
 use Quantum\Authorization\Authority\InMemoryAuthorityRepository;
 use Quantum\Authorization\Authority\RequestScopedAuthorityMemoizationCache;
 use Quantum\Authorization\Bridges\ControllerSecurityPlannerBridge;
+use Quantum\Authorization\Consistency\VersionedAuthorizationConsistency;
+use Quantum\Authorization\Console\Commands\AuthorizationConsistencyInvalidateCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationManifestClearCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationManifestCompileCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationRelationshipsListCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationRelationshipsRevokeCommand;
 use Quantum\Authorization\Contracts\AbilityNormalizerInterface;
+use Quantum\Authorization\Contracts\AuthorizationConsistencyInterface;
 use Quantum\Authorization\Contracts\AuthorityMemoizationCacheInterface;
 use Quantum\Authorization\Contracts\AuthorityRepositoryInterface;
 use Quantum\Authorization\Contracts\AuthorizationContextFactoryInterface;
@@ -53,6 +56,7 @@ use Quantum\Authorization\Relationship\DatabaseRelationshipRepository;
 use Quantum\Authorization\Relationship\RelationshipEvaluator;
 use Quantum\Authorization\Subject\SubjectResolver;
 use Quantum\Config\ConfigRepository;
+use Quantum\Cache\Contracts\VersionAuthorityInterface;
 use Quantum\Database\Contracts\DatabaseInterface;
 use Quantum\Http\Request;
 use Quantum\Metadata\MetadataMergeStrategy;
@@ -72,6 +76,7 @@ final class AuthorizationServiceProvider extends ServiceProvider
         $this->mergeDefaultConfiguration();
         $this->registerMetadataSchemas();
         $this->registerManifestStore();
+        $this->registerConsistencyBindings();
         $this->registerAuthorityRepository();
         $this->registerRelationshipRepository();
         $this->registerMemoizationBindings();
@@ -299,7 +304,30 @@ final class AuthorizationServiceProvider extends ServiceProvider
     {
         $this->app->scoped(
             AuthorityMemoizationCacheInterface::class,
-            static fn (): AuthorityMemoizationCacheInterface => new RequestScopedAuthorityMemoizationCache(),
+            fn(Application $app): AuthorityMemoizationCacheInterface => new RequestScopedAuthorityMemoizationCache(
+                $this->resolveConsistency($app),
+            ),
+        );
+    }
+
+    private function registerConsistencyBindings(): void
+    {
+        $enabled = $this->app->config('authorization.consistency.enabled', true);
+
+        if (! $this->booleanOf($enabled)) {
+            return;
+        }
+
+        $this->app->singleton(
+            AuthorizationConsistencyInterface::class,
+            function (Application $app): AuthorizationConsistencyInterface {
+                $namespace = $app->config('authorization.consistency.namespace', 'authorization.consistency');
+
+                return new VersionedAuthorizationConsistency(
+                    $app->make(VersionAuthorityInterface::class),
+                    is_string($namespace) && trim($namespace) !== '' ? trim($namespace) : 'authorization.consistency',
+                );
+            },
         );
     }
 
@@ -331,8 +359,14 @@ final class AuthorizationServiceProvider extends ServiceProvider
         $driver = strtolower(trim((string) $app->config('authorization.relationships.driver', 'memory')));
 
         return match ($driver) {
-            'database', 'db', 'dbal' => $this->makeDatabaseRelationshipRepository($app) ?? new InMemoryRelationshipRepository(is_iterable($entries) ? $entries : []),
-            default => new InMemoryRelationshipRepository(is_iterable($entries) ? $entries : []),
+            'database', 'db', 'dbal' => $this->makeDatabaseRelationshipRepository($app) ?? new InMemoryRelationshipRepository(
+                is_iterable($entries) ? $entries : [],
+                $this->resolveConsistency($app),
+            ),
+            default => new InMemoryRelationshipRepository(
+                is_iterable($entries) ? $entries : [],
+                $this->resolveConsistency($app),
+            ),
         };
     }
 
@@ -348,6 +382,7 @@ final class AuthorizationServiceProvider extends ServiceProvider
                 $database,
                 is_string($connection) && trim($connection) !== '' ? $connection : null,
                 is_string($table) && trim($table) !== '' ? $table : DatabaseRelationshipRepository::DEFAULT_RELATIONSHIPS_TABLE,
+                $this->resolveConsistency($app),
             );
         } catch (\Throwable) {
             return null;
@@ -414,6 +449,15 @@ final class AuthorizationServiceProvider extends ServiceProvider
     {
         try {
             return $app->make(RelationshipRepositoryInterface::class);
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    private function resolveConsistency(Application $app): ?AuthorizationConsistencyInterface
+    {
+        try {
+            return $app->make(AuthorizationConsistencyInterface::class);
         } catch (\Throwable) {
             return null;
         }
@@ -516,6 +560,7 @@ final class AuthorizationServiceProvider extends ServiceProvider
     public function commands(): array
     {
         return [
+            AuthorizationConsistencyInvalidateCommand::class,
             AuthorizationManifestCompileCommand::class,
             AuthorizationManifestClearCommand::class,
             AuthorizationRelationshipsListCommand::class,
@@ -536,6 +581,10 @@ final class AuthorizationServiceProvider extends ServiceProvider
             'manifest' => [
                 'enabled' => true,
                 'path' => null,
+            ],
+            'consistency' => [
+                'enabled' => true,
+                'namespace' => 'authorization.consistency',
             ],
             'authority' => [
                 'enabled' => true,

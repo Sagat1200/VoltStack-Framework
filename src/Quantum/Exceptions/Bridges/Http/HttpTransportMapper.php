@@ -13,6 +13,8 @@ final class HttpTransportMapper implements TransportMapperInterface
 {
     private const MAX_ACCEPT_LENGTH = 4096;
     private const MAX_ACCEPT_VALUES = 32;
+    private const SPA_MEDIA_TYPE = 'application/vnd.voltstack.spa-error+json';
+    private const SPA_VERSION = 1;
 
     public function map(ExceptionDescriptor $descriptor, TransportContext $context): TransportPlan
     {
@@ -20,8 +22,6 @@ final class HttpTransportMapper implements TransportMapperInterface
             throw new \InvalidArgumentException('HttpTransportMapper only supports the http transport kind.');
         }
 
-        $status = $this->statusFor($descriptor);
-        $target = $this->targetFor($context);
         $headers = [
             'Cache-Control' => 'no-store',
             'X-Content-Type-Options' => 'nosniff',
@@ -37,43 +37,59 @@ final class HttpTransportMapper implements TransportMapperInterface
             $headers['Retry-After'] = (string) $retryAfter;
         }
 
+        $resolved = $this->resolveTarget($descriptor, $context);
+
         return new TransportPlan(
-            target: $target,
-            status: $status,
+            target: $resolved['target'],
+            status: $resolved['status'] ?? $this->statusFor($descriptor),
             headers: $headers,
+            spaAction: is_string($resolved['spa_action'] ?? null) ? $resolved['spa_action'] : null,
             retryAfterSeconds: $retryAfter,
+            metadata: is_array($resolved['metadata'] ?? null) ? $resolved['metadata'] : [],
         );
     }
 
-    private function targetFor(TransportContext $context): string
+    /**
+     * @return array{
+     *   target: string,
+     *   status?: int,
+     *   spa_action?: string,
+     *   metadata?: array<string, scalar|array|null>
+     * }
+     */
+    private function resolveTarget(ExceptionDescriptor $descriptor, TransportContext $context): array
     {
         $profile = strtolower(trim((string) $context->routeProfile));
 
+        if (in_array($profile, ['spa', 'spa_v1'], true)) {
+            return $this->resolveSpaTarget($descriptor, $context);
+        }
+
         if (in_array($profile, ['api', 'problem', 'problem_json'], true)) {
-            return 'http.problem_json';
+            return ['target' => 'http.problem_json'];
         }
 
         if (in_array($profile, ['json', 'legacy_json'], true)) {
-            return 'http.json';
+            return ['target' => 'http.json'];
         }
 
         if (in_array($profile, ['html', 'web', 'browser'], true)) {
-            return 'http.html';
+            return ['target' => 'http.html'];
         }
 
-        $negotiated = $this->negotiateAccept($context->accept);
+        $negotiated = $this->negotiateAccept($context->accept, false);
 
         if ($negotiated !== null) {
-            return $negotiated;
+            return ['target' => $negotiated];
         }
 
-        return 'http.html';
+        return ['target' => 'http.html'];
     }
 
     /**
      * @param list<string> $values
      */
-    private function negotiateAccept(array $values): ?string
+    private function negotiateAccept(array $values, bool $allowSpa): ?string
     {
         $raw = trim(implode(',', array_filter($values, static fn (mixed $value): bool => is_string($value) && $value !== '')));
 
@@ -102,7 +118,11 @@ final class HttpTransportMapper implements TransportMapperInterface
                 continue;
             }
 
-            foreach (['http.problem_json', 'http.json', 'http.html'] as $candidate) {
+            $candidates = $allowSpa
+                ? ['spa.error.v1', 'http.problem_json', 'http.json', 'http.html']
+                : ['http.problem_json', 'http.json', 'http.html'];
+
+            foreach ($candidates as $candidate) {
                 $specificity = $this->specificityFor($mediaType, $candidate);
 
                 if ($specificity < 0) {
@@ -145,9 +165,19 @@ final class HttpTransportMapper implements TransportMapperInterface
     private function specificityFor(string $mediaType, string $candidate): int
     {
         return match ($candidate) {
+            'spa.error.v1' => $this->spaSpecificity($mediaType),
             'http.problem_json' => $this->problemJsonSpecificity($mediaType),
             'http.json' => $this->jsonSpecificity($mediaType),
             'http.html' => $this->htmlSpecificity($mediaType),
+            default => -1,
+        };
+    }
+
+    private function spaSpecificity(string $mediaType): int
+    {
+        return match (true) {
+            $mediaType === self::SPA_MEDIA_TYPE => 6,
+            str_starts_with($mediaType, self::SPA_MEDIA_TYPE . ';') => 5,
             default => -1,
         };
     }
@@ -207,5 +237,148 @@ final class HttpTransportMapper implements TransportMapperInterface
         }
 
         return $value;
+    }
+
+    /**
+     * @return array{
+     *   target: string,
+     *   status?: int,
+     *   spa_action?: string,
+     *   metadata?: array<string, scalar|array|null>
+     * }
+     */
+    private function resolveSpaTarget(ExceptionDescriptor $descriptor, TransportContext $context): array
+    {
+        if ($context->spaVersion !== self::SPA_VERSION || ! $this->supportsSpaAccept($context->accept)) {
+            return [
+                'target' => 'http.problem_json',
+                'status' => 406,
+                'metadata' => [
+                    'problem_code' => 'spa.protocol_unsupported',
+                    'problem_title' => 'Not Acceptable',
+                    'problem_detail' => 'The requested SPA protocol version is not supported.',
+                    'problem_status' => 406,
+                    'problem_extensions' => [
+                        'supported_versions' => [self::SPA_VERSION],
+                    ],
+                ],
+            ];
+        }
+
+        $targetScope = $this->targetScopeFor($descriptor);
+        $action = $this->spaActionFor($descriptor, $targetScope);
+
+        return [
+            'target' => 'spa.error.v1',
+            'status' => $this->statusFor($descriptor),
+            'spa_action' => $action,
+            'metadata' => [
+                'spa_version' => self::SPA_VERSION,
+                'request_id' => $this->stringOrNull($descriptor->contextSummary['request_id'] ?? null),
+                'operation_id' => $this->stringOrNull($descriptor->contextSummary['operation_id'] ?? null),
+                'navigation_id' => $this->stringOrNull($descriptor->contextSummary['navigation_id'] ?? null),
+                'target_scope' => $targetScope,
+                'target_id' => $targetScope === 'component'
+                    ? $this->stringOrNull($descriptor->contextSummary['spa_target_id'] ?? null)
+                    : null,
+                'target_revision' => $targetScope === 'component' && is_int($descriptor->contextSummary['spa_target_revision'] ?? null)
+                    ? $descriptor->contextSummary['spa_target_revision']
+                    : null,
+                'effect' => $descriptor->semantic->effect->name,
+                'retry' => $this->spaRetryFor($descriptor),
+                'reconcile' => $this->spaReconcileFor($descriptor),
+            ],
+        ];
+    }
+
+    /**
+     * @param list<string> $accept
+     */
+    private function supportsSpaAccept(array $accept): bool
+    {
+        foreach ($accept as $value) {
+            if (! is_string($value)) {
+                continue;
+            }
+
+            $normalized = strtolower(trim($value));
+
+            if ($normalized === self::SPA_MEDIA_TYPE || str_starts_with($normalized, self::SPA_MEDIA_TYPE . ';')) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function targetScopeFor(ExceptionDescriptor $descriptor): string
+    {
+        $scope = strtolower(trim((string) ($descriptor->contextSummary['spa_target_scope'] ?? '')));
+
+        return $scope === 'component' ? 'component' : 'page';
+    }
+
+    private function spaActionFor(ExceptionDescriptor $descriptor, string $targetScope): string
+    {
+        return match ($descriptor->semantic->code) {
+            'validation.failed' => 'show_fields',
+            'authentication.required', 'authentication.failed' => 'authenticate',
+            'authorization.challenge' => 'challenge',
+            'operation.indeterminate', 'operation.cancelled' => 'reconcile',
+            'dependency.unavailable' => 'retry_read',
+            default => $targetScope === 'component' ? 'show_boundary' : 'show_page',
+        };
+    }
+
+    /**
+     * @return array<string, scalar|array|null>
+     */
+    private function spaRetryFor(ExceptionDescriptor $descriptor): array
+    {
+        $allowed = $descriptor->semantic->retryAdvice !== \Quantum\Exceptions\Enums\RetryAdvice::Never
+            && ($descriptor->contextSummary['idempotency_verified'] ?? false) === true;
+
+        $payload = [
+            'allowed' => $allowed,
+        ];
+
+        if (! $allowed) {
+            return $payload;
+        }
+
+        if (($retryAfter = $this->retryAfterFor($descriptor)) !== null) {
+            $payload['after_ms'] = $retryAfter * 1000;
+        }
+
+        $payload['max_attempts'] = 1;
+
+        return $payload;
+    }
+
+    /**
+     * @return array<string, scalar>|null
+     */
+    private function spaReconcileFor(ExceptionDescriptor $descriptor): ?array
+    {
+        if (! in_array($descriptor->semantic->code, ['operation.indeterminate', 'operation.cancelled'], true)) {
+            return null;
+        }
+
+        $payload = [];
+
+        if (($operationRef = $this->stringOrNull($descriptor->contextSummary['spa_reconcile_operation_ref'] ?? null)) !== null) {
+            $payload['operation_ref'] = $operationRef;
+        }
+
+        if (($routeKey = $this->stringOrNull($descriptor->contextSummary['spa_reconcile_route_key'] ?? null)) !== null) {
+            $payload['route_key'] = $routeKey;
+        }
+
+        return $payload === [] ? null : $payload;
+    }
+
+    private function stringOrNull(mixed $value): ?string
+    {
+        return is_string($value) && $value !== '' ? $value : null;
     }
 }

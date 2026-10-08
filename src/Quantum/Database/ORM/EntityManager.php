@@ -240,6 +240,8 @@ final class EntityManager implements EntityManagerInterface
 
     public function flush(): void
     {
+        $this->assertNoUnsupportedPartialManagedCollectionChanges();
+
         // Step 0: Apply CASCADE operations BFS (visited-guard against circular refs).
         $this->applyCascadesBeforeFlush(Cascade::PERSIST);
         $this->applyCascadesBeforeFlush(Cascade::REMOVE);
@@ -856,7 +858,7 @@ final class EntityManager implements EntityManagerInterface
 
         $allFields = $this->unitOfWork->isPartialManaged($entity)
             ? array_values(array_unique(array_merge(
-                $this->unitOfWork->partialManagedFields($entity),
+                $this->partialManagedRootFieldNames($metadata, $this->unitOfWork->partialManagedFields($entity)),
                 array_keys($current),
                 array_keys($original),
             )))
@@ -1027,6 +1029,29 @@ final class EntityManager implements EntityManagerInterface
         }
 
         return false;
+    }
+
+    private function assertNoUnsupportedPartialManagedCollectionChanges(): void
+    {
+        foreach ($this->unitOfWork->managedEntities() as $entity) {
+            if (! $this->unitOfWork->isPartialManaged($entity)) {
+                continue;
+            }
+
+            $metadata = $this->unitOfWork->metadataFor($entity);
+            foreach ($this->unitOfWork->loadedPartialManagedToManyAssociations($entity) as $associationName) {
+                $diff = $this->unitOfWork->collectionDiff($entity, $associationName);
+                if ($diff['removed'] === [] && $diff['added'] === []) {
+                    continue;
+                }
+
+                throw new RuntimeException(sprintf(
+                    'Cannot mutate membership of partially managed collection [%s::$%s]; refresh or load the full entity before adding or removing collection items.',
+                    $metadata->className,
+                    $associationName,
+                ));
+            }
+        }
     }
 
     /**
@@ -1473,6 +1498,30 @@ final class EntityManager implements EntityManagerInterface
         }
 
         $this->unitOfWork->synchronize($entity, $key);
+    }
+
+    /**
+     * @param list<string> $loadedFields
+     * @return list<string>
+     */
+    private function partialManagedRootFieldNames(EntityMetadata $metadata, array $loadedFields): array
+    {
+        return array_values(array_filter(
+            $loadedFields,
+            static function (string $field) use ($metadata): bool {
+                if ($metadata->hasField($field)) {
+                    return true;
+                }
+
+                if (! str_contains($field, '.')) {
+                    return false;
+                }
+
+                [$embeddedName, $innerName] = explode('.', $field, 2);
+                return $metadata->hasEmbedded($embeddedName)
+                    && $metadata->embedded($embeddedName)->hasInnerField($innerName);
+            },
+        ));
     }
 
     /**

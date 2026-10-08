@@ -78,6 +78,24 @@ PHP
         self::assertTrue($session->canAcceptMoreRequests());
     }
 
+    public function test_worker_factory_uses_single_execution_mode_for_sapi_runtime_context(): void
+    {
+        $app = new Application($this->basePath);
+        $app->instance(KernelContract::class, new TestRuntimeManagerKernel());
+
+        $plan = ApplicationBuilder::create($this->basePath)
+            ->withEnvironment('testing')
+            ->withProfile('web')
+            ->build();
+
+        /** @var WorkerFactoryInterface $factory */
+        $factory = $app->make(WorkerFactoryInterface::class);
+        $session = $factory->create($plan, WorkerContext::create('sapi', 1));
+
+        self::assertSame('single', $session->bootstrapResult()->context()?->executionMode());
+        self::assertSame('web', $session->bootstrapResult()->context()?->profile());
+    }
+
     public function test_runtime_manager_server_runs_frankenphp_adapter_sequentially(): void
     {
         $app = new Application($this->basePath);
@@ -275,6 +293,77 @@ PHP
         self::assertCount(2, $emitter->emitted());
         self::assertSame('runtime:/native-first', $emitter->emitted()[0]['response']->payload());
         self::assertSame('runtime:/native-second', $emitter->emitted()[1]['response']->payload());
+    }
+
+    public function test_runtime_manager_server_runs_sapi_adapter_with_single_request_capture(): void
+    {
+        $app = new Application($this->basePath);
+        $app->instance(KernelContract::class, new TestRuntimeManagerKernel());
+        $emitter = new InMemoryTransportEmitter();
+        $app->instance(TransportEmitterInterface::class, $emitter);
+
+        $plan = ApplicationBuilder::create($this->basePath)
+            ->withEnvironment('testing')
+            ->withProfile('web')
+            ->build();
+
+        $originalGet = $_GET;
+        $originalPost = $_POST;
+        $originalCookie = $_COOKIE;
+        $originalFiles = $_FILES;
+        $originalServer = $_SERVER;
+
+        $_GET = [];
+        $_POST = [];
+        $_COOKIE = [];
+        $_FILES = [];
+        $_SERVER = [
+            'REQUEST_METHOD' => 'GET',
+            'REQUEST_URI' => '/sapi',
+        ];
+
+        try {
+            /** @var RuntimeManagerServer $manager */
+            $manager = $app->make(RuntimeManagerServer::class);
+            $exitCode = $manager->run($plan, new RuntimeConfiguration(
+                driver: 'sapi',
+                maxRequests: 1,
+            ));
+        } finally {
+            $_GET = $originalGet;
+            $_POST = $originalPost;
+            $_COOKIE = $originalCookie;
+            $_FILES = $originalFiles;
+            $_SERVER = $originalServer;
+        }
+
+        self::assertSame(0, $exitCode);
+        self::assertSame(['/sapi'], TestRuntimeManagerKernel::$handledPaths);
+        self::assertCount(1, $emitter->emitted());
+        self::assertSame('runtime:/sapi', $emitter->emitted()[0]['response']->payload());
+        self::assertSame('sapi', $manager->adapter('sapi')->id());
+    }
+
+    public function test_runtime_manager_server_rejects_invalid_sapi_max_requests(): void
+    {
+        $app = new Application($this->basePath);
+        $app->instance(KernelContract::class, new TestRuntimeManagerKernel());
+
+        $plan = ApplicationBuilder::create($this->basePath)
+            ->withEnvironment('testing')
+            ->withProfile('web')
+            ->build();
+
+        /** @var RuntimeManagerServer $manager */
+        $manager = $app->make(RuntimeManagerServer::class);
+
+        $this->expectException(RuntimeAdapterException::class);
+        $this->expectExceptionMessage('SAPI runtime adapter only supports maxRequests=1.');
+
+        $manager->run($plan, new RuntimeConfiguration(
+            driver: 'sapi',
+            maxRequests: 2,
+        ));
     }
 
     private function deleteDirectory(string $path): void

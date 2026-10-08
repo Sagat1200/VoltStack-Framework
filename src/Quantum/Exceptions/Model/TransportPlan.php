@@ -8,6 +8,7 @@ final readonly class TransportPlan
 {
     /**
      * @param array<string, string> $headers
+     * @param array<string, scalar|array|null> $metadata
      */
     public function __construct(
         public string $target,
@@ -16,6 +17,7 @@ final readonly class TransportPlan
         public array $headers = [],
         public ?string $spaAction = null,
         public ?int $retryAfterSeconds = null,
+        public array $metadata = [],
     ) {
         if ($target === '') {
             throw new \InvalidArgumentException('TransportPlan target must not be empty.');

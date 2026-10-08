@@ -348,7 +348,7 @@ final class EntityQuery
                 continue;
             }
 
-            $joinedSelection = $this->resolveJoinedPartialSelection($normalized);
+            $joinedSelection = $this->resolveJoinedPartialSelection($normalized, allowToMany: true);
             if ($joinedSelection !== null) {
                 $joinedColumns[$joinedSelection['association']][$joinedSelection['column']] = $joinedSelection;
                 continue;
@@ -520,6 +520,16 @@ final class EntityQuery
             ));
         }
 
+        if ($this->hasJoinedToManyAssociations()) {
+            $windowIdentifiers = $this->joinedRootIdentifiersForWindow();
+
+            return $windowIdentifiers === null
+                ? $this->hydrateJoinedManagedPartialRows(
+                    $this->queryForJoinedToManyPartialHydration($this->managedPartialSelections)->get()->rows(),
+                )
+                : $this->hydrateJoinedManagedPartialEntitiesForRootIdentifiers($windowIdentifiers);
+        }
+
         $loadedFields = array_values(array_map(
             static fn(array $selection): string => $selection['name'],
             $this->managedPartialSelections,
@@ -542,6 +552,14 @@ final class EntityQuery
                 'Managed partial hydration for [%s] requires calling partialManaged(...) first.',
                 $this->metadata->className,
             ));
+        }
+
+        if ($this->hasJoinedToManyAssociations()) {
+            $entities = $this->hydrateJoinedManagedPartialEntitiesForRootIdentifiers(
+                $this->joinedRootIdentifiersForWindow(limit: 1),
+            );
+
+            return $entities[0] ?? null;
         }
 
         $row = $this->query->first();
@@ -1012,6 +1030,28 @@ final class EntityQuery
     }
 
     /**
+     * @param list<int|string> $rootIdentifiers
+     * @return list<object>
+     */
+    private function hydrateJoinedManagedPartialEntitiesForRootIdentifiers(array $rootIdentifiers): array
+    {
+        if ($rootIdentifiers === []) {
+            return [];
+        }
+
+        $query = $this->queryForJoinedToManyPartialHydration($this->managedPartialSelections);
+        $query->whereIn(
+            $this->qualifyRootColumn($this->metadata->identifier->column),
+            $rootIdentifiers,
+        );
+
+        return $this->orderEntitiesByRootIdentifiers(
+            $this->hydrateJoinedManagedPartialRows($query->get()->rows()),
+            $rootIdentifiers,
+        );
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function hydrateProjectionRow(array $row): array
@@ -1028,7 +1068,9 @@ final class EntityQuery
     private function hydrateRelationalPartialRow(array $row, bool $managed): object
     {
         $rootSelections = $managed ? $this->managedPartialSelections : $this->partialSelections;
-        $rootLoadedFields = $this->partialLoadedFieldNames($rootSelections);
+        $rootLoadedFields = $managed
+            ? $this->relationalManagedLoadedFieldNames($rootSelections)
+            : $this->partialLoadedFieldNames($rootSelections);
         $rootRow = $this->extractPartialRootRow($row, $rootSelections);
 
         $entity = $managed
@@ -1060,6 +1102,23 @@ final class EntityQuery
         }
 
         return $entity;
+    }
+
+    /**
+     * @param list<array{name:string,column:string}> $rootSelections
+     * @return list<string>
+     */
+    private function relationalManagedLoadedFieldNames(array $rootSelections): array
+    {
+        $loaded = $this->partialLoadedFieldNames($rootSelections);
+
+        foreach ($this->partialJoinedSelections as $associationName => $selections) {
+            foreach ($selections as $selection) {
+                $loaded[] = $associationName . '.' . $selection['name'];
+            }
+        }
+
+        return array_values(array_unique($loaded));
     }
 
     /**
@@ -1101,7 +1160,6 @@ final class EntityQuery
         $entitiesById = [];
         $order = [];
         $seenTargets = [];
-        $rootLoadedFields = $this->partialLoadedFieldNames($this->partialSelections);
 
         foreach ($rows as $row) {
             $rootIdentifier = $row[$this->metadata->identifier->column] ?? null;
@@ -1146,6 +1204,71 @@ final class EntityQuery
             fn(string $key): object => $entitiesById[$key],
             $order,
         ));
+    }
+
+    /**
+     * @param list<array<string, mixed>> $rows
+     * @return list<object>
+     */
+    private function hydrateJoinedManagedPartialRows(array $rows): array
+    {
+        $entitiesById = [];
+        $order = [];
+        $seenTargets = [];
+        $rootLoadedFields = $this->relationalManagedLoadedFieldNames($this->managedPartialSelections);
+
+        foreach ($rows as $row) {
+            $rootIdentifier = $row[$this->metadata->identifier->column] ?? null;
+            if ($rootIdentifier === null || $rootIdentifier === '') {
+                continue;
+            }
+
+            $rootKey = (string) $this->metadata->canonicalizeIdentifier($rootIdentifier);
+            if (! isset($entitiesById[$rootKey])) {
+                $entity = $this->manager->hydrateManagedPartial(
+                    $this->metadata,
+                    $this->extractPartialRootRow($row, $this->managedPartialSelections),
+                    $rootLoadedFields,
+                );
+                $this->initializeJoinedCollections($entity);
+                $entitiesById[$rootKey] = $entity;
+                $order[] = $rootKey;
+            }
+
+            $entity = $entitiesById[$rootKey];
+            foreach ($this->partialJoinedSelections as $associationName => $selections) {
+                $join = $this->joinedAssociations[$associationName];
+                $association = $join['association'];
+
+                if ($association->isToOne()) {
+                    $this->hydrateJoinedManagedPartialToOneAssociation($entity, $join, $row, $selections);
+
+                    continue;
+                }
+
+                $seenTargets[$rootKey][$associationName] ??= [];
+                $this->hydrateJoinedManagedPartialToManyAssociation(
+                    $entity,
+                    $join,
+                    $row,
+                    $selections,
+                    $seenTargets[$rootKey][$associationName],
+                );
+            }
+        }
+
+        $entities = array_values(array_map(
+            fn(string $key): object => $entitiesById[$key],
+            $order,
+        ));
+
+        foreach ($entities as $entity) {
+            if ($this->manager->contains($entity)) {
+                $this->manager->snapshotCollections($entity);
+            }
+        }
+
+        return $entities;
     }
 
     private function hydrateEntityRow(array $row): object
@@ -1274,6 +1397,36 @@ final class EntityQuery
 
     /**
      * @param array{alias:string,type:string,association:EntityAssociationMetadata,targetMetadata:EntityMetadata} $join
+     * @param list<array{name:string,column:string,resultKey:string}> $selections
+     */
+    private function hydrateJoinedManagedPartialToOneAssociation(object $entity, array $join, array $row, array $selections): void
+    {
+        $association = $join['association'];
+        $targetMetadata = $join['targetMetadata'];
+        $targetRow = $this->extractJoinedTargetRow($join, $row);
+
+        if ($targetRow === null) {
+            $this->assignAssociationValue($entity, $association, null);
+
+            return;
+        }
+
+        $targetLoadedFields = array_values(array_map(
+            static fn(array $selection): string => $selection['name'],
+            $selections,
+        ));
+
+        $target = $this->manager->hydrateManagedPartial(
+            $targetMetadata,
+            $targetRow,
+            $targetLoadedFields,
+        );
+        $this->assignAssociationValue($entity, $association, $target);
+        $this->linkJoinedReverseAssociation($entity, $association, $target, $targetMetadata);
+    }
+
+    /**
+     * @param array{alias:string,type:string,association:EntityAssociationMetadata,targetMetadata:EntityMetadata} $join
      * @param array<string, true> $seenTargetIds
      */
     private function hydrateJoinedToManyAssociation(object $entity, array $join, array $row, array &$seenTargetIds): void
@@ -1344,6 +1497,62 @@ final class EntityQuery
         if ($targetId === null) {
             throw new RuntimeException(sprintf(
                 'Joined partial target [%s] did not expose an identifier during hydration of [%s::$%s].',
+                $targetMetadata->className,
+                $this->metadata->className,
+                $association->name,
+            ));
+        }
+
+        $targetKey = (string) $targetMetadata->canonicalizeIdentifier($targetId);
+        if (! isset($seenTargetIds[$targetKey])) {
+            $current[] = $target;
+            $seenTargetIds[$targetKey] = true;
+            $this->assignAssociationValue($entity, $association, $current);
+        }
+
+        $this->linkJoinedReverseAssociation($entity, $association, $target, $targetMetadata);
+    }
+
+    /**
+     * @param array{alias:string,type:string,association:EntityAssociationMetadata,targetMetadata:EntityMetadata} $join
+     * @param list<array{name:string,column:string,resultKey:string}> $selections
+     * @param array<string, true> $seenTargetIds
+     */
+    private function hydrateJoinedManagedPartialToManyAssociation(
+        object $entity,
+        array $join,
+        array $row,
+        array $selections,
+        array &$seenTargetIds,
+    ): void {
+        $association = $join['association'];
+        $targetMetadata = $join['targetMetadata'];
+        $current = $this->readAssociationValue($entity, $association);
+        if (! is_array($current)) {
+            $current = [];
+        }
+
+        $targetRow = $this->extractJoinedTargetRow($join, $row);
+        if ($targetRow === null) {
+            $this->assignAssociationValue($entity, $association, $current);
+
+            return;
+        }
+
+        $targetLoadedFields = array_values(array_map(
+            static fn(array $selection): string => $selection['name'],
+            $selections,
+        ));
+
+        $target = $this->manager->hydrateManagedPartial(
+            $targetMetadata,
+            $targetRow,
+            $targetLoadedFields,
+        );
+        $targetId = $targetMetadata->identifierValue($target);
+        if ($targetId === null) {
+            throw new RuntimeException(sprintf(
+                'Joined managed partial target [%s] did not expose an identifier during hydration of [%s::$%s].',
                 $targetMetadata->className,
                 $this->metadata->className,
                 $association->name,
@@ -1728,13 +1937,13 @@ final class EntityQuery
     private function assertJoinedPartialHydrationAllowed(string $mode): void
     {
         foreach ($this->joinedAssociations as $join) {
-            if ($mode === 'partial' && $join['association']->isToMany()) {
+            if (($mode === 'partial' || $mode === 'partialManaged') && $join['association']->isToMany()) {
                 continue;
             }
 
             if (! $join['association']->isToOne()) {
                 throw new RuntimeException(sprintf(
-                    'Cannot combine [%s::%s()] with joined to-many association [%s::$%s]; relational partial hydration over joins to-many remains detached-only in V1 and is not available for managed partial mode.',
+                    'Cannot combine [%s::%s()] with joined association [%s::$%s]; relational partial hydration only supports joined to-one and to-many association paths with explicit scalar target fields.',
                     self::class,
                     $mode,
                     $this->metadata->className,

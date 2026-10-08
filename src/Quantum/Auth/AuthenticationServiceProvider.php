@@ -739,7 +739,10 @@ final class AuthenticationServiceProvider extends ServiceProvider
                 if ($driver === 'mock' || $driver === 'in_memory') {
                     return new InMemoryMockOidcWellKnownClient();
                 }
-                return new CurlOidcWellKnownClient();
+                return new CurlOidcWellKnownClient(
+                    timeoutSeconds: max(1, (int) $config->get('auth.oidc.http_client.timeout_seconds', 5)),
+                    enabled: (bool) $config->get('auth.oidc.http_client.enabled', false),
+                );
             } catch (\Throwable) {
                 return null;
             }
@@ -807,9 +810,26 @@ final class AuthenticationServiceProvider extends ServiceProvider
                 } catch (\Throwable) {
                     $jwksCache = null;
                 }
+                $wellKnownClient = null;
+                try {
+                    $candidate = $app->make(OidcWellKnownClientInterface::class);
+                    if ($candidate instanceof OidcWellKnownClientInterface) {
+                        $wellKnownClient = $candidate;
+                    }
+                } catch (\Throwable) {
+                    $wellKnownClient = null;
+                }
                 $expected = $config->get('auth.oidc.expected_claims', []);
                 $claims = is_array($expected) ? $expected : [];
-                return new OidcAuthenticator($tokenValidator, $idp, $jwksCache, $claims);
+                return new OidcAuthenticator(
+                    $tokenValidator,
+                    $idp,
+                    $jwksCache,
+                    $claims,
+                    $wellKnownClient,
+                    (bool) $config->get('auth.oidc.http_client.refresh_on_kid_miss', true),
+                    (bool) $config->get('auth.oidc.http_client.refresh_on_expired_cache', true),
+                );
             } catch (\Throwable) {
                 return null;
             }

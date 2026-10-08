@@ -265,6 +265,22 @@ class Container implements ContainerInterface
         return $this->scopeStack()->describe();
     }
 
+    /**
+     * @return array<string, Binding>
+     */
+    public function registeredBindings(): array
+    {
+        return $this->bindings;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    public function registeredAliases(): array
+    {
+        return $this->aliases;
+    }
+
     protected function resolve(mixed $concrete, array $parameters = []): mixed
     {
         return $this->concreteResolver()->resolve(

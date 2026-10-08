@@ -158,6 +158,25 @@ PHP
         self::assertSame('single', $bootstrapContext->executionMode());
         self::assertSame('web', $bootstrapContext->profile());
     }
+
+    public function test_runtime_bootstrap_context_named_constructor_maps_persistent_and_single_execution_modes(): void
+    {
+        $persistent = BootstrapContext::forRuntime(
+            environment: 'production',
+            persistent: true,
+            profile: 'worker',
+        );
+        $single = BootstrapContext::forRuntime(
+            environment: 'production',
+            persistent: false,
+            profile: 'web',
+        );
+
+        self::assertSame('worker', $persistent->executionMode());
+        self::assertSame('worker', $persistent->profile());
+        self::assertSame('single', $single->executionMode());
+        self::assertSame('web', $single->profile());
+    }
 }
 
 final class TestPlanServiceProvider extends ServiceProvider

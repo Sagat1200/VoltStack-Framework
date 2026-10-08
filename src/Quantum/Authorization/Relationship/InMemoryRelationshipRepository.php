@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quantum\Authorization\Relationship;
 
 use Quantum\Authorization\Authority\Scope;
+use Quantum\Authorization\Contracts\AuthorizationConsistencyInterface;
 use Quantum\Authorization\Contracts\RelationshipAdministrationInterface;
 use Quantum\Authorization\Contracts\RelationshipRepositoryInterface;
 
@@ -18,7 +19,10 @@ final class InMemoryRelationshipRepository implements RelationshipAdministration
     /**
      * @param iterable<array{principal_id:string,relation:string,resource:mixed,scope?:string|Scope|null}> $entries
      */
-    public function __construct(iterable $entries = [])
+    public function __construct(
+        iterable $entries = [],
+        private readonly ?AuthorizationConsistencyInterface $consistency = null,
+    )
     {
         foreach ($entries as $entry) {
             if (! is_array($entry)) {
@@ -127,6 +131,8 @@ final class InMemoryRelationshipRepository implements RelationshipAdministration
         }
 
         unset($this->relationships[$key]);
+
+        $this->consistency?->invalidateRelationships(trim($principalId), $this->normalizeScope($scope));
 
         return true;
     }

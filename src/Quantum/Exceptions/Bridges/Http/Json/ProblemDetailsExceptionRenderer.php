@@ -22,20 +22,24 @@ final class ProblemDetailsExceptionRenderer
 
     public function render(PublicError $error, TransportPlan $plan): RenderedOutput
     {
-        $status = $plan->status ?? 500;
+        $status = $this->statusFor($plan);
         $payload = [
-            'type' => $this->typeFor($error->code),
-            'title' => $this->titleFor($status),
+            'type' => $this->typeFor($this->codeFor($error, $plan)),
+            'title' => $this->titleFor($status, $plan),
             'status' => $status,
-            'detail' => $error->message,
+            'detail' => $this->detailFor($error, $plan),
             'instance' => sprintf('urn:voltstack:occurrence:%s', $error->occurrenceId),
-            'code' => $error->code,
+            'code' => $this->codeFor($error, $plan),
         ];
 
         $errors = $this->errorsFor($error);
 
         if ($errors !== []) {
             $payload['errors'] = $errors;
+        }
+
+        foreach ($this->extensionsFor($plan) as $key => $value) {
+            $payload[$key] = $value;
         }
 
         $encoded = json_encode(
@@ -58,6 +62,10 @@ final class ProblemDetailsExceptionRenderer
 
     private function typeFor(string $code): string
     {
+        if ($code === 'spa.protocol_unsupported') {
+            return 'about:blank';
+        }
+
         $baseUri = trim((string) $this->typeBaseUri);
 
         if ($baseUri === '') {
@@ -67,8 +75,14 @@ final class ProblemDetailsExceptionRenderer
         return rtrim($baseUri, '/') . '/' . str_replace('.', '-', $code);
     }
 
-    private function titleFor(int $status): string
+    private function titleFor(int $status, TransportPlan $plan): string
     {
+        $override = $plan->metadata['problem_title'] ?? null;
+
+        if (is_string($override) && $override !== '') {
+            return $override;
+        }
+
         return match ($status) {
             400 => 'Bad Request',
             401 => 'Unauthorized',
@@ -87,6 +101,45 @@ final class ProblemDetailsExceptionRenderer
             504 => 'Gateway Timeout',
             default => 'Application Error',
         };
+    }
+
+    private function codeFor(PublicError $error, TransportPlan $plan): string
+    {
+        $override = $plan->metadata['problem_code'] ?? null;
+
+        return is_string($override) && $override !== '' ? $override : $error->code;
+    }
+
+    private function detailFor(PublicError $error, TransportPlan $plan): string
+    {
+        $override = $plan->metadata['problem_detail'] ?? null;
+
+        return is_string($override) && $override !== '' ? $override : $error->message;
+    }
+
+    private function statusFor(TransportPlan $plan): int
+    {
+        $override = $plan->metadata['problem_status'] ?? null;
+
+        if (is_int($override) && $override >= 400 && $override <= 599) {
+            return $override;
+        }
+
+        return $plan->status ?? 500;
+    }
+
+    /**
+     * @return array<string, scalar|array|null>
+     */
+    private function extensionsFor(TransportPlan $plan): array
+    {
+        $extensions = $plan->metadata['problem_extensions'] ?? [];
+
+        if (! is_array($extensions)) {
+            return [];
+        }
+
+        return $extensions;
     }
 
     /**

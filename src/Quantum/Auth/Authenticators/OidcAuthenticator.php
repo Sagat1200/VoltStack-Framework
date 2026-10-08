@@ -8,6 +8,7 @@ use Quantum\Auth\Context\AuthenticationContext;
 use Quantum\Auth\Contracts\AuthenticatorInterface;
 use Quantum\Auth\Contracts\IdentityProviderInterface;
 use Quantum\Auth\Contracts\OidcJwksCacheInterface;
+use Quantum\Auth\Contracts\OidcWellKnownClientInterface;
 use Quantum\Auth\Decisions\AuthenticationDecision;
 use Quantum\Auth\Federation\Oidc\OidcIdentityTokenValidator;
 use Quantum\Auth\Identity\IdentityReference;
@@ -21,6 +22,9 @@ final class OidcAuthenticator implements AuthenticatorInterface
         private readonly IdentityProviderInterface $identityProvider,
         private readonly ?OidcJwksCacheInterface $jwksCache = null,
         private readonly array $expectedClaims = [],
+        private readonly ?OidcWellKnownClientInterface $wellKnownClient = null,
+        private readonly bool $refreshOnKidMiss = true,
+        private readonly bool $refreshOnExpiredCache = true,
     ) {
     }
 
@@ -61,9 +65,17 @@ final class OidcAuthenticator implements AuthenticatorInterface
         $header = $decoded['header'];
         $payload = $decoded['payload'];
 
+        $this->refreshJwksCacheIfNeeded($credentials, $header);
         $expectations = $this->buildExpectations($credentials, $compactJws, $header);
 
         $validationResult = $this->tokenValidator->validateAll($payload, $expectations);
+        if (
+            ! $validationResult['valid']
+            && $this->shouldRetryAfterJwksRefresh($validationResult['reason_codes'] ?? [])
+            && $this->refreshJwksCache($credentials, $header)
+        ) {
+            $validationResult = $this->tokenValidator->validateAll($payload, $expectations);
+        }
 
         if (! $validationResult['valid']) {
             $reasonCodes = is_array($validationResult['reason_codes'] ?? null)
@@ -186,6 +198,136 @@ final class OidcAuthenticator implements AuthenticatorInterface
         }
 
         return $expectations;
+    }
+
+    /**
+     * @param array<string, mixed> $credentials
+     * @param array<string, mixed> $header
+     */
+    private function refreshJwksCacheIfNeeded(array $credentials, array $header): void
+    {
+        if ($this->jwksCache === null || $this->wellKnownClient === null) {
+            return;
+        }
+
+        $kid = $this->resolvedKid($credentials, $header);
+        if ($kid === null) {
+            return;
+        }
+
+        if ($this->refreshOnExpiredCache && $this->jwksCacheExpired()) {
+            $this->refreshJwksCache($credentials, $header);
+
+            return;
+        }
+
+        if ($this->refreshOnKidMiss && $this->jwksCache->getKey($kid) === null) {
+            $this->refreshJwksCache($credentials, $header);
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $credentials
+     * @param array<string, mixed> $header
+     */
+    private function refreshJwksCache(array $credentials, array $header): bool
+    {
+        if ($this->jwksCache === null || $this->wellKnownClient === null) {
+            return false;
+        }
+
+        $issuer = $this->resolvedIssuer($credentials);
+        if ($issuer === null) {
+            return false;
+        }
+
+        try {
+            $metadata = $this->wellKnownClient->fetchConfiguration($issuer);
+            $jwks = $this->wellKnownClient->fetchJwksByUri($metadata->jwksUri);
+        } catch (\Throwable) {
+            return false;
+        }
+
+        $keys = is_array($jwks['keys'] ?? null) ? array_values($jwks['keys']) : [];
+        $savedAny = false;
+
+        foreach ($keys as $jwk) {
+            if (! is_array($jwk)) {
+                continue;
+            }
+
+            $kid = $this->nonEmptyString($jwk['kid'] ?? null);
+            if ($kid === null) {
+                continue;
+            }
+
+            $this->jwksCache->saveKey($kid, $jwk);
+            $savedAny = true;
+        }
+
+        if (method_exists($this->jwksCache, 'markFetchedNow')) {
+            $this->jwksCache->markFetchedNow();
+        }
+
+        return $savedAny;
+    }
+
+    /**
+     * @param list<mixed> $reasonCodes
+     */
+    private function shouldRetryAfterJwksRefresh(array $reasonCodes): bool
+    {
+        if (! $this->refreshOnKidMiss || $this->wellKnownClient === null || $this->jwksCache === null) {
+            return false;
+        }
+
+        foreach ($reasonCodes as $reasonCode) {
+            if ($reasonCode === 'signature_invalid:jwk_missing') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string, mixed> $credentials
+     * @param array<string, mixed> $header
+     */
+    private function resolvedKid(array $credentials, array $header): ?string
+    {
+        return $this->nonEmptyString($credentials['kid'] ?? null)
+            ?? $this->nonEmptyString($header['kid'] ?? null);
+    }
+
+    /**
+     * @param array<string, mixed> $credentials
+     */
+    private function resolvedIssuer(array $credentials): ?string
+    {
+        return $this->nonEmptyString($credentials['expected_issuer'] ?? null)
+            ?? $this->nonEmptyString($credentials['issuer'] ?? null)
+            ?? $this->nonEmptyString($this->expectedClaims['issuer'] ?? null);
+    }
+
+    private function jwksCacheExpired(): bool
+    {
+        if (! method_exists($this->jwksCache, 'hasExpired')) {
+            return false;
+        }
+
+        return (bool) $this->jwksCache->hasExpired();
+    }
+
+    private function nonEmptyString(mixed $value): ?string
+    {
+        if (! is_string($value)) {
+            return null;
+        }
+
+        $trimmed = trim($value);
+
+        return $trimmed !== '' ? $trimmed : null;
     }
 
     /**

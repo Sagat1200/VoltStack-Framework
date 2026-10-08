@@ -141,6 +141,79 @@ final class QuantumExceptionTransportBridgeTest extends TestCase
         self::assertStringContainsString('"occurrence_id"', $result->output?->bodyBytes ?? '');
     }
 
+    public function test_manager_renders_spa_error_protocol_v1_for_registered_profile(): void
+    {
+        $manager = new ExceptionManager(
+            normalizer: new ThrowableNormalizer(),
+            semanticMapper: DeterministicSemanticExceptionMapper::standard(),
+            recoveryPolicy: new DeterministicRecoveryPolicy(),
+            transportMapper: new HttpTransportMapper(),
+            renderer: new TransportExceptionRenderer(),
+        );
+
+        $result = $manager->handle(
+            new ValidationException(['email' => ['invalid']]),
+            new ExceptionContext(
+                scopeId: 'scope-http-spa',
+                attributes: [
+                    'surface' => 'http',
+                    'transport_kind' => 'http',
+                    'transport_route_profile' => 'spa',
+                    'transport_spa_version' => 1,
+                    'transport_accept' => ['application/vnd.voltstack.spa-error+json;v=1'],
+                    'request_id' => 'req-1',
+                    'operation_id' => 'op-1',
+                    'navigation_id' => 'nav-1',
+                    'spa_target_scope' => 'component',
+                    'spa_target_id' => 'cmp_1',
+                    'spa_target_revision' => 7,
+                    'idempotency_verified' => false,
+                ],
+            ),
+        );
+
+        self::assertSame(HandlingResultKind::Rendered, $result->kind);
+        self::assertSame('application/vnd.voltstack.spa-error+json;v=1', $result->output?->mediaType);
+        self::assertSame(422, $result->output?->status);
+        self::assertStringContainsString('"protocol":"voltstack.spa.error"', $result->output?->bodyBytes ?? '');
+        self::assertStringContainsString('"action":"show_fields"', $result->output?->bodyBytes ?? '');
+        self::assertStringContainsString('"scope":"component"', $result->output?->bodyBytes ?? '');
+        self::assertStringContainsString('"id":"cmp_1"', $result->output?->bodyBytes ?? '');
+        self::assertStringContainsString('"revision":7', $result->output?->bodyBytes ?? '');
+        self::assertStringContainsString('"effect":"None"', $result->output?->bodyBytes ?? '');
+    }
+
+    public function test_manager_returns_problem_details_when_spa_version_is_incompatible(): void
+    {
+        $manager = new ExceptionManager(
+            normalizer: new ThrowableNormalizer(),
+            semanticMapper: DeterministicSemanticExceptionMapper::standard(),
+            recoveryPolicy: new DeterministicRecoveryPolicy(),
+            transportMapper: new HttpTransportMapper(),
+            renderer: new TransportExceptionRenderer(),
+        );
+
+        $result = $manager->handle(
+            new ValidationException(['email' => ['invalid']]),
+            new ExceptionContext(
+                scopeId: 'scope-http-spa-unsupported',
+                attributes: [
+                    'surface' => 'http',
+                    'transport_kind' => 'http',
+                    'transport_route_profile' => 'spa',
+                    'transport_spa_version' => 2,
+                    'transport_accept' => ['application/vnd.voltstack.spa-error+json;v=2'],
+                ],
+            ),
+        );
+
+        self::assertSame(HandlingResultKind::Rendered, $result->kind);
+        self::assertSame('application/problem+json', $result->output?->mediaType);
+        self::assertSame(406, $result->output?->status);
+        self::assertStringContainsString('"code":"spa.protocol_unsupported"', $result->output?->bodyBytes ?? '');
+        self::assertStringContainsString('"supported_versions":[1]', $result->output?->bodyBytes ?? '');
+    }
+
     public function test_manager_renders_cli_json_when_profile_requests_it(): void
     {
         $manager = new ExceptionManager(

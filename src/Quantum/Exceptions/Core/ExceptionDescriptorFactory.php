@@ -49,6 +49,15 @@ final readonly class ExceptionDescriptorFactory
             'transport_kind',
             'transport_route_profile',
             'execution_owner',
+            'request_id',
+            'operation_id',
+            'navigation_id',
+            'spa_target_scope',
+            'spa_target_id',
+            'spa_target_revision',
+            'spa_reconcile_operation_ref',
+            'spa_reconcile_route_key',
+            'idempotency_verified',
         ] as $key) {
             if (array_key_exists($key, $context->attributes)) {
                 $summary[$key] = $context->attributes[$key];

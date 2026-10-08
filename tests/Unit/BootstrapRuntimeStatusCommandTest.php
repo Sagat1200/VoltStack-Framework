@@ -177,7 +177,7 @@ PHP
         self::assertStringContainsString('Recommended total budget: 80.000 ms', $output->stdout());
         self::assertStringContainsString('Recommended request budget: 30.000 ms', $output->stdout());
         self::assertStringContainsString('Budget source: config', $output->stdout());
-        self::assertStringContainsString('Supported drivers: frankenphp', $output->stdout());
+        self::assertStringContainsString('Supported drivers: frankenphp, sapi', $output->stdout());
         self::assertStringContainsString('Telemetry: emitted', $output->stdout());
 
         $telemetry = file_get_contents($this->telemetryPath);

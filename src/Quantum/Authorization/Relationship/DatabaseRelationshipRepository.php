@@ -6,6 +6,7 @@ namespace Quantum\Authorization\Relationship;
 
 use PDO;
 use Quantum\Authorization\Authority\Scope;
+use Quantum\Authorization\Contracts\AuthorizationConsistencyInterface;
 use Quantum\Authorization\Contracts\RelationshipAdministrationInterface;
 use Quantum\Authorization\Contracts\RelationshipRepositoryInterface;
 use Quantum\Database\Contracts\DatabaseInterface;
@@ -20,6 +21,7 @@ final class DatabaseRelationshipRepository implements RelationshipAdministration
         private readonly DatabaseInterface $database,
         private readonly ?string $connectionName = null,
         ?string $table = null,
+        private readonly ?AuthorizationConsistencyInterface $consistency = null,
     ) {
         $this->table = $this->normalizeTableName($table ?? self::DEFAULT_RELATIONSHIPS_TABLE);
     }
@@ -132,7 +134,13 @@ final class DatabaseRelationshipRepository implements RelationshipAdministration
             ':scope' => (string) ($scope instanceof Scope ? $scope : new Scope($scope)),
         ]);
 
-        return $statement->rowCount() > 0;
+        $revoked = $statement->rowCount() > 0;
+
+        if ($revoked) {
+            $this->consistency?->invalidateRelationships(trim($principalId), $scope instanceof Scope ? $scope : new Scope($scope));
+        }
+
+        return $revoked;
     }
 
     /**

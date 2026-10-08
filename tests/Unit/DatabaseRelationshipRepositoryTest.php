@@ -6,7 +6,9 @@ namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
 use Quantum\Authorization\Authority\Scope;
+use Quantum\Authorization\Consistency\VersionedAuthorizationConsistency;
 use Quantum\Authorization\Relationship\DatabaseRelationshipRepository;
+use Quantum\Cache\LocalVersionAuthority;
 use Quantum\Config\ConfigRepository;
 use Quantum\Database\Contracts\DatabaseInterface;
 use VoltStack\Framework\Application;
@@ -79,7 +81,8 @@ final class DatabaseRelationshipRepositoryTest extends TestCase
             ['principal_id' => 'u_3', 'relation' => 'viewer', 'resource_key' => 'string:doc-4', 'scope' => 'global'],
         ]);
 
-        $repository = new DatabaseRelationshipRepository($database);
+        $consistency = new VersionedAuthorizationConsistency(new LocalVersionAuthority());
+        $repository = new DatabaseRelationshipRepository($database, null, null, $consistency);
         $listed = $repository->listRelationships([
             'principal_id' => 'u_3',
             'relation' => 'owner',
@@ -88,8 +91,10 @@ final class DatabaseRelationshipRepositoryTest extends TestCase
 
         self::assertCount(1, $listed);
         self::assertSame('string:doc-3', $listed[0]['resource_key']);
+        $before = $consistency->relationshipVersion('u_3', 'tenant:acme');
         self::assertTrue($repository->revokeRelationshipByKey('u_3', 'owner', 'string:doc-3', 'tenant:acme'));
         self::assertFalse($repository->hasRelationship('u_3', 'owner', 'doc-3', 'tenant:acme'));
+        self::assertNotSame($before, $consistency->relationshipVersion('u_3', 'tenant:acme'));
 
         $database->connection()->disconnect();
     }

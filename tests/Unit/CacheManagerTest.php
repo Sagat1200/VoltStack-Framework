@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
+use Quantum\Cache\CachePoolDoctor;
+use Quantum\Cache\CachePoolSummary;
 use Quantum\Cache\CacheManager;
 use Quantum\Cache\Contracts\ClockInterface;
 use Quantum\Cache\Repository;
@@ -182,6 +184,104 @@ final class CacheManagerTest extends TestCase
         self::assertSame('missing', $featured->get('homepage', 'missing'));
         self::assertSame('seasonal-v1', $seasonal->get('homepage'));
         self::assertSame('base-v1', $catalog->get('homepage'));
+    }
+
+    public function test_it_lists_configured_pools_with_driver_topology_and_classification(): void
+    {
+        $app = new Application($this->basePath);
+        $config = $app->make(ConfigRepository::class);
+        $config->set('cache.stores', [
+            'memory' => ['driver' => 'memory'],
+            'null' => ['driver' => 'null'],
+        ]);
+        $config->set('cache.pools', [
+            'alpha' => [
+                'store' => 'memory',
+                'prefix' => 'alpha',
+                'default_ttl' => 60,
+            ],
+            'disabled' => [
+                'store' => 'null',
+                'prefix' => 'disabled',
+                'default_ttl' => null,
+            ],
+        ]);
+
+        $pools = $app->make(CacheManager::class)->listPools();
+
+        self::assertContainsOnlyInstancesOf(CachePoolSummary::class, $pools);
+        self::assertCount(2, $pools);
+        self::assertSame('alpha', $pools[0]->pool);
+        self::assertSame('memory', $pools[0]->driver);
+        self::assertSame('single_store', $pools[0]->topology);
+        self::assertSame('local', $pools[0]->classification);
+        self::assertSame('disabled', $pools[1]->pool);
+        self::assertSame('discard', $pools[1]->classification);
+    }
+
+    public function test_it_reports_local_pool_doctor_payload_with_stable_fields(): void
+    {
+        $app = new Application($this->basePath);
+        $config = $app->make(ConfigRepository::class);
+        $config->set('cache.stores', [
+            'memory' => ['driver' => 'memory'],
+            'null' => ['driver' => 'null'],
+        ]);
+        $config->set('cache.pools', [
+            'runtime' => [
+                'store' => 'memory',
+                'prefix' => 'runtime',
+                'default_ttl' => 60,
+            ],
+            'disabled' => [
+                'store' => 'null',
+                'prefix' => 'disabled',
+                'default_ttl' => null,
+            ],
+        ]);
+        $config->set('cache.default_pool', 'runtime');
+
+        $doctor = $app->make(CacheManager::class)->doctor('runtime');
+        $payload = $doctor->toArray();
+
+        self::assertInstanceOf(CachePoolDoctor::class, $doctor);
+        self::assertSame('cache.pool.doctor.v1', $payload['schema_version'] ?? null);
+        self::assertSame(16, strlen((string) ($payload['operation_id'] ?? '')));
+        self::assertSame('runtime', $payload['pool'] ?? null);
+        self::assertSame(40, strlen((string) ($payload['scope_fingerprint'] ?? '')));
+        self::assertSame('available', $payload['outcome'] ?? null);
+        self::assertSame(['pool_config_loaded', 'store_resolved', 'repository_diagnostics'], $payload['effects'] ?? null);
+        self::assertSame([], $payload['warnings'] ?? null);
+        self::assertSame('memory', $payload['configuration']['driver'] ?? null);
+        self::assertSame('runtime', $payload['configuration']['prefix'] ?? null);
+        self::assertSame('local', $payload['configuration']['classification'] ?? null);
+        self::assertSame('runtime', $payload['diagnostics']['context']['key_prefix'] ?? null);
+        self::assertSame($payload['scope_fingerprint'] ?? null, $payload['diagnostics']['context_fingerprint'] ?? null);
+        self::assertSame('v1:runtime', $payload['diagnostics']['storage_namespace'] ?? null);
+        self::assertSame($payload, $doctor->jsonSerialize());
+    }
+
+    public function test_it_reports_warnings_for_discard_pools_without_default_ttl(): void
+    {
+        $app = new Application($this->basePath);
+        $config = $app->make(ConfigRepository::class);
+        $config->set('cache.stores', [
+            'null' => ['driver' => 'null'],
+        ]);
+        $config->set('cache.pools', [
+            'disabled' => [
+                'store' => 'null',
+                'prefix' => 'disabled',
+                'default_ttl' => null,
+            ],
+        ]);
+        $config->set('cache.default_pool', 'disabled');
+
+        $payload = $app->make(CacheManager::class)->doctor()->toArray();
+
+        self::assertSame('disabled', $payload['pool'] ?? null);
+        self::assertSame(['discard_store', 'default_ttl_unset'], $payload['warnings'] ?? null);
+        self::assertSame('discard', $payload['configuration']['classification'] ?? null);
     }
 
     private function deleteDirectory(string $path): void

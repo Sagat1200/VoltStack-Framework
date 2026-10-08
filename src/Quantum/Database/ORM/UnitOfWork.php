@@ -78,7 +78,7 @@ final class UnitOfWork
         $this->snapshots[$oid] = $this->extractLoadedFieldsSnapshot($entity, $metadata, $loadedFields);
         $this->keys[$oid] = $key;
         $this->partialManagedFields[$oid] = array_values(array_unique($loadedFields));
-        $this->originalCollections[$oid] = [];
+        $this->originalCollections[$oid] ??= [];
     }
 
     public function persist(object $entity, EntityMetadata $metadata, ?EntityKey $key): void
@@ -215,7 +215,7 @@ final class UnitOfWork
         $this->snapshots[$oid] = $this->extractLoadedFieldsSnapshot($entity, $metadata, $loadedFields);
         $this->keys[$oid] = $key;
         $this->partialManagedFields[$oid] = array_values(array_unique($loadedFields));
-        $this->originalCollections[$oid] = [];
+        $this->originalCollections[$oid] ??= [];
     }
 
     public function isPartialManaged(object $entity): bool
@@ -229,6 +229,37 @@ final class UnitOfWork
     public function partialManagedFields(object $entity): array
     {
         return $this->partialManagedFields[spl_object_id($entity)] ?? [];
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function loadedPartialManagedToManyAssociations(object $entity): array
+    {
+        $oid = spl_object_id($entity);
+        $metadata = $this->metadataFor($entity);
+        $loaded = $this->partialManagedFields[$oid] ?? [];
+        $associations = [];
+
+        foreach ($loaded as $fieldPath) {
+            if (! str_contains($fieldPath, '.')) {
+                continue;
+            }
+
+            [$associationName] = explode('.', $fieldPath, 2);
+            if (! $metadata->hasAssociation($associationName)) {
+                continue;
+            }
+
+            $association = $metadata->association($associationName);
+            if (! $association->isToMany()) {
+                continue;
+            }
+
+            $associations[$associationName] = $associationName;
+        }
+
+        return array_values($associations);
     }
 
     public function clear(): void

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quantum\Authorization\Authority;
 
+use Quantum\Authorization\Contracts\AuthorizationConsistencyInterface;
 use Quantum\Authorization\Contracts\AuthorityMemoizationCacheInterface;
 
 /**
@@ -19,6 +20,10 @@ final class RequestScopedAuthorityMemoizationCache implements AuthorityMemoizati
      * @var array<string, list<Permission>>
      */
     private array $cache = [];
+
+    public function __construct(
+        private readonly ?AuthorizationConsistencyInterface $consistency = null,
+    ) {}
 
     /**
      * @return list<Permission>
@@ -52,7 +57,13 @@ final class RequestScopedAuthorityMemoizationCache implements AuthorityMemoizati
     public function clear(string $principalId, Scope|string $scope = Scope::GLOBAL): void
     {
         $scopeObject = $scope instanceof Scope ? $scope : new Scope($scope);
-        unset($this->cache[$this->key($principalId, $scopeObject)]);
+        $prefix = $this->tuplePrefix($principalId, $scopeObject);
+
+        foreach (array_keys($this->cache) as $key) {
+            if (str_starts_with($key, $prefix)) {
+                unset($this->cache[$key]);
+            }
+        }
     }
 
     public function clearAll(): void
@@ -62,6 +73,13 @@ final class RequestScopedAuthorityMemoizationCache implements AuthorityMemoizati
 
     private function key(string $principalId, Scope $scope): string
     {
-        return $principalId . '|' . ((string) $scope);
+        $version = $this->consistency?->authorityVersion($principalId, $scope) ?? 'v1';
+
+        return $this->tuplePrefix($principalId, $scope) . '|' . $version;
+    }
+
+    private function tuplePrefix(string $principalId, Scope $scope): string
+    {
+        return trim($principalId) . '|' . ((string) $scope);
     }
 }

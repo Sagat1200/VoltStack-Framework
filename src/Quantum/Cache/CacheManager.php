@@ -81,6 +81,47 @@ final class CacheManager
         );
     }
 
+    /**
+     * @return array<int, CachePoolSummary>
+     */
+    public function listPools(): array
+    {
+        $pools = $this->config('pools', []);
+
+        if (! is_array($pools)) {
+            return [];
+        }
+
+        $names = array_keys(array_filter($pools, static fn(mixed $config): bool => is_array($config)));
+        sort($names, SORT_STRING);
+
+        return array_map(fn(string $name): CachePoolSummary => $this->poolSummary($name), $names);
+    }
+
+    public function doctor(?string $name = null): CachePoolDoctor
+    {
+        $name ??= (string) $this->config('default_pool', $this->config('default', 'file'));
+
+        $summary = $this->poolSummary($name);
+        $diagnostics = $this->pool($name)->diagnostics()->toArray();
+
+        return new CachePoolDoctor(
+            schemaVersion: 'cache.pool.doctor.v1',
+            operationId: bin2hex(random_bytes(8)),
+            pool: $name,
+            scopeFingerprint: (string) ($diagnostics['context_fingerprint'] ?? ''),
+            outcome: 'available',
+            effects: [
+                'pool_config_loaded',
+                'store_resolved',
+                'repository_diagnostics',
+            ],
+            warnings: $this->doctorWarnings($summary),
+            configuration: $summary->toArray(),
+            diagnostics: $diagnostics,
+        );
+    }
+
     private function resolveStore(string $name): StoreInterface
     {
         if (isset($this->resolvedStores[$name])) {
@@ -166,6 +207,51 @@ final class CacheManager
         }
 
         throw new InvalidArgumentException('Cache pool default_ttl must be null, int, DateInterval or DateTimeInterface.');
+    }
+
+    private function poolSummary(string $name): CachePoolSummary
+    {
+        $config = $this->poolConfig($name);
+        $storeName = (string) ($config['store'] ?? $this->config('default', 'file'));
+        $storeConfig = $this->storeConfig($storeName);
+        $driver = (string) ($storeConfig['driver'] ?? 'file');
+
+        return new CachePoolSummary(
+            pool: $name,
+            store: $storeName,
+            driver: $driver,
+            prefix: (string) ($config['prefix'] ?? $name),
+            defaultTtl: $config['default_ttl'] ?? null,
+            topology: 'single_store',
+            classification: $this->classificationForDriver($driver),
+        );
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function doctorWarnings(CachePoolSummary $summary): array
+    {
+        $warnings = [];
+
+        if ($summary->driver === 'null') {
+            $warnings[] = 'discard_store';
+        }
+
+        if ($summary->defaultTtl === null) {
+            $warnings[] = 'default_ttl_unset';
+        }
+
+        return $warnings;
+    }
+
+    private function classificationForDriver(string $driver): string
+    {
+        return match ($driver) {
+            'memory' => 'local',
+            'null' => 'discard',
+            default => 'persistent_local',
+        };
     }
 
     private function config(string $key, mixed $default = null): mixed

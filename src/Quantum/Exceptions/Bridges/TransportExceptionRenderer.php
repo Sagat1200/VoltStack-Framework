@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quantum\Exceptions\Bridges;
 
 use Quantum\Exceptions\Bridges\Http\Json\ProblemDetailsExceptionRenderer;
+use Quantum\Exceptions\Bridges\Spa\SpaExceptionRenderer;
 use Quantum\Exceptions\Contracts\ExceptionRendererInterface;
 use Quantum\Exceptions\Model\PublicError;
 use Quantum\Exceptions\Model\RenderedOutput;
@@ -13,15 +14,21 @@ use Quantum\Exceptions\Model\TransportPlan;
 final class TransportExceptionRenderer implements ExceptionRendererInterface
 {
     private readonly ProblemDetailsExceptionRenderer $problemDetailsRenderer;
+    private readonly SpaExceptionRenderer $spaRenderer;
 
-    public function __construct(?ProblemDetailsExceptionRenderer $problemDetailsRenderer = null)
+    public function __construct(
+        ?ProblemDetailsExceptionRenderer $problemDetailsRenderer = null,
+        ?SpaExceptionRenderer $spaRenderer = null,
+    )
     {
         $this->problemDetailsRenderer = $problemDetailsRenderer ?? new ProblemDetailsExceptionRenderer();
+        $this->spaRenderer = $spaRenderer ?? new SpaExceptionRenderer();
     }
 
     public function render(PublicError $error, TransportPlan $plan): RenderedOutput
     {
         return match ($plan->target) {
+            'spa.error.v1' => $this->spaRenderer->render($error, $plan),
             'http.problem_json' => $this->problemDetailsRenderer->render($error, $plan),
             'http.json' => $this->renderHttpJson($error, $plan),
             'http.html' => $this->renderHttpHtml($error, $plan),

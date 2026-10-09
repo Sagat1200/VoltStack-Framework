@@ -14,6 +14,9 @@ final readonly class RuntimeReleasePipelineReport
     public function __construct(
         private string $driver,
         private string $profile,
+        private string $capabilityEvidenceLevel,
+        private bool $nativeIntegrationVerified,
+        private array $capabilityEvidenceNotes,
         private BootstrapReleaseCheckReport $releaseCheck,
         private ?RuntimeSmokeCheckReport $smokeCheck,
         private ?RuntimeBudgetCalibrationReport $calibration,
@@ -31,6 +34,24 @@ final readonly class RuntimeReleasePipelineReport
     public function profile(): string
     {
         return $this->profile;
+    }
+
+    public function capabilityEvidenceLevel(): string
+    {
+        return $this->capabilityEvidenceLevel;
+    }
+
+    public function nativeIntegrationVerified(): bool
+    {
+        return $this->nativeIntegrationVerified;
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function capabilityEvidenceNotes(): array
+    {
+        return $this->capabilityEvidenceNotes;
     }
 
     public function releaseCheck(): BootstrapReleaseCheckReport
@@ -133,6 +154,11 @@ final readonly class RuntimeReleasePipelineReport
             'passed' => $this->passed(),
             'driver' => $this->driver,
             'profile' => $this->profile,
+            'capability_evidence' => [
+                'level' => $this->capabilityEvidenceLevel,
+                'native_integration_verified' => $this->nativeIntegrationVerified,
+                'notes' => $this->capabilityEvidenceNotes,
+            ],
             'failed_stage' => $this->failedStage(),
             'release_check' => $this->releaseCheck->toArray(),
             'smoke_check' => $this->smokeCheck?->toArray(),

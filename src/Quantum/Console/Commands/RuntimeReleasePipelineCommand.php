@@ -110,6 +110,11 @@ final class RuntimeReleasePipelineCommand extends Command
             $output->writeln(sprintf('  Passed: %s', $report->passed() ? 'yes' : 'no'));
             $output->writeln(sprintf('  Driver: %s', $report->driver()));
             $output->writeln(sprintf('  Profile: %s', $report->profile()));
+            $output->writeln(sprintf('  Capability evidence: %s', $report->capabilityEvidenceLevel()));
+            $output->writeln(sprintf(
+                '  Native integration verified: %s',
+                $report->nativeIntegrationVerified() ? 'yes' : 'no'
+            ));
             $output->writeln(sprintf('  Failed stage: %s', $report->failedStage() ?? '-'));
             $output->writeln(sprintf(
                 '  Release generation: %s',
@@ -143,6 +148,14 @@ final class RuntimeReleasePipelineCommand extends Command
 
                 foreach ($report->violations() as $violation) {
                     $output->writeln(sprintf('    - %s', $violation));
+                }
+            }
+
+            if ($report->capabilityEvidenceNotes() !== []) {
+                $output->writeln('  Capability notes:');
+
+                foreach ($report->capabilityEvidenceNotes() as $note) {
+                    $output->writeln(sprintf('    - %s', $note));
                 }
             }
 

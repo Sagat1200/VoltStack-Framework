@@ -86,6 +86,15 @@ final class ContainerGraphInspectorTest extends TestCase
         self::assertArrayHasKey('unresolvable_dependency', $issuesByCode);
         self::assertSame(GraphNeedsContract::class, $issuesByCode['unresolvable_dependency'][0]->service);
         self::assertSame(GraphContract::class, $issuesByCode['unresolvable_dependency'][0]->subject);
+
+        self::assertSame('definition', $issuesByCode['missing_class'][0]->phase);
+        self::assertSame('binding', $issuesByCode['missing_class'][0]->origin);
+        self::assertSame(['graph.missing'], $issuesByCode['missing_class'][0]->path);
+        self::assertNotNull($issuesByCode['missing_class'][0]->remediation);
+
+        self::assertSame('autowiring', $issuesByCode['unresolvable_parameter'][0]->phase);
+        self::assertSame('$token', $issuesByCode['unresolvable_parameter'][0]->parameter);
+        self::assertSame([GraphNeedsScalar::class], $issuesByCode['unresolvable_parameter'][0]->path);
     }
 
     public function test_it_does_not_report_contract_dependencies_when_a_binding_exists_for_the_contract(): void
@@ -120,6 +129,12 @@ final class ContainerGraphInspectorTest extends TestCase
         self::assertCount(1, $cycles);
         self::assertStringContainsString(GraphCycleA::class, $cycles[0]->message);
         self::assertStringContainsString(GraphCycleB::class, $cycles[0]->message);
+        self::assertSame('cycle_detection', $cycles[0]->phase);
+        self::assertSame('constructor', $cycles[0]->origin);
+        self::assertSame(
+            [GraphCycleA::class, GraphCycleB::class, GraphCycleA::class],
+            $cycles[0]->path,
+        );
     }
 
     public function test_it_reports_static_lifetime_and_scope_capture_violations_for_registered_services(): void
@@ -150,6 +165,11 @@ final class ContainerGraphInspectorTest extends TestCase
         self::assertSame(GraphRequestScopedDependency::class, $byService[GraphSingletonRetainsRequest::class]->subject);
         self::assertStringContainsString('singleton', $byService[GraphSingletonRetainsRequest::class]->message);
         self::assertStringContainsString('request', $byService[GraphSingletonRetainsRequest::class]->message);
+        self::assertSame('scope_propagation', $byService[GraphSingletonRetainsRequest::class]->phase);
+        self::assertSame(
+            [GraphSingletonRetainsRequest::class, GraphRequestScopedDependency::class],
+            $byService[GraphSingletonRetainsRequest::class]->path,
+        );
 
         self::assertArrayHasKey(GraphRequestRetainsTenant::class, $byService);
         self::assertSame(GraphTenantScopedDependency::class, $byService[GraphRequestRetainsTenant::class]->subject);
@@ -202,6 +222,14 @@ final class ContainerGraphInspectorTest extends TestCase
             $byService[GraphSingletonRetainsRequestTransitively::class][0]->subject,
         );
         self::assertStringContainsString(GraphTransientBridgeToRequest::class, $byService[GraphSingletonRetainsRequestTransitively::class][0]->message);
+        self::assertSame(
+            [
+                GraphSingletonRetainsRequestTransitively::class,
+                GraphTransientBridgeToRequest::class,
+                GraphRequestScopedDependency::class,
+            ],
+            $byService[GraphSingletonRetainsRequestTransitively::class][0]->path,
+        );
 
         self::assertCount(1, $byService[GraphRequestRetainsTenantTransitively::class] ?? []);
         self::assertSame(

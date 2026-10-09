@@ -4,11 +4,10 @@ declare(strict_types=1);
 
 namespace VoltStack\Runtime\Adapters;
 
-use Closure;
 use Quantum\Bootstrap\ApplicationPlan;
+use Quantum\Exceptions\Enums\WorkerDisposition;
 use Quantum\Http\Request;
 use Quantum\Http\Response;
-use Quantum\Exceptions\Enums\WorkerDisposition;
 use Quantum\Transport\Bridges\Http\HttpResponseTransformer;
 use Quantum\Transport\Contracts\ResponseTransportManagerInterface;
 use Quantum\Transport\Runtime\TransportContext;
@@ -22,17 +21,11 @@ use VoltStack\Runtime\RuntimeCapabilities;
 use VoltStack\Runtime\RuntimeConfiguration;
 use VoltStack\Runtime\WorkerSession;
 
-final class FrankenPhpRuntimeAdapter implements RuntimeAdapterInterface
+final class RoadRunnerRuntimeAdapter implements RuntimeAdapterInterface
 {
-    public function __construct(
-        private readonly ?Closure $nativeLoopInvoker = null,
-        private readonly ?Closure $nativeAvailabilityResolver = null,
-    ) {
-    }
-
     public function id(): string
     {
-        return 'frankenphp';
+        return 'roadrunner';
     }
 
     public function capabilities(): RuntimeCapabilities
@@ -42,11 +35,11 @@ final class FrankenPhpRuntimeAdapter implements RuntimeAdapterInterface
             concurrent: false,
             streaming: false,
             drainControl: true,
-            nativeHttp: true,
-            evidenceLevel: 'contractual',
+            nativeHttp: false,
+            evidenceLevel: 'simulated',
             nativeIntegrationVerified: false,
             evidenceNotes: [
-                'El adapter ya implementa loop nativo y contratos operativos, pero aun no esta contrastado contra FrankenPHP real en esta plataforma.',
+                'El adapter depende de requestSource en memoria hasta implementar un bridge HTTP nativo de RoadRunner.',
             ],
         );
     }
@@ -56,18 +49,18 @@ final class FrankenPhpRuntimeAdapter implements RuntimeAdapterInterface
         WorkerFactoryInterface $factory,
         RuntimeConfiguration $configuration,
     ): int {
-        $workerContext = WorkerContext::create(
-            driver: $this->id(),
-            maxRequests: $configuration->maxRequests(),
-        );
-
-        $session = $factory->create($plan, $workerContext);
         $requestSource = $configuration->requestSource();
 
         if ($requestSource === null) {
-            return $this->runNativeLoop($session);
+            throw new RuntimeAdapterException(
+                'RoadRunner runtime adapter requires an in-memory request source until a native HTTP bridge is implemented.'
+            );
         }
 
+        $session = $factory->create($plan, WorkerContext::create(
+            driver: $this->id(),
+            maxRequests: $configuration->maxRequests(),
+        ));
         $requests = $this->normalizeRequestSource($requestSource);
         $requests->rewind();
 
@@ -90,40 +83,6 @@ final class FrankenPhpRuntimeAdapter implements RuntimeAdapterInterface
             }
 
             $requests->next();
-        }
-
-        return 0;
-    }
-
-    private function runNativeLoop(WorkerSession $session): int
-    {
-        if (! $this->isNativeRuntimeAvailable()) {
-            throw new RuntimeAdapterException(
-                'FrankenPHP native worker mode requires frankenphp_handle_request() when no in-memory request source is provided.'
-            );
-        }
-
-        while ($session->canAcceptMoreRequests()) {
-            $continue = $this->invokeNativeLoop(function () use ($session): void {
-                $request = Request::capture();
-                $result = $session->handle($request);
-
-                if ($result->workerDisposition() === WorkerDisposition::Terminate) {
-                    return;
-                }
-
-                if (! $this->emitResponse($session, $result->response(), $request)) {
-                    $session->lifecycle()->request(WorkerDisposition::Terminate);
-                }
-            });
-
-            if ($session->lifecycle()->shouldTerminate()) {
-                return 1;
-            }
-
-            if (! $continue) {
-                break;
-            }
         }
 
         return 0;
@@ -154,40 +113,17 @@ final class FrankenPhpRuntimeAdapter implements RuntimeAdapterInterface
         return $transportResult->completed && $transportResult->exception === null;
     }
 
-    private function isNativeRuntimeAvailable(): bool
-    {
-        if ($this->nativeAvailabilityResolver !== null) {
-            return (bool) ($this->nativeAvailabilityResolver)();
-        }
-
-        return function_exists('frankenphp_handle_request');
-    }
-
-    private function invokeNativeLoop(callable $handler): bool
-    {
-        if ($this->nativeLoopInvoker !== null) {
-            return (bool) ($this->nativeLoopInvoker)($handler);
-        }
-
-        /** @phpstan-ignore-next-line */
-        return call_user_func('frankenphp_handle_request', $handler);
-    }
-
     /**
      * @return Iterator<int, Request>
      */
     private function normalizeRequestSource(mixed $source): Iterator
     {
-        if ($source === null) {
-            return $this->yieldRequests([]);
-        }
-
         if (is_callable($source)) {
             $source = $source();
         }
 
         if (! is_array($source) && ! $source instanceof Traversable) {
-            throw new RuntimeAdapterException('FrankenPHP runtime request source must be iterable or callable.');
+            throw new RuntimeAdapterException('RoadRunner runtime request source must be iterable or callable.');
         }
 
         return $this->yieldRequests($source);
@@ -201,7 +137,7 @@ final class FrankenPhpRuntimeAdapter implements RuntimeAdapterInterface
     {
         foreach ($source as $request) {
             if (! $request instanceof Request) {
-                throw new RuntimeAdapterException('FrankenPHP runtime request source must yield Request instances.');
+                throw new RuntimeAdapterException('RoadRunner runtime request source must yield Request instances.');
             }
 
             yield $request;

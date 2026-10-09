@@ -214,6 +214,16 @@ final class AuthenticationServiceProvider extends ServiceProvider
         });
 
         $this->app->scoped(RecoveryManagerInterface::class, static function (Application $app): RecoveryManagerInterface {
+            $passkeyStore = null;
+            try {
+                $candidate = $app->make(PasskeyCredentialStoreInterface::class);
+                if ($candidate instanceof PasskeyCredentialStoreInterface) {
+                    $passkeyStore = $candidate;
+                }
+            } catch (\Throwable) {
+                $passkeyStore = null;
+            }
+
             return new RecoveryManager(
                 $app->make(IdentityProviderInterface::class),
                 $app->make(PasswordPolicyInterface::class),
@@ -223,6 +233,8 @@ final class AuthenticationServiceProvider extends ServiceProvider
                 $app->make(AuthenticationSessionRepositoryInterface::class),
                 $app->make(OpaqueTokenRepositoryInterface::class),
                 $app->make(ConfigRepository::class),
+                $app->make(TrustedDeviceRepositoryInterface::class),
+                $passkeyStore,
                 $app->make(PasswordLifecycleAwareProviderInterface::class),
                 $app->make(DistributedPasswordGovernanceProviderInterface::class),
             );

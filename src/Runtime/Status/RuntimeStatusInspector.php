@@ -35,6 +35,9 @@ final class RuntimeStatusInspector
                 streaming: false,
                 drainControl: false,
                 nativeHttp: false,
+                capabilityEvidenceLevel: 'unavailable',
+                nativeIntegrationVerified: false,
+                capabilityEvidenceNotes: ['No existe un adapter runtime registrado para este driver.'],
                 recommendedBudget: new RuntimeBudgetBaseline(
                     driver: $driver === '' ? 'unknown' : $driver,
                     totalMaximumMs: null,
@@ -67,12 +70,17 @@ final class RuntimeStatusInspector
             streaming: $capabilities->streaming(),
             drainControl: $capabilities->drainControl(),
             nativeHttp: $capabilities->nativeHttp(),
+            capabilityEvidenceLevel: $capabilities->evidenceLevel(),
+            nativeIntegrationVerified: $capabilities->nativeIntegrationVerified(),
+            capabilityEvidenceNotes: $capabilities->evidenceNotes(),
             recommendedBudget: $recommendedBudget,
             rolloutReadiness: $this->rolloutReadiness(
                 persistent: $capabilities->persistent(),
                 drainControl: $capabilities->drainControl(),
                 budget: $recommendedBudget,
                 hasActiveCalibration: $activeCalibration !== null,
+                evidenceLevel: $capabilities->evidenceLevel(),
+                nativeIntegrationVerified: $capabilities->nativeIntegrationVerified(),
             ),
             activeCalibration: $activeCalibration,
             supportedDrivers: $manager->drivers(),
@@ -100,6 +108,8 @@ final class RuntimeStatusInspector
         bool $drainControl,
         RuntimeBudgetBaseline $budget,
         bool $hasActiveCalibration,
+        string $evidenceLevel,
+        bool $nativeIntegrationVerified,
     ): RuntimeRolloutReadinessReport {
         $strategy = $this->rolloutStrategy($persistent, $drainControl);
         $requiresEmpiricalBudget = $persistent;
@@ -115,6 +125,10 @@ final class RuntimeStatusInspector
             && ! $hasActiveCalibration
         ) {
             $gaps[] = 'No existe budget runtime configurado o calibrado para un rollout persistente controlado.';
+        }
+
+        if ($persistent && (! $nativeIntegrationVerified || $evidenceLevel !== 'native-verified')) {
+            $gaps[] = 'El runtime persistente aun no tiene evidencia nativa verificada en esta plataforma.';
         }
 
         return new RuntimeRolloutReadinessReport(

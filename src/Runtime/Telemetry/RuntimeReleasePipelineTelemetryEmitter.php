@@ -28,6 +28,8 @@ final class RuntimeReleasePipelineTelemetryEmitter
                 'passed' => $report->passed(),
                 'failed_stage' => $report->failedStage(),
                 'rollback_triggered' => $report->rollback()->triggered(),
+                'capability_evidence_level' => $report->capabilityEvidenceLevel(),
+                'native_integration_verified' => $report->nativeIntegrationVerified(),
                 'drain_required' => $report->drain()->required(),
                 'drain_action' => $report->drain()->action(),
             ],

@@ -9,16 +9,19 @@ use Quantum\Auth\Contracts\DistributedPasswordGovernanceProviderInterface;
 use Quantum\Auth\Contracts\IdentityProviderInterface;
 use Quantum\Auth\Contracts\MutableIdentityProviderInterface;
 use Quantum\Auth\Contracts\OpaqueTokenRepositoryInterface;
+use Quantum\Auth\Contracts\PasskeyCredentialStoreInterface;
 use Quantum\Auth\Contracts\PasswordLifecycleAwareProviderInterface;
 use Quantum\Auth\Contracts\PasswordPolicyInterface;
 use Quantum\Auth\Contracts\PasswordRehashingIdentityProviderInterface;
 use Quantum\Auth\Contracts\RecoveryManagerInterface;
 use Quantum\Auth\Contracts\RecoveryTokenRepositoryInterface;
+use Quantum\Auth\Contracts\TrustedDeviceRepositoryInterface;
 use Quantum\Auth\Exceptions\RecoveryPasswordRejectedException;
 use Quantum\Auth\Exceptions\RecoveryPasswordReuseException;
 use Quantum\Auth\Exceptions\RecoveryTokenExpiredException;
 use Quantum\Auth\Exceptions\RecoveryTokenInvalidException;
 use Quantum\Auth\Identity\IdentityInterface;
+use Quantum\Auth\Identity\IdentityReference;
 use Quantum\Config\ConfigRepository;
 
 final class RecoveryManager implements RecoveryManagerInterface
@@ -32,6 +35,8 @@ final class RecoveryManager implements RecoveryManagerInterface
         private readonly AuthenticationSessionRepositoryInterface $sessions,
         private readonly OpaqueTokenRepositoryInterface $opaqueTokens,
         private readonly ConfigRepository $config,
+        private readonly TrustedDeviceRepositoryInterface $trustedDevices,
+        private readonly ?PasskeyCredentialStoreInterface $passkeys = null,
         private readonly ?PasswordLifecycleAwareProviderInterface $passwordLifecycle = null,
         private readonly ?DistributedPasswordGovernanceProviderInterface $governance = null,
     ) {}
@@ -188,6 +193,8 @@ final class RecoveryManager implements RecoveryManagerInterface
         $revokedSessions = count($this->sessions->listForIdentity($identity));
         $this->sessions->deleteForIdentity($identity);
         $tokensRevoked = $this->opaqueTokens->revokeAllForIdentity($identity->type(), (string) $identity->identifier());
+        $trustedDevicesRevoked = $this->revokeTrustedDevicesForIdentity($identity);
+        $passkeysRevoked = $this->revokePasskeysForIdentity($identity, $record->identifier);
 
         return new RecoveryResult(
             completed: true,
@@ -196,6 +203,8 @@ final class RecoveryManager implements RecoveryManagerInterface
             identityId: (string) $identity->identifier(),
             sessionsRevoked: $revokedSessions,
             tokensRevoked: $tokensRevoked,
+            trustedDevicesRevoked: $trustedDevicesRevoked,
+            passkeysRevoked: $passkeysRevoked,
             completedAt: time(),
             metadata: [
                 'transport' => $request->transport,
@@ -255,5 +264,65 @@ final class RecoveryManager implements RecoveryManagerInterface
     private function exposeToken(): bool
     {
         return (bool) $this->config->get('auth.recovery.password_reset.expose_token', false);
+    }
+
+    private function revokeTrustedDevicesForIdentity(IdentityInterface $identity): int
+    {
+        if (! $this->invalidateTrustedDevices()) {
+            return 0;
+        }
+
+        $reference = new IdentityReference($identity->identifier(), $identity->type());
+        $revoked = 0;
+
+        foreach ($this->trustedDevices->listForIdentity($reference) as $device) {
+            $this->trustedDevices->delete($device->publicId->value);
+            $revoked++;
+        }
+
+        return $revoked;
+    }
+
+    private function revokePasskeysForIdentity(IdentityInterface $identity, string $lookupIdentifier): int
+    {
+        if (! $this->invalidatePasskeys() || ! $this->passkeys instanceof PasskeyCredentialStoreInterface) {
+            return 0;
+        }
+
+        $userHandle = '';
+
+        if ($identity instanceof \Quantum\Auth\Identity\GenericIdentity) {
+            $candidate = $identity->attributes['_provider_identifier_value'] ?? null;
+            if (is_string($candidate) && trim($candidate) !== '') {
+                $userHandle = trim($candidate);
+            }
+        }
+
+        if ($userHandle === '') {
+            $userHandle = trim($lookupIdentifier);
+        }
+
+        if ($userHandle === '') {
+            return 0;
+        }
+
+        $revoked = 0;
+        foreach ($this->passkeys->listForUserHandle($userHandle) as $credential) {
+            if ($this->passkeys->revoke($credential->credentialId)) {
+                $revoked++;
+            }
+        }
+
+        return $revoked;
+    }
+
+    private function invalidateTrustedDevices(): bool
+    {
+        return (bool) $this->config->get('auth.recovery.password_reset.invalidate_trusted_devices', true);
+    }
+
+    private function invalidatePasskeys(): bool
+    {
+        return (bool) $this->config->get('auth.recovery.password_reset.invalidate_passkeys', true);
     }
 }

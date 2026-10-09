@@ -9,6 +9,8 @@ use Quantum\Database\ORM\Metadata\EntityAssociationMetadata;
 use Quantum\Database\ORM\Metadata\EntityMetadata;
 use Quantum\Database\ORM\Planning\AssociationFetchPlan;
 use Quantum\Database\ORM\Planning\AssociationFetchPlanCompiler;
+use Quantum\Database\ORM\Planning\EntityHydrationPlan;
+use Quantum\Database\ORM\Planning\EntityHydrationPlanCompiler;
 use Quantum\Database\Query\Builder\DatabaseQueryManager;
 use Quantum\Database\Query\Builder\SelectQueryBuilder;
 use RuntimeException;
@@ -1832,34 +1834,7 @@ final class EntityQuery
      */
     private function entityHydrationSelectColumns(): array
     {
-        $columns = [self::ROOT_ALIAS . '.*'];
-
-        foreach ($this->joinedAssociations as $associationName => $join) {
-            $targetMetadata = $join['targetMetadata'];
-            $alias = $join['alias'];
-
-            foreach ($targetMetadata->mappedFields() as $field) {
-                $columns[] = sprintf(
-                    '%s.%s AS %s',
-                    $alias,
-                    $field->column,
-                    $this->joinedResultKey($associationName, $field->column),
-                );
-            }
-
-            foreach ($targetMetadata->embeddeds() as $embedded) {
-                foreach ($embedded->mappedInnerFields() as $innerField) {
-                    $columns[] = sprintf(
-                        '%s.%s AS %s',
-                        $alias,
-                        $innerField->column,
-                        $this->joinedResultKey($associationName, $innerField->column),
-                    );
-                }
-            }
-        }
-
-        return $columns;
+        return $this->compiledEntityHydrationPlan()->selectColumns();
     }
 
     /**
@@ -1868,38 +1843,10 @@ final class EntityQuery
      */
     private function extractJoinedTargetRow(array $join, array $row): ?array
     {
-        $targetMetadata = $join['targetMetadata'];
-        $associationName = $join['association']->name;
-        $targetRow = [];
-        $hasAnyValue = false;
-
-        foreach ($targetMetadata->mappedFields() as $field) {
-            $resultKey = $this->joinedResultKey($associationName, $field->column);
-            if (! array_key_exists($resultKey, $row)) {
-                continue;
-            }
-
-            $targetRow[$field->column] = $row[$resultKey];
-            if ($row[$resultKey] !== null) {
-                $hasAnyValue = true;
-            }
-        }
-
-        foreach ($targetMetadata->embeddeds() as $embedded) {
-            foreach ($embedded->mappedInnerFields() as $innerField) {
-                $resultKey = $this->joinedResultKey($associationName, $innerField->column);
-                if (! array_key_exists($resultKey, $row)) {
-                    continue;
-                }
-
-                $targetRow[$innerField->column] = $row[$resultKey];
-                if ($row[$resultKey] !== null) {
-                    $hasAnyValue = true;
-                }
-            }
-        }
-
-        return $hasAnyValue ? $targetRow : null;
+        return $this->compiledEntityHydrationPlan()->extractJoinedTargetRow(
+            $join['association']->name,
+            $row,
+        );
     }
 
     private function linkJoinedReverseAssociation(
@@ -2101,9 +2048,23 @@ final class EntityQuery
         );
     }
 
+    private function compiledEntityHydrationPlan(): EntityHydrationPlan
+    {
+        return $this->entityHydrationPlanCompiler()->compile(
+            $this->metadata,
+            self::ROOT_ALIAS,
+            $this->joinedAssociations,
+        );
+    }
+
     private function fetchPlanCompiler(): AssociationFetchPlanCompiler
     {
         return new AssociationFetchPlanCompiler($this->manager->metadata);
+    }
+
+    private function entityHydrationPlanCompiler(): EntityHydrationPlanCompiler
+    {
+        return new EntityHydrationPlanCompiler();
     }
 
     /**

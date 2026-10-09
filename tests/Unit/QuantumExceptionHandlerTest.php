@@ -307,6 +307,90 @@ final class QuantumExceptionHandlerTest extends TestCase
         self::assertSame('Session realm="VoltStack", error="authorization_required"', $result->response->headers()['WWW-Authenticate'] ?? null);
     }
 
+    public function test_authorization_mapper_adaptive_step_up_challenge_emits_risk_and_step_up_headers(): void
+    {
+        $handler = new ExceptionHandler();
+        $handler->addMapper(new AuthorizationExceptionMapper());
+
+        $ex = FrameworkAuthorizationChallengeException::fromDecision(
+            DecisionResult::challenge('authorization.stage:adaptive_access', 'auth.step_up_required', [
+                'adaptive_access_action' => 'step_up',
+                'risk_score' => 82,
+                'risk_level' => 'high',
+                'risk_step_up_threshold' => 75,
+                'step_up_available_methods' => ['totp', 'passkey'],
+                'step_up_challenge_endpoint' => '/auth/step-up/challenge',
+                'step_up_continuation_endpoint' => '/auth/step-up/continue',
+            ]),
+        );
+
+        $request = Request::create('/t', 'GET', [], [], [], [], [], [
+            'HTTP_ACCEPT' => 'application/json',
+        ]);
+        $context = new ExceptionHandlingContext(
+            throwable: $ex,
+            origin: ExceptionOrigin::Routing,
+            runtime: new RuntimeContext(environment: 'local'),
+            request: $request,
+            controllerExecution: null,
+            transportExecution: new TransportExecution(response: new TransportResponse(), context: new TransportContext()),
+            metadata: new MetadataBag([]),
+            state: new ExceptionHandlingState(),
+            debug: false,
+        );
+
+        $result = $handler->handle($ex, $context);
+        $payload = json_decode($result->response->content(), true);
+
+        self::assertSame(401, $result->response->statusCode());
+        self::assertSame('required', $result->response->headers()['X-Auth-Step-Up'] ?? null);
+        self::assertSame('82', $result->response->headers()['X-Auth-Risk-Score'] ?? null);
+        self::assertSame('high', $result->response->headers()['X-Auth-Risk-Level'] ?? null);
+        self::assertSame('75', $result->response->headers()['X-Auth-Risk-Step-Up-Threshold'] ?? null);
+        self::assertSame('totp,passkey', $result->response->headers()['X-Auth-Step-Up-Available-Methods'] ?? null);
+        self::assertSame('/auth/step-up/challenge', $payload['step_up_challenge_endpoint'] ?? null);
+        self::assertSame('/auth/step-up/continue', $payload['step_up_continuation_endpoint'] ?? null);
+    }
+
+    public function test_authorization_mapper_adaptive_risk_denial_emits_risk_headers(): void
+    {
+        $handler = new ExceptionHandler();
+        $handler->addMapper(new AuthorizationExceptionMapper());
+
+        $ex = FrameworkAuthorizationDeniedException::fromDecision(
+            DecisionResult::deny('authorization.stage:adaptive_access', 'auth.risk_denied', [
+                'adaptive_access_action' => 'deny',
+                'risk_score' => 97,
+                'risk_level' => 'critical',
+                'risk_deny_threshold' => 95,
+            ]),
+        );
+
+        $request = Request::create('/t', 'GET', [], [], [], [], [], [
+            'HTTP_ACCEPT' => 'application/json',
+        ]);
+        $context = new ExceptionHandlingContext(
+            throwable: $ex,
+            origin: ExceptionOrigin::Routing,
+            runtime: new RuntimeContext(environment: 'local'),
+            request: $request,
+            controllerExecution: null,
+            transportExecution: new TransportExecution(response: new TransportResponse(), context: new TransportContext()),
+            metadata: new MetadataBag([]),
+            state: new ExceptionHandlingState(),
+            debug: false,
+        );
+
+        $result = $handler->handle($ex, $context);
+        $payload = json_decode($result->response->content(), true);
+
+        self::assertSame(403, $result->response->statusCode());
+        self::assertSame('true', $result->response->headers()['X-Auth-Risk-Denied'] ?? null);
+        self::assertSame('97', $result->response->headers()['X-Auth-Risk-Score'] ?? null);
+        self::assertSame('95', $result->response->headers()['X-Auth-Risk-Deny-Threshold'] ?? null);
+        self::assertSame('critical', $payload['risk_level'] ?? null);
+    }
+
     public function test_security_mapper_tenant_violation_returns_404_to_avoid_leaking_tenant_info(): void
     {
         $handler = new ExceptionHandler();

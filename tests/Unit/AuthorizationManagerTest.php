@@ -331,6 +331,56 @@ final class AuthorizationManagerTest extends TestCase
         self::assertSame('manifest_requirement_relationship_not_satisfied', $deny->reasonCode());
         self::assertSame('owner', $deny->metadata()['relation'] ?? null);
     }
+
+    public function test_authorization_manager_challenges_when_adaptive_access_requires_step_up(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $config = $app->make(ConfigRepository::class);
+        $config->set('authorization.adaptive_access.enabled', true);
+        $config->set('authorization.adaptive_access.step_up_threshold', 70);
+        $config->set('authorization.adaptive_access.challenge.available_methods', ['totp', 'passkey']);
+        $config->set('authorization.adaptive_access.challenge.challenge_endpoint', '/auth/step-up/challenge');
+        $config->set('authorization.adaptive_access.challenge.continuation_endpoint', '/auth/step-up/continue');
+        $config->set('authorization.adaptive_access.challenge.required_strength_name', 'multi_factor');
+        $config->set('authorization.adaptive_access.challenge.required_strength_value', 500);
+
+        $decision = $app->make(AuthorizationManagerInterface::class)->decide(
+            'documents.approve',
+            context: new AuthorizationContext('req-step-up', attributes: [
+                'auth_risk_score' => 80,
+                'auth_risk_level' => 'high',
+            ]),
+        );
+
+        self::assertTrue($decision->isChallenge());
+        self::assertSame('auth.step_up_required', $decision->reasonCode());
+        self::assertSame(80, $decision->metadata()['risk_score'] ?? null);
+        self::assertSame('high', $decision->metadata()['risk_level'] ?? null);
+        self::assertSame(70, $decision->metadata()['risk_step_up_threshold'] ?? null);
+        self::assertSame(['totp', 'passkey'], $decision->metadata()['step_up_available_methods'] ?? null);
+    }
+
+    public function test_authorization_manager_denies_when_adaptive_access_exceeds_deny_threshold(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $config = $app->make(ConfigRepository::class);
+        $config->set('authorization.adaptive_access.enabled', true);
+        $config->set('authorization.adaptive_access.step_up_threshold', 70);
+        $config->set('authorization.adaptive_access.deny_threshold', 95);
+
+        $decision = $app->make(AuthorizationManagerInterface::class)->decide(
+            'documents.approve',
+            context: new AuthorizationContext('req-risk-deny', attributes: [
+                'risk' => ['score' => 99],
+                'risk_level' => 'critical',
+            ]),
+        );
+
+        self::assertTrue($decision->isDenied());
+        self::assertSame('auth.risk_denied', $decision->reasonCode());
+        self::assertSame(99, $decision->metadata()['risk_score'] ?? null);
+        self::assertSame(95, $decision->metadata()['risk_deny_threshold'] ?? null);
+    }
 }
 
 final readonly class AuthorizationArticle

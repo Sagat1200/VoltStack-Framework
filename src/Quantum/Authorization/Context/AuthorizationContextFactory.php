@@ -34,16 +34,22 @@ final class AuthorizationContextFactory implements AuthorizationContextFactoryIn
         }
 
         if ($authContext !== null) {
+            $riskScore = $authContext->attribute('risk_score');
+            $riskLevel = $authContext->attribute('risk_level');
+
             $context = new AuthorizationContext(
                 requestId: $authContext->requestId,
                 tenantId: is_string($authContext->attribute('tenant_id')) ? $authContext->attribute('tenant_id') : null,
                 channel: is_string($authContext->attribute('channel')) ? $authContext->attribute('channel') : $authContext->method,
-                attributes: [
+                attributes: array_filter([
                     'authentication_method' => $authContext->method,
                     'authentication_assurance_profile' => $authContext->authenticationAssuranceProfile(),
+                    'auth_assurance_profile' => $authContext->authenticationAssuranceProfile(),
                     'session_public_id' => $authContext->sessionPublicId(),
                     'device_reference' => $authContext->deviceReference(),
-                ] + $authContext->attributes,
+                    'auth_risk_score' => is_int($riskScore) ? $riskScore : (is_string($riskScore) && preg_match('/^-?\d+$/', trim($riskScore)) === 1 ? (int) trim($riskScore) : null),
+                    'auth_risk_level' => is_string($riskLevel) && trim($riskLevel) !== '' ? trim($riskLevel) : null,
+                ], static fn (mixed $value): bool => $value !== null) + $authContext->attributes,
             );
 
             return $this->tenantScopeResolver?->normalize($context) ?? $context;

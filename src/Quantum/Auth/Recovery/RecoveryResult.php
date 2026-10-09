@@ -16,6 +16,8 @@ final readonly class RecoveryResult
         public string $identityId,
         public int $sessionsRevoked,
         public int $tokensRevoked,
+        public int $trustedDevicesRevoked,
+        public int $passkeysRevoked,
         public int $completedAt,
         public array $metadata = [],
     ) {}

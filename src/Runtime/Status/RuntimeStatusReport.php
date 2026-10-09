@@ -21,6 +21,9 @@ final readonly class RuntimeStatusReport
         private bool $streaming,
         private bool $drainControl,
         private bool $nativeHttp,
+        private string $capabilityEvidenceLevel,
+        private bool $nativeIntegrationVerified,
+        private array $capabilityEvidenceNotes,
         private RuntimeBudgetBaseline $recommendedBudget,
         private RuntimeRolloutReadinessReport $rolloutReadiness,
         private ?RuntimeBudgetCalibrationArtifact $activeCalibration = null,
@@ -62,6 +65,24 @@ final readonly class RuntimeStatusReport
     public function nativeHttp(): bool
     {
         return $this->nativeHttp;
+    }
+
+    public function capabilityEvidenceLevel(): string
+    {
+        return $this->capabilityEvidenceLevel;
+    }
+
+    public function nativeIntegrationVerified(): bool
+    {
+        return $this->nativeIntegrationVerified;
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function capabilityEvidenceNotes(): array
+    {
+        return $this->capabilityEvidenceNotes;
     }
 
     public function recommendedBudget(): RuntimeBudgetBaseline
@@ -114,6 +135,11 @@ final readonly class RuntimeStatusReport
             'streaming' => $this->streaming,
             'drain_control' => $this->drainControl,
             'native_http' => $this->nativeHttp,
+            'capability_evidence' => [
+                'level' => $this->capabilityEvidenceLevel,
+                'native_integration_verified' => $this->nativeIntegrationVerified,
+                'notes' => $this->capabilityEvidenceNotes,
+            ],
             'recommended_budget' => $this->recommendedBudget->toArray(),
             'rollout_readiness' => $this->rolloutReadiness->toArray(),
             'active_calibration' => $this->activeCalibration?->toArray(),

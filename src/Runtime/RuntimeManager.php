@@ -8,6 +8,7 @@ use InvalidArgumentException;
 use Quantum\Bootstrap\ApplicationPlan;
 use VoltStack\Framework\Application;
 use VoltStack\Runtime\Adapters\FrankenPhpRuntimeAdapter;
+use VoltStack\Runtime\Adapters\RoadRunnerRuntimeAdapter;
 use VoltStack\Runtime\Adapters\SapiRuntimeAdapter;
 use VoltStack\Runtime\Contracts\RuntimeAdapterInterface;
 use VoltStack\Runtime\Contracts\WorkerFactoryInterface;
@@ -23,7 +24,7 @@ final class RuntimeManager
         private ?WorkerFactoryInterface $workerFactory = null,
     ) {
         if ($this->adapters === []) {
-            foreach ([new FrankenPhpRuntimeAdapter(), new SapiRuntimeAdapter()] as $default) {
+            foreach ([new FrankenPhpRuntimeAdapter(), new SapiRuntimeAdapter(), new RoadRunnerRuntimeAdapter()] as $default) {
                 $this->adapters[$default->id()] = $default;
             }
         }

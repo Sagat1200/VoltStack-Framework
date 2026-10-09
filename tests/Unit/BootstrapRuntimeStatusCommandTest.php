@@ -186,19 +186,25 @@ PHP
         self::assertStringContainsString('Max requests: 4', $output->stdout());
         self::assertStringContainsString('Persistent: yes', $output->stdout());
         self::assertStringContainsString('Concurrent: no', $output->stdout());
+        self::assertStringContainsString('Capability evidence: contractual', $output->stdout());
+        self::assertStringContainsString('Native integration verified: no', $output->stdout());
         self::assertStringContainsString('Recommended total budget: 80.000 ms', $output->stdout());
         self::assertStringContainsString('Recommended request budget: 30.000 ms', $output->stdout());
         self::assertStringContainsString('Budget source: config', $output->stdout());
-        self::assertStringContainsString('Rollout ready: yes', $output->stdout());
+        self::assertStringContainsString('Rollout ready: no', $output->stdout());
         self::assertStringContainsString('Rollout strategy: progressive-drain', $output->stdout());
-        self::assertStringContainsString('Supported drivers: frankenphp, sapi', $output->stdout());
+        self::assertStringContainsString('Capability notes:', $output->stdout());
+        self::assertStringContainsString('Rollout gaps:', $output->stdout());
+        self::assertStringContainsString('Supported drivers: frankenphp, sapi, roadrunner', $output->stdout());
         self::assertStringContainsString('Telemetry: emitted', $output->stdout());
 
         $telemetry = file_get_contents($this->telemetryPath);
         self::assertIsString($telemetry);
         self::assertStringContainsString('"type":"runtime_status"', $telemetry);
         self::assertStringContainsString('"budget_source":"config"', $telemetry);
-        self::assertStringContainsString('"rollout_ready":true', $telemetry);
+        self::assertStringContainsString('"capability_evidence_level":"contractual"', $telemetry);
+        self::assertStringContainsString('"native_integration_verified":false', $telemetry);
+        self::assertStringContainsString('"rollout_ready":false', $telemetry);
         self::assertStringContainsString('"rollout_strategy":"progressive-drain"', $telemetry);
     }
 
@@ -321,11 +327,17 @@ PHP
         self::assertSame('frankenphp', $decoded['report']['driver'] ?? null);
         self::assertSame(3, $decoded['report']['max_requests'] ?? null);
         self::assertSame(true, $decoded['report']['persistent'] ?? null);
+        self::assertSame('contractual', $decoded['report']['capability_evidence']['level'] ?? null);
+        self::assertSame(false, $decoded['report']['capability_evidence']['native_integration_verified'] ?? null);
         self::assertSame(80, $decoded['report']['recommended_budget']['total_budget_ms'] ?? null);
         self::assertSame(30, $decoded['report']['recommended_budget']['request_budget_ms'] ?? null);
         self::assertSame('config', $decoded['report']['recommended_budget']['source'] ?? null);
-        self::assertSame(true, $decoded['report']['rollout_readiness']['ready'] ?? null);
+        self::assertSame(false, $decoded['report']['rollout_readiness']['ready'] ?? null);
         self::assertSame('progressive-drain', $decoded['report']['rollout_readiness']['strategy'] ?? null);
+        self::assertContains(
+            'El runtime persistente aun no tiene evidencia nativa verificada en esta plataforma.',
+            $decoded['report']['rollout_readiness']['gaps'] ?? [],
+        );
     }
 
     public function test_runtime_status_command_uses_the_active_published_calibration_when_no_config_budget_exists(): void
@@ -387,8 +399,13 @@ PHP
         self::assertEquals(61.0, $decoded['report']['recommended_budget']['total_budget_ms'] ?? null);
         self::assertEquals(29.0, $decoded['report']['recommended_budget']['request_budget_ms'] ?? null);
         self::assertSame($artifact->generationId(), $decoded['report']['active_calibration']['generation_id'] ?? null);
-        self::assertSame(true, $decoded['report']['rollout_readiness']['ready'] ?? null);
+        self::assertSame('contractual', $decoded['report']['capability_evidence']['level'] ?? null);
+        self::assertSame(false, $decoded['report']['rollout_readiness']['ready'] ?? null);
         self::assertSame('progressive-drain', $decoded['report']['rollout_readiness']['strategy'] ?? null);
+        self::assertContains(
+            'El runtime persistente aun no tiene evidencia nativa verificada en esta plataforma.',
+            $decoded['report']['rollout_readiness']['gaps'] ?? [],
+        );
     }
 
     public function test_runtime_status_command_flags_persistent_runtime_without_empirical_or_config_budget_as_not_ready_for_rollout(): void
@@ -429,6 +446,10 @@ PHP
         self::assertSame('adapter-default', $decoded['report']['rollout_readiness']['budget_source'] ?? null);
         self::assertContains(
             'No existe budget runtime configurado o calibrado para un rollout persistente controlado.',
+            $decoded['report']['rollout_readiness']['gaps'] ?? [],
+        );
+        self::assertContains(
+            'El runtime persistente aun no tiene evidencia nativa verificada en esta plataforma.',
             $decoded['report']['rollout_readiness']['gaps'] ?? [],
         );
     }

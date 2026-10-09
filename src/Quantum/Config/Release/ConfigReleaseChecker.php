@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quantum\Config\Release;
 
+use Quantum\Config\Publication\PublishedConfigurationRequiredException;
 use Quantum\Config\Telemetry\ConfigReleaseTelemetryEmitter;
 use Quantum\Telemetry\Contracts\TelemetryManagerInterface;
 use RuntimeException;
@@ -19,10 +20,11 @@ final class ConfigReleaseChecker
     public function run(
         bool $requireActiveGeneration = true,
         bool $requirePublishedMatch = true,
+        bool $requirePublishedConfig = false,
         bool $emitTelemetry = false,
         string $commandName = 'config:release-check',
     ): ConfigReleaseCheckReport {
-        $app = $this->bootstrapApplication();
+        $app = $this->bootstrapApplication($requirePublishedConfig);
         $scopeManager = $app->make(ScopeManager::class);
 
         return $scopeManager->runInCommand(
@@ -45,7 +47,7 @@ final class ConfigReleaseChecker
         );
     }
 
-    private function bootstrapApplication(): Application
+    private function bootstrapApplication(bool $requirePublishedConfig = false): Application
     {
         $bootstrapPath = $this->basePath . DIRECTORY_SEPARATOR . 'bootstrap' . DIRECTORY_SEPARATOR . 'app.php';
 
@@ -59,6 +61,27 @@ final class ConfigReleaseChecker
             throw new RuntimeException('The application bootstrap file must return a VoltStack application instance.');
         }
 
+        if ($requirePublishedConfig) {
+            $this->assertPublishedConfiguration($app);
+        }
+
         return $app;
+    }
+
+    private function assertPublishedConfiguration(Application $app): void
+    {
+        $status = $app->configStatusInspector()->inspect($app);
+
+        if (! $status->hasActiveGeneration()) {
+            throw new PublishedConfigurationRequiredException(
+                'Published configuration is required for config release check, but no active configuration generation exists.',
+            );
+        }
+
+        if (! $status->publishedMatchesEffective()) {
+            throw new PublishedConfigurationRequiredException(
+                'Published configuration is required for config release check, but the effective snapshot differs from the active generation.',
+            );
+        }
     }
 }

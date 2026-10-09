@@ -48,6 +48,7 @@ final class RuntimeReleasePipelineRunner
     ): RuntimeReleasePipelineReport {
         $app = $this->bootstrapCurrentApplication($requirePublishedConfig);
         $driver = $this->resolveDriver($app, $driver);
+        $capabilities = $this->capabilities($app, $driver);
         $artifactDirectory = $this->normalizeArtifactDirectory($artifactDirectory);
         $bootstrapBefore = $this->currentBootstrapBuild($artifactDirectory);
         $calibrationBefore = $this->currentCalibrationBuild($app, $driver, $calibrationDirectory);
@@ -58,7 +59,7 @@ final class RuntimeReleasePipelineRunner
             calibrationGenerationBefore: $calibrationBefore?->id,
         );
         $drain = RuntimeReleasePipelineDrainReport::idle(
-            supported: $this->supportsDrainControl($app, $driver),
+            supported: $capabilities->drainControl(),
         );
 
         $releaseCheck = (new BootstrapReleaseChecker($this->basePath))->run(
@@ -73,6 +74,9 @@ final class RuntimeReleasePipelineRunner
             return new RuntimeReleasePipelineReport(
                 driver: $driver,
                 profile: $profile,
+                capabilityEvidenceLevel: $capabilities->evidenceLevel(),
+                nativeIntegrationVerified: $capabilities->nativeIntegrationVerified(),
+                capabilityEvidenceNotes: $capabilities->evidenceNotes(),
                 releaseCheck: $releaseCheck,
                 smokeCheck: null,
                 calibration: null,
@@ -104,6 +108,9 @@ final class RuntimeReleasePipelineRunner
             return new RuntimeReleasePipelineReport(
                 driver: $driver,
                 profile: $profile,
+                capabilityEvidenceLevel: $capabilities->evidenceLevel(),
+                nativeIntegrationVerified: $capabilities->nativeIntegrationVerified(),
+                capabilityEvidenceNotes: $capabilities->evidenceNotes(),
                 releaseCheck: $releaseCheck,
                 smokeCheck: $smokeCheck,
                 calibration: null,
@@ -141,6 +148,9 @@ final class RuntimeReleasePipelineRunner
                 return new RuntimeReleasePipelineReport(
                     driver: $driver,
                     profile: $profile,
+                    capabilityEvidenceLevel: $capabilities->evidenceLevel(),
+                    nativeIntegrationVerified: $capabilities->nativeIntegrationVerified(),
+                    capabilityEvidenceNotes: $capabilities->evidenceNotes(),
                     releaseCheck: $releaseCheck,
                     smokeCheck: $smokeCheck,
                     calibration: $calibration,
@@ -170,6 +180,9 @@ final class RuntimeReleasePipelineRunner
         return new RuntimeReleasePipelineReport(
             driver: $driver,
             profile: $profile,
+            capabilityEvidenceLevel: $capabilities->evidenceLevel(),
+            nativeIntegrationVerified: $capabilities->nativeIntegrationVerified(),
+            capabilityEvidenceNotes: $capabilities->evidenceNotes(),
             releaseCheck: $releaseCheck,
             smokeCheck: $smokeCheck,
             calibration: $calibration,
@@ -345,11 +358,6 @@ final class RuntimeReleasePipelineRunner
     {
         return preg_match('/^[A-Za-z]:\\\\/', $path) === 1
             || str_starts_with($path, DIRECTORY_SEPARATOR);
-    }
-
-    private function supportsDrainControl(Application $app, string $driver): bool
-    {
-        return $this->capabilities($app, $driver)->drainControl();
     }
 
     private function drainForFailure(

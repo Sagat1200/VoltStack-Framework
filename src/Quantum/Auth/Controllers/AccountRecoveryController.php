@@ -65,6 +65,8 @@ final class AccountRecoveryController extends Controller
             ],
             'sessions_revoked' => $result->sessionsRevoked,
             'tokens_revoked' => $result->tokensRevoked,
+            'trusted_devices_revoked' => $result->trustedDevicesRevoked,
+            'passkeys_revoked' => $result->passkeysRevoked,
             'completed_at' => $result->completedAt,
             'metadata' => $result->metadata,
         ], 200, [

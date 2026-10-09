@@ -344,6 +344,61 @@ PHP
         self::assertSame('sapi', $manager->adapter('sapi')->id());
     }
 
+    public function test_runtime_manager_server_runs_roadrunner_adapter_sequentially_with_request_source(): void
+    {
+        $app = new Application($this->basePath);
+        $app->instance(KernelContract::class, new TestRuntimeManagerKernel());
+        $emitter = new InMemoryTransportEmitter();
+        $app->instance(TransportEmitterInterface::class, $emitter);
+
+        $plan = ApplicationBuilder::create($this->basePath)
+            ->withEnvironment('testing')
+            ->withProfile('worker')
+            ->build();
+
+        /** @var RuntimeManagerServer $manager */
+        $manager = $app->make(RuntimeManagerServer::class);
+        $exitCode = $manager->run($plan, RuntimeConfiguration::roadrunner(
+            maxRequests: 2,
+            requestSource: [
+                Request::create('/rr-first'),
+                Request::create('/rr-second'),
+                Request::create('/rr-third'),
+            ],
+        ));
+
+        self::assertSame(0, $exitCode);
+        self::assertSame(['/rr-first', '/rr-second'], TestRuntimeManagerKernel::$handledPaths);
+        self::assertTrue($manager->adapter('roadrunner')->capabilities()->persistent());
+        self::assertFalse($manager->adapter('roadrunner')->capabilities()->concurrent());
+        self::assertFalse($manager->adapter('roadrunner')->capabilities()->nativeHttp());
+        self::assertCount(2, $emitter->emitted());
+        self::assertSame('runtime:/rr-first', $emitter->emitted()[0]['response']->payload());
+        self::assertSame('runtime:/rr-second', $emitter->emitted()[1]['response']->payload());
+    }
+
+    public function test_runtime_manager_server_fails_closed_for_roadrunner_without_request_source(): void
+    {
+        $app = new Application($this->basePath);
+        $app->instance(KernelContract::class, new TestRuntimeManagerKernel());
+
+        $plan = ApplicationBuilder::create($this->basePath)
+            ->withEnvironment('testing')
+            ->withProfile('worker')
+            ->build();
+
+        /** @var RuntimeManagerServer $manager */
+        $manager = $app->make(RuntimeManagerServer::class);
+
+        $this->expectException(RuntimeAdapterException::class);
+        $this->expectExceptionMessage('RoadRunner runtime adapter requires an in-memory request source');
+
+        $manager->run($plan, RuntimeConfiguration::roadrunner(
+            maxRequests: 2,
+            requestSource: null,
+        ));
+    }
+
     public function test_runtime_manager_server_rejects_invalid_sapi_max_requests(): void
     {
         $app = new Application($this->basePath);

@@ -34,6 +34,11 @@ final class SapiRuntimeAdapter implements RuntimeAdapterInterface
             streaming: false,
             drainControl: false,
             nativeHttp: true,
+            evidenceLevel: 'native-verified',
+            nativeIntegrationVerified: true,
+            evidenceNotes: [
+                'El adapter SAPI usa la captura/respuesta nativa del runtime PHP actual.',
+            ],
         );
     }
 

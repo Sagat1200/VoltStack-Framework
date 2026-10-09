@@ -65,6 +65,11 @@ final class ContainerGraphInspector
                     sprintf('Binding [%s] targets class [%s], but that class does not exist.', $binding->abstract, $concrete),
                     $binding->abstract,
                     $concrete,
+                    phase: 'definition',
+                    consumer: $binding->abstract,
+                    origin: 'binding',
+                    path: [$binding->abstract],
+                    remediation: 'Register a valid target class or update the binding to an instantiable concrete.',
                 );
             } else {
                 $analyzable = true;
@@ -104,6 +109,11 @@ final class ContainerGraphInspector
                         sprintf('Binding [%s] targets [%s], but that class is not instantiable.', $abstract, $concrete),
                         $abstract,
                         $concrete,
+                        phase: 'definition',
+                        consumer: $abstract,
+                        origin: 'constructor',
+                        path: [$abstract],
+                        remediation: 'Bind the abstract to a concrete instantiable class or provide a factory/closure.',
                     ),
                 ],
             ];
@@ -150,6 +160,12 @@ final class ContainerGraphInspector
                     ),
                     $abstract,
                     '$' . $parameter->getName(),
+                    phase: 'autowiring',
+                    consumer: $abstract,
+                    parameter: '$' . $parameter->getName(),
+                    origin: 'constructor',
+                    path: [$abstract],
+                    remediation: 'Provide a default value, contextual parameter, or factory for this constructor argument.',
                 );
             }
         }
@@ -191,6 +207,11 @@ final class ContainerGraphInspector
                     ),
                     $service->abstract,
                     $target,
+                    phase: 'autowiring',
+                    consumer: $service->abstract,
+                    origin: 'constructor',
+                    path: [$service->abstract, $target],
+                    remediation: 'Register the dependency explicitly or bind the contract to an instantiable implementation.',
                 );
             }
         }
@@ -316,6 +337,11 @@ final class ContainerGraphInspector
                 ),
                 $service->abstract,
                 $dependencyNode->abstract,
+                phase: 'scope_propagation',
+                consumer: $service->abstract,
+                origin: 'constructor',
+                path: $path,
+                remediation: 'Move the retained dependency to a compatible scope or break the retention with a unit-scoped boundary.',
             );
         }
 
@@ -342,6 +368,11 @@ final class ContainerGraphInspector
             ),
             $service->abstract,
             $dependencyNode->abstract,
+            phase: 'scope_propagation',
+            consumer: $service->abstract,
+            origin: 'constructor',
+            path: $path,
+            remediation: 'Align the owner scope with the dependency scope or move the dependency behind a compatible boundary.',
         );
     }
 
@@ -402,6 +433,11 @@ final class ContainerGraphInspector
                     ),
                     $abstract,
                     implode(' -> ', $cycle),
+                    phase: 'cycle_detection',
+                    consumer: $abstract,
+                    origin: 'constructor',
+                    path: $cycle,
+                    remediation: 'Break the constructor cycle with an orchestrator, provider, or explicit deferred boundary.',
                 );
             }
 

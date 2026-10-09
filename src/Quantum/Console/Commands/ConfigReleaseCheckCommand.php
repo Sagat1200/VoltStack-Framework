@@ -23,7 +23,7 @@ final class ConfigReleaseCheckCommand extends Command
 
     public function usage(): string
     {
-        return 'config:release-check [--allow-missing-generation] [--allow-drift] [--emit-telemetry] [--json]';
+        return 'config:release-check [--allow-missing-generation] [--allow-drift] [--require-published-config] [--emit-telemetry] [--json]';
     }
 
     public function category(): string
@@ -36,6 +36,7 @@ final class ConfigReleaseCheckCommand extends Command
         return [
             '--allow-missing-generation' => 'No falla si no existe una generacion de configuracion activa.',
             '--allow-drift' => 'No falla si el snapshot efectivo difiere de la generacion publicada activa.',
+            '--require-published-config' => 'Exige una generation activa y sin drift antes de ejecutar el release-check.',
             '--emit-telemetry' => 'Emite telemetry con el reporte del release-check de configuracion.',
             '--json' => 'Emite un payload JSON estable con el reporte del release-check.',
         ];
@@ -46,6 +47,7 @@ final class ConfigReleaseCheckCommand extends Command
         $report = (new ConfigReleaseChecker($this->basePath))->run(
             requireActiveGeneration: ! $input->hasOption('allow-missing-generation'),
             requirePublishedMatch: ! $input->hasOption('allow-drift'),
+            requirePublishedConfig: $input->hasOption('require-published-config'),
             emitTelemetry: $input->hasOption('emit-telemetry'),
             commandName: $this->name(),
         );

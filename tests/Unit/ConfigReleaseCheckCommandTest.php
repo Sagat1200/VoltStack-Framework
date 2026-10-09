@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use Quantum\Bootstrap\Bootstrapper;
 use Quantum\Bootstrap\Config\SecretReference;
 use Quantum\Config\ConfigRepository;
+use Quantum\Config\Publication\PublishedConfigurationRequiredException;
 use Quantum\Console\Commands\ConfigReleaseCheckCommand;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
@@ -237,6 +238,71 @@ PHP
         self::assertIsString($telemetry);
         self::assertStringContainsString('config_release_check', $telemetry);
         self::assertStringContainsString('"source":"config"', $telemetry);
+    }
+
+    public function test_config_release_check_command_can_require_published_configuration_when_generation_matches_effective_snapshot(): void
+    {
+        $this->publishConfigurationSnapshot();
+
+        $command = new ConfigReleaseCheckCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'config:release-check',
+                '--require-published-config',
+                '--json',
+            ]),
+            $output,
+        );
+
+        self::assertSame(0, $exitCode);
+
+        $decoded = json_decode(trim($output->stdout()), true);
+        self::assertIsArray($decoded);
+        self::assertSame(true, $decoded['report']['passed'] ?? null);
+    }
+
+    public function test_config_release_check_command_can_require_published_configuration(): void
+    {
+        $command = new ConfigReleaseCheckCommand($this->basePath);
+        $output = new Output();
+
+        $this->expectException(PublishedConfigurationRequiredException::class);
+        $this->expectExceptionMessage('Published configuration is required for config release check');
+
+        $command->handle(
+            Input::fromArgv([
+                'volt',
+                'config:release-check',
+                '--require-published-config',
+                '--json',
+            ]),
+            $output,
+        );
+    }
+
+    public function test_config_release_check_command_fails_when_required_published_configuration_has_drift(): void
+    {
+        $this->publishConfigurationSnapshot();
+        $this->writeBootstrapApp(mutateAfterBoot: true);
+
+        $command = new ConfigReleaseCheckCommand($this->basePath);
+        $output = new Output();
+
+        $this->expectException(PublishedConfigurationRequiredException::class);
+        $this->expectExceptionMessage('effective snapshot differs from the active generation');
+
+        $command->handle(
+            Input::fromArgv([
+                'volt',
+                'config:release-check',
+                '--require-published-config',
+                '--json',
+            ]),
+            $output,
+        );
     }
 
     /**

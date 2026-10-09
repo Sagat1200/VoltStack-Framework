@@ -11,6 +11,7 @@ use Quantum\Console\Commands\BootstrapBenchmarkCommand;
 use Quantum\Console\Commands\CacheClearCommand;
 use Quantum\Console\Commands\ConfigReleaseCheckCommand;
 use Quantum\Console\Commands\ConfigStatusCommand;
+use Quantum\Console\Commands\ExceptionCatalogCommand;
 use Quantum\Console\Commands\ExceptionCompileCommand;
 use Quantum\Console\Commands\ExceptionDoctorCommand;
 use Quantum\Console\Commands\ExceptionReleaseCheckCommand;
@@ -63,6 +64,7 @@ final class ConsoleApplicationTest extends TestCase
         self::assertStringContainsString('bootstrap:release-check', $output->stdout());
         self::assertStringContainsString('bootstrap:benchmark', $output->stdout());
         self::assertStringContainsString('bootstrap:status', $output->stdout());
+        self::assertStringContainsString('exceptions:catalog', $output->stdout());
         self::assertStringContainsString('exceptions:compile', $output->stdout());
         self::assertStringContainsString('exceptions:doctor', $output->stdout());
         self::assertStringContainsString('exceptions:release-check', $output->stdout());
@@ -219,9 +221,10 @@ final class ConsoleApplicationTest extends TestCase
 
         self::assertSame(0, $exitCode);
         self::assertStringContainsString('Command: config:release-check', $output->stdout());
-        self::assertStringContainsString('Usage: php volt config:release-check [--allow-missing-generation] [--allow-drift] [--emit-telemetry] [--json]', $output->stdout());
+        self::assertStringContainsString('Usage: php volt config:release-check [--allow-missing-generation] [--allow-drift] [--require-published-config] [--emit-telemetry] [--json]', $output->stdout());
         self::assertStringContainsString('--allow-missing-generation', $output->stdout());
         self::assertStringContainsString('--allow-drift', $output->stdout());
+        self::assertStringContainsString('--require-published-config', $output->stdout());
         self::assertStringContainsString('--emit-telemetry', $output->stdout());
         self::assertStringContainsString('--json', $output->stdout());
     }
@@ -241,6 +244,23 @@ final class ConsoleApplicationTest extends TestCase
         self::assertStringContainsString('Command: exceptions:compile', $output->stdout());
         self::assertStringContainsString('Usage: php volt exceptions:compile [--check-only] [--json]', $output->stdout());
         self::assertStringContainsString('--check-only', $output->stdout());
+        self::assertStringContainsString('--json', $output->stdout());
+    }
+
+    public function test_it_renders_help_for_exception_catalog_command(): void
+    {
+        $output = new Output();
+        $application = $this->application($output);
+
+        $exitCode = $application->run([
+            'volt',
+            'help',
+            'exceptions:catalog',
+        ]);
+
+        self::assertSame(0, $exitCode);
+        self::assertStringContainsString('Command: exceptions:catalog', $output->stdout());
+        self::assertStringContainsString('Usage: php volt exceptions:catalog [--json]', $output->stdout());
         self::assertStringContainsString('--json', $output->stdout());
     }
 
@@ -507,6 +527,7 @@ final class ConsoleApplicationTest extends TestCase
                 new CacheClearCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new ViewCacheCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new ViewClearCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
+                new ExceptionCatalogCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new ExceptionCompileCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new ConfigReleaseCheckCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new ConfigStatusCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),

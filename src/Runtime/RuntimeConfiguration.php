@@ -32,6 +32,22 @@ final readonly class RuntimeConfiguration
         );
     }
 
+    public static function roadrunner(
+        int $maxRequests = 1,
+        mixed $requestSource = null,
+        ?string $environment = null,
+        ?string $profile = null,
+    ): self {
+        return new self(
+            driver: 'roadrunner',
+            maxRequests: $maxRequests,
+            drainOnTerminate: true,
+            requestSource: $requestSource,
+            environment: $environment,
+            profile: $profile,
+        );
+    }
+
     public function driver(): string
     {
         return $this->driver;

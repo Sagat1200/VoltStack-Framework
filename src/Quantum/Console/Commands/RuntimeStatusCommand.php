@@ -80,6 +80,11 @@ final class RuntimeStatusCommand extends Command
                 $output->writeln(sprintf('  Streaming: %s', $report->streaming() ? 'yes' : 'no'));
                 $output->writeln(sprintf('  Drain control: %s', $report->drainControl() ? 'yes' : 'no'));
                 $output->writeln(sprintf('  Native HTTP: %s', $report->nativeHttp() ? 'yes' : 'no'));
+                $output->writeln(sprintf('  Capability evidence: %s', $report->capabilityEvidenceLevel()));
+                $output->writeln(sprintf(
+                    '  Native integration verified: %s',
+                    $report->nativeIntegrationVerified() ? 'yes' : 'no'
+                ));
                 $output->writeln(sprintf(
                     '  Recommended total budget: %s',
                     $report->recommendedBudget()->totalMaximumMs() !== null
@@ -121,6 +126,14 @@ final class RuntimeStatusCommand extends Command
 
                     foreach ($report->alerts() as $alert) {
                         $output->writeln(sprintf('    - %s', $alert));
+                    }
+                }
+
+                if ($report->capabilityEvidenceNotes() !== []) {
+                    $output->writeln('  Capability notes:');
+
+                    foreach ($report->capabilityEvidenceNotes() as $note) {
+                        $output->writeln(sprintf('    - %s', $note));
                     }
                 }
 

@@ -158,6 +158,8 @@ PHP
         self::assertIsArray($decoded);
         self::assertSame('runtime:release-pipeline', $decoded['command'] ?? null);
         self::assertSame(true, $decoded['report']['passed'] ?? null);
+        self::assertSame('contractual', $decoded['report']['capability_evidence']['level'] ?? null);
+        self::assertSame(false, $decoded['report']['capability_evidence']['native_integration_verified'] ?? null);
         self::assertSame(null, $decoded['report']['failed_stage'] ?? null);
         self::assertSame(true, $decoded['report']['release_check']['passed'] ?? null);
         self::assertSame(true, $decoded['report']['smoke_check']['passed'] ?? null);
@@ -188,6 +190,7 @@ PHP
         $decoded = json_decode(trim($output->stdout()), true);
         self::assertIsArray($decoded);
         self::assertSame(false, $decoded['report']['passed'] ?? null);
+        self::assertSame('contractual', $decoded['report']['capability_evidence']['level'] ?? null);
         self::assertSame('runtime_smoke', $decoded['report']['failed_stage'] ?? null);
         self::assertSame(true, $decoded['report']['rollback']['triggered'] ?? null);
         self::assertSame(true, $decoded['report']['rollback']['bootstrap']['rolled_back'] ?? null);
@@ -225,6 +228,7 @@ PHP
         self::assertIsArray($decoded);
         self::assertSame(true, $decoded['report']['passed'] ?? null);
         self::assertSame(true, $decoded['report']['calibration']['passed'] ?? null);
+        self::assertSame('contractual', $decoded['report']['capability_evidence']['level'] ?? null);
         self::assertSame('frankenphp', $decoded['report']['published_calibration']['driver'] ?? null);
         self::assertSame('published-calibration', $decoded['report']['published_calibration']['recommended_budget']['source'] ?? null);
 
@@ -260,6 +264,8 @@ PHP
         $telemetry = file_get_contents($this->telemetryPath);
         self::assertIsString($telemetry);
         self::assertStringContainsString('"type":"runtime_release_pipeline"', $telemetry);
+        self::assertStringContainsString('"capability_evidence_level":"contractual"', $telemetry);
+        self::assertStringContainsString('"native_integration_verified":false', $telemetry);
         self::assertStringContainsString('"drain_required":true', $telemetry);
         self::assertStringContainsString('"drain_action":"drain"', $telemetry);
     }

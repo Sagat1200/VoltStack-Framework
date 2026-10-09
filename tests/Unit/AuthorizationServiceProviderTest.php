@@ -8,6 +8,7 @@ use PHPUnit\Framework\TestCase;
 use Quantum\Authorization\Manifest\Contracts\AuthorizationManifestStoreInterface;
 use Quantum\Authorization\Manifest\FilesystemAuthorizationManifestStore;
 use Quantum\Authorization\Manifest\InMemoryAuthorizationManifestStore;
+use Quantum\Authorization\Core\Stages\AdaptiveAccessStage;
 use Quantum\Authorization\Contracts\AuthorizationMetadataResolverInterface;
 use Quantum\Authorization\Metadata\AuthorizationMetadataResolver;
 use Quantum\Config\ConfigRepository;
@@ -119,6 +120,15 @@ final class AuthorizationServiceProviderTest extends TestCase
         $storeValue = $storeProperty->getValue($resolver);
 
         self::assertNull($storeValue);
+    }
+
+    public function test_adaptive_access_stage_resolves_with_default_disabled_configuration(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+
+        $stage = $app->make(AdaptiveAccessStage::class);
+
+        self::assertInstanceOf(AdaptiveAccessStage::class, $stage);
     }
 
     private function cleanupDir(string $dir): void

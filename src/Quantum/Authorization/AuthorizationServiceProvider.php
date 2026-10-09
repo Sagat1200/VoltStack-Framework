@@ -43,6 +43,7 @@ use Quantum\Authorization\Context\TenantScopeResolver;
 use Quantum\Authorization\Core\AuthorizationManager;
 use Quantum\Authorization\Core\AuthorizationPlanner;
 use Quantum\Authorization\Core\AuthorizationRequestFactory;
+use Quantum\Authorization\Core\Stages\AdaptiveAccessStage;
 use Quantum\Authorization\Core\Stages\GateAuthorizationStage;
 use Quantum\Authorization\Core\Stages\ManifestRequirementsEnforcementStage;
 use Quantum\Authorization\Core\Stages\PolicyAuthorizationStage;
@@ -146,6 +147,30 @@ final class AuthorizationServiceProvider extends ServiceProvider
         $this->app->scoped(RelationshipEvaluator::class, function (Application $app): RelationshipEvaluator {
             return new RelationshipEvaluator($app->make(RelationshipRepositoryInterface::class));
         });
+        $this->app->scoped(AdaptiveAccessStage::class, function (Application $app): AdaptiveAccessStage {
+            $config = $app->config('authorization.adaptive_access', []);
+            $config = is_array($config) ? $config : [];
+            $challenge = is_array($config['challenge'] ?? null) ? $config['challenge'] : [];
+            $deny = is_array($config['deny'] ?? null) ? $config['deny'] : [];
+            $scoreKeys = is_array($config['score_attribute_keys'] ?? null) ? $config['score_attribute_keys'] : ['auth_risk_score', 'risk_score', 'risk.score'];
+            $levelKeys = is_array($config['level_attribute_keys'] ?? null) ? $config['level_attribute_keys'] : ['auth_risk_level', 'risk_level', 'risk.level'];
+            $methods = is_array($challenge['available_methods'] ?? null) ? $challenge['available_methods'] : [];
+
+            return new AdaptiveAccessStage(
+                enabled: $this->booleanOf($config['enabled'] ?? false),
+                stepUpThreshold: $this->nullableInt($config['step_up_threshold'] ?? null),
+                denyThreshold: $this->nullableInt($config['deny_threshold'] ?? null),
+                scoreAttributeKeys: array_values(array_filter($scoreKeys, static fn (mixed $value): bool => is_string($value) && trim($value) !== '')),
+                levelAttributeKeys: array_values(array_filter($levelKeys, static fn (mixed $value): bool => is_string($value) && trim($value) !== '')),
+                stepUpReasonCode: is_string($challenge['reason_code'] ?? null) && trim((string) $challenge['reason_code']) !== '' ? trim((string) $challenge['reason_code']) : 'auth.step_up_required',
+                denyReasonCode: is_string($deny['reason_code'] ?? null) && trim((string) $deny['reason_code']) !== '' ? trim((string) $deny['reason_code']) : 'auth.risk_denied',
+                availableMethods: array_values(array_filter($methods, static fn (mixed $value): bool => is_string($value) && trim($value) !== '')),
+                challengeEndpoint: is_string($challenge['challenge_endpoint'] ?? null) && trim((string) $challenge['challenge_endpoint']) !== '' ? trim((string) $challenge['challenge_endpoint']) : null,
+                continuationEndpoint: is_string($challenge['continuation_endpoint'] ?? null) && trim((string) $challenge['continuation_endpoint']) !== '' ? trim((string) $challenge['continuation_endpoint']) : null,
+                requiredStrengthName: is_string($challenge['required_strength_name'] ?? null) && trim((string) $challenge['required_strength_name']) !== '' ? trim((string) $challenge['required_strength_name']) : null,
+                requiredStrengthValue: $this->nullableInt($challenge['required_strength_value'] ?? null),
+            );
+        });
         $this->app->scoped(ManifestRequirementsEnforcementStage::class, function (Application $app): ManifestRequirementsEnforcementStage {
             $failClosed = $app->config('authorization.fail_closed', true);
             $evaluateConcretely = $app->config('authorization.authority.evaluate_requirements_concretely', false);
@@ -189,6 +214,7 @@ final class AuthorizationServiceProvider extends ServiceProvider
                     $app->make(AuthorizationRequestEnricherInterface::class),
                 ],
                 [
+                    $app->make(AdaptiveAccessStage::class),
                     $app->make(ManifestRequirementsEnforcementStage::class),
                     $app->make(GateAuthorizationStage::class),
                     $app->make(PolicyAuthorizationStage::class),
@@ -592,6 +618,19 @@ final class AuthorizationServiceProvider extends ServiceProvider
         return (bool) $value;
     }
 
+    private function nullableInt(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value;
+        }
+
+        if (is_string($value) && preg_match('/^-?\d+$/', trim($value)) === 1) {
+            return (int) trim($value);
+        }
+
+        return null;
+    }
+
     /**
      * @return list<class-string<\Quantum\Console\Command>>
      */
@@ -623,6 +662,24 @@ final class AuthorizationServiceProvider extends ServiceProvider
             'manifest' => [
                 'enabled' => true,
                 'path' => null,
+            ],
+            'adaptive_access' => [
+                'enabled' => false,
+                'score_attribute_keys' => ['auth_risk_score', 'risk_score', 'risk.score'],
+                'level_attribute_keys' => ['auth_risk_level', 'risk_level', 'risk.level'],
+                'step_up_threshold' => null,
+                'deny_threshold' => null,
+                'challenge' => [
+                    'reason_code' => 'auth.step_up_required',
+                    'available_methods' => [],
+                    'challenge_endpoint' => null,
+                    'continuation_endpoint' => null,
+                    'required_strength_name' => null,
+                    'required_strength_value' => null,
+                ],
+                'deny' => [
+                    'reason_code' => 'auth.risk_denied',
+                ],
             ],
             'consistency' => [
                 'enabled' => true,

@@ -16,6 +16,7 @@ use Quantum\Console\Commands\BootstrapBenchmarkCommand;
 use Quantum\Console\Commands\ControllerCompileClearCommand;
 use Quantum\Console\Commands\ControllerCompileCommand;
 use Quantum\Console\Commands\ControllerCompileWarmupCommand;
+use Quantum\Console\Commands\ExceptionCatalogCommand;
 use Quantum\Console\Commands\ExceptionCompileCommand;
 use Quantum\Console\Commands\ExceptionDoctorCommand;
 use Quantum\Console\Commands\ExceptionReleaseCheckCommand;
@@ -99,6 +100,7 @@ final class ConsoleApplication
             $this->add(new ControllerCompileCommand($basePath));
             $this->add(new ControllerCompileClearCommand($basePath));
             $this->add(new ControllerCompileWarmupCommand($basePath));
+            $this->add(new ExceptionCatalogCommand($basePath));
             $this->add(new ExceptionCompileCommand($basePath));
             $this->add(new ExceptionDoctorCommand($basePath));
             $this->add(new ExceptionReleaseCheckCommand($basePath));

@@ -399,6 +399,62 @@ PHP
         ));
     }
 
+    public function test_runtime_manager_server_runs_openswoole_adapter_sequentially_with_request_source(): void
+    {
+        $app = new Application($this->basePath);
+        $app->instance(KernelContract::class, new TestRuntimeManagerKernel());
+        $emitter = new InMemoryTransportEmitter();
+        $app->instance(TransportEmitterInterface::class, $emitter);
+
+        $plan = ApplicationBuilder::create($this->basePath)
+            ->withEnvironment('testing')
+            ->withProfile('worker')
+            ->build();
+
+        /** @var RuntimeManagerServer $manager */
+        $manager = $app->make(RuntimeManagerServer::class);
+        $exitCode = $manager->run($plan, RuntimeConfiguration::openswoole(
+            maxRequests: 2,
+            requestSource: [
+                Request::create('/os-first'),
+                Request::create('/os-second'),
+                Request::create('/os-third'),
+            ],
+        ));
+
+        self::assertSame(0, $exitCode);
+        self::assertSame(['/os-first', '/os-second'], TestRuntimeManagerKernel::$handledPaths);
+        self::assertTrue($manager->adapter('openswoole')->capabilities()->persistent());
+        self::assertFalse($manager->adapter('openswoole')->capabilities()->concurrent());
+        self::assertFalse($manager->adapter('openswoole')->capabilities()->nativeHttp());
+        self::assertSame('simulated', $manager->adapter('openswoole')->capabilities()->evidenceLevel());
+        self::assertCount(2, $emitter->emitted());
+        self::assertSame('runtime:/os-first', $emitter->emitted()[0]['response']->payload());
+        self::assertSame('runtime:/os-second', $emitter->emitted()[1]['response']->payload());
+    }
+
+    public function test_runtime_manager_server_fails_closed_for_openswoole_without_request_source(): void
+    {
+        $app = new Application($this->basePath);
+        $app->instance(KernelContract::class, new TestRuntimeManagerKernel());
+
+        $plan = ApplicationBuilder::create($this->basePath)
+            ->withEnvironment('testing')
+            ->withProfile('worker')
+            ->build();
+
+        /** @var RuntimeManagerServer $manager */
+        $manager = $app->make(RuntimeManagerServer::class);
+
+        $this->expectException(RuntimeAdapterException::class);
+        $this->expectExceptionMessage('OpenSwoole runtime adapter requires an in-memory request source');
+
+        $manager->run($plan, RuntimeConfiguration::openswoole(
+            maxRequests: 2,
+            requestSource: null,
+        ));
+    }
+
     public function test_runtime_manager_server_rejects_invalid_sapi_max_requests(): void
     {
         $app = new Application($this->basePath);

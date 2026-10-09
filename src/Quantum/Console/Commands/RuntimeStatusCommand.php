@@ -119,6 +119,22 @@ final class RuntimeStatusCommand extends Command
                         $report->activeCalibration()->fingerprint()
                     ));
                 }
+
+                if ($report->activeCapabilityEvidence() !== null) {
+                    $output->writeln(sprintf(
+                        '  Active capability evidence generation: %s',
+                        $report->activeCapabilityEvidence()->generationId()
+                    ));
+                    $output->writeln(sprintf(
+                        '  Active capability evidence platform: %s',
+                        $report->activeCapabilityEvidence()->platform()
+                    ));
+                    $output->writeln(sprintf(
+                        '  Active capability evidence fingerprint: %s',
+                        $report->activeCapabilityEvidence()->fingerprint()
+                    ));
+                }
+
                 $output->writeln(sprintf('  Supported drivers: %s', implode(', ', $report->supportedDrivers())));
 
                 if ($report->alerts() !== []) {

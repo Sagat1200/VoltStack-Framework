@@ -11,6 +11,8 @@ use Quantum\Database\ORM\Planning\AssociationFetchPlan;
 use Quantum\Database\ORM\Planning\AssociationFetchPlanCompiler;
 use Quantum\Database\ORM\Planning\EntityHydrationPlan;
 use Quantum\Database\ORM\Planning\EntityHydrationPlanCompiler;
+use Quantum\Database\ORM\Planning\PartialHydrationPlan;
+use Quantum\Database\ORM\Planning\PartialHydrationPlanCompiler;
 use Quantum\Database\Query\Builder\DatabaseQueryManager;
 use Quantum\Database\Query\Builder\SelectQueryBuilder;
 use RuntimeException;
@@ -319,7 +321,7 @@ final class EntityQuery
 
         $this->partialJoinedSelections = $this->finalizeJoinedPartialSelections($joinedColumns);
         $this->partialSelections = array_values($columns);
-        $this->query->select(...$this->partialHydrationSelectColumns($this->partialSelections));
+        $this->query->select(...$this->compiledPartialHydrationPlan($this->partialSelections)->selectColumns());
 
         return $this;
     }
@@ -363,7 +365,7 @@ final class EntityQuery
 
         $this->partialJoinedSelections = $this->finalizeJoinedPartialSelections($joinedColumns);
         $this->managedPartialSelections = array_values($columns);
-        $this->query->select(...$this->partialHydrationSelectColumns($this->managedPartialSelections));
+        $this->query->select(...$this->compiledPartialHydrationPlan($this->managedPartialSelections)->selectColumns());
 
         return $this;
     }
@@ -944,45 +946,9 @@ final class EntityQuery
     private function queryForJoinedToManyPartialHydration(array $rootSelections): SelectQueryBuilder
     {
         $query = $this->query->withoutLimitOffset();
-        $query->select(...$this->partialHydrationSelectColumns($rootSelections));
+        $query->select(...$this->compiledPartialHydrationPlan($rootSelections)->selectColumns());
 
         return $query;
-    }
-
-    /**
-     * @param list<array{name:string,column:string}> $rootSelections
-     * @return list<string>
-     */
-    private function partialHydrationSelectColumns(array $rootSelections): array
-    {
-        $columns = [];
-
-        foreach ($rootSelections as $selection) {
-            if ($this->joinedAssociations === []) {
-                $columns[] = $selection['column'];
-                continue;
-            }
-
-            $columns[] = sprintf(
-                '%s AS %s',
-                $this->qualifyRootColumn($selection['column']),
-                $selection['column'],
-            );
-        }
-
-        foreach ($this->partialJoinedSelections as $associationName => $selections) {
-            $join = $this->joinedAssociations[$associationName];
-            foreach ($selections as $selection) {
-                $columns[] = sprintf(
-                    '%s.%s AS %s',
-                    $join['alias'],
-                    $selection['column'],
-                    $selection['resultKey'],
-                );
-            }
-        }
-
-        return $columns;
     }
 
     /**
@@ -1068,10 +1034,11 @@ final class EntityQuery
     private function hydrateRelationalPartialRow(array $row, bool $managed): object
     {
         $rootSelections = $managed ? $this->managedPartialSelections : $this->partialSelections;
+        $plan = $this->compiledPartialHydrationPlan($rootSelections);
         $rootLoadedFields = $managed
-            ? $this->relationalManagedLoadedFieldNames($rootSelections)
-            : $this->partialLoadedFieldNames($rootSelections);
-        $rootRow = $this->extractPartialRootRow($row, $rootSelections);
+            ? $this->relationalManagedLoadedFieldNames($plan)
+            : $plan->rootLoadedFieldNames();
+        $rootRow = $plan->extractRootRow($row);
 
         $entity = $managed
             ? $this->manager->hydrateManagedPartial($this->metadata, $rootRow, $rootLoadedFields)
@@ -1081,17 +1048,14 @@ final class EntityQuery
             $join = $this->joinedAssociations[$associationName];
             $association = $join['association'];
             $targetMetadata = $join['targetMetadata'];
-            $targetRow = $this->extractJoinedTargetRow($join, $row);
+            $targetRow = $plan->extractJoinedTargetRow($associationName, $row);
 
             if ($targetRow === null) {
                 $this->assignAssociationValue($entity, $association, null);
                 continue;
             }
 
-            $targetLoadedFields = array_values(array_map(
-                static fn(array $selection): string => $selection['name'],
-                $selections,
-            ));
+            $targetLoadedFields = $plan->joinedTargetLoadedFieldNames($associationName);
 
             $target = $managed
                 ? $this->manager->hydrateManagedPartial($targetMetadata, $targetRow, $targetLoadedFields)
@@ -1105,50 +1069,19 @@ final class EntityQuery
     }
 
     /**
-     * @param list<array{name:string,column:string}> $rootSelections
      * @return list<string>
      */
-    private function relationalManagedLoadedFieldNames(array $rootSelections): array
+    private function relationalManagedLoadedFieldNames(PartialHydrationPlan $plan): array
     {
-        $loaded = $this->partialLoadedFieldNames($rootSelections);
+        $loaded = $plan->rootLoadedFieldNames();
 
-        foreach ($this->partialJoinedSelections as $associationName => $selections) {
-            foreach ($selections as $selection) {
-                $loaded[] = $associationName . '.' . $selection['name'];
+        foreach (array_keys($this->partialJoinedSelections) as $associationName) {
+            foreach ($plan->joinedTargetLoadedFieldNames($associationName) as $fieldName) {
+                $loaded[] = $associationName . '.' . $fieldName;
             }
         }
 
         return array_values(array_unique($loaded));
-    }
-
-    /**
-     * @param list<array{name:string,column:string}> $selections
-     * @return list<string>
-     */
-    private function partialLoadedFieldNames(array $selections): array
-    {
-        return array_values(array_map(
-            static fn(array $selection): string => $selection['name'],
-            $selections,
-        ));
-    }
-
-    /**
-     * @param list<array{name:string,column:string}> $selections
-     * @return array<string, mixed>
-     */
-    private function extractPartialRootRow(array $row, array $selections): array
-    {
-        $rootRow = [];
-        foreach ($selections as $selection) {
-            if (! array_key_exists($selection['column'], $row)) {
-                continue;
-            }
-
-            $rootRow[$selection['column']] = $row[$selection['column']];
-        }
-
-        return $rootRow;
     }
 
     /**
@@ -1160,6 +1093,7 @@ final class EntityQuery
         $entitiesById = [];
         $order = [];
         $seenTargets = [];
+        $plan = $this->compiledPartialHydrationPlan($this->partialSelections);
 
         foreach ($rows as $row) {
             $rootIdentifier = $row[$this->metadata->identifier->column] ?? null;
@@ -1171,7 +1105,7 @@ final class EntityQuery
             if (! isset($entitiesById[$rootKey])) {
                 $entity = $this->manager->hydratePartial(
                     $this->metadata,
-                    $this->extractPartialRootRow($row, $this->partialSelections),
+                    $plan->extractRootRow($row),
                 );
                 $this->initializeJoinedCollections($entity);
                 $entitiesById[$rootKey] = $entity;
@@ -1215,7 +1149,8 @@ final class EntityQuery
         $entitiesById = [];
         $order = [];
         $seenTargets = [];
-        $rootLoadedFields = $this->relationalManagedLoadedFieldNames($this->managedPartialSelections);
+        $plan = $this->compiledPartialHydrationPlan($this->managedPartialSelections);
+        $rootLoadedFields = $this->relationalManagedLoadedFieldNames($plan);
 
         foreach ($rows as $row) {
             $rootIdentifier = $row[$this->metadata->identifier->column] ?? null;
@@ -1227,7 +1162,7 @@ final class EntityQuery
             if (! isset($entitiesById[$rootKey])) {
                 $entity = $this->manager->hydrateManagedPartial(
                     $this->metadata,
-                    $this->extractPartialRootRow($row, $this->managedPartialSelections),
+                    $plan->extractRootRow($row),
                     $rootLoadedFields,
                 );
                 $this->initializeJoinedCollections($entity);
@@ -1379,7 +1314,8 @@ final class EntityQuery
     {
         $association = $join['association'];
         $targetMetadata = $join['targetMetadata'];
-        $targetRow = $this->extractJoinedTargetRow($join, $row);
+        $plan = $this->compiledPartialHydrationPlan($this->partialSelections);
+        $targetRow = $plan->extractJoinedTargetRow($association->name, $row);
 
         if ($targetRow === null) {
             $this->assignAssociationValue($entity, $association, null);
@@ -1403,7 +1339,8 @@ final class EntityQuery
     {
         $association = $join['association'];
         $targetMetadata = $join['targetMetadata'];
-        $targetRow = $this->extractJoinedTargetRow($join, $row);
+        $plan = $this->compiledPartialHydrationPlan($this->managedPartialSelections);
+        $targetRow = $plan->extractJoinedTargetRow($association->name, $row);
 
         if ($targetRow === null) {
             $this->assignAssociationValue($entity, $association, null);
@@ -1411,10 +1348,7 @@ final class EntityQuery
             return;
         }
 
-        $targetLoadedFields = array_values(array_map(
-            static fn(array $selection): string => $selection['name'],
-            $selections,
-        ));
+        $targetLoadedFields = $plan->joinedTargetLoadedFieldNames($association->name);
 
         $target = $this->manager->hydrateManagedPartial(
             $targetMetadata,
@@ -1480,12 +1414,13 @@ final class EntityQuery
     ): void {
         $association = $join['association'];
         $targetMetadata = $join['targetMetadata'];
+        $plan = $this->compiledPartialHydrationPlan($this->partialSelections);
         $current = $this->readAssociationValue($entity, $association);
         if (! is_array($current)) {
             $current = [];
         }
 
-        $targetRow = $this->extractJoinedTargetRow($join, $row);
+        $targetRow = $plan->extractJoinedTargetRow($association->name, $row);
         if ($targetRow === null) {
             $this->assignAssociationValue($entity, $association, $current);
 
@@ -1527,22 +1462,20 @@ final class EntityQuery
     ): void {
         $association = $join['association'];
         $targetMetadata = $join['targetMetadata'];
+        $plan = $this->compiledPartialHydrationPlan($this->managedPartialSelections);
         $current = $this->readAssociationValue($entity, $association);
         if (! is_array($current)) {
             $current = [];
         }
 
-        $targetRow = $this->extractJoinedTargetRow($join, $row);
+        $targetRow = $plan->extractJoinedTargetRow($association->name, $row);
         if ($targetRow === null) {
             $this->assignAssociationValue($entity, $association, $current);
 
             return;
         }
 
-        $targetLoadedFields = array_values(array_map(
-            static fn(array $selection): string => $selection['name'],
-            $selections,
-        ));
+        $targetLoadedFields = $plan->joinedTargetLoadedFieldNames($association->name);
 
         $target = $this->manager->hydrateManagedPartial(
             $targetMetadata,
@@ -2057,6 +1990,19 @@ final class EntityQuery
         );
     }
 
+    /**
+     * @param list<array{name:string,column:string}> $rootSelections
+     */
+    private function compiledPartialHydrationPlan(array $rootSelections): PartialHydrationPlan
+    {
+        return $this->partialHydrationPlanCompiler()->compile(
+            self::ROOT_ALIAS,
+            $rootSelections,
+            $this->partialJoinedSelections,
+            $this->joinedAssociations,
+        );
+    }
+
     private function fetchPlanCompiler(): AssociationFetchPlanCompiler
     {
         return new AssociationFetchPlanCompiler($this->manager->metadata);
@@ -2065,6 +2011,11 @@ final class EntityQuery
     private function entityHydrationPlanCompiler(): EntityHydrationPlanCompiler
     {
         return new EntityHydrationPlanCompiler();
+    }
+
+    private function partialHydrationPlanCompiler(): PartialHydrationPlanCompiler
+    {
+        return new PartialHydrationPlanCompiler();
     }
 
     /**

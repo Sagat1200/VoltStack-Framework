@@ -33,10 +33,15 @@ final class AccountRecoveryManagerTest extends TestCase
 {
     public function test_recovery_manager_resets_password_and_revokes_sessions_and_tokens(): void
     {
-        $app = new Application(sys_get_temp_dir());
+        $basePath = $this->createBasePath();
+        $notificationsPath = $basePath . DIRECTORY_SEPARATOR . 'recovery-notifications.jsonl';
+
+        $app = new Application($basePath);
         $config = $app->make(ConfigRepository::class);
         $config->set('auth.recovery.password_reset.expose_token', true);
         $config->set('auth.passkeys.enabled', true);
+        $config->set('auth.recovery.notifications.driver', 'file');
+        $config->set('auth.recovery.notifications.storage_path', $notificationsPath);
         $config->set('auth.providers.local.identities', [
             [
                 'id' => 7101,
@@ -72,6 +77,7 @@ final class AccountRecoveryManagerTest extends TestCase
         self::assertTrue($start->accepted);
         self::assertTrue($start->issued);
         self::assertNotNull($start->token);
+        self::assertTrue((bool) ($start->metadata['notification_dispatched'] ?? false));
 
         $session = new AuthenticationSession(
             id: new AuthenticationSessionId('sess-recovery-1'),
@@ -130,6 +136,7 @@ final class AccountRecoveryManagerTest extends TestCase
         self::assertSame(2, $result->tokensRevoked);
         self::assertSame(1, $result->trustedDevicesRevoked);
         self::assertSame(1, $result->passkeysRevoked);
+        self::assertTrue((bool) ($result->metadata['notification_dispatched'] ?? false));
         self::assertCount(0, $sessions->listForIdentity($identity));
         self::assertTrue($tokens->findAccessToken('access-recovery-1')?->revoked ?? false);
         self::assertTrue($tokens->findRefreshToken('refresh-recovery-1')?->revoked ?? false);
@@ -145,6 +152,15 @@ final class AccountRecoveryManagerTest extends TestCase
         self::assertNull($metadata['lockout_until']);
         self::assertSame('active', $metadata['security_state']);
 
+        $notifications = $this->readJsonl($notificationsPath);
+        self::assertCount(2, $notifications);
+        self::assertSame('password_reset_requested', $notifications[0]['type'] ?? null);
+        self::assertSame('password_reset_completed', $notifications[1]['type'] ?? null);
+        self::assertSame('recovery@example.com', $notifications[0]['destination'] ?? null);
+        self::assertSame($start->token, $notifications[0]['payload']['reset_token'] ?? null);
+        self::assertSame(1, $notifications[1]['payload']['trusted_devices_revoked'] ?? null);
+        self::assertSame(1, $notifications[1]['payload']['passkeys_revoked'] ?? null);
+
         $this->expectException(RecoveryTokenInvalidException::class);
 
         $manager->continueRecovery(new RecoveryContinuationRequest(
@@ -157,7 +173,7 @@ final class AccountRecoveryManagerTest extends TestCase
 
     public function test_recovery_manager_rejects_password_reuse_from_current_or_history(): void
     {
-        $app = new Application(sys_get_temp_dir());
+        $app = new Application($this->createBasePath());
         $config = $app->make(ConfigRepository::class);
         $config->set('auth.recovery.password_reset.expose_token', true);
         $config->set('auth.providers.local.identities', [
@@ -189,5 +205,43 @@ final class AccountRecoveryManagerTest extends TestCase
             newPassword: 'old-secret-123',
             transport: 'unit',
         ));
+    }
+
+    private function createBasePath(): string
+    {
+        $path = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-account-recovery-unit-' . uniqid('', true);
+
+        if (! mkdir($concurrentDirectory = $path, 0777, true) && ! is_dir($concurrentDirectory)) {
+            throw new \RuntimeException(sprintf('Unable to create test directory [%s].', $path));
+        }
+
+        return $path;
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function readJsonl(string $path): array
+    {
+        if (! is_file($path)) {
+            return [];
+        }
+
+        $lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+
+        if (! is_array($lines)) {
+            return [];
+        }
+
+        $records = [];
+
+        foreach ($lines as $line) {
+            $decoded = json_decode((string) $line, true);
+            if (is_array($decoded)) {
+                $records[] = $decoded;
+            }
+        }
+
+        return $records;
     }
 }

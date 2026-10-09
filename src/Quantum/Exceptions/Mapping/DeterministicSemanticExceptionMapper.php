@@ -129,6 +129,89 @@ final class DeterministicSemanticExceptionMapper implements SemanticExceptionMap
 
     public function map(FailureSnapshot $failure, ExceptionContext $context): ?SemanticError
     {
+        return $this->inspect($failure, $context)['semantic'];
+    }
+
+    /**
+     * @return array{
+     *   semantic: SemanticError,
+     *   matched_rule: ?array{
+     *     id: string,
+     *     exception_type: string,
+     *     catalog_code: string,
+     *     priority: int,
+     *     specificity_rank: int,
+     *     distance: int,
+     *     service_id: ?string,
+     *     origin_package: ?string
+     *   },
+     *   used_fallback: bool
+     * }
+     */
+    public function inspect(FailureSnapshot $failure, ExceptionContext $context): array
+    {
+        foreach ($this->candidateMatchesFor($failure) as $match) {
+            $entry = $this->catalog->get($match->rule->catalogCode);
+
+            if ($entry === null) {
+                return [
+                    'semantic' => $this->fallback($failure),
+                    'matched_rule' => null,
+                    'used_fallback' => true,
+                ];
+            }
+
+            try {
+                if (! $match->rule->predicateMatches($failure, $context)) {
+                    continue;
+                }
+
+                return [
+                    'semantic' => new SemanticError(
+                        code: $entry->code,
+                        category: $entry->category,
+                        messageKey: $entry->messageKey,
+                        safeParameters: array_filter(
+                            $match->rule->buildParameters($failure, $context, $entry),
+                            static fn (mixed $value): bool => $value !== null,
+                        ),
+                        severity: $entry->severity,
+                        effect: $entry->effect,
+                        retryAdvice: $entry->retryAdvice,
+                    ),
+                    'matched_rule' => [
+                        'id' => $match->rule->id,
+                        'exception_type' => $match->rule->exceptionType,
+                        'catalog_code' => $match->rule->catalogCode,
+                        'priority' => $match->rule->priority,
+                        'specificity_rank' => $match->specificityRank,
+                        'distance' => $match->distance,
+                        'service_id' => $match->rule->serviceId,
+                        'origin_package' => $match->rule->originPackage,
+                    ],
+                    'used_fallback' => false,
+                ];
+            } catch (Throwable) {
+                return [
+                    'semantic' => $this->fallback($failure),
+                    'matched_rule' => null,
+                    'used_fallback' => true,
+                ];
+            }
+        }
+
+        return [
+            'semantic' => $this->fallback($failure),
+            'matched_rule' => null,
+            'used_fallback' => true,
+        ];
+    }
+
+    /**
+     * @return list<MappingRuleMatch>
+     */
+    private function candidateMatchesFor(FailureSnapshot $failure): array
+    {
         $candidateMatches = [];
 
         foreach ($this->rules as $rule) {
@@ -155,36 +238,7 @@ final class DeterministicSemanticExceptionMapper implements SemanticExceptionMap
             return strcmp($left->rule->id, $right->rule->id);
         });
 
-        foreach ($candidateMatches as $match) {
-            $entry = $this->catalog->get($match->rule->catalogCode);
-
-            if ($entry === null) {
-                return $this->fallback($failure);
-            }
-
-            try {
-                if (! $match->rule->predicateMatches($failure, $context)) {
-                    continue;
-                }
-
-                return new SemanticError(
-                    code: $entry->code,
-                    category: $entry->category,
-                    messageKey: $entry->messageKey,
-                    safeParameters: array_filter(
-                        $match->rule->buildParameters($failure, $context, $entry),
-                        static fn (mixed $value): bool => $value !== null,
-                    ),
-                    severity: $entry->severity,
-                    effect: $entry->effect,
-                    retryAdvice: $entry->retryAdvice,
-                );
-            } catch (Throwable) {
-                return $this->fallback($failure);
-            }
-        }
-
-        return $this->fallback($failure);
+        return $candidateMatches;
     }
 
     private function fallback(FailureSnapshot $failure): SemanticError

@@ -17,7 +17,10 @@ use VoltStack\Runtime\Budget\RuntimeBudgetCalibrationArtifact;
 use VoltStack\Runtime\Budget\RuntimeBudgetCalibrationReport;
 use VoltStack\Runtime\Budget\RuntimeBudgetCalibrationStoreResolver;
 use VoltStack\Runtime\Budget\RuntimeBudgetCalibrator;
+use VoltStack\Runtime\Evidence\RuntimeCapabilityEvidenceArtifact;
+use VoltStack\Runtime\Evidence\RuntimeCapabilityEvidenceStoreResolver;
 use VoltStack\Runtime\RuntimeManager;
+use VoltStack\Runtime\RuntimeCapabilities;
 use VoltStack\Runtime\Smoke\RuntimeSmokeCheckReport;
 use VoltStack\Runtime\Smoke\RuntimeSmokeChecker;
 
@@ -48,7 +51,11 @@ final class RuntimeReleasePipelineRunner
     ): RuntimeReleasePipelineReport {
         $app = $this->bootstrapCurrentApplication($requirePublishedConfig);
         $driver = $this->resolveDriver($app, $driver);
-        $capabilities = $this->capabilities($app, $driver);
+        $activeCapabilityEvidence = $this->currentCapabilityEvidence($app, $driver);
+        $capabilities = $this->effectiveCapabilities(
+            $this->capabilities($app, $driver),
+            $activeCapabilityEvidence,
+        );
         $artifactDirectory = $this->normalizeArtifactDirectory($artifactDirectory);
         $bootstrapBefore = $this->currentBootstrapBuild($artifactDirectory);
         $calibrationBefore = $this->currentCalibrationBuild($app, $driver, $calibrationDirectory);
@@ -77,6 +84,7 @@ final class RuntimeReleasePipelineRunner
                 capabilityEvidenceLevel: $capabilities->evidenceLevel(),
                 nativeIntegrationVerified: $capabilities->nativeIntegrationVerified(),
                 capabilityEvidenceNotes: $capabilities->evidenceNotes(),
+                activeCapabilityEvidence: $activeCapabilityEvidence,
                 releaseCheck: $releaseCheck,
                 smokeCheck: null,
                 calibration: null,
@@ -111,6 +119,7 @@ final class RuntimeReleasePipelineRunner
                 capabilityEvidenceLevel: $capabilities->evidenceLevel(),
                 nativeIntegrationVerified: $capabilities->nativeIntegrationVerified(),
                 capabilityEvidenceNotes: $capabilities->evidenceNotes(),
+                activeCapabilityEvidence: $activeCapabilityEvidence,
                 releaseCheck: $releaseCheck,
                 smokeCheck: $smokeCheck,
                 calibration: null,
@@ -151,6 +160,7 @@ final class RuntimeReleasePipelineRunner
                     capabilityEvidenceLevel: $capabilities->evidenceLevel(),
                     nativeIntegrationVerified: $capabilities->nativeIntegrationVerified(),
                     capabilityEvidenceNotes: $capabilities->evidenceNotes(),
+                    activeCapabilityEvidence: $activeCapabilityEvidence,
                     releaseCheck: $releaseCheck,
                     smokeCheck: $smokeCheck,
                     calibration: $calibration,
@@ -183,6 +193,7 @@ final class RuntimeReleasePipelineRunner
             capabilityEvidenceLevel: $capabilities->evidenceLevel(),
             nativeIntegrationVerified: $capabilities->nativeIntegrationVerified(),
             capabilityEvidenceNotes: $capabilities->evidenceNotes(),
+            activeCapabilityEvidence: $activeCapabilityEvidence,
             releaseCheck: $releaseCheck,
             smokeCheck: $smokeCheck,
             calibration: $calibration,
@@ -391,5 +402,42 @@ final class RuntimeReleasePipelineRunner
         $manager = $app->make(RuntimeManager::class);
 
         return $manager->adapter($driver)->capabilities();
+    }
+
+    private function currentCapabilityEvidence(Application $app, string $driver): ?RuntimeCapabilityEvidenceArtifact
+    {
+        $artifact = (new RuntimeCapabilityEvidenceStoreResolver())
+            ->resolveForDriver($app, $driver)
+            ->currentArtifact();
+
+        if ($artifact === null) {
+            return null;
+        }
+
+        return strtolower($artifact->driver()) === strtolower($driver)
+            ? $artifact
+            : null;
+    }
+
+    private function effectiveCapabilities(
+        RuntimeCapabilities $capabilities,
+        ?RuntimeCapabilityEvidenceArtifact $artifact,
+    ): RuntimeCapabilities {
+        if ($artifact === null) {
+            return $capabilities;
+        }
+
+        $evidence = $artifact->capabilities();
+
+        return new RuntimeCapabilities(
+            persistent: $capabilities->persistent(),
+            concurrent: $capabilities->concurrent(),
+            streaming: $capabilities->streaming(),
+            drainControl: $capabilities->drainControl(),
+            nativeHttp: $capabilities->nativeHttp(),
+            evidenceLevel: $evidence->evidenceLevel(),
+            nativeIntegrationVerified: $evidence->nativeIntegrationVerified(),
+            evidenceNotes: $evidence->evidenceNotes(),
+        );
     }
 }

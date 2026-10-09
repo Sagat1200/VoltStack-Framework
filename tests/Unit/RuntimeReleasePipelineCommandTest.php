@@ -15,6 +15,8 @@ use Quantum\Console\Output;
 use Quantum\Compilation\BuildManifest;
 use VoltStack\Framework\Application;
 use VoltStack\Runtime\Budget\RuntimeBudgetCalibrationStoreResolver;
+use VoltStack\Runtime\Evidence\RuntimeCapabilityEvidenceStoreResolver;
+use VoltStack\Runtime\RuntimeCapabilities;
 
 final class RuntimeReleasePipelineCommandTest extends TestCase
 {
@@ -268,6 +270,51 @@ PHP
         self::assertStringContainsString('"native_integration_verified":false', $telemetry);
         self::assertStringContainsString('"drain_required":true', $telemetry);
         self::assertStringContainsString('"drain_action":"drain"', $telemetry);
+    }
+
+    public function test_runtime_release_pipeline_command_uses_active_capability_evidence_when_present(): void
+    {
+        $app = require $this->basePath . DIRECTORY_SEPARATOR . 'bootstrap' . DIRECTORY_SEPARATOR . 'app.php';
+        self::assertInstanceOf(Application::class, $app);
+
+        $store = (new RuntimeCapabilityEvidenceStoreResolver())->resolveForDriver($app, 'frankenphp');
+        $artifact = $store->publish(
+            driver: 'frankenphp',
+            platform: 'windows-frankenphp-dev',
+            capabilities: new RuntimeCapabilities(
+                persistent: true,
+                concurrent: false,
+                streaming: false,
+                drainControl: true,
+                nativeHttp: true,
+                evidenceLevel: 'native-verified',
+                nativeIntegrationVerified: true,
+                evidenceNotes: ['Validado contra runtime real de FrankenPHP en Windows.'],
+            ),
+        );
+        $store->activateGeneration($artifact->generationId());
+
+        $command = new RuntimeReleasePipelineCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'runtime:release-pipeline',
+                '--requests=GET:/ok',
+                '--json',
+            ]),
+            $output,
+        );
+
+        self::assertSame(0, $exitCode);
+
+        $decoded = json_decode(trim($output->stdout()), true);
+        self::assertIsArray($decoded);
+        self::assertSame('native-verified', $decoded['report']['capability_evidence']['level'] ?? null);
+        self::assertSame(true, $decoded['report']['capability_evidence']['native_integration_verified'] ?? null);
+        self::assertSame($artifact->generationId(), $decoded['report']['active_capability_evidence']['generation_id'] ?? null);
+        self::assertSame('windows-frankenphp-dev', $decoded['report']['active_capability_evidence']['platform'] ?? null);
     }
 
     public function test_runtime_release_pipeline_command_can_require_published_configuration_when_generation_matches_effective_snapshot(): void

@@ -71,12 +71,22 @@ abstract class Command
 
     protected function runInCommandRuntime(callable $callback, ?string $commandName = null): mixed
     {
+        $hadExceptionErrorHandler = ($GLOBALS['__voltstack_exceptionhandler_error_handler_registered'] ?? false) === true;
         $app = $this->bootstrapApplication();
         $scope = $app->make(ScopeManager::class);
 
-        return $scope->runInCommand(
-            fn(): mixed => $callback($app),
-            $commandName ?? $this->name(),
-        );
+        try {
+            return $scope->runInCommand(
+                fn(): mixed => $callback($app),
+                $commandName ?? $this->name(),
+            );
+        } finally {
+            $hasInstalledExceptionErrorHandler = ($GLOBALS['__voltstack_exceptionhandler_error_handler_registered'] ?? false) === true;
+
+            if (! $hadExceptionErrorHandler && $hasInstalledExceptionErrorHandler) {
+                restore_error_handler();
+                $GLOBALS['__voltstack_exceptionhandler_error_handler_registered'] = false;
+            }
+        }
     }
 }

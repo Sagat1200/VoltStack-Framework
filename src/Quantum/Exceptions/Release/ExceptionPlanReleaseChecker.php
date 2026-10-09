@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quantum\Exceptions\Release;
 
+use Quantum\Config\Publication\PublishedConfigurationRequiredException;
 use Quantum\Exceptions\Diagnostics\ExceptionPlanStatusInspector;
 use RuntimeException;
 use VoltStack\Framework\Application;
@@ -19,9 +20,10 @@ final class ExceptionPlanReleaseChecker
         bool $requirePublishedPlan = true,
         bool $requirePublishedMatch = true,
         bool $requireCompatiblePlan = true,
+        bool $requirePublishedConfig = false,
         string $commandName = 'exceptions:release-check',
     ): ExceptionPlanReleaseCheckReport {
-        $app = $this->bootstrapApplication();
+        $app = $this->bootstrapApplication($requirePublishedConfig);
         $scopeManager = $app->make(ScopeManager::class);
 
         return $scopeManager->runInCommand(
@@ -37,7 +39,7 @@ final class ExceptionPlanReleaseChecker
         );
     }
 
-    private function bootstrapApplication(): Application
+    private function bootstrapApplication(bool $requirePublishedConfig = false): Application
     {
         $bootstrapPath = $this->basePath . DIRECTORY_SEPARATOR . 'bootstrap' . DIRECTORY_SEPARATOR . 'app.php';
 
@@ -51,6 +53,27 @@ final class ExceptionPlanReleaseChecker
             throw new RuntimeException('The application bootstrap file must return a VoltStack application instance.');
         }
 
+        if ($requirePublishedConfig) {
+            $this->assertPublishedConfiguration($app);
+        }
+
         return $app;
+    }
+
+    private function assertPublishedConfiguration(Application $app): void
+    {
+        $status = $app->configStatusInspector()->inspect($app);
+
+        if (! $status->hasActiveGeneration()) {
+            throw new PublishedConfigurationRequiredException(
+                'Published configuration is required for exception release check, but no active configuration generation exists.',
+            );
+        }
+
+        if (! $status->publishedMatchesEffective()) {
+            throw new PublishedConfigurationRequiredException(
+                'Published configuration is required for exception release check, but the effective snapshot differs from the active generation.',
+            );
+        }
     }
 }

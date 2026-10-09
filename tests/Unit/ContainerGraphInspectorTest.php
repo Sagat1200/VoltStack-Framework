@@ -53,6 +53,46 @@ final class ContainerGraphInspectorTest extends TestCase
         ], $graph->aliases());
     }
 
+    public function test_it_serializes_the_graph_snapshot_for_tooling_consumers(): void
+    {
+        $container = new Container();
+        $container->singleton(GraphConsumer::class, GraphConsumer::class);
+        $container->scopedFor(GraphDependency::class, GraphDependency::class, 'request');
+        $container->bind(GraphNeedsScalar::class, GraphNeedsScalar::class);
+        $container->alias(GraphConsumer::class, 'graph.consumer');
+
+        $graph = (new ContainerGraphInspector())->inspect($container);
+
+        $payload = $graph->toArray();
+
+        self::assertTrue($payload['has_issues']);
+        self::assertSame(GraphConsumer::class, $payload['services'][GraphConsumer::class]['abstract']);
+        self::assertSame('singleton', $payload['services'][GraphConsumer::class]['lifetime']);
+        self::assertSame([
+            [
+                'abstract' => GraphDependency::class,
+                'optional' => false,
+            ],
+        ], $payload['services'][GraphConsumer::class]['dependencies']);
+        self::assertSame([
+            [
+                'name' => 'label',
+                'type' => 'string',
+                'builtin' => true,
+                'has_default' => true,
+            ],
+        ], $payload['services'][GraphConsumer::class]['parameters']);
+        self::assertSame([
+            'graph.consumer' => GraphConsumer::class,
+        ], $payload['aliases']);
+        self::assertSame('unresolvable_parameter', $payload['issues'][0]['code']);
+        self::assertSame('autowiring', $payload['issues'][0]['phase']);
+        self::assertSame(GraphNeedsScalar::class, $payload['issues'][0]['service_id']);
+        self::assertSame('$token', $payload['issues'][0]['parameter']);
+        self::assertSame([GraphNeedsScalar::class], $payload['issues'][0]['path']);
+        self::assertSame($payload, $graph->jsonSerialize());
+    }
+
     public function test_it_reports_missing_targets_non_instantiable_targets_and_required_scalar_parameters(): void
     {
         $container = new Container();

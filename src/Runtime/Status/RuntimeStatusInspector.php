@@ -10,6 +10,9 @@ use VoltStack\Runtime\Budget\RuntimeBudgetCalibrationArtifact;
 use VoltStack\Runtime\Budget\RuntimeBudgetCalibrationStoreResolver;
 use VoltStack\Runtime\Budget\RuntimeBudgetBaseline;
 use VoltStack\Runtime\Budget\RuntimeBudgetBaselineResolver;
+use VoltStack\Runtime\Evidence\RuntimeCapabilityEvidenceArtifact;
+use VoltStack\Runtime\Evidence\RuntimeCapabilityEvidenceStoreResolver;
+use VoltStack\Runtime\RuntimeCapabilities;
 use VoltStack\Runtime\RuntimeManager;
 
 final class RuntimeStatusInspector
@@ -21,10 +24,14 @@ final class RuntimeStatusInspector
         $driver = strtolower(trim($driver ?? (string) $app->config('runtime.driver', 'frankenphp')));
         $alerts = [];
         $activeCalibration = $this->activeCalibration($app, $driver);
+        $activeCapabilityEvidence = $this->activeCapabilityEvidence($app, $driver);
 
         try {
             $adapter = $manager->adapter($driver);
-            $capabilities = $adapter->capabilities();
+            $capabilities = $this->effectiveCapabilities(
+                $adapter->capabilities(),
+                $activeCapabilityEvidence,
+            );
             $recommendedBudget = (new RuntimeBudgetBaselineResolver())->resolve($app, $driver, $capabilities);
         } catch (InvalidArgumentException) {
             return new RuntimeStatusReport(
@@ -53,6 +60,7 @@ final class RuntimeStatusInspector
                     gaps: ['El driver runtime solicitado no esta registrado.'],
                 ),
                 activeCalibration: $activeCalibration,
+                activeCapabilityEvidence: $activeCapabilityEvidence,
                 supportedDrivers: $manager->drivers(),
                 alerts: ['El driver runtime solicitado no esta registrado.'],
             );
@@ -83,8 +91,12 @@ final class RuntimeStatusInspector
                 nativeIntegrationVerified: $capabilities->nativeIntegrationVerified(),
             ),
             activeCalibration: $activeCalibration,
+            activeCapabilityEvidence: $activeCapabilityEvidence,
             supportedDrivers: $manager->drivers(),
-            alerts: $alerts,
+            alerts: [
+                ...$alerts,
+                ...$this->capabilityEvidenceAlerts($adapter->capabilities(), $activeCapabilityEvidence),
+            ],
         );
     }
 
@@ -101,6 +113,80 @@ final class RuntimeStatusInspector
         return strtolower($artifact->driver()) === strtolower($driver)
             ? $artifact
             : null;
+    }
+
+    private function activeCapabilityEvidence(Application $app, string $driver): ?RuntimeCapabilityEvidenceArtifact
+    {
+        $artifact = (new RuntimeCapabilityEvidenceStoreResolver())
+            ->resolveForDriver($app, $driver)
+            ->currentArtifact();
+
+        if ($artifact === null) {
+            return null;
+        }
+
+        return strtolower($artifact->driver()) === strtolower($driver)
+            ? $artifact
+            : null;
+    }
+
+    private function effectiveCapabilities(
+        RuntimeCapabilities $capabilities,
+        ?RuntimeCapabilityEvidenceArtifact $artifact,
+    ): RuntimeCapabilities {
+        if ($artifact === null) {
+            return $capabilities;
+        }
+
+        $evidence = $artifact->capabilities();
+
+        return new RuntimeCapabilities(
+            persistent: $capabilities->persistent(),
+            concurrent: $capabilities->concurrent(),
+            streaming: $capabilities->streaming(),
+            drainControl: $capabilities->drainControl(),
+            nativeHttp: $capabilities->nativeHttp(),
+            evidenceLevel: $evidence->evidenceLevel(),
+            nativeIntegrationVerified: $evidence->nativeIntegrationVerified(),
+            evidenceNotes: $evidence->evidenceNotes(),
+        );
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function capabilityEvidenceAlerts(
+        RuntimeCapabilities $adapterCapabilities,
+        ?RuntimeCapabilityEvidenceArtifact $artifact,
+    ): array {
+        if ($artifact === null) {
+            return [];
+        }
+
+        $snapshot = $artifact->capabilities();
+        $alerts = [];
+
+        if ($adapterCapabilities->persistent() !== $snapshot->persistent()) {
+            $alerts[] = 'La evidencia activa no coincide con persistent del adapter runtime.';
+        }
+
+        if ($adapterCapabilities->concurrent() !== $snapshot->concurrent()) {
+            $alerts[] = 'La evidencia activa no coincide con concurrent del adapter runtime.';
+        }
+
+        if ($adapterCapabilities->streaming() !== $snapshot->streaming()) {
+            $alerts[] = 'La evidencia activa no coincide con streaming del adapter runtime.';
+        }
+
+        if ($adapterCapabilities->drainControl() !== $snapshot->drainControl()) {
+            $alerts[] = 'La evidencia activa no coincide con drain control del adapter runtime.';
+        }
+
+        if ($adapterCapabilities->nativeHttp() !== $snapshot->nativeHttp()) {
+            $alerts[] = 'La evidencia activa no coincide con native HTTP del adapter runtime.';
+        }
+
+        return $alerts;
     }
 
     private function rolloutReadiness(

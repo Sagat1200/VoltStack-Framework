@@ -89,6 +89,7 @@ final class AuthorizationServiceProvider extends ServiceProvider
         $this->registerMemoizationBindings();
         $this->registerControllersSecurityBridgeBinding();
 
+        $this->app->singleton(AuthorizationDriverRegistry::class);
         $this->app->singleton(AbilityRegistry::class);
         $this->app->singleton(GateRegistry::class);
         $this->app->singleton(PolicyRegistry::class, function (Application $app): PolicyRegistry {
@@ -320,6 +321,11 @@ final class AuthorizationServiceProvider extends ServiceProvider
         $config = $app->config('authorization.authority.grants', []);
         $seed = is_array($config) ? $config : [];
         $driver = strtolower(trim((string) $app->config('authorization.authority.driver', 'memory')));
+        $custom = $app->make(AuthorizationDriverRegistry::class)->resolveAuthority($driver, $app);
+
+        if ($custom !== null) {
+            return $custom;
+        }
 
         return match ($driver) {
             'database', 'db', 'dbal' => $this->makeDatabaseAuthorityRepository($app) ?? new InMemoryAuthorityRepository($seed, $this->resolveConsistency($app)),
@@ -369,6 +375,12 @@ final class AuthorizationServiceProvider extends ServiceProvider
             function (Application $app): AuthorizationConsistencyInterface {
                 $namespace = $app->config('authorization.consistency.namespace', 'authorization.consistency');
                 $driver = strtolower(trim((string) $app->config('authorization.consistency.driver', 'local')));
+                $custom = $app->make(AuthorizationDriverRegistry::class)->resolveConsistency($driver, $app);
+
+                if ($custom !== null) {
+                    return $custom;
+                }
+
                 $versions = match ($driver) {
                     'file', 'filesystem', 'shared' => new FileVersionAuthority(
                         $this->resolveConsistencyFilePath($app),
@@ -421,6 +433,11 @@ final class AuthorizationServiceProvider extends ServiceProvider
     {
         $entries = $app->config('authorization.relationships.entries', []);
         $driver = strtolower(trim((string) $app->config('authorization.relationships.driver', 'memory')));
+        $custom = $app->make(AuthorizationDriverRegistry::class)->resolveRelationships($driver, $app);
+
+        if ($custom !== null) {
+            return $custom;
+        }
 
         return match ($driver) {
             'database', 'db', 'dbal' => $this->makeDatabaseRelationshipRepository($app) ?? new InMemoryRelationshipRepository(

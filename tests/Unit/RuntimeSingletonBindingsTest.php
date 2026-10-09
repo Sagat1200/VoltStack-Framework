@@ -73,7 +73,7 @@ final class RuntimeSingletonBindingsTest extends TestCase
         self::assertSame($manager, $reusedManager);
         self::assertSame($manager, $legacy->manager());
         self::assertSame($manager, $reused->manager());
-        self::assertSame(['frankenphp', 'sapi', 'roadrunner', 'test-singleton'], $reusedManager->drivers());
+        self::assertSame(['frankenphp', 'sapi', 'roadrunner', 'openswoole', 'test-singleton'], $reusedManager->drivers());
         self::assertSame('test-singleton', $reused->adapter('test-singleton')->id());
         self::assertSame('test-singleton', $reusedManager->adapter('test-singleton')->id());
     }

@@ -14,6 +14,7 @@ use Quantum\Auth\Contracts\PasswordLifecycleAwareProviderInterface;
 use Quantum\Auth\Contracts\PasswordPolicyInterface;
 use Quantum\Auth\Contracts\PasswordRehashingIdentityProviderInterface;
 use Quantum\Auth\Contracts\RecoveryManagerInterface;
+use Quantum\Auth\Contracts\RecoveryNotificationDispatcherInterface;
 use Quantum\Auth\Contracts\RecoveryTokenRepositoryInterface;
 use Quantum\Auth\Contracts\TrustedDeviceRepositoryInterface;
 use Quantum\Auth\Exceptions\RecoveryPasswordRejectedException;
@@ -36,6 +37,7 @@ final class RecoveryManager implements RecoveryManagerInterface
         private readonly OpaqueTokenRepositoryInterface $opaqueTokens,
         private readonly ConfigRepository $config,
         private readonly TrustedDeviceRepositoryInterface $trustedDevices,
+        private readonly RecoveryNotificationDispatcherInterface $notifications,
         private readonly ?PasskeyCredentialStoreInterface $passkeys = null,
         private readonly ?PasswordLifecycleAwareProviderInterface $passwordLifecycle = null,
         private readonly ?DistributedPasswordGovernanceProviderInterface $governance = null,
@@ -88,6 +90,8 @@ final class RecoveryManager implements RecoveryManagerInterface
         $issuedAt = time();
         $expiresAt = $issuedAt + $this->passwordResetTtlSeconds();
 
+        $deliveryToken = $tokenId . '.' . $secret;
+
         $this->tokens->save(new PasswordResetTokenRecord(
             id: $tokenId,
             secretHash: $secretHash,
@@ -98,16 +102,24 @@ final class RecoveryManager implements RecoveryManagerInterface
             attributes: $request->attributes,
         ));
 
+        $deliveryDispatched = $this->dispatchPasswordResetRequestedNotification(
+            $identity,
+            $request,
+            $deliveryToken,
+            $expiresAt,
+        );
+
         return new RecoveryStartResult(
             accepted: true,
             purpose: RecoveryPurpose::PasswordReset,
             issued: true,
             expiresAt: $expiresAt,
             delivery: $this->deliveryChannel(),
-            token: $this->exposeToken() ? $tokenId . '.' . $secret : null,
+            token: $this->exposeToken() ? $deliveryToken : null,
             metadata: [
                 'transport' => $request->transport,
                 'token_preview_enabled' => $this->exposeToken(),
+                'notification_dispatched' => $deliveryDispatched,
             ],
         );
     }
@@ -195,6 +207,14 @@ final class RecoveryManager implements RecoveryManagerInterface
         $tokensRevoked = $this->opaqueTokens->revokeAllForIdentity($identity->type(), (string) $identity->identifier());
         $trustedDevicesRevoked = $this->revokeTrustedDevicesForIdentity($identity);
         $passkeysRevoked = $this->revokePasskeysForIdentity($identity, $record->identifier);
+        $notificationDispatched = $this->dispatchPasswordResetCompletedNotification(
+            $identity,
+            $request,
+            $revokedSessions,
+            $tokensRevoked,
+            $trustedDevicesRevoked,
+            $passkeysRevoked,
+        );
 
         return new RecoveryResult(
             completed: true,
@@ -209,6 +229,7 @@ final class RecoveryManager implements RecoveryManagerInterface
             metadata: [
                 'transport' => $request->transport,
                 'recovery_token_id' => $record->id,
+                'notification_dispatched' => $notificationDispatched,
             ],
         );
     }
@@ -324,5 +345,104 @@ final class RecoveryManager implements RecoveryManagerInterface
     private function invalidatePasskeys(): bool
     {
         return (bool) $this->config->get('auth.recovery.password_reset.invalidate_passkeys', true);
+    }
+
+    private function dispatchPasswordResetRequestedNotification(
+        IdentityInterface $identity,
+        RecoveryRequest $request,
+        string $deliveryToken,
+        int $expiresAt,
+    ): bool {
+        $destination = $this->resolveRecoveryDestination($identity, $request->identifier);
+        if ($destination === '' || ! $this->notificationsEnabled()) {
+            return false;
+        }
+
+        return $this->notifications->dispatch(new RecoveryNotification(
+            type: RecoveryNotificationType::PasswordResetRequested,
+            purpose: RecoveryPurpose::PasswordReset,
+            identityType: $identity->type(),
+            identityId: (string) $identity->identifier(),
+            destination: $destination,
+            channel: $this->deliveryChannel(),
+            transport: $request->transport,
+            createdAt: time(),
+            payload: array_filter([
+                'reset_token' => $deliveryToken,
+                'expires_at' => $expiresAt,
+                'reset_url' => $this->buildResetUrl($deliveryToken),
+            ], static fn (mixed $value): bool => $value !== null),
+            metadata: $request->attributes,
+        ));
+    }
+
+    private function dispatchPasswordResetCompletedNotification(
+        IdentityInterface $identity,
+        RecoveryContinuationRequest $request,
+        int $sessionsRevoked,
+        int $tokensRevoked,
+        int $trustedDevicesRevoked,
+        int $passkeysRevoked,
+    ): bool {
+        $destination = $this->resolveRecoveryDestination($identity, '');
+        if ($destination === '' || ! $this->notificationsEnabled()) {
+            return false;
+        }
+
+        return $this->notifications->dispatch(new RecoveryNotification(
+            type: RecoveryNotificationType::PasswordResetCompleted,
+            purpose: RecoveryPurpose::PasswordReset,
+            identityType: $identity->type(),
+            identityId: (string) $identity->identifier(),
+            destination: $destination,
+            channel: $this->deliveryChannel(),
+            transport: $request->transport,
+            createdAt: time(),
+            payload: [
+                'sessions_revoked' => $sessionsRevoked,
+                'tokens_revoked' => $tokensRevoked,
+                'trusted_devices_revoked' => $trustedDevicesRevoked,
+                'passkeys_revoked' => $passkeysRevoked,
+            ],
+            metadata: $request->attributes,
+        ));
+    }
+
+    private function notificationsEnabled(): bool
+    {
+        return strtolower(trim((string) $this->config->get('auth.recovery.notifications.driver', 'noop'))) !== 'noop';
+    }
+
+    private function resolveRecoveryDestination(IdentityInterface $identity, string $fallbackIdentifier): string
+    {
+        if ($identity instanceof \Quantum\Auth\Identity\GenericIdentity) {
+            foreach (['email', 'identifier', 'username', '_provider_identifier_value'] as $key) {
+                $candidate = $identity->attributes[$key] ?? null;
+                if (is_string($candidate) && trim($candidate) !== '') {
+                    return trim($candidate);
+                }
+            }
+        }
+
+        return trim($fallbackIdentifier);
+    }
+
+    private function buildResetUrl(string $deliveryToken): ?string
+    {
+        $configured = $this->config->get('auth.recovery.notifications.reset_url');
+
+        if (! is_string($configured) || trim($configured) === '') {
+            return null;
+        }
+
+        $configured = trim($configured);
+
+        if (str_contains($configured, '{token}')) {
+            return str_replace('{token}', rawurlencode($deliveryToken), $configured);
+        }
+
+        $separator = str_contains($configured, '?') ? '&' : '?';
+
+        return $configured . $separator . 'token=' . rawurlencode($deliveryToken);
     }
 }

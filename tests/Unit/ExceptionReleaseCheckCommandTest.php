@@ -5,6 +5,9 @@ declare(strict_types=1);
 namespace VoltStack\Test\Unit;
 
 use PHPUnit\Framework\TestCase;
+use Quantum\Bootstrap\Config\SecretReference;
+use Quantum\Config\ConfigRepository;
+use Quantum\Config\Publication\PublishedConfigurationRequiredException;
 use Quantum\Console\Commands\ExceptionReleaseCheckCommand;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
@@ -166,6 +169,73 @@ PHP
         self::assertSame(false, $relaxedDecoded['report']['require_published_match'] ?? null);
     }
 
+    public function test_exception_release_check_can_require_published_configuration_when_generation_matches_effective_snapshot(): void
+    {
+        $this->publishCurrentPlan();
+        $this->publishCurrentConfiguration();
+
+        $command = new ExceptionReleaseCheckCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'exceptions:release-check',
+                '--require-published-config',
+                '--json',
+            ]),
+            $output,
+        );
+
+        self::assertSame(0, $exitCode);
+
+        $decoded = json_decode(trim($output->stdout()), true);
+        self::assertIsArray($decoded);
+        self::assertSame(true, $decoded['report']['passed'] ?? null);
+    }
+
+    public function test_exception_release_check_can_require_published_configuration(): void
+    {
+        $command = new ExceptionReleaseCheckCommand($this->basePath);
+        $output = new Output();
+
+        $this->expectException(PublishedConfigurationRequiredException::class);
+        $this->expectExceptionMessage('Published configuration is required for exception release check');
+
+        $command->handle(
+            Input::fromArgv([
+                'volt',
+                'exceptions:release-check',
+                '--require-published-config',
+                '--json',
+            ]),
+            $output,
+        );
+    }
+
+    public function test_exception_release_check_fails_when_required_published_configuration_has_drift(): void
+    {
+        $this->publishCurrentPlan();
+        $this->publishCurrentConfiguration();
+        $this->writeBootstrapApp(mutateAfterBoot: true);
+
+        $command = new ExceptionReleaseCheckCommand($this->basePath);
+        $output = new Output();
+
+        $this->expectException(PublishedConfigurationRequiredException::class);
+        $this->expectExceptionMessage('effective snapshot differs from the active generation');
+
+        $command->handle(
+            Input::fromArgv([
+                'volt',
+                'exceptions:release-check',
+                '--require-published-config',
+                '--json',
+            ]),
+            $output,
+        );
+    }
+
     private function publishCurrentPlan(): void
     {
         $app = $this->application();
@@ -173,6 +243,28 @@ PHP
             ->compile((array) $app->config('exceptions', []));
 
         $app->make(ExceptionPlanStore::class)->persist($plan);
+    }
+
+    private function publishCurrentConfiguration(): string
+    {
+        $app = new Application($this->basePath);
+        $bootstrapper = new \Quantum\Bootstrap\Bootstrapper($app);
+        $bootstrapper->loadConfiguration();
+
+        $repository = $app->make(ConfigRepository::class);
+        $repository->set('app.key', new SecretReference('APP_KEY'));
+
+        $codec = $app->configSnapshotCodec();
+        $baseSnapshot = $repository->snapshot(provenance: $repository->provenance());
+        $publishedSnapshot = $repository->snapshot(
+            provenance: $baseSnapshot->provenance(),
+            configId: $codec->configId($baseSnapshot),
+        );
+
+        $artifact = $app->configManifestStore()->publish($publishedSnapshot);
+        $app->configManifestStore()->activateGeneration($artifact->generationId());
+
+        return $artifact->generationId();
     }
 
     private function application(): Application

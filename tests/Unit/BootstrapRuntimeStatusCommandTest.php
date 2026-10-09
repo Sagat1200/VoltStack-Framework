@@ -18,6 +18,8 @@ use VoltStack\Framework\Application;
 use VoltStack\Runtime\Budget\RuntimeBudgetBaseline;
 use VoltStack\Runtime\Budget\RuntimeBudgetCalibrationReport;
 use VoltStack\Runtime\Budget\RuntimeBudgetCalibrationStoreResolver;
+use VoltStack\Runtime\Evidence\RuntimeCapabilityEvidenceStoreResolver;
+use VoltStack\Runtime\RuntimeCapabilities;
 
 final class BootstrapRuntimeStatusCommandTest extends TestCase
 {
@@ -195,7 +197,7 @@ PHP
         self::assertStringContainsString('Rollout strategy: progressive-drain', $output->stdout());
         self::assertStringContainsString('Capability notes:', $output->stdout());
         self::assertStringContainsString('Rollout gaps:', $output->stdout());
-        self::assertStringContainsString('Supported drivers: frankenphp, sapi, roadrunner', $output->stdout());
+        self::assertStringContainsString('Supported drivers: frankenphp, sapi, roadrunner, openswoole', $output->stdout());
         self::assertStringContainsString('Telemetry: emitted', $output->stdout());
 
         $telemetry = file_get_contents($this->telemetryPath);
@@ -452,6 +454,53 @@ PHP
             'El runtime persistente aun no tiene evidencia nativa verificada en esta plataforma.',
             $decoded['report']['rollout_readiness']['gaps'] ?? [],
         );
+    }
+
+    public function test_runtime_status_command_uses_active_capability_evidence_to_promote_verified_rollout_readiness(): void
+    {
+        $app = require $this->basePath . DIRECTORY_SEPARATOR . 'bootstrap' . DIRECTORY_SEPARATOR . 'app.php';
+        self::assertInstanceOf(Application::class, $app);
+
+        $store = (new RuntimeCapabilityEvidenceStoreResolver())->resolveForDriver($app, 'frankenphp');
+        $artifact = $store->publish(
+            driver: 'frankenphp',
+            platform: 'windows-frankenphp-dev',
+            capabilities: new RuntimeCapabilities(
+                persistent: true,
+                concurrent: false,
+                streaming: false,
+                drainControl: true,
+                nativeHttp: true,
+                evidenceLevel: 'native-verified',
+                nativeIntegrationVerified: true,
+                evidenceNotes: ['Validado contra runtime real de FrankenPHP en Windows.'],
+            ),
+        );
+        $store->activateGeneration($artifact->generationId());
+
+        $command = new RuntimeStatusCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'runtime:status',
+                '--driver=frankenphp',
+                '--strict-rollout',
+                '--json',
+            ]),
+            $output,
+        );
+
+        self::assertSame(0, $exitCode);
+        $decoded = json_decode(trim($output->stdout()), true);
+        self::assertIsArray($decoded);
+        self::assertSame('native-verified', $decoded['report']['capability_evidence']['level'] ?? null);
+        self::assertSame(true, $decoded['report']['capability_evidence']['native_integration_verified'] ?? null);
+        self::assertSame(true, $decoded['report']['rollout_readiness']['ready'] ?? null);
+        self::assertSame($artifact->generationId(), $decoded['report']['active_capability_evidence']['generation_id'] ?? null);
+        self::assertSame('windows-frankenphp-dev', $decoded['report']['active_capability_evidence']['platform'] ?? null);
+        self::assertSame([], $decoded['report']['rollout_readiness']['gaps'] ?? null);
     }
 
     public function test_runtime_status_command_can_require_published_configuration(): void

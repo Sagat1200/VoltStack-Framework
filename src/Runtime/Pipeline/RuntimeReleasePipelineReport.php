@@ -7,6 +7,7 @@ namespace VoltStack\Runtime\Pipeline;
 use Quantum\Bootstrap\Release\BootstrapReleaseCheckReport;
 use VoltStack\Runtime\Budget\RuntimeBudgetCalibrationArtifact;
 use VoltStack\Runtime\Budget\RuntimeBudgetCalibrationReport;
+use VoltStack\Runtime\Evidence\RuntimeCapabilityEvidenceArtifact;
 use VoltStack\Runtime\Smoke\RuntimeSmokeCheckReport;
 
 final readonly class RuntimeReleasePipelineReport
@@ -17,6 +18,7 @@ final readonly class RuntimeReleasePipelineReport
         private string $capabilityEvidenceLevel,
         private bool $nativeIntegrationVerified,
         private array $capabilityEvidenceNotes,
+        private ?RuntimeCapabilityEvidenceArtifact $activeCapabilityEvidence,
         private BootstrapReleaseCheckReport $releaseCheck,
         private ?RuntimeSmokeCheckReport $smokeCheck,
         private ?RuntimeBudgetCalibrationReport $calibration,
@@ -52,6 +54,11 @@ final readonly class RuntimeReleasePipelineReport
     public function capabilityEvidenceNotes(): array
     {
         return $this->capabilityEvidenceNotes;
+    }
+
+    public function activeCapabilityEvidence(): ?RuntimeCapabilityEvidenceArtifact
+    {
+        return $this->activeCapabilityEvidence;
     }
 
     public function releaseCheck(): BootstrapReleaseCheckReport
@@ -159,6 +166,7 @@ final readonly class RuntimeReleasePipelineReport
                 'native_integration_verified' => $this->nativeIntegrationVerified,
                 'notes' => $this->capabilityEvidenceNotes,
             ],
+            'active_capability_evidence' => $this->activeCapabilityEvidence?->toArray(),
             'failed_stage' => $this->failedStage(),
             'release_check' => $this->releaseCheck->toArray(),
             'smoke_check' => $this->smokeCheck?->toArray(),

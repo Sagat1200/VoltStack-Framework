@@ -23,7 +23,7 @@ final class ExceptionReleaseCheckCommand extends Command
 
     public function usage(): string
     {
-        return 'exceptions:release-check [--allow-missing-plan] [--allow-drift] [--allow-incompatible-plan] [--json]';
+        return 'exceptions:release-check [--allow-missing-plan] [--allow-drift] [--allow-incompatible-plan] [--require-published-config] [--json]';
     }
 
     public function category(): string
@@ -37,6 +37,7 @@ final class ExceptionReleaseCheckCommand extends Command
             '--allow-missing-plan' => 'No falla si no existe un plan de excepciones publicado.',
             '--allow-drift' => 'No falla si el plan efectivo difiere del plan publicado.',
             '--allow-incompatible-plan' => 'No falla si el plan publicado no es compatible con el runtime/PHP actual.',
+            '--require-published-config' => 'Exige una generation activa y sin drift antes de ejecutar el release-check.',
             '--json' => 'Emite un payload JSON estable con el reporte del release-check.',
         ];
     }
@@ -47,6 +48,7 @@ final class ExceptionReleaseCheckCommand extends Command
             requirePublishedPlan: ! $input->hasOption('allow-missing-plan'),
             requirePublishedMatch: ! $input->hasOption('allow-drift'),
             requireCompatiblePlan: ! $input->hasOption('allow-incompatible-plan'),
+            requirePublishedConfig: $input->hasOption('require-published-config'),
             commandName: $this->name(),
         );
 

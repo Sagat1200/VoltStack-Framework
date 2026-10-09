@@ -29,6 +29,7 @@ final class RuntimeTelemetryEmitter
                 'concurrent' => $report->concurrent(),
                 'budget_source' => $report->recommendedBudget()->source(),
                 'has_active_calibration' => $report->activeCalibration() !== null,
+                'has_active_capability_evidence' => $report->activeCapabilityEvidence() !== null,
                 'capability_evidence_level' => $report->capabilityEvidenceLevel(),
                 'native_integration_verified' => $report->nativeIntegrationVerified(),
                 'rollout_ready' => $report->rolloutReadiness()->ready(),

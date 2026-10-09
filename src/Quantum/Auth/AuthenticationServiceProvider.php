@@ -34,6 +34,7 @@ use Quantum\Auth\Contracts\PasswordPolicyInterface;
 use Quantum\Auth\Contracts\PasswordRehashingIdentityProviderInterface;
 use Quantum\Auth\Contracts\RefreshTokenRotationStoreInterface;
 use Quantum\Auth\Contracts\RecoveryManagerInterface;
+use Quantum\Auth\Contracts\RecoveryNotificationDispatcherInterface;
 use Quantum\Auth\Contracts\RecoveryTokenRepositoryInterface;
 use Quantum\Auth\Contracts\RiskAdaptivePolicyInterface;
 use Quantum\Auth\Contracts\SessionRepositoryDriverFactoryInterface;
@@ -57,8 +58,10 @@ use Quantum\Auth\Passkeys\PasskeyAssertionCeremony;
 use Quantum\Auth\Passkeys\PasskeyAuthenticator;
 use Quantum\Auth\Passkeys\RelyingPartyConfig;
 use Quantum\Auth\Passwords\PasswordPolicy;
+use Quantum\Auth\Recovery\FileRecoveryNotificationDispatcher;
 use Quantum\Auth\Recovery\FileRecoveryTokenRepository;
 use Quantum\Auth\Recovery\InMemoryRecoveryTokenRepository;
+use Quantum\Auth\Recovery\NoopRecoveryNotificationDispatcher;
 use Quantum\Auth\Recovery\RecoveryManager;
 use Quantum\Auth\Runtime\AuthenticationOrchestrator;
 use Quantum\Auth\Runtime\AuthenticationPolicyEngine;
@@ -213,6 +216,33 @@ final class AuthenticationServiceProvider extends ServiceProvider
             return new InMemoryRecoveryTokenRepository();
         });
 
+        $this->app->singleton(RecoveryNotificationDispatcherInterface::class, function (Application $app): RecoveryNotificationDispatcherInterface {
+            $driver = strtolower(trim((string) $app->config('auth.recovery.notifications.driver', 'noop')));
+
+            if ($driver === 'file') {
+                $configuredPath = $app->config('auth.recovery.notifications.storage_path');
+                $storagePath = is_string($configuredPath) && trim($configuredPath) !== ''
+                    ? trim($configuredPath)
+                    : null;
+
+                if ($storagePath === null) {
+                    try {
+                        $storagePath = $app->storagePath('framework/auth/recovery/notifications/recovery-notifications.jsonl');
+                    } catch (\Throwable) {
+                        $storagePath = null;
+                    }
+                }
+
+                $path = is_string($storagePath) && trim($storagePath) !== ''
+                    ? $storagePath
+                    : (sys_get_temp_dir() . '/voltstack-auth-recovery-notifications.jsonl');
+
+                return new FileRecoveryNotificationDispatcher($path);
+            }
+
+            return new NoopRecoveryNotificationDispatcher();
+        });
+
         $this->app->scoped(RecoveryManagerInterface::class, static function (Application $app): RecoveryManagerInterface {
             $passkeyStore = null;
             try {
@@ -234,6 +264,7 @@ final class AuthenticationServiceProvider extends ServiceProvider
                 $app->make(OpaqueTokenRepositoryInterface::class),
                 $app->make(ConfigRepository::class),
                 $app->make(TrustedDeviceRepositoryInterface::class),
+                $app->make(RecoveryNotificationDispatcherInterface::class),
                 $passkeyStore,
                 $app->make(PasswordLifecycleAwareProviderInterface::class),
                 $app->make(DistributedPasswordGovernanceProviderInterface::class),

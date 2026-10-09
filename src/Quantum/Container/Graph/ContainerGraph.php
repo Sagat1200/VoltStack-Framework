@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace Quantum\Container\Graph;
 
-final readonly class ContainerGraph
+use JsonSerializable;
+
+final readonly class ContainerGraph implements JsonSerializable
 {
     /**
      * @param array<string, ServiceNode> $services
@@ -50,5 +52,32 @@ final readonly class ContainerGraph
     public function hasIssues(): bool
     {
         return $this->issues !== [];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function toArray(): array
+    {
+        return [
+            'services' => array_map(
+                static fn(ServiceNode $service): array => $service->toArray(),
+                $this->services,
+            ),
+            'aliases' => $this->aliases,
+            'issues' => array_map(
+                static fn(ValidationIssue $issue): array => $issue->toArray(),
+                $this->issues,
+            ),
+            'has_issues' => $this->hasIssues(),
+        ];
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function jsonSerialize(): array
+    {
+        return $this->toArray();
     }
 }

@@ -6,6 +6,7 @@ namespace VoltStack\Runtime\Status;
 
 use VoltStack\Runtime\Budget\RuntimeBudgetCalibrationArtifact;
 use VoltStack\Runtime\Budget\RuntimeBudgetBaseline;
+use VoltStack\Runtime\Evidence\RuntimeCapabilityEvidenceArtifact;
 
 final readonly class RuntimeStatusReport
 {
@@ -27,6 +28,7 @@ final readonly class RuntimeStatusReport
         private RuntimeBudgetBaseline $recommendedBudget,
         private RuntimeRolloutReadinessReport $rolloutReadiness,
         private ?RuntimeBudgetCalibrationArtifact $activeCalibration = null,
+        private ?RuntimeCapabilityEvidenceArtifact $activeCapabilityEvidence = null,
         private array $supportedDrivers = [],
         private array $alerts = [],
     ) {
@@ -100,6 +102,11 @@ final readonly class RuntimeStatusReport
         return $this->activeCalibration;
     }
 
+    public function activeCapabilityEvidence(): ?RuntimeCapabilityEvidenceArtifact
+    {
+        return $this->activeCapabilityEvidence;
+    }
+
     /**
      * @return list<string>
      */
@@ -143,6 +150,7 @@ final readonly class RuntimeStatusReport
             'recommended_budget' => $this->recommendedBudget->toArray(),
             'rollout_readiness' => $this->rolloutReadiness->toArray(),
             'active_calibration' => $this->activeCalibration?->toArray(),
+            'active_capability_evidence' => $this->activeCapabilityEvidence?->toArray(),
             'supported_drivers' => $this->supportedDrivers,
             'alerts' => $this->alerts,
         ];

@@ -115,6 +115,16 @@ final class RuntimeReleasePipelineCommand extends Command
                 '  Native integration verified: %s',
                 $report->nativeIntegrationVerified() ? 'yes' : 'no'
             ));
+            if ($report->activeCapabilityEvidence() !== null) {
+                $output->writeln(sprintf(
+                    '  Active capability evidence generation: %s',
+                    $report->activeCapabilityEvidence()->generationId()
+                ));
+                $output->writeln(sprintf(
+                    '  Active capability evidence platform: %s',
+                    $report->activeCapabilityEvidence()->platform()
+                ));
+            }
             $output->writeln(sprintf('  Failed stage: %s', $report->failedStage() ?? '-'));
             $output->writeln(sprintf(
                 '  Release generation: %s',

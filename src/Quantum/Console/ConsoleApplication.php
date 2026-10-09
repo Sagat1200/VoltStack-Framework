@@ -19,6 +19,7 @@ use Quantum\Console\Commands\ControllerCompileWarmupCommand;
 use Quantum\Console\Commands\ExceptionCatalogCommand;
 use Quantum\Console\Commands\ExceptionCompileCommand;
 use Quantum\Console\Commands\ExceptionDoctorCommand;
+use Quantum\Console\Commands\ExceptionExplainCommand;
 use Quantum\Console\Commands\ExceptionReleaseCheckCommand;
 use Quantum\Console\Commands\ExceptionStatusCommand;
 use Quantum\Console\Commands\ExceptionValidateCommand;
@@ -103,6 +104,8 @@ final class ConsoleApplication
             $this->add(new ExceptionCatalogCommand($basePath));
             $this->add(new ExceptionCompileCommand($basePath));
             $this->add(new ExceptionDoctorCommand($basePath));
+            $this->add(new ExceptionExplainCommand($basePath));
+            $this->add(new ExceptionExplainCommand($basePath));
             $this->add(new ExceptionReleaseCheckCommand($basePath));
             $this->add(new ExceptionStatusCommand($basePath));
             $this->add(new ExceptionValidateCommand($basePath));

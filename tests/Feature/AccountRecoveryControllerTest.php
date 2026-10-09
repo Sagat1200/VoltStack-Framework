@@ -27,18 +27,22 @@ use VoltStack\Framework\Application;
 
 final class AccountRecoveryControllerTest extends TestCase
 {
-    public function test_password_reset_http_flow_issues_preview_token_and_completes_once(): void
+    public function test_password_reset_http_flow_delivers_token_out_of_band_and_completes_once(): void
     {
         $basePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-account-recovery-' . uniqid('', true);
+        $notificationsPath = $basePath . DIRECTORY_SEPARATOR . 'recovery-notifications.jsonl';
         if (! mkdir($concurrentDirectory = $basePath, 0777, true) && ! is_dir($concurrentDirectory)) {
             throw new \RuntimeException(sprintf('Unable to create test directory [%s].', $basePath));
         }
 
         $app = new Application($basePath);
         $config = $app->make(ConfigRepository::class);
-        $config->set('auth.recovery.password_reset.expose_token', true);
+        $config->set('auth.recovery.password_reset.expose_token', false);
         $config->set('auth.passkeys.enabled', true);
         $config->set('auth.passkeys.store.driver', 'file');
+        $config->set('auth.recovery.notifications.driver', 'file');
+        $config->set('auth.recovery.notifications.storage_path', $notificationsPath);
+        $config->set('auth.recovery.notifications.reset_url', 'https://example.test/reset-password?token={token}');
         $config->set('auth.providers.local.identities', [
             [
                 'id' => 7301,
@@ -65,6 +69,15 @@ final class AccountRecoveryControllerTest extends TestCase
         /** @var array<string, mixed> $startPayload */
         $startPayload = json_decode($startResponse->content(), true, 512, JSON_THROW_ON_ERROR);
         $token = $startPayload['token'] ?? null;
+
+        self::assertNull($token);
+
+        $notifications = $this->readJsonl($notificationsPath);
+        self::assertCount(1, $notifications);
+        self::assertSame('password_reset_requested', $notifications[0]['type'] ?? null);
+        self::assertSame('http-recovery@example.com', $notifications[0]['destination'] ?? null);
+        self::assertStringContainsString('https://example.test/reset-password?token=', (string) ($notifications[0]['payload']['reset_url'] ?? ''));
+        $token = $notifications[0]['payload']['reset_token'] ?? null;
 
         self::assertIsString($token);
         self::assertNotSame('', trim($token));
@@ -145,6 +158,11 @@ final class AccountRecoveryControllerTest extends TestCase
         self::assertTrue($opaqueTokens->findRefreshToken('refresh-http-recovery-1')?->revoked ?? false);
         self::assertCount(0, $trustedDevices->listForIdentity($reference));
         self::assertSame([], $passkeys->listForUserHandle('http-recovery@example.com'));
+        $notifications = $this->readJsonl($notificationsPath);
+        self::assertCount(2, $notifications);
+        self::assertSame('password_reset_completed', $notifications[1]['type'] ?? null);
+        self::assertSame(1, $notifications[1]['payload']['trusted_devices_revoked'] ?? null);
+        self::assertSame(1, $notifications[1]['payload']['passkeys_revoked'] ?? null);
 
         $replayResponse = $app->make(HttpKernel::class)->handle(Request::create(
             '/auth/recovery/password-reset/complete',
@@ -158,5 +176,40 @@ final class AccountRecoveryControllerTest extends TestCase
 
         self::assertSame(400, $replayResponse->statusCode());
         self::assertSame('invalid', $replayResponse->headers()['X-Auth-Recovery-Token'] ?? null);
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function readJsonl(string $path): array
+    {
+        if (! is_file($path)) {
+            return [];
+        }
+
+        $lines = file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+
+        if (! is_array($lines)) {
+            return [];
+        }
+
+        $records = [];
+
+        foreach ($lines as $line) {
+            $decoded = json_decode((string) $line, true);
+            if (is_array($decoded)) {
+                $records[] = $decoded;
+            }
+        }
+
+        return $records;
+    }
+
+    protected function tearDown(): void
+    {
+        restore_error_handler();
+        unset($GLOBALS['__voltstack_exceptionhandler_error_handler_registered']);
+
+        parent::tearDown();
     }
 }

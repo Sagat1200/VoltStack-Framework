@@ -30,7 +30,7 @@ final class ControllerCompileCommand extends Command
 
     public function usage(): string
     {
-        return 'controller-compiler [--verbose] [--no-activate] [--retain=3]';
+        return 'controller-compiler [--verbose] [--no-activate] [--retain=3] [--require-published-config]';
     }
 
     public function category(): string
@@ -50,6 +50,7 @@ final class ControllerCompileCommand extends Command
             '--no-activate' => 'Crea el build pero no lo activa (requiere activación manual posterior).',
             '--retain=N' => 'Retiene como máximo N builds anteriores (incluye build actual, default 3).',
             '--incremental' => 'Reutiliza artefactos no modificados del build actual en vez de recompilar todo.',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de compilar controladores.',
         ];
     }
 
@@ -215,7 +216,7 @@ final class ControllerCompileCommand extends Command
             $output->writeln('¡Compilación de controladores completada con éxito!');
 
             return 0;
-        });
+        }, requirePublishedConfig: $input->hasOption('require-published-config'));
     }
 
     /**

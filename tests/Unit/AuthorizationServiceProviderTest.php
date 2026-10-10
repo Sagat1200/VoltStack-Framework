@@ -250,18 +250,25 @@ final class AuthorizationServiceProviderTest extends TestCase
                 return 'x' . $this->version;
             }
 
-            public function invalidateAuthority(?string $principalId = null, Scope|string|null $scope = null): array
+            public function invalidateAuthority(?string $principalId = null, Scope|string|null $scope = null, ?string $reason = null): array
             {
                 $this->version++;
 
                 return ['global' => 'x' . $this->version];
             }
 
-            public function invalidateRelationships(?string $principalId = null, Scope|string|null $scope = null): array
+            public function invalidateRelationships(?string $principalId = null, Scope|string|null $scope = null, ?string $reason = null): array
             {
                 $this->version++;
 
                 return ['global' => 'x' . $this->version];
+            }
+
+            public function inspect(): array
+            {
+                return [
+                    'version_authority_info' => ['kind' => 'custom-external'],
+                ];
             }
         };
 

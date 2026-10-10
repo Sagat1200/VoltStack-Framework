@@ -88,14 +88,33 @@ final class AuthorizationConsistencyReportCommandTest extends TestCase
                 return 'v1';
             }
 
-            public function invalidateAuthority(?string $principalId = null, \Quantum\Authorization\Authority\Scope|string|null $scope = null): array
-            {
+            public function invalidateAuthority(
+                ?string $principalId = null,
+                \Quantum\Authorization\Authority\Scope|string|null $scope = null,
+                ?string $reason = null,
+            ): array {
                 return [];
             }
 
-            public function invalidateRelationships(?string $principalId = null, \Quantum\Authorization\Authority\Scope|string|null $scope = null): array
-            {
+            public function invalidateRelationships(
+                ?string $principalId = null,
+                \Quantum\Authorization\Authority\Scope|string|null $scope = null,
+                ?string $reason = null,
+            ): array {
                 return [];
+            }
+
+            public function inspect(): array
+            {
+                return [
+                    'version_authority_info' => [
+                        'kind' => 'generic',
+                    ],
+                    'bump_counters_by_segment' => [
+                        'authority.global' => 2,
+                        'relationships.principal' => 1,
+                    ],
+                ];
             }
         };
 
@@ -117,6 +136,51 @@ final class AuthorizationConsistencyReportCommandTest extends TestCase
         self::assertSame(0, $exit);
         self::assertStringContainsString('Driver de consistencia', $output->stdout());
         self::assertStringContainsString('Reporte de consistencia Authorization', $output->stdout());
+        self::assertStringContainsString('Backend details', $output->stdout());
+        self::assertStringContainsString('Bump counters', $output->stdout());
+        self::assertStringContainsString('authority.global', $output->stdout());
+    }
+
+    public function test_json_report_includes_inspect_and_last_bump_fields_for_file_backend(): void
+    {
+        $app = new Application(sys_get_temp_dir());
+        $app->make(\Quantum\Config\ConfigRepository::class)->set('authorization.consistency.driver', 'file');
+        $app->make(\Quantum\Config\ConfigRepository::class)->set(
+            'authorization.consistency.file.path',
+            $this->tempBasePath . DIRECTORY_SEPARATOR . 'shared',
+        );
+        $this->writeBootstrap($app);
+
+        /** @var \Quantum\Authorization\Contracts\AuthorizationConsistencyInterface $consistency */
+        $consistency = $app->make(\Quantum\Authorization\Contracts\AuthorizationConsistencyInterface::class);
+        $consistency->invalidateAuthority('u_1', 'tenant:acme', 'admin change');
+
+        $command = new AuthorizationConsistencyReportCommand($this->tempBasePath);
+        $output = new Output();
+
+        $exit = $command->handle(Input::fromArgv([
+            'volt',
+            'authz:consistency:report',
+            '--principal-id=u_1',
+            '--scope=tenant:acme',
+            '--json',
+        ]), $output);
+
+        self::assertSame(0, $exit);
+
+        $decoded = json_decode($output->stdout(), true);
+        self::assertIsArray($decoded);
+        self::assertSame('u_1', $decoded['principal_id']);
+        self::assertSame('tenant:acme', $decoded['scope']);
+        self::assertArrayHasKey('inspect', $decoded);
+        self::assertArrayHasKey('backend', $decoded);
+        self::assertArrayHasKey('last_bump_at', $decoded);
+        self::assertNotEmpty($decoded['last_bump_at']);
+        self::assertSame('file', $decoded['inspect']['version_authority_info']['kind'] ?? null);
+        self::assertArrayHasKey('authority.principal', $decoded['inspect']['bump_counters_by_segment'] ?? []);
+        self::assertArrayHasKey('authority.scope', $decoded['inspect']['bump_counters_by_segment'] ?? []);
+        self::assertSame('admin change', $decoded['inspect']['last_bump_reasons_by_segment']['authority.principal'] ?? null);
+        self::assertSame('admin change', $decoded['inspect']['last_bump_reasons_by_segment']['authority.scope'] ?? null);
     }
 
     private function writeBootstrap(Application $app): void

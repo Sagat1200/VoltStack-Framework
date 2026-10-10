@@ -7,10 +7,11 @@ namespace Quantum\Cache;
 use DateInterval;
 use DateTimeInterface;
 use Quantum\Cache\Concerns\InteractsWithTime;
+use Quantum\Cache\Contracts\AtomicIncrementableStoreInterface;
 use Quantum\Cache\Contracts\ClockInterface;
 use Quantum\Cache\Contracts\InspectableStoreInterface;
 
-final class FileStore implements InspectableStoreInterface
+final class FileStore implements InspectableStoreInterface, AtomicIncrementableStoreInterface
 {
     use InteractsWithTime;
 
@@ -81,6 +82,99 @@ final class FileStore implements InspectableStoreInterface
     public function sourceLevel(): string
     {
         return 'file';
+    }
+
+    public function incrementInt(
+        string $key,
+        int $step = 1,
+        int $initial = 1,
+        DateInterval|DateTimeInterface|int|null $ttl = null,
+    ): int {
+        if ($step < 1) {
+            throw new \InvalidArgumentException('Increment step must be a positive integer.');
+        }
+
+        if ($initial < 0) {
+            throw new \InvalidArgumentException('Increment initial value must be a non-negative integer.');
+        }
+
+        $path = $this->pathFor($key);
+        $lockPath = $path . '.lock';
+        $directory = dirname($path);
+
+        if (! is_dir($directory) && ! mkdir($directory, 0777, true) && ! is_dir($directory)) {
+            throw new \RuntimeException(sprintf(
+                'Unable to create directory for cache file [%s].',
+                $path,
+            ));
+        }
+
+        $lock = @fopen($lockPath, 'c+');
+
+        if ($lock === false) {
+            throw new \RuntimeException(sprintf(
+                'Unable to open cache lock file [%s].',
+                $lockPath,
+            ));
+        }
+
+        if (! @flock($lock, LOCK_EX)) {
+            @fclose($lock);
+
+            throw new \RuntimeException(sprintf(
+                'Unable to acquire cache lock for key [%s].',
+                $key,
+            ));
+        }
+
+        try {
+            $payload = $this->read($key);
+
+            if ($payload === null) {
+                $next = $initial;
+                $expiresAt = $this->expirationTimestamp($ttl);
+
+                if ($expiresAt !== null && $expiresAt <= $this->nowUnixSeconds()) {
+                    return $initial;
+                }
+
+                $this->write($key, [
+                    'expires_at' => $expiresAt,
+                    'value' => $next,
+                    'created_at_ms' => $this->nowUnixMilliseconds(),
+                ]);
+
+                return $next;
+            }
+
+            $current = $payload['value'];
+
+            if (! is_int($current)) {
+                throw new \RuntimeException(sprintf(
+                    'Cannot increment non-integer cache value at key [%s].',
+                    $key,
+                ));
+            }
+
+            $next = $current + $step;
+            $expiresAt = $ttl === null ? $payload['expires_at'] : $this->expirationTimestamp($ttl);
+
+            if ($expiresAt !== null && $expiresAt <= $this->nowUnixSeconds()) {
+                $next = $initial;
+                $expiresAt = $this->expirationTimestamp($ttl);
+            }
+
+            $this->write($key, [
+                'expires_at' => $expiresAt,
+                'value' => $next,
+                'created_at_ms' => $payload['created_at_ms'],
+            ]);
+
+            return $next;
+        } finally {
+            @flock($lock, LOCK_UN);
+            @fclose($lock);
+        }
     }
 
     /**

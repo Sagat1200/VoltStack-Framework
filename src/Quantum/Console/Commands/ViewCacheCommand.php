@@ -27,7 +27,7 @@ final class ViewCacheCommand extends Command
 
     public function usage(): string
     {
-        return 'view:cache [--verbose]';
+        return 'view:cache [--verbose] [--require-published-config]';
     }
 
     public function category(): string
@@ -44,6 +44,7 @@ final class ViewCacheCommand extends Command
     {
         return [
             '--verbose' => 'Muestra cada vista fuente y su archivo compilado en cache.',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de precompilar vistas.',
         ];
     }
 
@@ -79,7 +80,7 @@ final class ViewCacheCommand extends Command
             $output->writeln(sprintf('  Vistas compiladas: %d', $compiled));
 
             return 0;
-        });
+        }, requirePublishedConfig: $input->hasOption('require-published-config'));
     }
 
     /**

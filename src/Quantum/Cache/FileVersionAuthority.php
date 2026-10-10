@@ -8,6 +8,8 @@ use Quantum\Cache\Contracts\VersionAuthorityInterface;
 
 final class FileVersionAuthority implements VersionAuthorityInterface
 {
+    private const ENVELOPE_VERSION = 2;
+
     public function __construct(
         private readonly string $storagePath,
     ) {
@@ -23,10 +25,10 @@ final class FileVersionAuthority implements VersionAuthorityInterface
 
     public function currentVersion(string $scope): string
     {
-        return 'v' . $this->readVersion($this->normalizeScope($scope));
+        return 'v' . $this->readEnvelope($this->normalizeScope($scope))['version'];
     }
 
-    public function bump(string $scope): string
+    public function bump(string $scope, ?string $reason = null): string
     {
         $normalizedScope = $this->normalizeScope($scope);
         $lockPath = $this->lockPathFor($normalizedScope);
@@ -54,8 +56,14 @@ final class FileVersionAuthority implements VersionAuthorityInterface
         }
 
         try {
-            $nextVersion = $this->readVersion($normalizedScope) + 1;
-            $this->writeVersion($normalizedScope, $nextVersion);
+            $envelope = $this->readEnvelope($normalizedScope);
+            $nextVersion = $envelope['version'] + 1;
+            $this->writeEnvelope(
+                $normalizedScope,
+                $nextVersion,
+                is_string($reason) ? trim($reason) : '',
+                $envelope['bump_counter'] + 1,
+            );
 
             return 'v' . $nextVersion;
         } finally {
@@ -64,43 +72,109 @@ final class FileVersionAuthority implements VersionAuthorityInterface
         }
     }
 
-    private function readVersion(string $scope): int
+    /**
+     * @return array{envelope:int,scope:string,version:int<1,max>,updated_at:string,bump_counter:int<0,max>,last_reason:string,last_bump_at:string}
+     */
+    public function readEnvelope(string $scope): array
     {
+        $scope = $this->normalizeScope($scope);
         $path = $this->versionPathFor($scope);
 
         if (! is_file($path)) {
-            return 1;
+            return [
+                'envelope' => self::ENVELOPE_VERSION,
+                'scope' => $scope,
+                'version' => 1,
+                'updated_at' => '',
+                'bump_counter' => 0,
+                'last_reason' => '',
+                'last_bump_at' => '',
+            ];
         }
 
         $contents = @file_get_contents($path);
 
         if (! is_string($contents) || trim($contents) === '') {
-            return 1;
+            return [
+                'envelope' => self::ENVELOPE_VERSION,
+                'scope' => $scope,
+                'version' => 1,
+                'updated_at' => '',
+                'bump_counter' => 0,
+                'last_reason' => '',
+                'last_bump_at' => '',
+            ];
         }
 
         $payload = json_decode($contents, true);
 
         if (! is_array($payload)) {
-            return 1;
+            return [
+                'envelope' => self::ENVELOPE_VERSION,
+                'scope' => $scope,
+                'version' => 1,
+                'updated_at' => '',
+                'bump_counter' => 0,
+                'last_reason' => '',
+                'last_bump_at' => '',
+            ];
         }
 
-        $version = $payload['version'] ?? 1;
+        $envelope = (int) ($payload['envelope'] ?? 0);
 
-        return is_int($version) && $version > 0 ? $version : 1;
+        if ($envelope !== self::ENVELOPE_VERSION) {
+            $legacyVersion = isset($payload['version']) && is_int($payload['version']) && $payload['version'] > 0
+                ? $payload['version']
+                : 1;
+
+            return [
+                'envelope' => self::ENVELOPE_VERSION,
+                'scope' => $scope,
+                'version' => $legacyVersion,
+                'updated_at' => is_string($payload['updated_at'] ?? null) ? (string) $payload['updated_at'] : '',
+                'bump_counter' => max(0, $legacyVersion - 1),
+                'last_reason' => '',
+                'last_bump_at' => is_string($payload['updated_at'] ?? null) ? (string) $payload['updated_at'] : '',
+            ];
+        }
+
+        $version = isset($payload['version']) && is_int($payload['version']) && $payload['version'] > 0
+            ? $payload['version']
+            : 1;
+        $bumpCounter = isset($payload['bump_counter']) && is_int($payload['bump_counter']) && $payload['bump_counter'] >= 0
+            ? $payload['bump_counter']
+            : max(0, $version - 1);
+
+        return [
+            'envelope' => self::ENVELOPE_VERSION,
+            'scope' => is_string($payload['scope'] ?? null) ? (string) $payload['scope'] : $scope,
+            'version' => $version,
+            'updated_at' => is_string($payload['updated_at'] ?? null) ? (string) $payload['updated_at'] : '',
+            'bump_counter' => $bumpCounter,
+            'last_reason' => is_string($payload['last_reason'] ?? null) ? (string) $payload['last_reason'] : '',
+            'last_bump_at' => is_string($payload['last_bump_at'] ?? null)
+                ? (string) $payload['last_bump_at']
+                : (is_string($payload['updated_at'] ?? null) ? (string) $payload['updated_at'] : ''),
+        ];
     }
 
-    private function writeVersion(string $scope, int $version): void
+    private function writeEnvelope(string $scope, int $version, string $reason, int $bumpCounter): void
     {
         $path = $this->versionPathFor($scope);
         $directory = dirname($path);
         $tempPath = $path . '.tmp.' . bin2hex(random_bytes(4));
+        $timestamp = date('c');
 
         $this->ensureDirectory($directory);
 
         $payload = json_encode([
+            'envelope' => self::ENVELOPE_VERSION,
             'scope' => $scope,
             'version' => $version,
-            'updated_at' => date('c'),
+            'updated_at' => $timestamp,
+            'bump_counter' => $bumpCounter,
+            'last_reason' => $reason,
+            'last_bump_at' => $timestamp,
         ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
 
         if (! is_string($payload)) {

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quantum\Authorization\Console\Commands;
 
 use Quantum\Authorization\Contracts\RelationshipAdministrationInterface;
+use Quantum\Config\Publication\PublishedConfigurationRequiredException;
 use Quantum\Console\Command;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
@@ -23,7 +24,7 @@ final class AuthorizationRelationshipsRevokeCommand extends Command
 
     public function usage(): string
     {
-        return 'authz:relationships:revoke --principal-id=... --relation=... --resource-key=... [--scope=global] [--dry-run] [--verbose]';
+        return 'authz:relationships:revoke --principal-id=... --relation=... --resource-key=... [--scope=global] [--dry-run] [--verbose] [--require-published-config]';
     }
 
     public function category(): string
@@ -45,6 +46,7 @@ final class AuthorizationRelationshipsRevokeCommand extends Command
             '--scope=' => 'Scope exacto de la relacion. Default: global.',
             '--dry-run' => 'Muestra la operacion sin modificar el repositorio.',
             '--verbose' => 'Imprime el repositorio administrativo utilizado.',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de revocar relaciones.',
         ];
     }
 
@@ -62,7 +64,19 @@ final class AuthorizationRelationshipsRevokeCommand extends Command
         }
 
         try {
-            $app = $this->bootstrapApplication();
+            $app = $this->bootstrapApplication(requirePublishedConfig: $input->hasOption('require-published-config'));
+        } catch (PublishedConfigurationRequiredException $exception) {
+            throw $exception;
+        } catch (\Throwable $exception) {
+            $output->error(sprintf(
+                'No se pudo resolver la administracion de relaciones: %s',
+                $exception->getMessage(),
+            ));
+
+            return 1;
+        }
+
+        try {
             $admin = $app->make(RelationshipAdministrationInterface::class);
         } catch (\Throwable $exception) {
             $output->error(sprintf(

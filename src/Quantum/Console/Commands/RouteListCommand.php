@@ -26,7 +26,7 @@ final class RouteListCommand extends Command
 
     public function usage(): string
     {
-        return 'route:list';
+        return 'route:list [--require-published-config]';
     }
 
     public function category(): string
@@ -37,6 +37,13 @@ final class RouteListCommand extends Command
     public function aliases(): array
     {
         return ['routes'];
+    }
+
+    public function optionsHelp(): array
+    {
+        return [
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de listar rutas.',
+        ];
     }
 
     public function handle(Input $input, Output $output): int
@@ -69,7 +76,7 @@ final class RouteListCommand extends Command
             $output->writeln(sprintf('Total routes: %d', count($routes)));
 
             return 0;
-        });
+        }, requirePublishedConfig: $input->hasOption('require-published-config'));
     }
 
     private function formatAction(Route $route): string

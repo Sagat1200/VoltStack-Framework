@@ -6,6 +6,7 @@ namespace Quantum\Authorization\Console\Commands;
 
 use Quantum\Authorization\Consistency\VersionedAuthorizationConsistency;
 use Quantum\Authorization\Contracts\AuthorizationConsistencyInterface;
+use Quantum\Config\Publication\PublishedConfigurationRequiredException;
 use Quantum\Console\Command;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
@@ -24,7 +25,7 @@ final class AuthorizationConsistencyReportCommand extends Command
 
     public function usage(): string
     {
-        return 'authz:consistency:report [--principal-id=...] [--scope=...] [--json] [--verbose]';
+        return 'authz:consistency:report [--principal-id=...] [--scope=...] [--json] [--verbose] [--require-published-config]';
     }
 
     public function category(): string
@@ -43,14 +44,27 @@ final class AuthorizationConsistencyReportCommand extends Command
             '--principal-id=' => 'Principal opcional para inspeccionar segmentos principal/principal_scope.',
             '--scope=' => 'Scope opcional para inspeccionar segmentos scope/principal_scope.',
             '--json' => 'Emite el reporte como JSON.',
-            '--verbose' => 'Imprime metadatos adicionales del backend de consistencia resuelto.',
+            '--verbose' => 'Imprime metadatos adicionales del backend de consistencia resuelto y auditoria de bumps observables.',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de generar el reporte.',
         ];
     }
 
     public function handle(Input $input, Output $output): int
     {
         try {
-            $app = $this->bootstrapApplication();
+            $app = $this->bootstrapApplication(requirePublishedConfig: $input->hasOption('require-published-config'));
+        } catch (PublishedConfigurationRequiredException $exception) {
+            throw $exception;
+        } catch (\Throwable $exception) {
+            $output->error(sprintf(
+                'No se pudo resolver la consistencia de Authorization: %s',
+                $exception->getMessage(),
+            ));
+
+            return 1;
+        }
+
+        try {
             $consistency = $app->make(AuthorizationConsistencyInterface::class);
         } catch (\Throwable $exception) {
             $output->error(sprintf(
@@ -63,6 +77,9 @@ final class AuthorizationConsistencyReportCommand extends Command
 
         $principalId = $this->stringOption($input, 'principal-id');
         $scope = $this->stringOption($input, 'scope');
+        $inspect = $consistency->inspect();
+
+        $bumpReasons = $this->flattenBumpReasons($inspect);
 
         $payload = [
             'driver' => $consistency::class,
@@ -70,11 +87,15 @@ final class AuthorizationConsistencyReportCommand extends Command
             'scope' => $scope,
             'authority' => $this->authoritySnapshot($consistency, $principalId, $scope),
             'relationships' => $this->relationshipSnapshot($consistency, $principalId, $scope),
+            'delegation_bumps' => $this->countReasonsByPrefix($bumpReasons, 'delegation.'),
+            'service_principal_bumps' => $this->countReasonsByPrefix($bumpReasons, 'service.'),
+            'inspect' => $inspect,
         ];
 
         if ($consistency instanceof VersionedAuthorizationConsistency) {
             $payload['backend'] = $consistency->driver();
             $payload['namespace'] = $consistency->namespace();
+            $payload['last_bump_at'] = $consistency->lastBumpAt();
         }
 
         if ($input->hasOption('json')) {
@@ -93,6 +114,27 @@ final class AuthorizationConsistencyReportCommand extends Command
             if (isset($payload['namespace']) && is_string($payload['namespace'])) {
                 $output->writeln(sprintf('Namespace: %s', $payload['namespace']));
             }
+
+            if (isset($payload['last_bump_at'])) {
+                $output->writeln(sprintf('Last bump at: %s', is_string($payload['last_bump_at']) ? $payload['last_bump_at'] : '-'));
+            }
+
+            if (isset($inspect['version_authority_info']) && is_array($inspect['version_authority_info'])) {
+                $output->writeln('Backend details:');
+
+                foreach ($inspect['version_authority_info'] as $key => $value) {
+                    $printedValue = is_scalar($value) ? (string) $value : (string) json_encode($value, JSON_UNESCAPED_SLASHES);
+                    $output->writeln(sprintf('  - %s => %s', $key, $printedValue));
+                }
+            }
+
+            if (isset($inspect['bump_counters_by_segment']) && is_array($inspect['bump_counters_by_segment']) && $inspect['bump_counters_by_segment'] !== []) {
+                $output->writeln('Bump counters:');
+
+                foreach ($inspect['bump_counters_by_segment'] as $segment => $count) {
+                    $output->writeln(sprintf('  - %s => %s', $segment, (string) $count));
+                }
+            }
         }
 
         $output->writeln('Reporte de consistencia Authorization:');
@@ -107,7 +149,50 @@ final class AuthorizationConsistencyReportCommand extends Command
             }
         }
 
+        $output->writeln(sprintf('  delegation_bumps: %d', (int) $payload['delegation_bumps']));
+        $output->writeln(sprintf('  service_principal_bumps: %d', (int) $payload['service_principal_bumps']));
+
         return 0;
+    }
+
+    /**
+     * @param array<string, mixed> $inspect
+     * @return list<string>
+     */
+    private function flattenBumpReasons(array $inspect): array
+    {
+        $reasons = [];
+
+        $bySegment = $inspect['last_bump_reasons_by_segment'] ?? null;
+        if (is_array($bySegment)) {
+            foreach ($bySegment as $list) {
+                if (! is_array($list)) {
+                    continue;
+                }
+                foreach ($list as $reason) {
+                    if (is_string($reason) && trim($reason) !== '') {
+                        $reasons[] = $reason;
+                    }
+                }
+            }
+        }
+
+        return $reasons;
+    }
+
+    /**
+     * @param list<string> $reasons
+     */
+    private function countReasonsByPrefix(array $reasons, string $prefix): int
+    {
+        $count = 0;
+        foreach ($reasons as $reason) {
+            if (str_starts_with($reason, $prefix)) {
+                $count++;
+            }
+        }
+
+        return $count;
     }
 
     /**

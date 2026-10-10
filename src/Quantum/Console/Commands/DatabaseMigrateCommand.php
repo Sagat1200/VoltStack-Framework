@@ -23,7 +23,7 @@ final class DatabaseMigrateCommand extends Command
 
     public function usage(): string
     {
-        return 'database:migrate [path] [--connection=name]';
+        return 'database:migrate [path] [--connection=name] [--require-published-config]';
     }
 
     public function category(): string
@@ -42,6 +42,7 @@ final class DatabaseMigrateCommand extends Command
     {
         return [
             '--connection=' => 'Usa una conexion especifica para ejecutar las migraciones.',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de ejecutar migraciones.',
         ];
     }
 
@@ -56,7 +57,7 @@ final class DatabaseMigrateCommand extends Command
             );
 
             return [$connection, $count];
-        });
+        }, requirePublishedConfig: $input->hasOption('require-published-config'));
 
         $output->writeln('Database migrate completed.');
         $output->writeln(sprintf('  Connection: %s', $connection ?? 'default'));

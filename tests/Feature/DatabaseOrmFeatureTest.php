@@ -34,6 +34,8 @@ use Quantum\Database\ORM\EntityState;
 use Quantum\Database\ORM\Metadata\EntityAssociationMetadata;
 use Quantum\Database\ORM\Metadata\EntityMetadataRegistry;
 use Quantum\Database\ORM\Model;
+use Quantum\Database\ORM\Proxy\LazyLoadableEntityTrait;
+use Quantum\Database\ORM\Proxy\ProxyInitializationStatus;
 use Quantum\Database\Schema\Builder\TableBlueprint;
 use Quantum\Http\Request;
 use RuntimeException;
@@ -2721,6 +2723,269 @@ final class DatabaseOrmFeatureTest extends TestCase
         }
     }
 
+    public function test_entity_manager_get_reference_returns_managed_placeholder_and_refresh_initializes_it(): void
+    {
+        $app = $this->makeApp();
+        $scope = $app->make(ScopeManager::class);
+        $scope->begin(Request::create('/database/orm/lazy-reference-foundation', 'GET'));
+
+        try {
+            $database = $app->make(DatabaseInterface::class);
+            $database->schema()->create('orm_users', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+                $table->boolean('active');
+            }, true);
+
+            $manager = $database->entityManager();
+
+            $volt = new OrmUser();
+            $volt->name = 'Lazy User';
+            $volt->active = true;
+
+            $manager->persist($volt);
+            $manager->flush();
+            $manager->clear();
+
+            // 1. getReference returns a managed placeholder without a DB row read.
+            $ref = $manager->getReference(OrmUser::class, $volt->id);
+            self::assertSame($volt->id, $ref->id, 'Identifier must be populated on the placeholder before any DB round-trip');
+            self::assertTrue($manager->contains($ref), 'Placeholder returned by getReference must already be managed');
+            self::assertSame(EntityState::Managed, $manager->state($ref), 'Placeholder state is Managed even before initialization');
+
+            // 2. Trying to flush with an uninitialized placeholder in the managed
+            // set must fail with the unified guardrail before any SQL runs.
+            $guardrailFired = false;
+            try {
+                $manager->flush();
+            } catch (RuntimeException $e) {
+                if (str_contains($e->getMessage(), 'uninitialized proxy placeholder')) {
+                    $guardrailFired = true;
+                } else {
+                    throw $e;
+                }
+            }
+            self::assertTrue($guardrailFired, 'Flush must reject an uninitialized placeholder before snapshot reads');
+
+            // 3. refresh() fully hydrates the placeholder through the initializer
+            // path. Subsequent flushes must succeed without guardrails.
+            $manager->refresh($ref);
+            self::assertSame('Lazy User', $ref->name);
+            self::assertTrue($ref->active);
+
+            // Idempotent: initializeProxy on a fully initialized placeholder is a no-op.
+            $manager->initializeProxy($ref);
+
+            // 4. After initialization, normal write operations still work and
+            // are observable through a second find on a cleared scope.
+            $ref->name = 'Lazy User (Updated)';
+            $manager->flush();
+
+            $manager->clear();
+            $reloaded = $manager->find(OrmUser::class, $volt->id);
+            self::assertInstanceOf(OrmUser::class, $reloaded);
+            self::assertSame('Lazy User (Updated)', $reloaded->name);
+        } finally {
+            $scope->end();
+        }
+    }
+
+    public function test_trait_lazyloadable_auto_loads_fetchlazy_associations_on_access_for_both_final_and_nonfinal_entities_and_refresh_still_works(): void
+    {
+        $app = $this->makeApp();
+        $scope = $app->make(ScopeManager::class);
+        $scope->begin(Request::create('/database/orm/trait-lazy-fetch-live-v2', 'GET'));
+
+        try {
+            $database = $app->make(DatabaseInterface::class);
+            $database->schema()->create('feat_lazy_categories', function (TableBlueprint $t): void {
+                $t->id();
+                $t->string('name');
+            }, true);
+            $database->schema()->create('feat_lazy_products', function (TableBlueprint $t): void {
+                $t->id();
+                $t->string('sku');
+                $t->integer('category_id');
+            }, true);
+            $database->schema()->create('feat_lazy_invoices', function (TableBlueprint $t): void {
+                $t->id();
+                $t->string('invoice_number');
+            }, true);
+            $database->schema()->create('feat_lazy_shipments', function (TableBlueprint $t): void {
+                $t->id();
+                $t->string('tracking_code');
+                $t->integer('invoice_id');
+            }, true);
+
+            $registry = $app->make(EntityMetadataRegistry::class);
+
+            // Fixture buckets A/B:
+            //   A) NON-final with trait: FeatLazyProduct (ManyToOne -> FeatLazyCategory)
+            //      INVERSE side warmup first.
+            $registry->for(FeatLazyCategory::class);
+            $registry->for(FeatLazyProduct::class);
+            //   B) FINAL with trait: FeatLazyShipment (OneToOne owning -> FeatLazyInvoice)
+            //      INVERSE side warmup first.
+            $registry->for(FeatLazyInvoiceWithTrait::class);
+            $registry->for(FeatLazyFinalShipmentWithTrait::class);
+
+            $manager = $database->entityManager();
+
+            // -- Seeding: create categories + products (non-final with trait)
+            $cat = new FeatLazyCategory();
+            $cat->name = 'Gardening';
+            $manager->persist($cat);
+
+            $skuList = ['GV-100', 'GV-200', 'GV-300'];
+            foreach ($skuList as $sku) {
+                $product = new FeatLazyProduct();
+                $product->sku = $sku;
+                $product->category = $cat;
+                $manager->persist($product);
+            }
+            $manager->flush();
+
+            // -- Seeding: create shipment + invoice (final class with trait; OneToOne)
+            $invoice = new FeatLazyInvoiceWithTrait();
+            $invoice->invoiceNumber = 'INV-2025-042';
+            $manager->persist($invoice);
+
+            $shipment = new FeatLazyFinalShipmentWithTrait();
+            $shipment->trackingCode = '1Z999AA10123456784';
+            $shipment->invoice = $invoice;
+            $manager->persist($shipment);
+            $manager->flush();
+            $manager->clear();
+
+            // ================================================================
+            // (a) find() on NON-final entity + lazy-read association on-access
+            // ================================================================
+            $firstProduct = $manager->find(FeatLazyProduct::class, 1);
+            self::assertNotNull($firstProduct);
+            self::assertSame('GV-100', $firstProduct->sku);
+            // Before read: the association property is unset (trait-managed).
+            // Accessing ->category must trigger loadToOne transparently.
+            self::assertSame('Gardening', $firstProduct->category?->name);
+            self::assertSame($cat->id, $firstProduct->category?->id);
+
+            // ================================================================
+            // (b) getReference() placeholder → hydrate-through then assoc load
+            // ================================================================
+            $productPlaceholder = $manager->getReference(FeatLazyProduct::class, 2);
+            self::assertSame(ProxyInitializationStatus::Uninitialized, $manager->proxyStatusOf($productPlaceholder));
+            // Access association directly; placeholder hydrates-through first.
+            self::assertSame('Gardening', $productPlaceholder->category?->name);
+            self::assertSame('GV-200', $productPlaceholder->sku);
+            self::assertSame(ProxyInitializationStatus::Initialized, $manager->proxyStatusOf($productPlaceholder));
+
+            // ================================================================
+            // (c) FINAL entity with trait: find() + lazy OneToOne load
+            // ================================================================
+            $finalShipment = $manager->find(FeatLazyFinalShipmentWithTrait::class, $shipment->id);
+            self::assertNotNull($finalShipment);
+            self::assertSame('1Z999AA10123456784', $finalShipment->trackingCode);
+            $loadedInvoice = $finalShipment->invoice;
+            self::assertNotNull($loadedInvoice);
+            self::assertSame('INV-2025-042', $loadedInvoice->invoiceNumber);
+            self::assertSame($invoice->id, $loadedInvoice->id);
+            // Second access returns exact same object reference (loader not re-run).
+            self::assertSame($loadedInvoice, $finalShipment->invoice);
+
+            // ================================================================
+            // (d) placeholder on FINAL: hydrate-through on association access
+            // ================================================================
+            $shipmentRef = $manager->getReference(FeatLazyFinalShipmentWithTrait::class, $shipment->id);
+            $invoiceThrough = $shipmentRef->invoice;
+            self::assertNotNull($invoiceThrough);
+            self::assertSame($invoice->id, $invoiceThrough->id);
+            self::assertSame('1Z999AA10123456784', $shipmentRef->trackingCode);
+
+            // ================================================================
+            // (e) Plain entity WITHOUT trait: association stays null/default
+            //     unless explicit loader is called (BC guarantee).
+            // ================================================================
+            $plainCat = $manager->find(FeatLazyCategory::class, $cat->id);
+            self::assertNotNull($plainCat);
+            self::assertSame('Gardening', $plainCat->name);
+            self::assertSame([], $plainCat->products, 'Without trait: inverse OneToMany stays default empty array (BC strict).');
+            $explicitProducts = $manager->loadToMany($plainCat, 'products');
+            self::assertCount(3, $explicitProducts);
+            self::assertCount(3, $plainCat->products, 'After explicit loadToMany the materialized collection lives on entity');
+
+            // ================================================================
+            // (f) Scalar guardrail on uninitialized placeholder with trait:
+            //     read of non-association field throws the unified V1 message.
+            //     NOTE: clear() first because prior steps loaded products
+            //     via explicit inverse-side loadToMany; those Initialized
+            //     entities live in the identity map and would short-circuit
+            //     getReference back to an Initialized ref.
+            // ================================================================
+            $manager->clear();
+            $uninitialized = $manager->getReference(FeatLazyProduct::class, 3);
+            $caughtScalar = false;
+            try {
+                $_ = $uninitialized->sku;
+            } catch (RuntimeException $e) {
+                if (str_contains($e->getMessage(), 'uninitialized proxy placeholder')) {
+                    $caughtScalar = true;
+                }
+            }
+            self::assertTrue($caughtScalar, 'Uninitialized placeholder + trait must throw on scalar read');
+
+            // ================================================================
+            // (g) User-side sideload of an association wins over lazy loader.
+            // ================================================================
+            $ghostCat = new FeatLazyCategory();
+            $ghostCat->id = 9007;
+            $ghostCat->name = 'Synthetic (never persisted)';
+            $productPlaceholder3 = $manager->getReference(FeatLazyProduct::class, 3);
+            $productPlaceholder3->category = $ghostCat;
+            self::assertSame($ghostCat, $productPlaceholder3->category);
+
+            // ================================================================
+            // (h) Detached entity guardrail: clear() then access trait path.
+            // ================================================================
+            $holder = $manager->getReference(FeatLazyProduct::class, 1);
+            $manager->clear();
+            $caughtDetached = false;
+            try {
+                $_ = $holder->category;
+            } catch (RuntimeException $e) {
+                if (stripos($e->getMessage(), 'orphaned') !== false
+                    || stripos($e->getMessage(), 'detached') !== false) {
+                    $caughtDetached = true;
+                }
+            }
+            self::assertTrue($caughtDetached, 'After clear(), accessing lazy assoc must throw orphaned/detached');
+
+            // ================================================================
+            // (i) Multiple writes then refresh() still materializes fields.
+            // ================================================================
+            $toRefresh = $manager->find(FeatLazyProduct::class, 1);
+            $toRefresh->sku = 'GV-100-MODIFIED';
+            $manager->refresh($toRefresh);
+            self::assertSame('GV-100', $toRefresh->sku, 'refresh() restores DB state');
+            // Association must still be lazy-loadable after refresh.
+            $refreshedCategory = $toRefresh->category;
+            self::assertNotNull($refreshedCategory);
+            self::assertSame('Gardening', $refreshedCategory->name);
+
+            // ================================================================
+            // (j) Refresh on uninitialized placeholder succeeds, then lazy
+            //     assocs still resolve and UnitOfWork stays coherent.
+            // ================================================================
+            $refBeforeRefresh = $manager->getReference(FeatLazyFinalShipmentWithTrait::class, $shipment->id);
+            $manager->refresh($refBeforeRefresh);
+            self::assertSame('1Z999AA10123456784', $refBeforeRefresh->trackingCode);
+            $postRefreshInvoice = $refBeforeRefresh->invoice;
+            self::assertNotNull($postRefreshInvoice);
+            self::assertSame('INV-2025-042', $postRefreshInvoice->invoiceNumber);
+            self::assertTrue($manager->contains($refBeforeRefresh));
+        } finally {
+            $scope->end();
+        }
+    }
+
     private function deleteDirectory(string $path): void
     {
         if (! is_dir($path)) {
@@ -2757,6 +3022,91 @@ final class DatabaseOrmFeatureTest extends TestCase
 
         return $reflection->isInitialized($object);
     }
+}
+
+// =========================================================================
+// Fase 37 / DV-DB-038 fixtures — trait lazy-loadable real fetch:lazy V2
+// Unique classnames globally (no collision with existing Orm* / Proxy* classes)
+// Pattern: separate FK int column + entity association property (no #[Column]
+// on the entity-typed property itself) to avoid raw-int hydration TypeError.
+// =========================================================================
+
+#[Entity]
+#[Table(name: 'feat_lazy_categories')]
+class FeatLazyCategory
+{
+    #[Id]
+    #[Column(name: 'id', type: 'int')]
+    public ?int $id = null;
+
+    #[Column(name: 'name', type: 'string')]
+    public ?string $name = null;
+
+    // INVERSE side: mappedBy points to owning-side property on FeatLazyProduct.
+    // WITHOUT LazyLoadableEntityTrait — stays at default [] (BC strict).
+    #[OneToMany(targetEntity: FeatLazyProduct::class, mappedBy: 'category')]
+    public array $products = [];
+}
+
+#[Entity]
+#[Table(name: 'feat_lazy_products')]
+class FeatLazyProduct
+{
+    use LazyLoadableEntityTrait;
+
+    #[Id]
+    #[Column(name: 'id', type: 'int')]
+    public ?int $id = null;
+
+    #[Column(name: 'sku', type: 'string')]
+    public ?string $sku = null;
+
+    #[Column(name: 'category_id', type: 'int')]
+    public ?int $categoryId = null;
+
+    // OWNING side: ManyToOne FeatLazyProduct::$category -> FeatLazyCategory.
+    // Trait + fetch:lazy = first ->category access transparently loads.
+    #[ManyToOne(targetEntity: FeatLazyCategory::class, inversedBy: 'products', fetch: 'lazy')]
+    public ?FeatLazyCategory $category = null;
+}
+
+#[Entity]
+#[Table(name: 'feat_lazy_invoices')]
+class FeatLazyInvoiceWithTrait
+{
+    use LazyLoadableEntityTrait;
+
+    #[Id]
+    #[Column(name: 'id', type: 'int')]
+    public ?int $id = null;
+
+    #[Column(name: 'invoice_number', type: 'string')]
+    public ?string $invoiceNumber = null;
+
+    // INVERSE side (mappedBy shipment.invoice). No FK column here.
+    #[OneToOne(targetEntity: FeatLazyFinalShipmentWithTrait::class, mappedBy: 'invoice', fetch: 'lazy')]
+    public ?FeatLazyFinalShipmentWithTrait $shipment = null;
+}
+
+#[Entity]
+#[Table(name: 'feat_lazy_shipments')]
+final class FeatLazyFinalShipmentWithTrait
+{
+    use LazyLoadableEntityTrait;
+
+    #[Id]
+    #[Column(name: 'id', type: 'int')]
+    public ?int $id = null;
+
+    #[Column(name: 'tracking_code', type: 'string')]
+    public ?string $trackingCode = null;
+
+    #[Column(name: 'invoice_id', type: 'int')]
+    public ?int $invoiceId = null;
+
+    // OWNING side: OneToOne invoice (with inversedBy = shipment).
+    #[OneToOne(targetEntity: FeatLazyInvoiceWithTrait::class, inversedBy: 'shipment', fetch: 'lazy')]
+    public ?FeatLazyInvoiceWithTrait $invoice = null;
 }
 
 #[Entity(repository: OrmUserRepository::class)]

@@ -8,6 +8,7 @@ use PDO;
 use Quantum\Authorization\Contracts\AuthorityAdministrationInterface;
 use Quantum\Authorization\Contracts\AuthorizationConsistencyInterface;
 use Quantum\Authorization\Contracts\AuthorityRepositoryInterface;
+use Quantum\Authorization\Contracts\DelegationAdministrationInterface;
 use Quantum\Database\Contracts\DatabaseInterface;
 
 /**
@@ -22,19 +23,29 @@ use Quantum\Database\Contracts\DatabaseInterface;
  * La resolución efectiva preserva la misma semántica observable que
  * InMemoryAuthorityRepository: grants directos del scope actual + ancestros.
  */
-final class DatabaseAuthorityRepository implements AuthorityAdministrationInterface, AuthorityRepositoryInterface
+final class DatabaseAuthorityRepository implements AuthorityAdministrationInterface, AuthorityRepositoryInterface, DelegationAdministrationInterface
 {
     public const DEFAULT_ROLE_GRANTS_TABLE = 'authorization_role_grants';
     public const DEFAULT_PERMISSION_GRANTS_TABLE = 'authorization_permission_grants';
     public const DEFAULT_ROLE_PERMISSIONS_TABLE = 'authorization_role_permissions';
+    public const DEFAULT_DELEGATION_GRANTS_TABLE = 'authorization_delegation_grants';
 
     /**
-     * @var array{role_grants:string,permission_grants:string,role_permissions:string}
+     * @var array{role_grants:string,permission_grants:string,role_permissions:string,delegation_grants:string}
      */
     private array $tables;
 
     /**
-     * @param array{role_grants?:string,permission_grants?:string,role_permissions?:string} $tables
+     * @param array{role_grants?:string,permission_grants?:string,role_permissions?:string,delegation_grants?:string} $tables
+     *
+     * Shape recomendada para la tabla delegation_grants (por defecto authorization_delegation_grants):
+     *   trustee_id      VARCHAR(128) NOT NULL
+     *   grantor_id      VARCHAR(128) NOT NULL
+     *   scope           VARCHAR(128) NOT NULL
+     *   grant_type      VARCHAR(16)  NOT NULL  -- 'role' | 'permission'
+     *   grant_value     VARCHAR(255) NOT NULL
+     *   granted_at      DATETIME(3) NULL
+     * UNIQUE KEY uniq_delegation (trustee_id, grantor_id, scope, grant_type, grant_value)
      */
     public function __construct(
         private readonly DatabaseInterface $database,
@@ -46,6 +57,7 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
             'role_grants' => $this->normalizeTableName($tables['role_grants'] ?? self::DEFAULT_ROLE_GRANTS_TABLE),
             'permission_grants' => $this->normalizeTableName($tables['permission_grants'] ?? self::DEFAULT_PERMISSION_GRANTS_TABLE),
             'role_permissions' => $this->normalizeTableName($tables['role_permissions'] ?? self::DEFAULT_ROLE_PERMISSIONS_TABLE),
+            'delegation_grants' => $this->normalizeTableName($tables['delegation_grants'] ?? self::DEFAULT_DELEGATION_GRANTS_TABLE),
         ];
     }
 
@@ -178,7 +190,7 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
             ':value' => $roleName,
         ]);
 
-        $this->consistency?->invalidateAuthority(trim($principalId), $scopeName);
+        $this->consistency?->invalidateAuthority(trim($principalId), $scopeName, 'authority.grant_role');
 
         return true;
     }
@@ -202,7 +214,7 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
             ':value' => $permissionName,
         ]);
 
-        $this->consistency?->invalidateAuthority(trim($principalId), $scopeName);
+        $this->consistency?->invalidateAuthority(trim($principalId), $scopeName, 'authority.grant_permission');
 
         return true;
     }
@@ -223,7 +235,7 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
         $deleted = $statement->rowCount() > 0;
 
         if ($deleted) {
-            $this->consistency?->invalidateAuthority(trim($principalId), $scopeName);
+            $this->consistency?->invalidateAuthority(trim($principalId), $scopeName, 'authority.revoke_role');
         }
 
         return $deleted;
@@ -245,7 +257,7 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
         $deleted = $statement->rowCount() > 0;
 
         if ($deleted) {
-            $this->consistency?->invalidateAuthority(trim($principalId), $scopeName);
+            $this->consistency?->invalidateAuthority(trim($principalId), $scopeName, 'authority.revoke_permission');
         }
 
         return $deleted;
@@ -480,5 +492,183 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
         }
 
         return array_values($deduplicated);
+    }
+
+    public function listDelegations(array $filters = []): array
+    {
+        $trusteeFilter = $this->normalizeOptionalString($filters['trustee_id'] ?? null);
+        $grantorFilter = $this->normalizeOptionalString($filters['grantor_id'] ?? null);
+        $scopeFilter = $this->normalizeOptionalScopeName($filters['scope'] ?? null);
+        $typeFilter = strtolower(trim((string) ($filters['type'] ?? 'all')));
+        $valueFilter = $this->normalizeOptionalString($filters['value'] ?? null);
+
+        $conditions = [];
+        $params = [];
+
+        if ($trusteeFilter !== null) {
+            $conditions[] = 'trustee_id = :trustee_id';
+            $params[':trustee_id'] = $trusteeFilter;
+        }
+
+        if ($grantorFilter !== null) {
+            $conditions[] = 'grantor_id = :grantor_id';
+            $params[':grantor_id'] = $grantorFilter;
+        }
+
+        if ($scopeFilter !== null) {
+            $conditions[] = 'scope = :scope';
+            $params[':scope'] = $scopeFilter;
+        }
+
+        if ($typeFilter !== 'all') {
+            $conditions[] = 'grant_type = :grant_type';
+            $params[':grant_type'] = $typeFilter;
+        }
+
+        if ($valueFilter !== null) {
+            $conditions[] = 'grant_value = :grant_value';
+            $params[':grant_value'] = $valueFilter;
+        }
+
+        $statement = $this->pdo()->prepare(sprintf(
+            'SELECT trustee_id, grantor_id, scope, grant_type AS type, grant_value AS value, granted_at FROM %s%s ORDER BY trustee_id ASC, grantor_id ASC, scope ASC, type ASC, value ASC',
+            $this->tables['delegation_grants'],
+            $conditions === [] ? '' : ' WHERE ' . implode(' AND ', $conditions),
+        ));
+        $statement->execute($params);
+
+        /** @var list<array{trustee_id:mixed,grantor_id:mixed,scope:mixed,type:mixed,value:mixed,granted_at:mixed}> $rows */
+        $rows = $statement->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+        return array_map(static function (array $row): array {
+            $grantedAt = $row['granted_at'] ?? null;
+            if ($grantedAt instanceof \DateTimeInterface) {
+                $grantedAt = $grantedAt->format(\DateTimeInterface::ATOM);
+            } elseif (is_string($grantedAt) && trim($grantedAt) !== '') {
+                try {
+                    $grantedAt = (new \DateTimeImmutable($grantedAt))->format(\DateTimeInterface::ATOM);
+                } catch (\Throwable) {
+                    $grantedAt = null;
+                }
+            } else {
+                $grantedAt = null;
+            }
+
+            return [
+                'trustee_id' => (string) ($row['trustee_id'] ?? ''),
+                'grantor_id' => (string) ($row['grantor_id'] ?? ''),
+                'scope' => (string) ($row['scope'] ?? ''),
+                'type' => (string) ($row['type'] ?? ''),
+                'value' => (string) ($row['value'] ?? ''),
+                'granted_at' => $grantedAt,
+            ];
+        }, $rows);
+    }
+
+    public function grantDelegation(
+        string $trusteeId,
+        string $grantorId,
+        Role|Permission $grant,
+        Scope|string $scope = Scope::GLOBAL,
+    ): bool {
+        $trusteeId = trim($trusteeId);
+        $grantorId = trim($grantorId);
+
+        if ($trusteeId === '' || $grantorId === '') {
+            return false;
+        }
+
+        $scopeName = $this->normalizeScopeName($scope);
+        $grantType = $grant instanceof Role ? 'role' : 'permission';
+        $grantValue = $grant->name;
+
+        if ($this->delegationExists($trusteeId, $grantorId, $scopeName, $grantType, $grantValue)) {
+            return false;
+        }
+
+        try {
+            $statement = $this->pdo()->prepare(sprintf(
+                'INSERT INTO %s (trustee_id, grantor_id, scope, grant_type, grant_value, granted_at) VALUES (:trustee_id, :grantor_id, :scope, :grant_type, :grant_value, :granted_at)',
+                $this->tables['delegation_grants'],
+            ));
+            $statement->execute([
+                ':trustee_id' => $trusteeId,
+                ':grantor_id' => $grantorId,
+                ':scope' => $scopeName,
+                ':grant_type' => $grantType,
+                ':grant_value' => $grantValue,
+                ':granted_at' => (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s.u'),
+            ]);
+        } catch (\Throwable) {
+            return false;
+        }
+
+        $this->consistency?->invalidateAuthority($trusteeId, $scopeName, 'delegation.grant');
+
+        return true;
+    }
+
+    public function revokeDelegation(
+        string $trusteeId,
+        string $grantorId,
+        Role|Permission $grant,
+        Scope|string $scope = Scope::GLOBAL,
+    ): bool {
+        $trusteeId = trim($trusteeId);
+        $grantorId = trim($grantorId);
+
+        if ($trusteeId === '' || $grantorId === '') {
+            return false;
+        }
+
+        $scopeName = $this->normalizeScopeName($scope);
+        $grantType = $grant instanceof Role ? 'role' : 'permission';
+        $grantValue = $grant->name;
+
+        try {
+            $statement = $this->pdo()->prepare(sprintf(
+                'DELETE FROM %s WHERE trustee_id = :trustee_id AND grantor_id = :grantor_id AND scope = :scope AND grant_type = :grant_type AND grant_value = :grant_value',
+                $this->tables['delegation_grants'],
+            ));
+            $statement->execute([
+                ':trustee_id' => $trusteeId,
+                ':grantor_id' => $grantorId,
+                ':scope' => $scopeName,
+                ':grant_type' => $grantType,
+                ':grant_value' => $grantValue,
+            ]);
+        } catch (\Throwable) {
+            return false;
+        }
+
+        $deleted = $statement->rowCount() > 0;
+
+        if ($deleted) {
+            $this->consistency?->invalidateAuthority($trusteeId, $scopeName, 'delegation.revoke');
+        }
+
+        return $deleted;
+    }
+
+    private function delegationExists(
+        string $trusteeId,
+        string $grantorId,
+        string $scopeName,
+        string $grantType,
+        string $grantValue,
+    ): bool {
+        $statement = $this->pdo()->prepare(sprintf(
+            'SELECT COUNT(*) FROM %s WHERE trustee_id = :trustee_id AND grantor_id = :grantor_id AND scope = :scope AND grant_type = :grant_type AND grant_value = :grant_value',
+            $this->tables['delegation_grants'],
+        ));
+        $statement->execute([
+            ':trustee_id' => $trusteeId,
+            ':grantor_id' => $grantorId,
+            ':scope' => $scopeName,
+            ':grant_type' => $grantType,
+            ':grant_value' => $grantValue,
+        ]);
+
+        return ((int) $statement->fetchColumn()) > 0;
     }
 }

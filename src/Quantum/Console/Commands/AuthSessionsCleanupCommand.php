@@ -24,7 +24,7 @@ final class AuthSessionsCleanupCommand extends Command
 
     public function usage(): string
     {
-        return 'auth:sessions:cleanup [--now=timestamp] [--verbose]';
+        return 'auth:sessions:cleanup [--now=timestamp] [--verbose] [--require-published-config]';
     }
 
     public function category(): string
@@ -37,6 +37,7 @@ final class AuthSessionsCleanupCommand extends Command
         return [
             '--now=' => 'Usa un timestamp UNIX especifico para la evaluacion de expiracion y retencion.',
             '--verbose' => 'Muestra detalle del driver activo y del retention window configurado.',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de purgar sesiones.',
         ];
     }
 
@@ -58,7 +59,7 @@ final class AuthSessionsCleanupCommand extends Command
             $retention = is_numeric($retention) ? (int) $retention : 604800;
 
             return [$driver, $trustedDeviceDriver, $retention, $expired, $expiredTrustedDevices, $tombstones];
-        });
+        }, requirePublishedConfig: $input->hasOption('require-published-config'));
 
         if ($input->hasOption('verbose')) {
             $output->writeln(sprintf('Driver activo: %s', $driver));

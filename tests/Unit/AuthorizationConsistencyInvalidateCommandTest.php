@@ -60,10 +60,10 @@ final class AuthorizationConsistencyInvalidateCommandTest extends TestCase
     public function test_command_invalidates_both_domains_and_can_emit_json(): void
     {
         $spy = new class implements AuthorizationConsistencyInterface {
-            /** @var list<array{principal_id:?string,scope:string|null}> */
+            /** @var list<array{principal_id:?string,scope:string|null,reason:string|null}> */
             public array $authorityCalls = [];
 
-            /** @var list<array{principal_id:?string,scope:string|null}> */
+            /** @var list<array{principal_id:?string,scope:string|null,reason:string|null}> */
             public array $relationshipCalls = [];
 
             public function authorityVersion(string $principalId, \Quantum\Authorization\Authority\Scope|string $scope = \Quantum\Authorization\Authority\Scope::GLOBAL): string
@@ -76,24 +76,41 @@ final class AuthorizationConsistencyInvalidateCommandTest extends TestCase
                 return 'v1';
             }
 
-            public function invalidateAuthority(?string $principalId = null, \Quantum\Authorization\Authority\Scope|string|null $scope = null): array
-            {
+            public function invalidateAuthority(
+                ?string $principalId = null,
+                \Quantum\Authorization\Authority\Scope|string|null $scope = null,
+                ?string $reason = null,
+            ): array {
                 $this->authorityCalls[] = [
                     'principal_id' => $principalId,
                     'scope' => is_string($scope) ? $scope : ($scope instanceof \Quantum\Authorization\Authority\Scope ? (string) $scope : null),
+                    'reason' => $reason,
                 ];
 
                 return ['scope' => 'v2'];
             }
 
-            public function invalidateRelationships(?string $principalId = null, \Quantum\Authorization\Authority\Scope|string|null $scope = null): array
-            {
+            public function invalidateRelationships(
+                ?string $principalId = null,
+                \Quantum\Authorization\Authority\Scope|string|null $scope = null,
+                ?string $reason = null,
+            ): array {
                 $this->relationshipCalls[] = [
                     'principal_id' => $principalId,
                     'scope' => is_string($scope) ? $scope : ($scope instanceof \Quantum\Authorization\Authority\Scope ? (string) $scope : null),
+                    'reason' => $reason,
                 ];
 
                 return ['principal_scope' => 'v3'];
+            }
+
+            public function inspect(): array
+            {
+                return [
+                    'implementation' => self::class,
+                    'last_bump_at' => null,
+                    'bump_counters_by_segment' => [],
+                ];
             }
         };
 
@@ -110,14 +127,18 @@ final class AuthorizationConsistencyInvalidateCommandTest extends TestCase
             '--domain=all',
             '--principal-id=u_1',
             '--scope=tenant:acme',
+            '--reason=manual',
             '--json',
         ]), $output);
 
         self::assertSame(0, $exit);
-        self::assertSame([['principal_id' => 'u_1', 'scope' => 'tenant:acme']], $spy->authorityCalls);
-        self::assertSame([['principal_id' => 'u_1', 'scope' => 'tenant:acme']], $spy->relationshipCalls);
+        self::assertSame([['principal_id' => 'u_1', 'scope' => 'tenant:acme', 'reason' => 'manual']], $spy->authorityCalls);
+        self::assertSame([['principal_id' => 'u_1', 'scope' => 'tenant:acme', 'reason' => 'manual']], $spy->relationshipCalls);
         self::assertStringContainsString('"authority"', $output->stdout());
         self::assertStringContainsString('"relationships"', $output->stdout());
+        self::assertStringContainsString('"reason":', $output->stdout());
+        self::assertStringContainsString('"manual"', $output->stdout());
+        self::assertStringContainsString('"inspect"', $output->stdout());
     }
 
     public function test_command_can_invalidate_single_domain_with_verbose_output(): void
@@ -133,14 +154,25 @@ final class AuthorizationConsistencyInvalidateCommandTest extends TestCase
                 return 'v1';
             }
 
-            public function invalidateAuthority(?string $principalId = null, \Quantum\Authorization\Authority\Scope|string|null $scope = null): array
-            {
+            public function invalidateAuthority(
+                ?string $principalId = null,
+                \Quantum\Authorization\Authority\Scope|string|null $scope = null,
+                ?string $reason = null,
+            ): array {
                 return ['global' => 'v2'];
             }
 
-            public function invalidateRelationships(?string $principalId = null, \Quantum\Authorization\Authority\Scope|string|null $scope = null): array
-            {
+            public function invalidateRelationships(
+                ?string $principalId = null,
+                \Quantum\Authorization\Authority\Scope|string|null $scope = null,
+                ?string $reason = null,
+            ): array {
                 throw new \RuntimeException('should not be called');
+            }
+
+            public function inspect(): array
+            {
+                return [];
             }
         };
 

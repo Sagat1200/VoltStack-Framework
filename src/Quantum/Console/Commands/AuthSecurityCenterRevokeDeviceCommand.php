@@ -29,7 +29,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
 
     public function usage(): string
     {
-        return 'auth:security-center:revoke-device --identity=value --device-reference=value --actor-identity=value --actor-session-public-id=value [--type=value] [--actor-type=value] [--scope=all|sessions|trusted-devices] [--include-public-ids] [--correlation-id=value] [--audit-log=path] [--audit-log-source=path] [--dry-run] [--json] [--verbose]';
+        return 'auth:security-center:revoke-device --identity=value --device-reference=value --actor-identity=value --actor-session-public-id=value [--type=value] [--actor-type=value] [--scope=all|sessions|trusted-devices] [--include-public-ids] [--correlation-id=value] [--audit-log=path] [--audit-log-source=path] [--dry-run] [--json] [--verbose] [--require-published-config]';
     }
 
     public function category(): string
@@ -54,6 +54,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
             '--dry-run' => 'Calcula la revocacion sin persistir cambios.',
             '--json' => 'Emite el resultado en JSON.',
             '--verbose' => 'Muestra detalle adicional del driver, filtro y conteos.',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de revocar devices/sesiones.',
         ];
     }
 
@@ -680,7 +681,7 @@ final class AuthSecurityCenterRevokeDeviceCommand extends Command
         }
 
         return 0;
-        });
+        }, requirePublishedConfig: $input->hasOption('require-published-config'));
     }
 
     private function resolveNow(Input $input): ?int

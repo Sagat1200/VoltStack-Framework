@@ -148,11 +148,13 @@ use Quantum\Exceptions\Bridges\Runtime\ManagedExceptionRuntimeBridge;
 use Quantum\Exceptions\Contracts\ExceptionManagerInterface;
 use Quantum\Exceptions\Contracts\ExceptionNormalizerInterface;
 use Quantum\Exceptions\Contracts\ExceptionRendererInterface;
+use Quantum\Exceptions\Contracts\RecoveryPolicyInterface;
 use Quantum\Exceptions\Contracts\SemanticExceptionMapperInterface;
 use Quantum\Exceptions\Contracts\TransportMapperInterface;
 use Quantum\Exceptions\Core\ExceptionManager;
 use Quantum\Exceptions\Mapping\DeterministicSemanticExceptionMapper;
 use Quantum\Exceptions\Normalization\ThrowableNormalizer;
+use Quantum\Exceptions\Recovery\DeterministicRecoveryPolicy;
 use Quantum\Exceptions\Reporting\EventDispatcherExceptionReporter;
 use Quantum\Exceptions\Reporting\ExceptionReporterPipeline;
 use Quantum\Exceptions\Reporting\ExceptionReportingPolicy;
@@ -1118,6 +1120,13 @@ class Application extends Container
                     renderer: $app->make(ExceptionRendererInterface::class),
                 );
             });
+        }
+
+        if (! isset($this->bindings[RecoveryPolicyInterface::class])) {
+            $this->singleton(
+                RecoveryPolicyInterface::class,
+                static fn (): RecoveryPolicyInterface => new DeterministicRecoveryPolicy(),
+            );
         }
 
         if (! isset($this->bindings[QuantumExceptionHandlerInterface::class])) {

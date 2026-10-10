@@ -6,6 +6,8 @@ namespace Quantum\Database\ORM;
 
 use Quantum\Database\ORM\Metadata\EntityAssociationMetadata;
 use Quantum\Database\ORM\Metadata\EntityMetadata;
+use Quantum\Database\ORM\Proxy\LazyLoadingPlaceholderInterface;
+use Quantum\Database\ORM\Proxy\ProxyInitializationStatus;
 use RuntimeException;
 
 final class UnitOfWork
@@ -52,6 +54,42 @@ final class UnitOfWork
      */
     private array $partialManagedFields = [];
 
+    /**
+     * Three-phase initialization status for lazy proxy placeholders managed by this UnitOfWork.
+     * Keys are spl_object_id. Absence of a key means:
+     *   - Initialized when the entity does NOT implement LazyLoadingPlaceholderInterface.
+     *   - Uninitialized when the entity DOES implement LazyLoadingPlaceholderInterface
+     *     and has not been explicitly marked otherwise yet.
+     *
+     * @var array<int, ProxyInitializationStatus>
+     */
+    private array $proxyInitializationStatus = [];
+
+    public function markProxyStatus(object $entity, ProxyInitializationStatus $status): void
+    {
+        $this->proxyInitializationStatus[spl_object_id($entity)] = $status;
+    }
+
+    public function proxyStatusOf(object $entity): ProxyInitializationStatus
+    {
+        $oid = spl_object_id($entity);
+
+        if (isset($this->proxyInitializationStatus[$oid])) {
+            return $this->proxyInitializationStatus[$oid];
+        }
+
+        if ($entity instanceof LazyLoadingPlaceholderInterface) {
+            return ProxyInitializationStatus::Uninitialized;
+        }
+
+        return ProxyInitializationStatus::Initialized;
+    }
+
+    public function isUninitializedProxy(object $entity): bool
+    {
+        return $this->proxyStatusOf($entity) === ProxyInitializationStatus::Uninitialized;
+    }
+
     public function registerManaged(object $entity, EntityMetadata $metadata, EntityKey $key): void
     {
         $oid = spl_object_id($entity);
@@ -62,6 +100,13 @@ final class UnitOfWork
         $this->snapshots[$oid] = $metadata->extract($entity);
         $this->keys[$oid] = $key;
         unset($this->partialManagedFields[$oid]);
+
+        if (! isset($this->proxyInitializationStatus[$oid])) {
+            $this->proxyInitializationStatus[$oid] = $entity instanceof LazyLoadingPlaceholderInterface
+                ? ProxyInitializationStatus::Uninitialized
+                : ProxyInitializationStatus::Initialized;
+        }
+
         $this->snapshotOneToManyCollections($entity, $metadata);
     }
 
@@ -79,6 +124,12 @@ final class UnitOfWork
         $this->keys[$oid] = $key;
         $this->partialManagedFields[$oid] = array_values(array_unique($loadedFields));
         $this->originalCollections[$oid] ??= [];
+
+        if (! isset($this->proxyInitializationStatus[$oid])) {
+            $this->proxyInitializationStatus[$oid] = $entity instanceof LazyLoadingPlaceholderInterface
+                ? ProxyInitializationStatus::Uninitialized
+                : ProxyInitializationStatus::Initialized;
+        }
     }
 
     public function persist(object $entity, EntityMetadata $metadata, ?EntityKey $key): void
@@ -130,6 +181,7 @@ final class UnitOfWork
             $this->keys[$oid],
             $this->originalCollections[$oid],
             $this->partialManagedFields[$oid],
+            $this->proxyInitializationStatus[$oid],
         );
     }
 
@@ -271,6 +323,7 @@ final class UnitOfWork
         $this->keys = [];
         $this->originalCollections = [];
         $this->partialManagedFields = [];
+        $this->proxyInitializationStatus = [];
     }
 
     /**

@@ -7,10 +7,11 @@ namespace Quantum\Cache;
 use DateInterval;
 use DateTimeInterface;
 use Quantum\Cache\Concerns\InteractsWithTime;
+use Quantum\Cache\Contracts\AtomicIncrementableStoreInterface;
 use Quantum\Cache\Contracts\ClockInterface;
 use Quantum\Cache\Contracts\InspectableStoreInterface;
 
-final class MemoryStore implements InspectableStoreInterface
+final class MemoryStore implements InspectableStoreInterface, AtomicIncrementableStoreInterface
 {
     use InteractsWithTime;
 
@@ -85,6 +86,68 @@ final class MemoryStore implements InspectableStoreInterface
     public function sourceLevel(): string
     {
         return 'memory';
+    }
+
+    public function incrementInt(
+        string $key,
+        int $step = 1,
+        int $initial = 1,
+        DateInterval|DateTimeInterface|int|null $ttl = null,
+    ): int {
+        if ($step < 1) {
+            throw new \InvalidArgumentException('Increment step must be a positive integer.');
+        }
+
+        if ($initial < 0) {
+            throw new \InvalidArgumentException('Increment initial value must be a non-negative integer.');
+        }
+
+        $existing = $this->read($key);
+
+        if ($existing === null) {
+            $next = $initial;
+            $expiresAt = $this->expirationTimestamp($ttl);
+
+            if ($expiresAt !== null && $expiresAt <= $this->nowUnixSeconds()) {
+                $this->forget($key);
+
+                return $initial;
+            }
+
+            $this->items[$key] = [
+                'expires_at' => $expiresAt,
+                'value' => $next,
+                'created_at_ms' => $this->nowUnixMilliseconds(),
+            ];
+
+            return $next;
+        }
+
+        $current = $existing['value'];
+
+        if (! is_int($current)) {
+            throw new \RuntimeException(sprintf(
+                'Cannot increment non-integer cache value at key [%s].',
+                $key,
+            ));
+        }
+
+        $next = $current + $step;
+        $expiresAt = $ttl === null ? $existing['expires_at'] : $this->expirationTimestamp($ttl);
+
+        if ($expiresAt !== null && $expiresAt <= $this->nowUnixSeconds()) {
+            $this->forget($key);
+
+            return $initial;
+        }
+
+        $this->items[$key] = [
+            'expires_at' => $expiresAt,
+            'value' => $next,
+            'created_at_ms' => $existing['created_at_ms'],
+        ];
+
+        return $next;
     }
 
     /**

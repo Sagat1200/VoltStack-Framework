@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quantum\Authorization\Console\Commands;
 
 use Quantum\Authorization\Contracts\AuthorityAdministrationInterface;
+use Quantum\Config\Publication\PublishedConfigurationRequiredException;
 use Quantum\Console\Command;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
@@ -23,7 +24,7 @@ final class AuthorizationAuthorityRevokeCommand extends Command
 
     public function usage(): string
     {
-        return 'authz:authority:revoke --principal-id=... [--scope=global] (--role=...|--permission=...) [--dry-run] [--verbose]';
+        return 'authz:authority:revoke --principal-id=... [--scope=global] (--role=...|--permission=...) [--dry-run] [--verbose] [--require-published-config]';
     }
 
     public function category(): string
@@ -45,6 +46,7 @@ final class AuthorizationAuthorityRevokeCommand extends Command
             '--permission=' => 'Permission exacto a revocar.',
             '--dry-run' => 'Muestra la operacion sin modificar el repositorio.',
             '--verbose' => 'Imprime el repositorio administrativo utilizado.',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de revocar authority.',
         ];
     }
 
@@ -61,7 +63,19 @@ final class AuthorizationAuthorityRevokeCommand extends Command
         }
 
         try {
-            $app = $this->bootstrapApplication();
+            $app = $this->bootstrapApplication(requirePublishedConfig: $input->hasOption('require-published-config'));
+        } catch (PublishedConfigurationRequiredException $exception) {
+            throw $exception;
+        } catch (\Throwable $exception) {
+            $output->error(sprintf(
+                'No se pudo resolver la administracion de authority: %s',
+                $exception->getMessage(),
+            ));
+
+            return 1;
+        }
+
+        try {
             $admin = $app->make(AuthorityAdministrationInterface::class);
         } catch (\Throwable $exception) {
             $output->error(sprintf(

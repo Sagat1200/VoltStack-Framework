@@ -15,21 +15,35 @@ final readonly class BoundAuthorization
     public function __construct(
         private AuthorizationManagerInterface $manager,
         private mixed $principal,
+        private ?AuthorizationContext $context = null,
     ) {}
+
+    private function mergeContext(?AuthorizationContext $context): ?AuthorizationContext
+    {
+        if ($this->context === null) {
+            return $context;
+        }
+
+        if ($context === null) {
+            return $this->context;
+        }
+
+        return $this->context->mergeAttributes($context->attributes());
+    }
 
     public function check(string|Ability $ability, mixed $subject = null, ?AuthorizationContext $context = null): bool
     {
-        return $this->manager->check($ability, $subject, $context, $this->principal);
+        return $this->manager->check($ability, $subject, $this->mergeContext($context), $this->principal);
     }
 
     public function cannot(string|Ability $ability, mixed $subject = null, ?AuthorizationContext $context = null): bool
     {
-        return $this->manager->cannot($ability, $subject, $context, $this->principal);
+        return $this->manager->cannot($ability, $subject, $this->mergeContext($context), $this->principal);
     }
 
     public function decide(string|Ability $ability, mixed $subject = null, ?AuthorizationContext $context = null): DecisionResult
     {
-        return $this->manager->decide($ability, $subject, $context, $this->principal);
+        return $this->manager->decide($ability, $subject, $this->mergeContext($context), $this->principal);
     }
 
     /**
@@ -37,6 +51,6 @@ final readonly class BoundAuthorization
      */
     public function authorize(string|Ability $ability, mixed $subject = null, ?AuthorizationContext $context = null): DecisionResult
     {
-        return $this->manager->authorize($ability, $subject, $context, $this->principal);
+        return $this->manager->authorize($ability, $subject, $this->mergeContext($context), $this->principal);
     }
 }

@@ -14,11 +14,15 @@ use Quantum\Authorization\Authority\InMemoryAuthorityRepository;
 use Quantum\Authorization\Authority\RequestScopedAuthorityMemoizationCache;
 use Quantum\Authorization\Bridges\ControllerSecurityPlannerBridge;
 use Quantum\Authorization\Consistency\VersionedAuthorizationConsistency;
+use Quantum\Authorization\Console\Commands\AuthorizationConsistencyDoctorCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationConsistencyInvalidateCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationConsistencyReportCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationAuthorityGrantCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationAuthorityListCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationAuthorityRevokeCommand;
+use Quantum\Authorization\Console\Commands\AuthorizationDelegationGrantCommand;
+use Quantum\Authorization\Console\Commands\AuthorizationDelegationListCommand;
+use Quantum\Authorization\Console\Commands\AuthorizationDelegationRevokeCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationManifestClearCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationManifestCompileCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationRelationshipsListCommand;
@@ -33,9 +37,11 @@ use Quantum\Authorization\Contracts\AuthorizationManagerInterface;
 use Quantum\Authorization\Contracts\AuthorizationMetadataResolverInterface;
 use Quantum\Authorization\Contracts\AuthorizationPlannerInterface;
 use Quantum\Authorization\Contracts\AuthorizationRequestEnricherInterface;
+use Quantum\Authorization\Contracts\DelegationAdministrationInterface;
 use Quantum\Authorization\Contracts\PrincipalResolverInterface;
 use Quantum\Authorization\Contracts\RelationshipAdministrationInterface;
 use Quantum\Authorization\Contracts\RelationshipRepositoryInterface;
+use Quantum\Authorization\Contracts\ServicePrincipalResolverInterface;
 use Quantum\Authorization\Contracts\SubjectResolverInterface;
 use Quantum\Authorization\Contracts\TenantScopeResolverInterface;
 use Quantum\Authorization\Context\AuthorizationContextFactory;
@@ -48,6 +54,7 @@ use Quantum\Authorization\Core\Stages\GateAuthorizationStage;
 use Quantum\Authorization\Core\Stages\ManifestRequirementsEnforcementStage;
 use Quantum\Authorization\Core\Stages\PolicyAuthorizationStage;
 use Quantum\Authorization\Decision\DecisionManager;
+use Quantum\Authorization\Enrichers\DelegationContextEnricher;
 use Quantum\Authorization\Gate\GateRegistry;
 use Quantum\Authorization\Manifest\Contracts\AuthorizationManifestStoreInterface;
 use Quantum\Authorization\Manifest\FilesystemAuthorizationManifestStore;
@@ -60,10 +67,14 @@ use Quantum\Authorization\Principal\PrincipalResolver;
 use Quantum\Authorization\Relationship\InMemoryRelationshipRepository;
 use Quantum\Authorization\Relationship\DatabaseRelationshipRepository;
 use Quantum\Authorization\Relationship\RelationshipEvaluator;
+use Quantum\Authorization\ServicePrincipal\ConfigurableServicePrincipalResolver;
 use Quantum\Authorization\Subject\SubjectResolver;
 use Quantum\Config\ConfigRepository;
+use Quantum\Cache\CacheManager;
+use Quantum\Cache\Contracts\StoreInterface;
 use Quantum\Cache\Contracts\VersionAuthorityInterface;
 use Quantum\Cache\FileVersionAuthority;
+use Quantum\Cache\CacheVersionAuthority;
 use Quantum\Database\Contracts\DatabaseInterface;
 use Quantum\Http\Request;
 use Quantum\Metadata\MetadataMergeStrategy;
@@ -88,6 +99,7 @@ final class AuthorizationServiceProvider extends ServiceProvider
         $this->registerRelationshipRepository();
         $this->registerMemoizationBindings();
         $this->registerControllersSecurityBridgeBinding();
+        $this->registerDelegationAndServicePrincipalBindings();
 
         $this->app->singleton(AuthorizationDriverRegistry::class);
         $this->app->singleton(AbilityRegistry::class);
@@ -115,7 +127,13 @@ final class AuthorizationServiceProvider extends ServiceProvider
         $this->app->scoped(AbilityNormalizerInterface::class, AbilityNormalizer::class);
         $this->app->scoped(SubjectResolverInterface::class, SubjectResolver::class);
         $this->app->scoped(PrincipalResolverInterface::class, function (Application $app): PrincipalResolverInterface {
-            return new PrincipalResolver($app->make(AuthenticationManagerInterface::class));
+            return new PrincipalResolver(
+                $app->make(AuthenticationManagerInterface::class),
+                $this->resolveServicePrincipalResolver($app),
+                $this->booleanOf($app->config('authorization.service_principal_resolver.enabled', false)),
+                $this->resolveOptionalRuntimeContext($app),
+                $this->resolveOptionalRequest($app),
+            );
         });
         $this->app->scoped(
             AuthorizationMetadataResolverInterface::class,
@@ -177,6 +195,7 @@ final class AuthorizationServiceProvider extends ServiceProvider
             $evaluateConcretely = $app->config('authorization.authority.evaluate_requirements_concretely', false);
             $evaluateAttributeConditions = $app->config('authorization.authority.evaluate_attribute_conditions', false);
             $evaluateRelationships = $app->config('authorization.relationships.evaluate', false);
+            $evaluateDelegations = $this->resolveEvaluateDelegations($app);
 
             return new ManifestRequirementsEnforcementStage(
                 is_bool($failClosed) ? $failClosed : (bool) $failClosed,
@@ -188,6 +207,8 @@ final class AuthorizationServiceProvider extends ServiceProvider
                 $this->resolveRelationshipRepository($app),
                 $app->make(RelationshipEvaluator::class),
                 $this->resolveTenantScopeResolver($app),
+                $evaluateDelegations ? $this->resolveDelegationAdministration($app) : null,
+                $evaluateDelegations,
             );
         });
         $this->app->scoped(GateAuthorizationStage::class, function (Application $app): GateAuthorizationStage {
@@ -209,11 +230,20 @@ final class AuthorizationServiceProvider extends ServiceProvider
         });
         $this->app->scoped(AuthorizationPlanner::class, function (Application $app): AuthorizationPlanner {
             $failClosed = $app->config('authorization.fail_closed', true);
+            $enrichers = [
+                $app->make(AuthorizationRequestEnricherInterface::class),
+            ];
+
+            if ($this->delegationOrServicePrincipalEnabled($app)) {
+                try {
+                    $enrichers[] = $app->make(DelegationContextEnricher::class);
+                } catch (\Throwable) {
+                    // Delegation enricher not resolvable; continue without it.
+                }
+            }
 
             return new AuthorizationPlanner(
-                [
-                    $app->make(AuthorizationRequestEnricherInterface::class),
-                ],
+                $enrichers,
                 [
                     $app->make(AdaptiveAccessStage::class),
                     $app->make(ManifestRequirementsEnforcementStage::class),
@@ -316,6 +346,38 @@ final class AuthorizationServiceProvider extends ServiceProvider
         );
     }
 
+    private function registerDelegationAndServicePrincipalBindings(): void
+    {
+        if (! $this->delegationOrServicePrincipalEnabled($this->app)) {
+            return;
+        }
+
+        $this->app->scoped(
+            DelegationAdministrationInterface::class,
+            static function (Application $app): DelegationAdministrationInterface {
+                /** @var AuthorityRepositoryInterface $repository */
+                $repository = $app->make(self::INNER_AUTHORITY_REPOSITORY);
+
+                if (! $repository instanceof DelegationAdministrationInterface) {
+                    throw new \RuntimeException('The configured authority repository does not support delegation administration.');
+                }
+
+                return $repository;
+            },
+        );
+
+        $this->app->singleton(
+            ServicePrincipalResolverInterface::class,
+            static function (Application $app): ServicePrincipalResolverInterface {
+                $map = $app->config('authorization.service_principals.map', []);
+
+                return new ConfigurableServicePrincipalResolver(
+                    is_array($map) ? $map : [],
+                );
+            },
+        );
+    }
+
     private function makeConfiguredAuthorityRepository(Application $app): AuthorityRepositoryInterface
     {
         $config = $app->config('authorization.authority.grants', []);
@@ -385,6 +447,7 @@ final class AuthorizationServiceProvider extends ServiceProvider
                     'file', 'filesystem', 'shared' => new FileVersionAuthority(
                         $this->resolveConsistencyFilePath($app),
                     ),
+                    'cache' => $this->makeCacheVersionAuthority($app),
                     default => $app->make(VersionAuthorityInterface::class),
                 };
 
@@ -405,6 +468,42 @@ final class AuthorizationServiceProvider extends ServiceProvider
         }
 
         return $app->storagePath('framework/authorization/consistency');
+    }
+
+    private function makeCacheVersionAuthority(Application $app): CacheVersionAuthority
+    {
+        /** @var CacheManager $cacheManager */
+        $cacheManager = $app->make(CacheManager::class);
+        $configuredStore = $app->config('authorization.consistency.cache.store');
+        $configuredPrefix = $app->config('authorization.consistency.cache.prefix');
+        $configuredTtl = $app->config('authorization.consistency.cache.ttl_seconds');
+
+        $storeName = is_string($configuredStore) && trim($configuredStore) !== ''
+            ? trim($configuredStore)
+            : null;
+
+        $repository = $cacheManager->store($storeName);
+        $reflection = new \ReflectionClass($repository);
+        $storeProperty = $reflection->getProperty('store');
+        $storeProperty->setAccessible(true);
+        $store = $storeProperty->getValue($repository);
+
+        if (! $store instanceof StoreInterface) {
+            throw new \RuntimeException('Unable to resolve cache store for CacheVersionAuthority.');
+        }
+
+        $prefix = is_string($configuredPrefix) && trim($configuredPrefix) !== ''
+            ? trim($configuredPrefix)
+            : 'authorization.consistency.versions';
+
+        $ttl = null;
+        if (is_int($configuredTtl) && $configuredTtl > 0) {
+            $ttl = $configuredTtl;
+        } elseif (is_string($configuredTtl) && trim($configuredTtl) !== '' && ctype_digit(trim($configuredTtl))) {
+            $ttl = (int) trim($configuredTtl);
+        }
+
+        return new CacheVersionAuthority($store, $prefix, $ttl);
     }
 
     private function registerRelationshipRepository(): void
@@ -657,12 +756,16 @@ final class AuthorizationServiceProvider extends ServiceProvider
             AuthorizationAuthorityListCommand::class,
             AuthorizationAuthorityGrantCommand::class,
             AuthorizationAuthorityRevokeCommand::class,
+            AuthorizationConsistencyDoctorCommand::class,
             AuthorizationConsistencyInvalidateCommand::class,
             AuthorizationConsistencyReportCommand::class,
             AuthorizationManifestCompileCommand::class,
             AuthorizationManifestClearCommand::class,
             AuthorizationRelationshipsListCommand::class,
             AuthorizationRelationshipsRevokeCommand::class,
+            AuthorizationDelegationListCommand::class,
+            AuthorizationDelegationGrantCommand::class,
+            AuthorizationDelegationRevokeCommand::class,
         ];
     }
 
@@ -679,6 +782,15 @@ final class AuthorizationServiceProvider extends ServiceProvider
             'manifest' => [
                 'enabled' => true,
                 'path' => null,
+            ],
+            'delegation' => [
+                'enabled' => false,
+            ],
+            'service_principal_resolver' => [
+                'enabled' => false,
+            ],
+            'service_principals' => [
+                'map' => [],
             ],
             'adaptive_access' => [
                 'enabled' => false,
@@ -705,12 +817,18 @@ final class AuthorizationServiceProvider extends ServiceProvider
                 'file' => [
                     'path' => null,
                 ],
+                'cache' => [
+                    'store' => null,
+                    'prefix' => 'authorization.consistency.versions',
+                    'ttl_seconds' => null,
+                ],
             ],
             'authority' => [
                 'enabled' => true,
                 'driver' => 'memory',
                 'evaluate_requirements_concretely' => false,
                 'evaluate_attribute_conditions' => false,
+                'evaluate_delegations' => false,
                 'grants' => [],
                 'memoize' => true,
                 'early_gate_enabled' => false,
@@ -747,5 +865,45 @@ final class AuthorizationServiceProvider extends ServiceProvider
                 ],
             ],
         ];
+    }
+
+    private function resolveEvaluateDelegations(Application $app): bool
+    {
+        $explicit = $app->config('authorization.authority.evaluate_delegations');
+        $inferred = $this->booleanOf($app->config('authorization.delegation.enabled', false));
+
+        if (is_bool($explicit)) {
+            return $explicit || $inferred;
+        }
+
+        return $inferred;
+    }
+
+    private function delegationOrServicePrincipalEnabled(Application $app): bool
+    {
+        return $this->booleanOf($app->config('authorization.delegation.enabled', false))
+            || $this->booleanOf($app->config('authorization.service_principal_resolver.enabled', false));
+    }
+
+    private function resolveDelegationAdministration(Application $app): ?DelegationAdministrationInterface
+    {
+        try {
+            return $app->make(DelegationAdministrationInterface::class);
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    private function resolveServicePrincipalResolver(Application $app): ?ServicePrincipalResolverInterface
+    {
+        if (! $this->booleanOf($app->config('authorization.service_principal_resolver.enabled', false))) {
+            return null;
+        }
+
+        try {
+            return $app->make(ServicePrincipalResolverInterface::class);
+        } catch (\Throwable) {
+            return null;
+        }
     }
 }

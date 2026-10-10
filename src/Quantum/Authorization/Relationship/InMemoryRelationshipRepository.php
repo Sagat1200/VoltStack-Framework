@@ -132,7 +132,7 @@ final class InMemoryRelationshipRepository implements RelationshipAdministration
 
         unset($this->relationships[$key]);
 
-        $this->consistency?->invalidateRelationships(trim($principalId), $this->normalizeScope($scope));
+        $this->consistency?->invalidateRelationships(trim($principalId), $this->normalizeScope($scope), 'relationships.revoke');
 
         return true;
     }

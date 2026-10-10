@@ -212,6 +212,37 @@ final class AuthorizationServiceProviderBridgeAndFlagsTest extends TestCase
         }
     }
 
+    public function test_cache_consistency_driver_shares_versions_across_application_instances(): void
+    {
+        $basePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-authz-consistency-cache-' . uniqid('', true);
+        @mkdir($basePath, 0777, true);
+
+        try {
+            $sharedCachePath = $basePath . DIRECTORY_SEPARATOR . 'shared-cache';
+
+            $appA = new Application($basePath . DIRECTORY_SEPARATOR . 'app-a');
+            $appA->make(ConfigRepository::class)->set('authorization.consistency.driver', 'cache');
+            $appA->make(ConfigRepository::class)->set('authorization.consistency.cache.prefix', 'shared.authz.v');
+            $appA->make(ConfigRepository::class)->set('cache.stores.file.path', $sharedCachePath);
+
+            $appB = new Application($basePath . DIRECTORY_SEPARATOR . 'app-b');
+            $appB->make(ConfigRepository::class)->set('authorization.consistency.driver', 'cache');
+            $appB->make(ConfigRepository::class)->set('authorization.consistency.cache.prefix', 'shared.authz.v');
+            $appB->make(ConfigRepository::class)->set('cache.stores.file.path', $sharedCachePath);
+
+            $consistencyA = $appA->make(AuthorizationConsistencyInterface::class);
+            $consistencyB = $appB->make(AuthorizationConsistencyInterface::class);
+
+            $before = $consistencyB->relationshipVersion('u_1', 'tenant:acme');
+            $consistencyA->invalidateRelationships('u_1', 'tenant:acme');
+            $after = $consistencyB->relationshipVersion('u_1', 'tenant:acme');
+
+            self::assertNotSame($before, $after);
+        } finally {
+            $this->removeDirectory($basePath);
+        }
+    }
+
     private function removeDirectory(string $directory): void
     {
         if (! is_dir($directory)) {

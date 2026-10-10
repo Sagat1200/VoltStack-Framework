@@ -291,6 +291,13 @@ final class AuthorizationManagerAuthorityEarlyGateTest extends TestCase
                 return $result;
             }
 
+            public function impersonate(mixed $caller, mixed $target, \Quantum\Authorization\Authority\Scope|string|null $scope = null): \Quantum\Authorization\Core\BoundAuthorization
+            {
+                $result = $this->inner->impersonate($caller, $target, $scope);
+                $this->sync();
+                return $result;
+            }
+
             private function sync(): void
             {
                 $val = (int) ($GLOBALS[$this->key] ?? 0);
@@ -375,6 +382,13 @@ final class AuthorizationManagerAuthorityEarlyGateTest extends TestCase
             public function authorize(string|\Quantum\Authorization\Ability\Ability $ability, mixed $subject = null, ?\Quantum\Authorization\Context\AuthorizationContext $context = null, mixed $principal = null): \Quantum\Authorization\Decision\DecisionResult
             {
                 $result = $this->inner->authorize($ability, $subject, $context, $principal);
+                $this->sync();
+                return $result;
+            }
+
+            public function impersonate(mixed $caller, mixed $target, \Quantum\Authorization\Authority\Scope|string|null $scope = null): \Quantum\Authorization\Core\BoundAuthorization
+            {
+                $result = $this->inner->impersonate($caller, $target, $scope);
                 $this->sync();
                 return $result;
             }

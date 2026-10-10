@@ -7,17 +7,15 @@ namespace VoltStack\Runtime\Adapters;
 use Quantum\Bootstrap\ApplicationPlan;
 use Quantum\Exceptions\Enums\WorkerDisposition;
 use Quantum\Http\Request;
-use Quantum\Http\Response;
 use Quantum\Transport\Bridges\Http\HttpResponseTransformer;
 use Quantum\Transport\Contracts\ResponseTransportManagerInterface;
-use Quantum\Transport\Runtime\TransportContext;
 use VoltStack\Runtime\Context\WorkerContext;
 use VoltStack\Runtime\Contracts\RuntimeAdapterInterface;
 use VoltStack\Runtime\Contracts\WorkerFactoryInterface;
 use VoltStack\Runtime\Exceptions\RuntimeAdapterException;
+use VoltStack\Runtime\RuntimeAdapterResponseEmitter;
 use VoltStack\Runtime\RuntimeCapabilities;
 use VoltStack\Runtime\RuntimeConfiguration;
-use VoltStack\Runtime\WorkerSession;
 
 final class SapiRuntimeAdapter implements RuntimeAdapterInterface
 {
@@ -59,6 +57,11 @@ final class SapiRuntimeAdapter implements RuntimeAdapterInterface
             driver: $this->id(),
             maxRequests: 1,
         ));
+        $app = $session->app();
+        $emitter = new RuntimeAdapterResponseEmitter(
+            transformer: $app->make(HttpResponseTransformer::class),
+            transport: $app->make(ResponseTransportManagerInterface::class),
+        );
         $request = Request::capture();
         $result = $session->handle($request);
 
@@ -66,37 +69,12 @@ final class SapiRuntimeAdapter implements RuntimeAdapterInterface
             return 1;
         }
 
-        if (! $this->emitResponse($session, $result->response(), $request)) {
+        if (! $emitter->emit($session->context(), $session->handledRequests(), $result->response(), $request)) {
             $session->lifecycle()->request(WorkerDisposition::Terminate);
 
             return 1;
         }
 
         return 0;
-    }
-
-    private function emitResponse(WorkerSession $session, ?Response $response, Request $request): bool
-    {
-        if ($response === null) {
-            return true;
-        }
-
-        /** @var HttpResponseTransformer $transformer */
-        $transformer = $session->app()->make(HttpResponseTransformer::class);
-        /** @var ResponseTransportManagerInterface $manager */
-        $manager = $session->app()->make(ResponseTransportManagerInterface::class);
-
-        $transportResponse = $transformer->transform($response);
-        $transportContext = new TransportContext(
-            request: $request,
-            attributes: [
-                'runtime.driver' => $session->context()->driver(),
-                'runtime.worker_id' => $session->context()->workerId(),
-                'runtime.handled_requests' => $session->handledRequests(),
-            ],
-        );
-        $transportResult = $manager->send($transportResponse, $transportContext);
-
-        return $transportResult->completed && $transportResult->exception === null;
     }
 }

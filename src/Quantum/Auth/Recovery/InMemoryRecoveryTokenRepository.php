@@ -38,6 +38,7 @@ final class InMemoryRecoveryTokenRepository implements RecoveryTokenRepositoryIn
             secretHash: $existing->secretHash,
             reference: $existing->reference,
             identifier: $existing->identifier,
+            purpose: $existing->purpose,
             issuedAt: $existing->issuedAt,
             expiresAt: $existing->expiresAt,
             consumedAt: ($consumedAt ?? time()) > 0 ? ($consumedAt ?? time()) : time(),

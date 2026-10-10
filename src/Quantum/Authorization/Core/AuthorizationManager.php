@@ -34,6 +34,34 @@ final class AuthorizationManager implements AuthorizationManagerInterface
         return new BoundAuthorization($this, $principal);
     }
 
+    public function impersonate(mixed $caller, mixed $target, Scope|string|null $scope = null): BoundAuthorization
+    {
+        $impersonationBuilder = new ImpersonationPrincipalBuilder();
+        $impersonatedPrincipal = $impersonationBuilder->build($caller, $target, $scope);
+
+        $scopeValue = $scope instanceof Scope ? $scope->value : (is_string($scope) && trim($scope) !== '' ? trim($scope) : null);
+        $claims = $impersonatedPrincipal->claims();
+
+        $originatorId = is_string($claims['originator_principal_id'] ?? null) ? $claims['originator_principal_id'] : '';
+        $targetId = is_string($claims['target_principal_id'] ?? null) ? $claims['target_principal_id'] : '';
+
+        $contextAttributes = array_filter([
+            'authorization.impersonation.originator_id' => $originatorId !== '' ? $originatorId : null,
+            'authorization.impersonation.target_id' => $targetId !== '' ? $targetId : null,
+            'authorization.impersonation.scope' => $scopeValue,
+            'authorization.impersonation.acting_as' => $targetId !== '' ? $targetId : null,
+            'authorization.impersonation.impersonated_at' => is_string($claims['impersonated_at'] ?? null) ? $claims['impersonated_at'] : null,
+        ], static fn (mixed $v): bool => $v !== null);
+
+        $context = AuthorizationContext::empty()->withAttributes($contextAttributes);
+
+        return new BoundAuthorization(
+            manager: $this,
+            principal: $impersonatedPrincipal,
+            context: $context,
+        );
+    }
+
     public function check(
         string|Ability $ability,
         mixed $subject = null,

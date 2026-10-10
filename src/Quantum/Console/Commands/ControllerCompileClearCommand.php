@@ -24,7 +24,7 @@ final class ControllerCompileClearCommand extends Command
 
     public function usage(): string
     {
-        return 'controller-compiler:clear [--verbose]';
+        return 'controller-compiler:clear [--verbose] [--require-published-config]';
     }
 
     public function category(): string
@@ -41,6 +41,7 @@ final class ControllerCompileClearCommand extends Command
     {
         return [
             '--verbose' => 'Muestra detalles de los builds y entradas de cache eliminadas.',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de limpiar builds de controladores.',
         ];
     }
 
@@ -81,6 +82,6 @@ final class ControllerCompileClearCommand extends Command
             $output->writeln('Cache de compilación de controladores limpiado correctamente.');
 
             return 0;
-        });
+        }, requirePublishedConfig: $input->hasOption('require-published-config'));
     }
 }

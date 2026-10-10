@@ -23,7 +23,7 @@ final class AuthorizationManifestClearCommand extends Command
 
     public function usage(): string
     {
-        return 'authz:manifest:clear [--verbose] [--dry-run]';
+        return 'authz:manifest:clear [--verbose] [--dry-run] [--require-published-config]';
     }
 
     public function category(): string
@@ -41,12 +41,13 @@ final class AuthorizationManifestClearCommand extends Command
         return [
             '--verbose' => 'Muestra el detalle de entries eliminadas cuando el store filesystem esta activo.',
             '--dry-run' => 'Calcula las entries que se eliminarian pero no modifica el store fisicamente.',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de limpiar el manifest.',
         ];
     }
 
     public function handle(Input $input, Output $output): int
     {
-        $app = $this->bootstrapApplication();
+        $app = $this->bootstrapApplication(requirePublishedConfig: $input->hasOption('require-published-config'));
         $store = $app->make(AuthorizationManifestStoreInterface::class);
         $verbose = $input->hasOption('verbose');
         $dryRun = $input->hasOption('dry-run');

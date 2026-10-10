@@ -26,7 +26,7 @@ final class ControllerCompileWarmupCommand extends Command
 
     public function usage(): string
     {
-        return 'controller-compiler:warmup [--verbose] [--rebuild-current]';
+        return 'controller-compiler:warmup [--verbose] [--rebuild-current] [--require-published-config]';
     }
 
     public function category(): string
@@ -44,6 +44,7 @@ final class ControllerCompileWarmupCommand extends Command
         return [
             '--verbose' => 'Muestra cada ruta hot compilada.',
             '--rebuild-current' => 'Fuerza la recompilación de las rutas hot sobre el build actual activo en vez de crear uno nuevo.',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de warmup de controladores.',
         ];
     }
 
@@ -165,6 +166,6 @@ final class ControllerCompileWarmupCommand extends Command
             $output->writeln('Warmup completado. Cold-start evitado para las rutas hot configuradas.');
 
             return $fail === 0 ? 0 : 1;
-        });
+        }, requirePublishedConfig: $input->hasOption('require-published-config'));
     }
 }

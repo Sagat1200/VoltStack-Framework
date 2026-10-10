@@ -28,6 +28,7 @@ use Quantum\Console\Commands\RouteCacheCommand;
 use Quantum\Console\Commands\RouteClearCommand;
 use Quantum\Console\Commands\RouteListCommand;
 use Quantum\Console\Commands\RuntimeBudgetCalibrateCommand;
+use Quantum\Console\Commands\RuntimeEvidenceIngestCommand;
 use Quantum\Console\Commands\RuntimeReleasePipelineCommand;
 use Quantum\Console\Commands\RuntimeSmokeCheckCommand;
 use Quantum\Console\Commands\RuntimeStatusCommand;
@@ -75,6 +76,7 @@ final class ConsoleApplicationTest extends TestCase
         self::assertStringContainsString('config:release-check', $output->stdout());
         self::assertStringContainsString('config:status', $output->stdout());
         self::assertStringContainsString('runtime:budget-calibrate', $output->stdout());
+        self::assertStringContainsString('runtime:evidence-ingest', $output->stdout());
         self::assertStringContainsString('runtime:release-pipeline', $output->stdout());
         self::assertStringContainsString('runtime:smoke-check', $output->stdout());
         self::assertStringContainsString('runtime:status', $output->stdout());
@@ -297,10 +299,12 @@ final class ConsoleApplicationTest extends TestCase
 
         self::assertSame(0, $exitCode);
         self::assertStringContainsString('Command: exceptions:explain', $output->stdout());
-        self::assertStringContainsString('Usage: php volt exceptions:explain [--type=validation] [--transport=json] [--json]', $output->stdout());
+        self::assertStringContainsString('Usage: php volt exceptions:explain [--type=validation] [--transport=json] [--json] [--show-receipts] [--matrix]', $output->stdout());
         self::assertStringContainsString('--type=', $output->stdout());
         self::assertStringContainsString('--transport=', $output->stdout());
         self::assertStringContainsString('--json', $output->stdout());
+        self::assertStringContainsString('--show-receipts', $output->stdout());
+        self::assertStringContainsString('--matrix', $output->stdout());
     }
 
     public function test_it_renders_help_for_exception_release_check_command(): void
@@ -563,6 +567,7 @@ final class ConsoleApplicationTest extends TestCase
                 new ExceptionStatusCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new ExceptionValidateCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new RuntimeBudgetCalibrateCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
+                new RuntimeEvidenceIngestCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new RuntimeReleasePipelineCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new RuntimeSmokeCheckCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),
                 new RuntimeStatusCommand('C:\\W4\\Packages\\VoltStack\\app-skeleton'),

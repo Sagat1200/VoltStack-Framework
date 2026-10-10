@@ -18,6 +18,16 @@ final readonly class ExceptionExplainReport
      * @param array<string, mixed> $fixture
      * @param list<string> $reporterIds
      * @param list<string> $reachedLimits
+     * @param list<array<string, mixed>> $reporterReceipts
+     * @param array<string, array{accepted:int,dropped:int,failed:int,skipped:int,total:int}> $reporterReceiptsMatrix
+     * @param array<string, mixed>|null $reportingDecision
+     * @param array<string, mixed>|null $recoveryDecision
+     * @param array<string, mixed>|null $transportDiagnostic
+     * @param list<array<string, mixed>> $bridgeMatrix
+     * @param list<array<string, mixed>> $effectMatrix
+     * @param array<string, list<array<string, mixed>>> $receiptsMatrixByScope
+     * @param array<string, mixed>|null $runtimeDiagnostic
+     * @param array<string, mixed>|null $streamConfirmation
      */
     public function __construct(
         private ExceptionCompilationPlan $plan,
@@ -32,6 +42,16 @@ final readonly class ExceptionExplainReport
         private array $reporterIds,
         private bool $ignoredByPolicy,
         private array $reachedLimits,
+        private array $reporterReceipts = [],
+        private array $reporterReceiptsMatrix = [],
+        private ?array $reportingDecision = null,
+        private ?array $recoveryDecision = null,
+        private ?array $transportDiagnostic = null,
+        private array $bridgeMatrix = [],
+        private array $effectMatrix = [],
+        private array $receiptsMatrixByScope = [],
+        private ?array $runtimeDiagnostic = null,
+        private ?array $streamConfirmation = null,
     ) {
     }
 
@@ -42,7 +62,7 @@ final readonly class ExceptionExplainReport
     {
         $semantic = $this->publicError->code;
         $limits = $this->plan->config()['limits'] ?? [];
-        return [
+        $result = [
             'effective' => [
                 'environment' => $this->plan->environment(),
                 'runtime' => $this->plan->runtime(),
@@ -97,13 +117,39 @@ final readonly class ExceptionExplainReport
                 'simulated' => true,
                 'reporter_ids' => $this->reporterIds,
                 'ignored_by_policy' => $this->ignoredByPolicy,
-                'receipts' => [],
+                'decision' => $this->reportingDecision,
+                'receipts' => $this->reporterReceipts,
+                'receipts_matrix' => $this->reporterReceiptsMatrix,
+                'stream_confirmation' => $this->streamConfirmation,
+            ],
+            'recovery' => [
+                'simulated' => true,
+                'decision' => $this->recoveryDecision,
+            ],
+            'transport' => $this->transportDiagnostic ?? [
+                'bridge' => 'unavailable',
+                'kind' => null,
+                'route_profile' => null,
             ],
             'limits' => [
                 'configured' => is_array($limits) ? $limits : [],
                 'reached' => $this->reachedLimits,
             ],
         ];
+        if ($this->bridgeMatrix !== []) {
+            $result['bridge_matrix'] = $this->bridgeMatrix;
+        }
+        if ($this->effectMatrix !== []) {
+            $result['effect_matrix'] = $this->effectMatrix;
+        }
+        if ($this->receiptsMatrixByScope !== []) {
+            $result['receipts_matrix_by_scope'] = $this->receiptsMatrixByScope;
+        }
+        if ($this->runtimeDiagnostic !== null) {
+            $result['runtime'] = $this->runtimeDiagnostic;
+        }
+
+        return $result;
     }
 
     private function preview(string $body): string

@@ -124,6 +124,14 @@ final class DeterministicSemanticExceptionMapper implements SemanticExceptionMap
                 predicate: static fn (FailureSnapshot $failure, ExceptionContext $context): bool =>
                     (($context->attributes['origin'] ?? null) === 'configuration') || str_contains(strtolower($failure->className), 'configuration'),
             ),
+            new MappingRule(
+                id: 'operation.cancelled',
+                exceptionType: \RuntimeException::class,
+                catalogCode: 'operation.cancelled',
+                priority: 30,
+                predicate: static fn (FailureSnapshot $failure, ExceptionContext $context): bool =>
+                    ($context->attributes['origin'] ?? null) === 'cancelled',
+            ),
         ]);
     }
 

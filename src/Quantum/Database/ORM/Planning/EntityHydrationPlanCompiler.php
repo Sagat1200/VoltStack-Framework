@@ -9,6 +9,13 @@ use Quantum\Database\ORM\Metadata\EntityMetadata;
 
 final readonly class EntityHydrationPlanCompiler
 {
+    private PlanningMetadataHelper $helper;
+
+    public function __construct()
+    {
+        $this->helper = new PlanningMetadataHelper();
+    }
+
     /**
      * @param array<string, array{alias:string,type:string,association:EntityAssociationMetadata,targetMetadata:EntityMetadata}> $joinedAssociations
      */
@@ -23,7 +30,7 @@ final readonly class EntityHydrationPlanCompiler
             $joinedTargetColumns[$associationName] = [];
 
             foreach ($targetMetadata->mappedFields() as $field) {
-                $resultKey = $this->joinedResultKey($associationName, $field->column);
+                $resultKey = $this->helper->joinedResultKey($associationName, $field->column);
                 $selectColumns[] = sprintf(
                     '%s.%s AS %s',
                     $alias,
@@ -38,7 +45,7 @@ final readonly class EntityHydrationPlanCompiler
 
             foreach ($targetMetadata->embeddeds() as $embedded) {
                 foreach ($embedded->mappedInnerFields() as $innerField) {
-                    $resultKey = $this->joinedResultKey($associationName, $innerField->column);
+                    $resultKey = $this->helper->joinedResultKey($associationName, $innerField->column);
                     $selectColumns[] = sprintf(
                         '%s.%s AS %s',
                         $alias,
@@ -54,10 +61,5 @@ final readonly class EntityHydrationPlanCompiler
         }
 
         return new EntityHydrationPlan($selectColumns, $joinedTargetColumns);
-    }
-
-    private function joinedResultKey(string $associationName, string $column): string
-    {
-        return '__orm_join_' . preg_replace('/[^A-Za-z0-9_]+/', '_', $associationName . '_' . $column);
     }
 }

@@ -33,6 +33,10 @@ use Quantum\Auth\Contracts\PasskeyCryptoVerifierInterface;
 use Quantum\Auth\Contracts\PasswordPolicyInterface;
 use Quantum\Auth\Contracts\PasswordRehashingIdentityProviderInterface;
 use Quantum\Auth\Contracts\RefreshTokenRotationStoreInterface;
+use Quantum\Auth\Contracts\RecoveryAuditLoggerInterface;
+use Quantum\Auth\Contracts\RecoveryCodeStoreInterface;
+use Quantum\Auth\Contracts\RecoveryEvidenceVerifierInterface;
+use Quantum\Auth\Contracts\FederatedIdentityLinkProviderInterface;
 use Quantum\Auth\Contracts\RecoveryManagerInterface;
 use Quantum\Auth\Contracts\RecoveryNotificationDispatcherInterface;
 use Quantum\Auth\Contracts\RecoveryTokenRepositoryInterface;
@@ -51,6 +55,7 @@ use Quantum\Auth\Federation\Oidc\InMemoryOidcJwksCache;
 use Quantum\Auth\Federation\Oidc\OidcIdentityTokenValidator;
 use Quantum\Auth\Federation\Oidc\OpensslJwsSignatureVerifier;
 use Quantum\Auth\Identity\LocalIdentityProvider;
+use Quantum\Auth\Identity\LocalFederatedIdentityLinkProvider;
 use Quantum\Auth\Passkeys\CoseOpensslCryptoVerifier;
 use Quantum\Auth\Passkeys\FilePasskeyCredentialStore;
 use Quantum\Auth\Passkeys\InMemoryPasskeyCredentialStore;
@@ -61,8 +66,16 @@ use Quantum\Auth\Passwords\PasswordPolicy;
 use Quantum\Auth\Recovery\FileRecoveryNotificationDispatcher;
 use Quantum\Auth\Recovery\FileRecoveryTokenRepository;
 use Quantum\Auth\Recovery\InMemoryRecoveryTokenRepository;
+use Quantum\Auth\Recovery\MfaRecoveryEvidenceVerifier;
+use Quantum\Auth\Recovery\AdminRecoveryEvidenceVerifier;
+use Quantum\Auth\Recovery\PasskeyRecoveryEvidenceVerifier;
+use Quantum\Auth\Recovery\NoopRecoveryAuditLogger;
 use Quantum\Auth\Recovery\NoopRecoveryNotificationDispatcher;
 use Quantum\Auth\Recovery\RecoveryManager;
+use Quantum\Auth\Recovery\FileRecoveryAuditLogger;
+use Quantum\Auth\Recovery\FileRecoveryCodeStore;
+use Quantum\Auth\Recovery\InMemoryRecoveryCodeStore;
+use Quantum\Auth\Recovery\FederatedLinkRecoveryEvidenceVerifier;
 use Quantum\Auth\Runtime\AuthenticationOrchestrator;
 use Quantum\Auth\Runtime\AuthenticationPolicyEngine;
 use Quantum\Auth\Runtime\AuthenticationPolicyRuleInterface;
@@ -243,6 +256,64 @@ final class AuthenticationServiceProvider extends ServiceProvider
             return new NoopRecoveryNotificationDispatcher();
         });
 
+        $this->app->singleton(RecoveryAuditLoggerInterface::class, function (Application $app): RecoveryAuditLoggerInterface {
+            $driver = strtolower(trim((string) $app->config('auth.recovery.audit.driver', 'noop')));
+
+            if ($driver === 'file') {
+                $configuredPath = $app->config('auth.recovery.audit.storage_path');
+                $storagePath = is_string($configuredPath) && trim($configuredPath) !== ''
+                    ? trim($configuredPath)
+                    : null;
+
+                if ($storagePath === null) {
+                    try {
+                        $storagePath = $app->storagePath('framework/auth/recovery/audit/recovery-audit.jsonl');
+                    } catch (\Throwable) {
+                        $storagePath = null;
+                    }
+                }
+
+                $path = is_string($storagePath) && trim($storagePath) !== ''
+                    ? $storagePath
+                    : (sys_get_temp_dir() . '/voltstack-auth-recovery-audit.jsonl');
+
+                return new FileRecoveryAuditLogger($path);
+            }
+
+            return new NoopRecoveryAuditLogger();
+        });
+
+        $this->app->singleton(RecoveryCodeStoreInterface::class, function (Application $app): RecoveryCodeStoreInterface {
+            $driver = strtolower(trim((string) $app->config('auth.recovery.recovery_codes.driver', 'noop')));
+
+            if ($driver === 'file') {
+                $configuredPath = $app->config('auth.recovery.recovery_codes.storage_path');
+                $storagePath = is_string($configuredPath) && trim($configuredPath) !== ''
+                    ? trim($configuredPath)
+                    : null;
+
+                if ($storagePath === null) {
+                    try {
+                        $storagePath = $app->storagePath('framework/auth/recovery/recovery-codes.jsonl');
+                    } catch (\Throwable) {
+                        $storagePath = null;
+                    }
+                }
+
+                $path = is_string($storagePath) && trim($storagePath) !== ''
+                    ? $storagePath
+                    : (sys_get_temp_dir() . '/voltstack-auth-recovery-codes.jsonl');
+
+                return new FileRecoveryCodeStore($path);
+            }
+
+            return new InMemoryRecoveryCodeStore();
+        });
+
+        $this->app->singleton(FederatedIdentityLinkProviderInterface::class, static function (Application $app): FederatedIdentityLinkProviderInterface {
+            return new LocalFederatedIdentityLinkProvider($app->make(LocalIdentityProvider::class));
+        });
+
         $this->app->scoped(RecoveryManagerInterface::class, static function (Application $app): RecoveryManagerInterface {
             $passkeyStore = null;
             try {
@@ -254,6 +325,60 @@ final class AuthenticationServiceProvider extends ServiceProvider
                 $passkeyStore = null;
             }
 
+            $config = $app->make(ConfigRepository::class);
+            $adminPlainWhitelist = $config->get('auth.recovery.evidence.admin.plain_whitelist', []);
+            $adminHmacSecret = (string) $config->get('auth.recovery.evidence.admin.hmac_secret', '');
+
+            $assertionCeremony = null;
+            try {
+                $ceremonyCandidate = $app->make(PasskeyAssertionCeremony::class);
+                if ($ceremonyCandidate instanceof PasskeyAssertionCeremony) {
+                    $assertionCeremony = $ceremonyCandidate;
+                }
+            } catch (\Throwable) {
+                $assertionCeremony = null;
+            }
+
+            $rpConfig = null;
+            try {
+                $rpCandidate = $app->make(RelyingPartyConfig::class);
+                if ($rpCandidate instanceof RelyingPartyConfig) {
+                    $rpConfig = $rpCandidate;
+                }
+            } catch (\Throwable) {
+                $rpConfig = null;
+            }
+
+            $recoveryCodeStore = null;
+            try {
+                $codeStoreCandidate = $app->make(RecoveryCodeStoreInterface::class);
+                if ($codeStoreCandidate instanceof RecoveryCodeStoreInterface) {
+                    $recoveryCodeStore = $codeStoreCandidate;
+                }
+            } catch (\Throwable) {
+                $recoveryCodeStore = null;
+            }
+
+            $linkProvider = null;
+            try {
+                $linkCandidate = $app->make(FederatedIdentityLinkProviderInterface::class);
+                if ($linkCandidate instanceof FederatedIdentityLinkProviderInterface) {
+                    $linkProvider = $linkCandidate;
+                }
+            } catch (\Throwable) {
+                $linkProvider = null;
+            }
+
+            $evidenceVerifiers = [
+                new MfaRecoveryEvidenceVerifier($app->make(IdentityProviderInterface::class), $recoveryCodeStore),
+                new PasskeyRecoveryEvidenceVerifier($passkeyStore, $assertionCeremony, $rpConfig),
+                new AdminRecoveryEvidenceVerifier(
+                    is_array($adminPlainWhitelist) ? $adminPlainWhitelist : [],
+                    $adminHmacSecret,
+                ),
+                new FederatedLinkRecoveryEvidenceVerifier($linkProvider),
+            ];
+
             return new RecoveryManager(
                 $app->make(IdentityProviderInterface::class),
                 $app->make(PasswordPolicyInterface::class),
@@ -262,12 +387,15 @@ final class AuthenticationServiceProvider extends ServiceProvider
                 $app->make(RecoveryTokenRepositoryInterface::class),
                 $app->make(AuthenticationSessionRepositoryInterface::class),
                 $app->make(OpaqueTokenRepositoryInterface::class),
-                $app->make(ConfigRepository::class),
+                $config,
                 $app->make(TrustedDeviceRepositoryInterface::class),
                 $app->make(RecoveryNotificationDispatcherInterface::class),
+                $app->make(RecoveryAuditLoggerInterface::class),
+                $evidenceVerifiers,
                 $passkeyStore,
                 $app->make(PasswordLifecycleAwareProviderInterface::class),
                 $app->make(DistributedPasswordGovernanceProviderInterface::class),
+                $recoveryCodeStore,
             );
         });
 

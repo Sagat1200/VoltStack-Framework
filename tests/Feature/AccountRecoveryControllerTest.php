@@ -31,6 +31,7 @@ final class AccountRecoveryControllerTest extends TestCase
     {
         $basePath = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-account-recovery-' . uniqid('', true);
         $notificationsPath = $basePath . DIRECTORY_SEPARATOR . 'recovery-notifications.jsonl';
+        $auditPath = $basePath . DIRECTORY_SEPARATOR . 'recovery-audit.jsonl';
         if (! mkdir($concurrentDirectory = $basePath, 0777, true) && ! is_dir($concurrentDirectory)) {
             throw new \RuntimeException(sprintf('Unable to create test directory [%s].', $basePath));
         }
@@ -43,6 +44,8 @@ final class AccountRecoveryControllerTest extends TestCase
         $config->set('auth.recovery.notifications.driver', 'file');
         $config->set('auth.recovery.notifications.storage_path', $notificationsPath);
         $config->set('auth.recovery.notifications.reset_url', 'https://example.test/reset-password?token={token}');
+        $config->set('auth.recovery.audit.driver', 'file');
+        $config->set('auth.recovery.audit.storage_path', $auditPath);
         $config->set('auth.providers.local.identities', [
             [
                 'id' => 7301,
@@ -176,6 +179,28 @@ final class AccountRecoveryControllerTest extends TestCase
 
         self::assertSame(400, $replayResponse->statusCode());
         self::assertSame('invalid', $replayResponse->headers()['X-Auth-Recovery-Token'] ?? null);
+
+        $auditEvents = $this->readJsonl($auditPath);
+        self::assertNotEmpty($auditEvents);
+
+        $requested = array_values(array_filter($auditEvents, static fn(array $event): bool => ($event['action'] ?? null) === 'recovery_requested'));
+        self::assertNotEmpty($requested);
+        self::assertSame('issued', $requested[0]['result'] ?? null);
+        self::assertSame('http-recovery@example.com', $requested[0]['destination'] ?? null);
+
+        $completed = array_values(array_filter($auditEvents, static fn(array $event): bool => ($event['action'] ?? null) === 'recovery_completed'));
+        self::assertNotEmpty($completed);
+        self::assertGreaterThanOrEqual(1, (int) ($completed[0]['payload']['sessions_revoked'] ?? 0));
+        self::assertGreaterThanOrEqual(2, (int) ($completed[0]['payload']['tokens_revoked'] ?? 0));
+        self::assertSame(1, $completed[0]['payload']['trusted_devices_revoked'] ?? null);
+        self::assertSame(1, $completed[0]['payload']['passkeys_revoked'] ?? null);
+
+        $deniedActions = ['recovery_token_already_consumed', 'recovery_token_invalid'];
+        $denied = array_values(array_filter(
+            $auditEvents,
+            static fn(array $event): bool => in_array($event['action'] ?? null, $deniedActions, true),
+        ));
+        self::assertNotEmpty($denied, 'Expected replay denial audit event (already_consumed or invalid).');
     }
 
     /**

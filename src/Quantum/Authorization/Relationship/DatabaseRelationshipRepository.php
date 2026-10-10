@@ -137,7 +137,11 @@ final class DatabaseRelationshipRepository implements RelationshipAdministration
         $revoked = $statement->rowCount() > 0;
 
         if ($revoked) {
-            $this->consistency?->invalidateRelationships(trim($principalId), $scope instanceof Scope ? $scope : new Scope($scope));
+            $this->consistency?->invalidateRelationships(
+                trim($principalId),
+                $scope instanceof Scope ? $scope : new Scope($scope),
+                'relationships.revoke',
+            );
         }
 
         return $revoked;

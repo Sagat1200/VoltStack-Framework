@@ -37,7 +37,7 @@ final class DatabaseSeedCommand extends Command
 
     public function usage(): string
     {
-        return 'database:seed [--class=FQCN] [--path=directory]';
+        return 'database:seed [--class=FQCN] [--path=directory] [--require-published-config]';
     }
 
     public function category(): string
@@ -53,6 +53,7 @@ final class DatabaseSeedCommand extends Command
         return [
             '--class=' => 'Clase FQCN del seeder a ejecutar (evita discovery convencional).',
             '--path='  => 'Directorio o archivo concreto para discovery de seeders (por defecto database/seeders).',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de ejecutar seeders.',
         ];
     }
 
@@ -74,7 +75,7 @@ final class DatabaseSeedCommand extends Command
                 : null;
 
             return $runner->run($class, $path);
-        });
+        }, requirePublishedConfig: $input->hasOption('require-published-config'));
 
         $output->writeln('Database seed');
         $output->writeln(sprintf(

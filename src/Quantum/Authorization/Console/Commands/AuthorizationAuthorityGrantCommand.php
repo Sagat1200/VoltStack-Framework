@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quantum\Authorization\Console\Commands;
 
 use Quantum\Authorization\Contracts\AuthorityAdministrationInterface;
+use Quantum\Config\Publication\PublishedConfigurationRequiredException;
 use Quantum\Console\Command;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
@@ -23,7 +24,7 @@ final class AuthorizationAuthorityGrantCommand extends Command
 
     public function usage(): string
     {
-        return 'authz:authority:grant --principal-id=... [--scope=global] (--role=...|--permission=...) [--verbose]';
+        return 'authz:authority:grant --principal-id=... [--scope=global] (--role=...|--permission=...) [--verbose] [--require-published-config]';
     }
 
     public function category(): string
@@ -44,6 +45,7 @@ final class AuthorizationAuthorityGrantCommand extends Command
             '--role=' => 'Role exacto a otorgar.',
             '--permission=' => 'Permission exacto a otorgar.',
             '--verbose' => 'Imprime el repositorio administrativo utilizado.',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de otorgar authority.',
         ];
     }
 
@@ -60,7 +62,19 @@ final class AuthorizationAuthorityGrantCommand extends Command
         }
 
         try {
-            $app = $this->bootstrapApplication();
+            $app = $this->bootstrapApplication(requirePublishedConfig: $input->hasOption('require-published-config'));
+        } catch (PublishedConfigurationRequiredException $exception) {
+            throw $exception;
+        } catch (\Throwable $exception) {
+            $output->error(sprintf(
+                'No se pudo resolver la administracion de authority: %s',
+                $exception->getMessage(),
+            ));
+
+            return 1;
+        }
+
+        try {
             $admin = $app->make(AuthorityAdministrationInterface::class);
         } catch (\Throwable $exception) {
             $output->error(sprintf(

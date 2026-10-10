@@ -88,7 +88,7 @@ final class TestRuntimeAwareCommand extends Command
         return $this->runInCommandRuntime($callback);
     }
 
-    protected function bootstrapApplication(): Application
+    protected function bootstrapApplication(bool $requirePublishedConfig = false): Application
     {
         return $this->app;
     }

@@ -7,13 +7,16 @@ namespace Quantum\Authorization\Core\Stages;
 use Quantum\Authorization\ABAC\AttributeConditionEvaluator;
 use Quantum\Authorization\Ability\Ability;
 use Quantum\Authorization\Authority\Permission;
+use Quantum\Authorization\Authority\Role;
 use Quantum\Authorization\Authority\Scope;
 use Quantum\Authorization\Contracts\AuthorityRepositoryInterface;
 use Quantum\Authorization\Contracts\AuthorizationEvaluationStageInterface;
+use Quantum\Authorization\Contracts\DelegationAdministrationInterface;
 use Quantum\Authorization\Contracts\RelationshipRepositoryInterface;
 use Quantum\Authorization\Contracts\TenantScopeResolverInterface;
 use Quantum\Authorization\Core\AuthorizationRequest;
 use Quantum\Authorization\Decision\DecisionResult;
+use Quantum\Authorization\Principal\PrincipalType;
 use Quantum\Authorization\Relationship\RelationshipEvaluator;
 
 final class ManifestRequirementsEnforcementStage implements AuthorizationEvaluationStageInterface
@@ -28,6 +31,8 @@ final class ManifestRequirementsEnforcementStage implements AuthorizationEvaluat
         private readonly ?RelationshipRepositoryInterface $relationshipRepository = null,
         private readonly ?RelationshipEvaluator $relationshipEvaluator = null,
         private readonly ?TenantScopeResolverInterface $tenantScopeResolver = null,
+        private readonly ?DelegationAdministrationInterface $delegationAdministration = null,
+        private readonly bool $evaluateDelegations = false,
     ) {}
 
     public function name(): string
@@ -133,6 +138,104 @@ final class ManifestRequirementsEnforcementStage implements AuthorizationEvaluat
     }
 
     /**
+     * @return array{enabled:bool,trustee_id:?string,grantor_id:?string}
+     */
+    private function impersonationContext(AuthorizationRequest $request): array
+    {
+        if ($request->principal()->type() !== PrincipalType::ImpersonatedUser) {
+            return ['enabled' => false, 'trustee_id' => null, 'grantor_id' => null];
+        }
+
+        $context = $request->context();
+        $trusteeId = $context->attribute('authorization.impersonation.originator_id');
+        $grantorId = $context->attribute('authorization.impersonation.target_id');
+
+        if (! is_string($trusteeId) || trim($trusteeId) === '' || ! is_string($grantorId) || trim($grantorId) === '') {
+            return ['enabled' => false, 'trustee_id' => null, 'grantor_id' => null];
+        }
+
+        return [
+            'enabled' => true,
+            'trustee_id' => trim($trusteeId),
+            'grantor_id' => trim($grantorId),
+        ];
+    }
+
+    /**
+     * @param Scope $scope
+     */
+    private function delegationGrantsPermission(
+        string $trusteeId,
+        string $grantorId,
+        Permission $permission,
+        Scope $scope,
+    ): bool {
+        if (! $this->evaluateDelegations || $this->delegationAdministration === null) {
+            return false;
+        }
+
+        $grants = $this->delegationAdministration->listDelegations([
+            'trustee_id' => $trusteeId,
+            'grantor_id' => $grantorId,
+            'scope' => $scope,
+        ]);
+
+        if ($grants === []) {
+            return false;
+        }
+
+        $roleNames = [];
+        $permissionNames = [];
+        foreach ($grants as $grant) {
+            if (($grant['type'] ?? '') === 'role') {
+                $roleNames[] = (string) ($grant['value'] ?? '');
+            } elseif (($grant['type'] ?? '') === 'permission') {
+                $permissionNames[] = (string) ($grant['value'] ?? '');
+            }
+        }
+
+        if (in_array($permission->name, $permissionNames, true)) {
+            return true;
+        }
+
+        // Regla semántica: si existe una delegación (role o permission) desde grantor a trustee,
+        // y el grantor posee el permiso pedido en el scope pedido a través de su authority normal,
+        // la delegación endosa ese authority al trustee.
+        if ($this->authorityRepository !== null) {
+            foreach ($grants as $grant) {
+                $type = (string) ($grant['type'] ?? '');
+                if ($type === 'role' || $type === 'permission') {
+                    if ($this->authorityRepository->hasPermission($grantorId, $permission, $scope)) {
+                        return true;
+                    }
+
+                    break; // Sólo una comprobación basta (el par trustee/grantor/scope es único)
+                }
+            }
+        }
+
+        foreach ($roleNames as $roleName) {
+            if ($roleName === '') {
+                continue;
+            }
+
+            try {
+                $role = new Role($roleName);
+            } catch (\Throwable) {
+                continue;
+            }
+
+            foreach ($role->permissions as $rolePermission) {
+                if ($rolePermission->equals($permission) || $rolePermission->matches($permission)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * @param mixed $matched
      * @return list<array{ability:string,scope?:string|null,principal?:string|null,condition?:mixed,effect?:string,relation?:string|null}>
      */
@@ -198,6 +301,7 @@ final class ManifestRequirementsEnforcementStage implements AuthorizationEvaluat
             return [];
         }
 
+        $impersonation = $this->impersonationContext($request);
         $scopeObject = $scope instanceof Scope ? $scope : (is_string($scope) ? new Scope($scope) : Scope::global());
         $results = [];
 
@@ -280,6 +384,27 @@ final class ManifestRequirementsEnforcementStage implements AuthorizationEvaluat
                 permission: $permission,
                 scope: $requirementScope,
             );
+
+            if (! $hasPermission && $impersonation['enabled'] && is_string($impersonation['trustee_id']) && is_string($impersonation['grantor_id'])) {
+                $hasPermission = $this->delegationGrantsPermission(
+                    trusteeId: $impersonation['trustee_id'],
+                    grantorId: $impersonation['grantor_id'],
+                    permission: $permission,
+                    scope: $requirementScope,
+                );
+
+                if ($hasPermission) {
+                    $baseMetadata['delegation_granted'] = true;
+                    $baseMetadata['delegation_trustee_id'] = $impersonation['trustee_id'];
+                    $baseMetadata['delegation_grantor_id'] = $impersonation['grantor_id'];
+                }
+            }
+
+            if ($impersonation['enabled'] && is_string($impersonation['trustee_id']) && is_string($impersonation['grantor_id'])) {
+                $baseMetadata['originator_principal_id'] = $impersonation['trustee_id'];
+                $baseMetadata['target_principal_id'] = $impersonation['grantor_id'];
+                $baseMetadata['impersonation_scope'] = (string) $requirementScope;
+            }
 
             if ($hasPermission) {
                 $results[] = DecisionResult::allow(

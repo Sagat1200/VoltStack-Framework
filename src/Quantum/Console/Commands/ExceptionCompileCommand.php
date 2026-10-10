@@ -27,7 +27,7 @@ final class ExceptionCompileCommand extends Command
 
     public function usage(): string
     {
-        return 'exceptions:compile [--check-only] [--json]';
+        return 'exceptions:compile [--check-only] [--json] [--require-published-config]';
     }
 
     public function category(): string
@@ -40,12 +40,14 @@ final class ExceptionCompileCommand extends Command
         return [
             '--check-only' => 'Compila y valida el plan sin publicarlo en el store activo.',
             '--json' => 'Emite un payload JSON estable con el resultado de compilacion/publicacion.',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de compilar.',
         ];
     }
 
     public function handle(Input $input, Output $output): int
     {
-        return $this->runInCommandRuntime(function (Application $app) use ($input, $output): int {
+        return $this->runInCommandRuntime(
+            function (Application $app) use ($input, $output): int {
             $checkOnly = $input->hasOption('check-only');
             $rawConfig = $app->config('exceptions', []);
             $config = is_array($rawConfig) ? $rawConfig : [];
@@ -130,6 +132,8 @@ final class ExceptionCompileCommand extends Command
             }
 
             return 0;
-        });
+        },
+            requirePublishedConfig: $input->hasOption('require-published-config'),
+        );
     }
 }

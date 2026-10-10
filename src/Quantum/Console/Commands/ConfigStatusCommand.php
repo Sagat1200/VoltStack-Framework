@@ -24,7 +24,7 @@ final class ConfigStatusCommand extends Command
 
     public function usage(): string
     {
-        return 'config:status [--emit-telemetry] [--strict] [--json]';
+        return 'config:status [--emit-telemetry] [--strict] [--json] [--require-published-config]';
     }
 
     public function category(): string
@@ -38,6 +38,7 @@ final class ConfigStatusCommand extends Command
             '--emit-telemetry' => 'Emite una senal de telemetry con el estado de configuracion.',
             '--strict' => 'Devuelve exit code 1 si el reporte contiene alertas.',
             '--json' => 'Emite un payload JSON estable con el reporte de status.',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de inspeccionar config status.',
         ];
     }
 
@@ -120,6 +121,6 @@ final class ConfigStatusCommand extends Command
             }
 
             return 0;
-        });
+        }, requirePublishedConfig: $input->hasOption('require-published-config'));
     }
 }

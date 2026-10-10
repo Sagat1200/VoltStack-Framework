@@ -24,7 +24,7 @@ final class ExceptionStatusCommand extends Command
 
     public function usage(): string
     {
-        return 'exceptions:status [--strict] [--json]';
+        return 'exceptions:status [--strict] [--json] [--require-published-config]';
     }
 
     public function category(): string
@@ -37,12 +37,14 @@ final class ExceptionStatusCommand extends Command
         return [
             '--strict' => 'Devuelve exit code 1 si el reporte contiene alertas.',
             '--json' => 'Emite un payload JSON estable con el reporte de status.',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de inspeccionar.',
         ];
     }
 
     public function handle(Input $input, Output $output): int
     {
-        return $this->runInCommandRuntime(function (Application $app) use ($input, $output): int {
+        return $this->runInCommandRuntime(
+            function (Application $app) use ($input, $output): int {
             $report = (new ExceptionPlanStatusInspector())->inspect($app);
 
             if ($input->hasOption('json')) {
@@ -99,6 +101,8 @@ final class ExceptionStatusCommand extends Command
             }
 
             return 0;
-        });
+        },
+            requirePublishedConfig: $input->hasOption('require-published-config'),
+        );
     }
 }

@@ -26,7 +26,7 @@ final class ViewClearCommand extends Command
 
     public function usage(): string
     {
-        return 'view:clear [--verbose]';
+        return 'view:clear [--verbose] [--require-published-config]';
     }
 
     public function category(): string
@@ -43,6 +43,7 @@ final class ViewClearCommand extends Command
     {
         return [
             '--verbose' => 'Lista cada archivo compilado eliminado antes del resumen final.',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de limpiar cache de vistas.',
         ];
     }
 
@@ -71,7 +72,7 @@ final class ViewClearCommand extends Command
             $output->writeln(sprintf('  Archivos eliminados: %d', $deleted));
 
             return 0;
-        });
+        }, requirePublishedConfig: $input->hasOption('require-published-config'));
     }
 
     /**

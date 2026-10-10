@@ -25,7 +25,7 @@ final class RouteCacheCommand extends Command
 
     public function usage(): string
     {
-        return 'route:cache [--verbose] [--optimizer-only]';
+        return 'route:cache [--verbose] [--optimizer-only] [--require-published-config]';
     }
 
     public function category(): string
@@ -43,6 +43,7 @@ final class RouteCacheCommand extends Command
         return [
             '--verbose' => 'Muestra cada artifact generado y su path final.',
             '--optimizer-only' => 'Imprime el reporte del pipeline optimizer sin escribir artifacts.',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de compilar artifacts de rutas.',
         ];
     }
 
@@ -112,7 +113,7 @@ final class RouteCacheCommand extends Command
             }
 
             return 0;
-        });
+        }, requirePublishedConfig: $input->hasOption('require-published-config'));
     }
 
     private function renderOptimizerReport(Output $output, PipelineOptimizationReport $report, bool $expanded): void

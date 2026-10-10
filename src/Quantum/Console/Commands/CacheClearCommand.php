@@ -27,7 +27,7 @@ final class CacheClearCommand extends Command
 
     public function usage(): string
     {
-        return 'cache:clear [--data-only] [--compiled-only] [--verbose]';
+        return 'cache:clear [--data-only] [--compiled-only] [--verbose] [--require-published-config]';
     }
 
     public function category(): string
@@ -46,6 +46,7 @@ final class CacheClearCommand extends Command
             '--data-only' => 'Limpia solo la cache de datos configurada en cache.stores.*.',
             '--compiled-only' => 'Limpia solo cache.compiled.views y cache.compiled.pages.',
             '--verbose' => 'Muestra el detalle por store y por directorio compilado.',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de limpiar cache.',
         ];
     }
 
@@ -99,7 +100,7 @@ final class CacheClearCommand extends Command
             $output->writeln(sprintf('  Paginas compiladas eliminadas: %d', $deletedPageFiles));
 
             return 0;
-        });
+        }, requirePublishedConfig: $input->hasOption('require-published-config'));
     }
 
     /**

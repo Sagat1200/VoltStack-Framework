@@ -23,7 +23,7 @@ final class DatabaseStatusCommand extends Command
 
     public function usage(): string
     {
-        return 'database:status [--connection=name]';
+        return 'database:status [--connection=name] [--require-published-config]';
     }
 
     public function category(): string
@@ -35,6 +35,7 @@ final class DatabaseStatusCommand extends Command
     {
         return [
             '--connection=' => 'Consulta una conexion especifica en lugar de la conexion por defecto.',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de inspeccionar.',
         ];
     }
 
@@ -45,7 +46,7 @@ final class DatabaseStatusCommand extends Command
             $status = $app->make(DatabaseInterface::class)->status($connection);
 
             return [$connection, $status];
-        });
+        }, requirePublishedConfig: $input->hasOption('require-published-config'));
 
         $output->writeln('Database status');
         $output->writeln(sprintf('  Default connection: %s', $status->defaultConnectionName));

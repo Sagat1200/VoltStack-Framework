@@ -28,7 +28,7 @@ final class AuthorizationManifestCompileCommand extends Command
 
     public function usage(): string
     {
-        return 'authz:manifest:compile [--verbose] [--dry-run]';
+        return 'authz:manifest:compile [--verbose] [--dry-run] [--require-published-config]';
     }
 
     public function category(): string
@@ -46,12 +46,13 @@ final class AuthorizationManifestCompileCommand extends Command
         return [
             '--verbose' => 'Muestra cada ruta compilada con su fingerprint y requirements.',
             '--dry-run' => 'Calcula el manifest pero no lo persiste fisicamente en el store.',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de compilar el manifest.',
         ];
     }
 
     public function handle(Input $input, Output $output): int
     {
-        $app = $this->bootstrapApplication();
+        $app = $this->bootstrapApplication(requirePublishedConfig: $input->hasOption('require-published-config'));
         $routes = $app->make(RouteCollection::class);
         $resolver = $app->make(AuthorizationMetadataResolverInterface::class);
         $store = $app->make(AuthorizationManifestStoreInterface::class);

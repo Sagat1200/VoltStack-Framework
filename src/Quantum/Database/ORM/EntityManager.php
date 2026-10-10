@@ -12,6 +12,12 @@ use Quantum\Database\ORM\Metadata\EntityAssociationMetadata;
 use Quantum\Database\ORM\Metadata\EntityMetadata;
 use Quantum\Database\ORM\Metadata\EntityMetadataRegistry;
 use Quantum\Database\ORM\Planning\AssociationFetchPlanCompiler;
+use Quantum\Database\ORM\Planning\CompiledHydrationPlanCache;
+use Quantum\Database\ORM\Proxy\LazyLoadingPlaceholderInterface;
+use Quantum\Database\ORM\Proxy\LazyLoadableEntityTrait;
+use Quantum\Database\ORM\Proxy\ProxyInitializationStatus;
+use Quantum\Database\ORM\Proxy\ProxyInstantiatorInterface;
+use Quantum\Database\ORM\Proxy\ReflectionAnonymousProxyInstantiator;
 use Quantum\Database\Query\Builder\DatabaseQueryManager;
 use RuntimeException;
 
@@ -27,6 +33,22 @@ final class EntityManager implements EntityManagerInterface
      */
     private array $partialEntities = [];
 
+    /**
+     * Per-EntityManager cache for compiled ORM plans.
+     *
+     * Readonly on the property level so the reference cannot be swapped; the
+     * cache object itself IS mutable (it stores entries during the scope).
+     */
+    public readonly CompiledHydrationPlanCache $planCache;
+
+    /**
+     * Creates uninitialized lazy proxy placeholders for getReference().
+     *
+     * @internal Ownership lives inside this EntityManager. Not exposed as
+     *           public API in this V1; swaps at construction are not supported.
+     */
+    private readonly ProxyInstantiatorInterface $proxyInstantiator;
+
     public function __construct(
         public readonly EntityMetadataRegistry $metadata,
         private readonly DatabaseQueryManager $queries,
@@ -34,6 +56,8 @@ final class EntityManager implements EntityManagerInterface
         private readonly UnitOfWork $unitOfWork,
         private readonly TransactionManagerInterface $transactions,
     ) {
+        $this->planCache = new CompiledHydrationPlanCache();
+        $this->proxyInstantiator = new ReflectionAnonymousProxyInstantiator();
     }
 
     public function find(string $entityClass, mixed $identifier): ?object
@@ -66,6 +90,92 @@ final class EntityManager implements EntityManagerInterface
         return $entity;
     }
 
+    public function getReference(string $entityClass, mixed $identifier): object
+    {
+        $metadata = $this->metadata->for($entityClass);
+        $key = $metadata->keyFor($identifier);
+        $managed = $this->identityMap->get($key);
+
+        if ($managed !== null) {
+            return $managed;
+        }
+
+        $placeholder = $this->proxyInstantiator->instantiatePlaceholder($metadata, $key, $this);
+        $this->unitOfWork->markProxyStatus($placeholder, ProxyInitializationStatus::Uninitialized);
+        $this->identityMap->register($key, $placeholder);
+        $this->unitOfWork->registerManaged($placeholder, $metadata, $key);
+        $this->linkLazyLoadableTraitIfUsed($placeholder, $metadata->className);
+
+        return $placeholder;
+    }
+
+    public function initializeProxy(object $placeholder): void
+    {
+        if (! $placeholder instanceof LazyLoadingPlaceholderInterface
+            && ! $this->unitOfWork->contains($placeholder)
+        ) {
+            throw new RuntimeException(sprintf(
+                'Object of class [%s] is not a managed lazy proxy placeholder tracked by this EntityManager.',
+                $placeholder::class,
+            ));
+        }
+
+        $status = $this->unitOfWork->proxyStatusOf($placeholder);
+
+        if ($status === ProxyInitializationStatus::Initialized) {
+            return;
+        }
+
+        if ($status === ProxyInitializationStatus::Initializing) {
+            throw new RuntimeException(sprintf(
+                'Circular lazy-loading detected for entity [%s] while initializing the proxy placeholder.',
+                $placeholder::class,
+            ));
+        }
+
+        $metadata = $this->unitOfWork->metadataFor($placeholder);
+        $key = $this->unitOfWork->keyFor($placeholder);
+
+        if ($key === null) {
+            throw new RuntimeException(sprintf(
+                'Lazy proxy placeholder of class [%s] has no known identifier and cannot be initialized.',
+                $placeholder::class,
+            ));
+        }
+
+        $this->unitOfWork->markProxyStatus($placeholder, ProxyInitializationStatus::Initializing);
+
+        try {
+            $row = $this->queries->table($metadata->table)
+                ->where($metadata->identifier->column, $key->identifier)
+                ->first();
+
+            if ($row === null) {
+                throw new RuntimeException(sprintf(
+                    'Lazy proxy placeholder for entity [%s] with identifier [%s] points to a row that no longer exists.',
+                    $metadata->className,
+                    (string) $key->identifier,
+                ));
+            }
+
+            $metadata->hydrate($row, $placeholder);
+            $this->unitOfWork->registerManaged($placeholder, $metadata, $key);
+            $this->linkLazyLoadableTraitIfUsed($placeholder, $metadata->className);
+            $this->unitOfWork->markProxyStatus($placeholder, ProxyInitializationStatus::Initialized);
+            $this->dispatchLifecycle('postLoad', $placeholder);
+            $this->preloadConfiguredEagerAssociations([$placeholder], $metadata);
+        } catch (RuntimeException $e) {
+            // Revert transient status on any failure so the caller is able to
+            // retry after fixing a transient DB error (or similar). Initialized
+            // status intentionally stays unmarked when the transaction fails.
+            if ($this->unitOfWork->proxyStatusOf($placeholder) !== ProxyInitializationStatus::Initialized) {
+                $this->unitOfWork->markProxyStatus($placeholder, ProxyInitializationStatus::Uninitialized);
+            }
+
+            throw $e;
+        }
+    }
+
     public function hydrateManaged(EntityMetadata $metadata, array $row): object
     {
         if (! array_key_exists($metadata->identifier->column, $row)) {
@@ -86,6 +196,7 @@ final class EntityManager implements EntityManagerInterface
         $entity = $metadata->hydrate($row);
         $this->identityMap->register($key, $entity);
         $this->unitOfWork->registerManaged($entity, $metadata, $key);
+        $this->linkLazyLoadableTraitIfUsed($entity, $metadata->className);
 
         $this->dispatchLifecycle('postLoad', $entity);
 
@@ -144,6 +255,7 @@ final class EntityManager implements EntityManagerInterface
                         $loadedFields,
                     ))),
                 );
+                $this->linkLazyLoadableTraitIfUsed($managed, $metadata->className);
             }
 
             return $managed;
@@ -152,6 +264,7 @@ final class EntityManager implements EntityManagerInterface
         $entity = $metadata->hydrate($row);
         $this->identityMap->register($key, $entity);
         $this->unitOfWork->registerManagedPartial($entity, $metadata, $key, $loadedFields);
+        $this->linkLazyLoadableTraitIfUsed($entity, $metadata->className);
 
         return $entity;
     }
@@ -207,6 +320,21 @@ final class EntityManager implements EntityManagerInterface
 
     public function refresh(object $entity): void
     {
+        $status = $this->unitOfWork->proxyStatusOf($entity);
+
+        if ($status === ProxyInitializationStatus::Initializing) {
+            throw new RuntimeException(sprintf(
+                'Circular lazy-loading detected while refreshing entity [%s].',
+                $entity::class,
+            ));
+        }
+
+        if ($status === ProxyInitializationStatus::Uninitialized) {
+            $this->initializeProxy($entity);
+
+            return;
+        }
+
         $metadata = $this->metadata->for($entity::class);
         $key = $this->unitOfWork->keyFor($entity);
 
@@ -235,6 +363,7 @@ final class EntityManager implements EntityManagerInterface
         $metadata->hydrate($row, $entity);
         $this->identityMap->register($key, $entity);
         $this->unitOfWork->registerManaged($entity, $metadata, $key);
+        $this->linkLazyLoadableTraitIfUsed($entity, $metadata->className);
         unset($this->partialEntities[spl_object_id($entity)]);
         $this->preloadConfiguredEagerAssociations([$entity], $metadata);
     }
@@ -242,6 +371,7 @@ final class EntityManager implements EntityManagerInterface
     public function flush(): void
     {
         $this->assertPartialManagedCollectionChangesAreSupported();
+        $this->assertNoUninitializedProxiesBeforeFlush();
 
         // Step 0: Apply CASCADE operations BFS (visited-guard against circular refs).
         $this->applyCascadesBeforeFlush(Cascade::PERSIST);
@@ -292,6 +422,166 @@ final class EntityManager implements EntityManagerInterface
         return $this->unitOfWork->contains($entity);
     }
 
+    /**
+     * Public passthrough for opt-in lazy-load interceptors to read the 3-phase
+     * proxy initialization status of a managed entity without leaking the
+     * internal UnitOfWork reference.
+     */
+    public function proxyStatusOf(object $entity): ProxyInitializationStatus
+    {
+        return $this->unitOfWork->proxyStatusOf($entity);
+    }
+
+    /**
+     * If the entity uses `LazyLoadableEntityTrait` (opt-in user-land),
+     * inject the 2 runtime state cells needed by the magic interceptors:
+     * a WeakReference back to this EntityManager (so the entity never
+     * prevents GC of the EM — avoids circular-reference leaks) and the
+     * entity FQCN cached for stable lookups inside the trait context.
+     *
+     * Called immediately after every successful `registerManaged()` and
+     * `registerManagedPartial()` in this EntityManager so the link is
+     * guaranteed to be alive before any user code reads back the entity.
+     *
+     * The call is idempotent; repeated invocations overwrite with the same
+     * values and are harmless (covers refresh / initializeProxy re-entry).
+     *
+     * @param class-string $className
+     */
+    private function linkLazyLoadableTraitIfUsed(object $entity, string $className): void
+    {
+        // Multi-level inheritance-safe trait detection. `class_uses()` only
+        // reports traits directly used by the exact class, so walk up the
+        // inheritance chain to cover traits introduced by parent classes.
+        $usesTrait = false;
+        for ($c = $className; $c !== false; $c = get_parent_class($c)) {
+            foreach (class_uses($c) as $t) {
+                if (ltrim($t, '\\') === LazyLoadableEntityTrait::class) {
+                    $usesTrait = true;
+                    break 2;
+                }
+            }
+        }
+
+        if (! $usesTrait) {
+            return;
+        }
+
+        $refWeak = new \ReflectionProperty($entity, '__ormEntityManagerWeakRef');
+        $refWeak->setAccessible(true);
+        $refWeak->setValue($entity, \WeakReference::create($this));
+
+        $refClass = new \ReflectionProperty($entity, '__ormEntityClassName');
+        $refClass->setAccessible(true);
+        $refClass->setValue($entity, $className);
+
+        // For `__get` / `__set` on the trait to be invoked, PHP requires that
+        // the target property NOT exist on the object's property table (on
+        // public declared properties PHP skips magic methods and accesses
+        // storage directly). So we selectively unset() mapped properties
+        // depending on proxy status:
+        //
+        //   * Uninitialized placeholders -> every non-id mapped field and
+        //     every association is removed so ANY mapped-property access
+        //     routes through the trait (hydrate-through + guardrails).
+        //   * Initialized managed entities -> only lazy associations (those
+        //     with fetch:lazy and not yet materialized) are removed, so the
+        //     first ->assoc read goes through the trait's loader and
+        //     subsequent reads use the PHP-native shadowed property.
+        //
+        // The trait always passes through for transient properties that are
+        // not in the metadata map, keeping regular PHP semantics.
+        $metadata = $this->unitOfWork->contains($entity)
+            ? $this->unitOfWork->metadataFor($entity)
+            : $this->metadata->for($className);
+
+        $status = $this->proxyStatusOf($entity);
+        $identifierName = $metadata->identifier->name;
+
+        if ($status === ProxyInitializationStatus::Uninitialized) {
+            // All mapped non-id fields (columns + embeddeds) + all associations.
+            foreach ($metadata->fields as $fieldName => $_field) {
+                if ($fieldName === $identifierName) {
+                    continue;
+                }
+                self::unsafeUnsetPublicProperty($entity, $fieldName);
+            }
+            foreach ($metadata->embeddeds as $embeddedName => $_embedded) {
+                self::unsafeUnsetPublicProperty($entity, $embeddedName);
+            }
+            foreach ($metadata->associations as $assocName => $_assoc) {
+                self::unsafeUnsetPublicProperty($entity, $assocName);
+            }
+        } else {
+            // Initialized (or unknown status). Only unset LAZY associations.
+            foreach ($metadata->associations as $assocName => $assoc) {
+                if (! $assoc->isLazy()) {
+                    continue;
+                }
+
+                // Before unsetting, check whether the property actually holds
+                // a non-default/non-empty value. If the user has explicitly
+                // populated it (e.g. preload during initializeProxy eager, or
+                // user-side sideload between calls), we preserve the value.
+                $vars = get_object_vars($entity);
+                $materialized = array_key_exists($assocName, $vars)
+                    && $vars[$assocName] !== null
+                    && ($assoc->isToOne() || $vars[$assocName] !== []);
+                if ($materialized) {
+                    continue;
+                }
+
+                self::unsafeUnsetPublicProperty($entity, $assocName);
+            }
+        }
+    }
+
+    /**
+     * Unset a declared PUBLIC property on an entity instance without
+     * triggering __unset() or failing on properties that are already gone.
+     *
+     * The entity POPO convention used across the ORM (and all bundled
+     * fixtures) is public-declared fields and associations; this helper does
+     * NOT attempt to reach into private/protected state because the trait's
+     * fast-path property_exists / get_object_vars checks would not be able
+     * to read them anyway.
+     *
+     * @param non-empty-string $name
+     */
+    private static function unsafeUnsetPublicProperty(object $entity, string $name): void
+    {
+        try {
+            $reflection = new \ReflectionProperty($entity, $name);
+        } catch (\ReflectionException) {
+            // Dynamically-added or unknown property. If it exists on the
+            // instance as a dynamic member unset() will clear it; otherwise
+            // it is a no-op.
+            try {
+                unset($entity->$name);
+            } catch (\Throwable) {
+                // @ignoreException
+            }
+
+            return;
+        }
+
+        if (! $reflection->isPublic()) {
+            // Trait/protected/private: reflection-based unset not supported
+            // in this helper. Safe no-op: the magic method handling cannot
+            // surface through anyway (visibility rules win over __get).
+            return;
+        }
+
+        try {
+            // Accessible public property via direct unset on the object works
+            // for public visibility regardless of scope (unset() can unset a
+            // public member from outside scope).
+            unset($entity->$name);
+        } catch (\Throwable) {
+            // @ignoreException — PHP edge case (readonly, error handler, etc.)
+        }
+    }
+
     public function snapshotCollections(object $entity): void
     {
         if (! $this->unitOfWork->contains($entity)) {
@@ -299,6 +589,52 @@ final class EntityManager implements EntityManagerInterface
         }
 
         $this->unitOfWork->snapshotOneToManyCollections($entity, $this->unitOfWork->metadataFor($entity));
+    }
+
+    /**
+     * Reject any flush operation that would require a real snapshot for a
+     * placeholder that is still Uninitialized. Covers BOTH lazy placeholders
+     * returned by getReference() and entities explicitly implementing the
+     * marker interface before an explicit initializeProxy() call.
+     *
+     * The same single message / guard helper is used by loaders and per-entity
+     * flush steps to keep DX unified.
+     */
+    private function assertNoUninitializedProxiesBeforeFlush(): void
+    {
+        foreach ($this->unitOfWork->newEntities() as $entity) {
+            $this->assertNoUninitializedProxyAccess($entity, 'flush / cascade');
+        }
+
+        foreach ($this->unitOfWork->managedEntities() as $entity) {
+            $this->assertNoUninitializedProxyAccess($entity, 'flush / dirty-check / orphan-removal');
+        }
+
+        foreach ($this->unitOfWork->removedEntities() as $entity) {
+            $this->assertNoUninitializedProxyAccess($entity, 'flush / remove');
+        }
+    }
+
+    private function assertNoUninitializedProxyAccess(object $entity, string $operation): void
+    {
+        if (! $this->unitOfWork->isUninitializedProxy($entity)) {
+            return;
+        }
+
+        $metadata = $this->unitOfWork->contains($entity)
+            ? $this->unitOfWork->metadataFor($entity)
+            : $this->metadata->for($entity::class);
+
+        $identifier = $this->unitOfWork->keyFor($entity)?->identifier
+            ?? $metadata->identifierValue($entity)
+            ?? '<unknown>';
+
+        throw new RuntimeException(sprintf(
+            'Entity [%s] with identifier [%s] is an uninitialized proxy placeholder. Call EntityManager::initializeProxy($entity) or EntityManager::refresh($entity) before accessing its persisted state or triggering operations (%s) that require snapshots.',
+            $metadata->className,
+            (string) $identifier,
+            $operation,
+        ));
     }
 
     public function isPartial(object $entity): bool
@@ -369,7 +705,13 @@ final class EntityManager implements EntityManagerInterface
             }
         }
 
-        foreach ($this->fetchPlanCompiler()->groupPaths($metadata, $associationNames) as $associationName => $nestedAssociationPaths) {
+        $groupedPaths = $this->planCache->rememberGroupedAssociationPaths(
+            $metadata,
+            $associationNames,
+            fn() => $this->fetchPlanCompiler()->groupPaths($metadata, $associationNames),
+        );
+
+        foreach ($groupedPaths as $associationName => $nestedAssociationPaths) {
             $loadedTargets = $this->preloadAssociationBatch(
                 $entities,
                 $metadata,
@@ -490,6 +832,8 @@ final class EntityManager implements EntityManagerInterface
 
     public function loadToOne(object $entity, string $associationName): ?object
     {
+        $this->assertNoUninitializedProxyAccess($entity, 'loadToOne');
+
         $metadata = $this->metadata->for($entity::class);
         $association = $metadata->association($associationName);
 
@@ -547,6 +891,8 @@ final class EntityManager implements EntityManagerInterface
      */
     public function loadToMany(object $entity, string $associationName): array
     {
+        $this->assertNoUninitializedProxyAccess($entity, 'loadToMany');
+
         $metadata = $this->metadata->for($entity::class);
         $association = $metadata->association($associationName);
 
@@ -589,6 +935,13 @@ final class EntityManager implements EntityManagerInterface
     ): array {
         if ($entities === []) {
             return [];
+        }
+
+        foreach ($entities as $entity) {
+            $this->assertNoUninitializedProxyAccess(
+                $entity,
+                sprintf('preloadAssociationBatch [%s::$%s]', $metadata->className, $association->name),
+            );
         }
 
         if ($association->isToOne()) {
@@ -882,6 +1235,8 @@ final class EntityManager implements EntityManagerInterface
 
     private function flushUpdate(object $entity): void
     {
+        $this->assertNoUninitializedProxyAccess($entity, 'flushUpdate');
+
         $metadata = $this->unitOfWork->metadataFor($entity);
         $key = $this->requireKey($entity);
 

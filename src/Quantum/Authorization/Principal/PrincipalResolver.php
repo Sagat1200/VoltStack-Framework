@@ -9,11 +9,18 @@ use Quantum\Auth\Contracts\AuthenticationManagerInterface;
 use Quantum\Auth\Identity\IdentityInterface;
 use Quantum\Authorization\Contracts\PrincipalInterface;
 use Quantum\Authorization\Contracts\PrincipalResolverInterface;
+use Quantum\Authorization\Contracts\ServicePrincipalResolverInterface;
+use Quantum\Http\Request;
+use VoltStack\Runtime\Context\RuntimeContext;
 
 final class PrincipalResolver implements PrincipalResolverInterface
 {
     public function __construct(
         private readonly ?AuthenticationManagerInterface $auth = null,
+        private readonly ?ServicePrincipalResolverInterface $servicePrincipalResolver = null,
+        private readonly bool $servicePrincipalResolverEnabled = false,
+        private readonly ?RuntimeContext $runtimeContext = null,
+        private readonly ?Request $request = null,
     ) {}
 
     public function resolve(mixed $principal = null): PrincipalInterface
@@ -71,6 +78,21 @@ final class PrincipalResolver implements PrincipalResolverInterface
             return is_object($user)
                 ? $this->fromObject($user)
                 : (is_array($user) ? $this->fromArray($user) : new Principal((string) $user));
+        }
+
+        if ($this->servicePrincipalResolverEnabled && $this->servicePrincipalResolver !== null) {
+            try {
+                $runtime = $this->runtimeContext ?? RuntimeContext::current();
+                $servicePrincipal = $this->servicePrincipalResolver->resolve(
+                    $runtime,
+                    $this->request,
+                );
+                if ($servicePrincipal instanceof PrincipalInterface) {
+                    return $servicePrincipal;
+                }
+            } catch (\Throwable) {
+                // fail-closed hacia AnonymousPrincipal
+            }
         }
 
         return new AnonymousPrincipal();

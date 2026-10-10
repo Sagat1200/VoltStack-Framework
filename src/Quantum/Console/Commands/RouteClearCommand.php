@@ -23,7 +23,7 @@ final class RouteClearCommand extends Command
 
     public function usage(): string
     {
-        return 'route:clear [--verbose]';
+        return 'route:clear [--verbose] [--require-published-config]';
     }
 
     public function category(): string
@@ -40,6 +40,7 @@ final class RouteClearCommand extends Command
     {
         return [
             '--verbose' => 'Lista cada artifact eliminado antes del resumen final.',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de eliminar artifacts de rutas.',
         ];
     }
 
@@ -66,6 +67,6 @@ final class RouteClearCommand extends Command
             $output->writeln(sprintf('  Artifacts eliminados: %d', count($deleted)));
 
             return 0;
-        });
+        }, requirePublishedConfig: $input->hasOption('require-published-config'));
     }
 }

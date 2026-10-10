@@ -5,21 +5,11 @@ declare(strict_types=1);
 namespace VoltStack\Runtime\Adapters;
 
 use Quantum\Bootstrap\ApplicationPlan;
-use Quantum\Exceptions\Enums\WorkerDisposition;
-use Quantum\Http\Request;
-use Quantum\Http\Response;
-use Quantum\Transport\Bridges\Http\HttpResponseTransformer;
-use Quantum\Transport\Contracts\ResponseTransportManagerInterface;
-use Quantum\Transport\Runtime\TransportContext;
-use Iterator;
-use Traversable;
-use VoltStack\Runtime\Context\WorkerContext;
 use VoltStack\Runtime\Contracts\RuntimeAdapterInterface;
 use VoltStack\Runtime\Contracts\WorkerFactoryInterface;
-use VoltStack\Runtime\Exceptions\RuntimeAdapterException;
 use VoltStack\Runtime\RuntimeCapabilities;
 use VoltStack\Runtime\RuntimeConfiguration;
-use VoltStack\Runtime\WorkerSession;
+use VoltStack\Runtime\SequentialRequestLoop;
 
 final class RoadRunnerRuntimeAdapter implements RuntimeAdapterInterface
 {
@@ -49,98 +39,12 @@ final class RoadRunnerRuntimeAdapter implements RuntimeAdapterInterface
         WorkerFactoryInterface $factory,
         RuntimeConfiguration $configuration,
     ): int {
-        $requestSource = $configuration->requestSource();
-
-        if ($requestSource === null) {
-            throw new RuntimeAdapterException(
-                'RoadRunner runtime adapter requires an in-memory request source until a native HTTP bridge is implemented.'
-            );
-        }
-
-        $session = $factory->create($plan, WorkerContext::create(
+        return SequentialRequestLoop::runForSourceDriver(
             driver: $this->id(),
-            maxRequests: $configuration->maxRequests(),
-        ));
-        $requests = $this->normalizeRequestSource($requestSource);
-        $requests->rewind();
-
-        while ($session->canAcceptMoreRequests() && $requests->valid()) {
-            $request = $requests->current();
-            $result = $session->handle($request);
-
-            if ($result->workerDisposition() === WorkerDisposition::Terminate) {
-                return 1;
-            }
-
-            if (! $this->emitResponse($session, $result->response(), $request)) {
-                $session->lifecycle()->request(WorkerDisposition::Terminate);
-
-                return 1;
-            }
-
-            if (! $session->canAcceptMoreRequests()) {
-                break;
-            }
-
-            $requests->next();
-        }
-
-        return 0;
-    }
-
-    private function emitResponse(WorkerSession $session, ?Response $response, Request $request): bool
-    {
-        if ($response === null) {
-            return true;
-        }
-
-        /** @var HttpResponseTransformer $transformer */
-        $transformer = $session->app()->make(HttpResponseTransformer::class);
-        /** @var ResponseTransportManagerInterface $manager */
-        $manager = $session->app()->make(ResponseTransportManagerInterface::class);
-
-        $transportResponse = $transformer->transform($response);
-        $transportContext = new TransportContext(
-            request: $request,
-            attributes: [
-                'runtime.driver' => $session->context()->driver(),
-                'runtime.worker_id' => $session->context()->workerId(),
-                'runtime.handled_requests' => $session->handledRequests(),
-            ],
+            plan: $plan,
+            factory: $factory,
+            configuration: $configuration,
+            driverLabel: 'RoadRunner',
         );
-        $transportResult = $manager->send($transportResponse, $transportContext);
-
-        return $transportResult->completed && $transportResult->exception === null;
-    }
-
-    /**
-     * @return Iterator<int, Request>
-     */
-    private function normalizeRequestSource(mixed $source): Iterator
-    {
-        if (is_callable($source)) {
-            $source = $source();
-        }
-
-        if (! is_array($source) && ! $source instanceof Traversable) {
-            throw new RuntimeAdapterException('RoadRunner runtime request source must be iterable or callable.');
-        }
-
-        return $this->yieldRequests($source);
-    }
-
-    /**
-     * @param iterable<mixed> $source
-     * @return Iterator<int, Request>
-     */
-    private function yieldRequests(iterable $source): Iterator
-    {
-        foreach ($source as $request) {
-            if (! $request instanceof Request) {
-                throw new RuntimeAdapterException('RoadRunner runtime request source must yield Request instances.');
-            }
-
-            yield $request;
-        }
     }
 }

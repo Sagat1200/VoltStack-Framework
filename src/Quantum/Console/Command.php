@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quantum\Console;
 
+use Quantum\Config\Publication\PublishedConfigurationRequiredException;
 use RuntimeException;
 use VoltStack\Framework\Application;
 use VoltStack\Runtime\Context\ScopeManager;
@@ -52,7 +53,7 @@ abstract class Command
         return [];
     }
 
-    protected function bootstrapApplication(): Application
+    protected function bootstrapApplication(bool $requirePublishedConfig = false): Application
     {
         $bootstrapPath = $this->basePath . DIRECTORY_SEPARATOR . 'bootstrap' . DIRECTORY_SEPARATOR . 'app.php';
 
@@ -66,13 +67,37 @@ abstract class Command
             throw new RuntimeException('The application bootstrap file must return a VoltStack application instance.');
         }
 
+        if ($requirePublishedConfig) {
+            $this->assertPublishedConfiguration($app);
+        }
+
         return $app;
     }
 
-    protected function runInCommandRuntime(callable $callback, ?string $commandName = null): mixed
+    private function assertPublishedConfiguration(Application $app): void
     {
+        $status = $app->configStatusInspector()->inspect($app);
+
+        if (! $status->hasActiveGeneration()) {
+            throw new PublishedConfigurationRequiredException(
+                'Published configuration is required for this command, but no active configuration generation exists.',
+            );
+        }
+
+        if (! $status->publishedMatchesEffective()) {
+            throw new PublishedConfigurationRequiredException(
+                'Published configuration is required for this command, but the effective snapshot differs from the active generation.',
+            );
+        }
+    }
+
+    protected function runInCommandRuntime(
+        callable $callback,
+        ?string $commandName = null,
+        bool $requirePublishedConfig = false,
+    ): mixed {
         $hadExceptionErrorHandler = ($GLOBALS['__voltstack_exceptionhandler_error_handler_registered'] ?? false) === true;
-        $app = $this->bootstrapApplication();
+        $app = $this->bootstrapApplication($requirePublishedConfig);
         $scope = $app->make(ScopeManager::class);
 
         try {

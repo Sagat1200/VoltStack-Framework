@@ -52,7 +52,7 @@ final class AuthSecurityCenterReportCommand extends Command
 
     public function usage(): string
     {
-        return 'auth:security-center:report [--now=timestamp] [--identity=value] [--type=value] [--include-public-ids] [--management-actors] [--correlation-id=value] [--audit-log-source=path] [--export-log=path] [--json] [--verbose]';
+        return 'auth:security-center:report [--now=timestamp] [--identity=value] [--type=value] [--include-public-ids] [--management-actors] [--correlation-id=value] [--audit-log-source=path] [--export-log=path] [--json] [--verbose] [--require-published-config]';
     }
 
     public function category(): string
@@ -73,6 +73,7 @@ final class AuthSecurityCenterReportCommand extends Command
             '--export-log=' => 'Anexa un snapshot JSONL durable del reporte operativo generado.',
             '--json' => 'Emite el reporte en JSON.',
             '--verbose' => 'Muestra distribuciones adicionales y metadatos del reporte.',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de generar el security-center report.',
         ];
     }
 
@@ -663,7 +664,7 @@ final class AuthSecurityCenterReportCommand extends Command
         }
 
         return 0;
-        });
+        }, requirePublishedConfig: $input->hasOption('require-published-config'));
     }
 
     private function resolveNow(Input $input): ?int

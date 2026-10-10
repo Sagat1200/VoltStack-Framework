@@ -15,10 +15,23 @@ interface AuthorizationConsistencyInterface
     /**
      * @return array<string, string>
      */
-    public function invalidateAuthority(?string $principalId = null, Scope|string|null $scope = null): array;
+    public function invalidateAuthority(
+        ?string $principalId = null,
+        Scope|string|null $scope = null,
+        ?string $reason = null,
+    ): array;
 
     /**
      * @return array<string, string>
      */
-    public function invalidateRelationships(?string $principalId = null, Scope|string|null $scope = null): array;
+    public function invalidateRelationships(
+        ?string $principalId = null,
+        Scope|string|null $scope = null,
+        ?string $reason = null,
+    ): array;
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function inspect(): array;
 }

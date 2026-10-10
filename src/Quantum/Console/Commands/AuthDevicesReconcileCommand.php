@@ -23,7 +23,7 @@ final class AuthDevicesReconcileCommand extends Command
 
     public function usage(): string
     {
-        return 'auth:devices:reconcile [--now=timestamp] [--dry-run] [--verbose]';
+        return 'auth:devices:reconcile [--now=timestamp] [--dry-run] [--verbose] [--require-published-config]';
     }
 
     public function category(): string
@@ -37,6 +37,7 @@ final class AuthDevicesReconcileCommand extends Command
             '--now=' => 'Usa un timestamp UNIX especifico para evaluar expiracion durante la reconciliacion.',
             '--dry-run' => 'Calcula y reporta cambios sin persistir modificaciones.',
             '--verbose' => 'Muestra detalle adicional del driver y del resultado por categoria.',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de reconciliar trusted devices.',
         ];
     }
 
@@ -54,7 +55,7 @@ final class AuthDevicesReconcileCommand extends Command
                 : $sessionDriver;
 
             return [$sessionDriver, $trustedDriver, $result];
-        });
+        }, requirePublishedConfig: $input->hasOption('require-published-config'));
 
         if ($input->hasOption('verbose')) {
             $output->writeln(sprintf('Driver sesiones: %s', $sessionDriver));

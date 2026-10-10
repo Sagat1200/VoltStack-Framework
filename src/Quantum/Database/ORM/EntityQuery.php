@@ -13,6 +13,7 @@ use Quantum\Database\ORM\Planning\EntityHydrationPlan;
 use Quantum\Database\ORM\Planning\EntityHydrationPlanCompiler;
 use Quantum\Database\ORM\Planning\PartialHydrationPlan;
 use Quantum\Database\ORM\Planning\PartialHydrationPlanCompiler;
+use Quantum\Database\ORM\Planning\PlanningMetadataHelper;
 use Quantum\Database\Query\Builder\DatabaseQueryManager;
 use Quantum\Database\Query\Builder\SelectQueryBuilder;
 use RuntimeException;
@@ -22,6 +23,8 @@ final class EntityQuery
     private const ROOT_ALIAS = 't0';
 
     public SelectQueryBuilder $query;
+
+    private readonly PlanningMetadataHelper $planningHelper;
 
     /**
      * @var list<string>
@@ -63,6 +66,7 @@ final class EntityQuery
         DatabaseQueryManager $queries,
     ) {
         $this->query = $queries->table($metadata->table);
+        $this->planningHelper = new PlanningMetadataHelper();
     }
 
     public function where(string $field, mixed $operatorOrValue, mixed $value = null): self
@@ -1974,19 +1978,29 @@ final class EntityQuery
 
     private function compiledFetchPlan(): AssociationFetchPlan
     {
-        return $this->fetchPlanCompiler()->compile(
+        return $this->manager->planCache->rememberFetchPlan(
             $this->metadata,
             $this->preloadedAssociations,
             array_keys($this->joinedAssociations),
+            fn() => $this->fetchPlanCompiler()->compile(
+                $this->metadata,
+                $this->preloadedAssociations,
+                array_keys($this->joinedAssociations),
+            ),
         );
     }
 
     private function compiledEntityHydrationPlan(): EntityHydrationPlan
     {
-        return $this->entityHydrationPlanCompiler()->compile(
+        return $this->manager->planCache->rememberEntityHydrationPlan(
             $this->metadata,
             self::ROOT_ALIAS,
             $this->joinedAssociations,
+            fn() => $this->entityHydrationPlanCompiler()->compile(
+                $this->metadata,
+                self::ROOT_ALIAS,
+                $this->joinedAssociations,
+            ),
         );
     }
 
@@ -1995,11 +2009,18 @@ final class EntityQuery
      */
     private function compiledPartialHydrationPlan(array $rootSelections): PartialHydrationPlan
     {
-        return $this->partialHydrationPlanCompiler()->compile(
+        return $this->manager->planCache->rememberPartialHydrationPlan(
+            $this->metadata,
             self::ROOT_ALIAS,
             $rootSelections,
             $this->partialJoinedSelections,
             $this->joinedAssociations,
+            fn() => $this->partialHydrationPlanCompiler()->compile(
+                self::ROOT_ALIAS,
+                $rootSelections,
+                $this->partialJoinedSelections,
+                $this->joinedAssociations,
+            ),
         );
     }
 
@@ -2042,7 +2063,7 @@ final class EntityQuery
 
     private function joinedResultKey(string $associationName, string $column): string
     {
-        return '__orm_join_' . preg_replace('/[^A-Za-z0-9_]+/', '_', $associationName . '_' . $column);
+        return $this->planningHelper->joinedResultKey($associationName, $column);
     }
 
     private function initializeJoinedCollections(object $entity): void

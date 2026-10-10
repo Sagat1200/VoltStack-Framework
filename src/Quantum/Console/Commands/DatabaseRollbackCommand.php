@@ -23,7 +23,7 @@ final class DatabaseRollbackCommand extends Command
 
     public function usage(): string
     {
-        return 'database:rollback [path] [--connection=name]';
+        return 'database:rollback [path] [--connection=name] [--require-published-config]';
     }
 
     public function category(): string
@@ -42,6 +42,7 @@ final class DatabaseRollbackCommand extends Command
     {
         return [
             '--connection=' => 'Usa una conexion especifica para revertir el ultimo batch.',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de revertir migraciones.',
         ];
     }
 
@@ -56,7 +57,7 @@ final class DatabaseRollbackCommand extends Command
             );
 
             return [$connection, $count];
-        });
+        }, requirePublishedConfig: $input->hasOption('require-published-config'));
 
         $output->writeln('Database rollback completed.');
         $output->writeln(sprintf('  Connection: %s', $connection ?? 'default'));

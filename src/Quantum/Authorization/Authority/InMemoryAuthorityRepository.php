@@ -7,6 +7,7 @@ namespace Quantum\Authorization\Authority;
 use Quantum\Authorization\Contracts\AuthorityAdministrationInterface;
 use Quantum\Authorization\Contracts\AuthorizationConsistencyInterface;
 use Quantum\Authorization\Contracts\AuthorityRepositoryInterface;
+use Quantum\Authorization\Contracts\DelegationAdministrationInterface;
 
 /**
  * Implementación en memoria de AuthorityRepositoryInterface.
@@ -15,7 +16,7 @@ use Quantum\Authorization\Contracts\AuthorityRepositoryInterface;
  * arriba en la jerarquía de scopes la resuelve `effectivePermissionsForPrincipal`
  * consultando también los ancestros del scope (menor → mayor granularidad).
  */
-final class InMemoryAuthorityRepository implements AuthorityAdministrationInterface, AuthorityRepositoryInterface
+final class InMemoryAuthorityRepository implements AuthorityAdministrationInterface, AuthorityRepositoryInterface, DelegationAdministrationInterface
 {
     /**
      * @var array<string, array<string, list<Role>>> [$principalId][$scopeName] = [Role...]
@@ -26,6 +27,12 @@ final class InMemoryAuthorityRepository implements AuthorityAdministrationInterf
      * @var array<string, array<string, list<Permission>>> [$principalId][$scopeName] = [Permission...]
      */
     private array $directPermissionGrants = [];
+
+    /**
+     * @var array<string, array{trustee_id:string,grantor_id:string,scope:string,type:string,value:string,granted_at:string|null}>
+     *   key = "trustee#grantor#scope#type#value"
+     */
+    private array $delegationGrants = [];
 
     /**
      * @param iterable<array{principal_id:string,scope?:string,roles?:iterable<string|Role>,permissions?:iterable<string|Permission>}> $seedGrants
@@ -61,7 +68,7 @@ final class InMemoryAuthorityRepository implements AuthorityAdministrationInterf
         }
 
         $this->roleGrants[$principalId][$scopeName][] = $roleObject;
-        $this->consistency?->invalidateAuthority(trim($principalId), $scopeName);
+        $this->consistency?->invalidateAuthority(trim($principalId), $scopeName, 'authority.grant_role');
 
         return true;
     }
@@ -78,7 +85,7 @@ final class InMemoryAuthorityRepository implements AuthorityAdministrationInterf
         }
 
         $this->directPermissionGrants[$principalId][$scopeName][] = $permissionObject;
-        $this->consistency?->invalidateAuthority(trim($principalId), $scopeName);
+        $this->consistency?->invalidateAuthority(trim($principalId), $scopeName, 'authority.grant_permission');
 
         return true;
     }
@@ -86,7 +93,7 @@ final class InMemoryAuthorityRepository implements AuthorityAdministrationInterf
     public function revokeAll(string $principalId): void
     {
         unset($this->roleGrants[$principalId], $this->directPermissionGrants[$principalId]);
-        $this->consistency?->invalidateAuthority(trim($principalId));
+        $this->consistency?->invalidateAuthority(trim($principalId), null, 'authority.revoke_all');
     }
 
     public function revokeRole(string $principalId, Role|string $role, Scope|string $scope = Scope::GLOBAL): bool
@@ -109,7 +116,7 @@ final class InMemoryAuthorityRepository implements AuthorityAdministrationInterf
             $this->roleGrants[$principalId][$scopeName] = $remaining;
         }
 
-        $this->consistency?->invalidateAuthority(trim($principalId), $scopeName);
+        $this->consistency?->invalidateAuthority(trim($principalId), $scopeName, 'authority.revoke_role');
 
         return true;
     }
@@ -134,7 +141,7 @@ final class InMemoryAuthorityRepository implements AuthorityAdministrationInterf
             $this->directPermissionGrants[$principalId][$scopeName] = $remaining;
         }
 
-        $this->consistency?->invalidateAuthority(trim($principalId), $scopeName);
+        $this->consistency?->invalidateAuthority(trim($principalId), $scopeName, 'authority.revoke_permission');
 
         return true;
     }
@@ -329,5 +336,128 @@ final class InMemoryAuthorityRepository implements AuthorityAdministrationInterf
         }
 
         return (string) ($value instanceof Scope ? $value : new Scope((string) $value));
+    }
+
+    public function listDelegations(array $filters = []): array
+    {
+        $trusteeFilter = $this->normalizeOptionalString($filters['trustee_id'] ?? null);
+        $grantorFilter = $this->normalizeOptionalString($filters['grantor_id'] ?? null);
+        $scopeFilter = $this->normalizeOptionalScope($filters['scope'] ?? null);
+        $typeFilter = strtolower(trim((string) ($filters['type'] ?? 'all')));
+        $valueFilter = $this->normalizeOptionalString($filters['value'] ?? null);
+
+        $rows = array_values($this->delegationGrants);
+
+        $rows = array_values(array_filter($rows, static function (array $row) use ($trusteeFilter, $grantorFilter, $scopeFilter, $typeFilter, $valueFilter): bool {
+            if ($trusteeFilter !== null && $row['trustee_id'] !== $trusteeFilter) {
+                return false;
+            }
+
+            if ($grantorFilter !== null && $row['grantor_id'] !== $grantorFilter) {
+                return false;
+            }
+
+            if ($scopeFilter !== null && $row['scope'] !== $scopeFilter) {
+                return false;
+            }
+
+            if ($typeFilter !== 'all' && $row['type'] !== $typeFilter) {
+                return false;
+            }
+
+            if ($valueFilter !== null && $row['value'] !== $valueFilter) {
+                return false;
+            }
+
+            return true;
+        }));
+
+        usort($rows, static function (array $left, array $right): int {
+            $leftKey = $left['trustee_id'] . '|' . $left['grantor_id'] . '|' . $left['scope'] . '|' . $left['type'] . '|' . $left['value'];
+            $rightKey = $right['trustee_id'] . '|' . $right['grantor_id'] . '|' . $right['scope'] . '|' . $right['type'] . '|' . $right['value'];
+
+            return $leftKey <=> $rightKey;
+        });
+
+        return $rows;
+    }
+
+    public function grantDelegation(
+        string $trusteeId,
+        string $grantorId,
+        Role|Permission $grant,
+        Scope|string $scope = Scope::GLOBAL,
+    ): bool {
+        $trusteeId = trim($trusteeId);
+        $grantorId = trim($grantorId);
+
+        if ($trusteeId === '' || $grantorId === '') {
+            return false;
+        }
+
+        $scopeName = (string) ($scope instanceof Scope ? $scope : new Scope($scope));
+
+        if ($grant instanceof Role) {
+            $type = 'role';
+            $value = $grant->name;
+        } else {
+            $type = 'permission';
+            $value = $grant->name;
+        }
+
+        $key = implode('#', [$trusteeId, $grantorId, $scopeName, $type, $value]);
+
+        if (isset($this->delegationGrants[$key])) {
+            return false;
+        }
+
+        $this->delegationGrants[$key] = [
+            'trustee_id' => $trusteeId,
+            'grantor_id' => $grantorId,
+            'scope' => $scopeName,
+            'type' => $type,
+            'value' => $value,
+            'granted_at' => (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format(\DateTimeInterface::ATOM),
+        ];
+
+        $this->consistency?->invalidateAuthority($trusteeId, $scopeName, 'delegation.grant');
+
+        return true;
+    }
+
+    public function revokeDelegation(
+        string $trusteeId,
+        string $grantorId,
+        Role|Permission $grant,
+        Scope|string $scope = Scope::GLOBAL,
+    ): bool {
+        $trusteeId = trim($trusteeId);
+        $grantorId = trim($grantorId);
+
+        if ($trusteeId === '' || $grantorId === '') {
+            return false;
+        }
+
+        $scopeName = (string) ($scope instanceof Scope ? $scope : new Scope($scope));
+
+        if ($grant instanceof Role) {
+            $type = 'role';
+            $value = $grant->name;
+        } else {
+            $type = 'permission';
+            $value = $grant->name;
+        }
+
+        $key = implode('#', [$trusteeId, $grantorId, $scopeName, $type, $value]);
+
+        if (! isset($this->delegationGrants[$key])) {
+            return false;
+        }
+
+        unset($this->delegationGrants[$key]);
+
+        $this->consistency?->invalidateAuthority($trusteeId, $scopeName, 'delegation.revoke');
+
+        return true;
     }
 }

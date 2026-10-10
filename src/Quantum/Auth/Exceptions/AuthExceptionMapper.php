@@ -23,6 +23,7 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
             $throwable instanceof PasswordRotationRequiredException => 401,
             $throwable instanceof RecoveryTokenInvalidException => 400,
             $throwable instanceof RecoveryTokenExpiredException => 410,
+            $throwable instanceof RecoveryEvidenceRejectedException,
             $throwable instanceof RecoveryPasswordRejectedException,
             $throwable instanceof RecoveryPasswordReuseException => 422,
             $throwable instanceof ThrottleDeniedException => 429,
@@ -85,6 +86,9 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
             $throwable instanceof RecoveryPasswordReuseException => [
                 'X-Auth-Recovery-Password' => 'reuse_denied',
             ],
+            $throwable instanceof RecoveryEvidenceRejectedException => [
+                'X-Auth-Recovery-Evidence' => 'rejected',
+            ],
             $throwable instanceof ThrottleDeniedException => array_filter([
                 'Retry-After' => $throwable->retryAfterSeconds > 0 ? (string) $throwable->retryAfterSeconds : null,
                 'X-Auth-Throttle-Denied' => 'true',
@@ -141,6 +145,7 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
             $throwable instanceof PasswordRotationRequiredException,
             $throwable instanceof RecoveryTokenInvalidException,
             $throwable instanceof RecoveryTokenExpiredException,
+            $throwable instanceof RecoveryEvidenceRejectedException,
             $throwable instanceof RecoveryPasswordRejectedException,
             $throwable instanceof RecoveryPasswordReuseException,
             $throwable instanceof ThrottleDeniedException,
@@ -164,6 +169,7 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
             $throwable instanceof PasswordRotationRequiredException,
             $throwable instanceof RecoveryTokenInvalidException,
             $throwable instanceof RecoveryTokenExpiredException,
+            $throwable instanceof RecoveryEvidenceRejectedException,
             $throwable instanceof RecoveryPasswordRejectedException,
             $throwable instanceof RecoveryPasswordReuseException,
             $throwable instanceof ThrottleDeniedException,
@@ -189,6 +195,7 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
             $throwable instanceof RecoveryTokenExpiredException => '<p>The recovery token has expired. Request a new password reset link.</p>',
             $throwable instanceof RecoveryPasswordRejectedException => '<p>The provided replacement password does not satisfy the configured password policy.</p>',
             $throwable instanceof RecoveryPasswordReuseException => '<p>The replacement password cannot reuse the current password or a retained historical password.</p>',
+            $throwable instanceof RecoveryEvidenceRejectedException => '<p>Additional proof of identity is required to complete account recovery. Provide a valid second factor, passkey, or authorized recovery reference and try again.</p>',
             $throwable instanceof ThrottleDeniedException => '<p>Too many failed authentication attempts have been detected for this account or IP address. Please wait before trying again.</p>',
             $throwable instanceof RiskDeniedException => '<p>This authentication attempt has been blocked by the adaptive risk policy. Please try again later or contact support.</p>',
             $throwable instanceof AssuranceInsufficientException => '<p>Your current authentication level is not sufficient to perform this operation. Please re-authenticate with a stronger assurance method (e.g. MFA, hardware key, passkey).</p>',
@@ -212,9 +219,14 @@ final class AuthExceptionMapper implements ExceptionMapperInterface
             $throwable instanceof RecoveryTokenInvalidException,
             $throwable instanceof RecoveryTokenExpiredException,
             $throwable instanceof RecoveryPasswordRejectedException,
-            $throwable instanceof RecoveryPasswordReuseException => [
+            $throwable instanceof RecoveryPasswordReuseException,
+            $throwable instanceof RecoveryEvidenceRejectedException => [
                 'reason_code' => $throwable->reasonCode,
-            ],
+            ] + (
+                $throwable instanceof RecoveryEvidenceRejectedException && isset($throwable->metadata['evidence_results']) && is_array($throwable->metadata['evidence_results'])
+                    ? ['evidence_results' => $throwable->metadata['evidence_results']]
+                    : []
+            ),
             $throwable instanceof FreshAuthenticationRequiredException => [
                 'reason_code' => $throwable->reasonCode,
                 'operation' => $throwable->operation,

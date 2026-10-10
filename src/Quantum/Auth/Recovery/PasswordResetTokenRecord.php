@@ -17,11 +17,17 @@ final readonly class PasswordResetTokenRecord
         public string $secretHash,
         public IdentityReference $reference,
         public string $identifier,
+        public RecoveryPurpose $purpose,
         public int $issuedAt,
         public int $expiresAt,
         public ?int $consumedAt = null,
         public array $attributes = [],
     ) {}
+
+    public function getId(): string
+    {
+        return $this->id;
+    }
 
     public function isConsumed(): bool
     {
@@ -46,6 +52,7 @@ final readonly class PasswordResetTokenRecord
             'reference_type' => $this->reference->type,
             'reference_identifier' => $this->reference->identifier->value,
             'identifier' => $this->identifier,
+            'purpose' => $this->purpose->value,
             'issued_at' => $this->issuedAt,
             'expires_at' => $this->expiresAt,
             'consumed_at' => $this->consumedAt,
@@ -58,6 +65,9 @@ final readonly class PasswordResetTokenRecord
      */
     public static function fromArray(array $data): self
     {
+        $purposeValue = (string) ($data['purpose'] ?? RecoveryPurpose::PasswordReset->value);
+        $purpose = RecoveryPurpose::tryFrom($purposeValue) ?? RecoveryPurpose::PasswordReset;
+
         return new self(
             id: (string) ($data['id'] ?? ''),
             secretHash: (string) ($data['secret_hash'] ?? ''),
@@ -66,6 +76,7 @@ final readonly class PasswordResetTokenRecord
                 (string) ($data['reference_type'] ?? 'user'),
             ),
             identifier: (string) ($data['identifier'] ?? ''),
+            purpose: $purpose,
             issuedAt: isset($data['issued_at']) && is_int($data['issued_at']) ? $data['issued_at'] : 0,
             expiresAt: isset($data['expires_at']) && is_int($data['expires_at']) ? $data['expires_at'] : 0,
             consumedAt: isset($data['consumed_at']) && is_int($data['consumed_at']) && $data['consumed_at'] > 0

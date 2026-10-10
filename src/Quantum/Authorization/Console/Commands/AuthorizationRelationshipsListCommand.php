@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quantum\Authorization\Console\Commands;
 
 use Quantum\Authorization\Contracts\RelationshipAdministrationInterface;
+use Quantum\Config\Publication\PublishedConfigurationRequiredException;
 use Quantum\Console\Command;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
@@ -23,7 +24,7 @@ final class AuthorizationRelationshipsListCommand extends Command
 
     public function usage(): string
     {
-        return 'authz:relationships:list [--principal-id=...] [--relation=...] [--scope=...] [--json]';
+        return 'authz:relationships:list [--principal-id=...] [--relation=...] [--scope=...] [--json] [--require-published-config]';
     }
 
     public function category(): string
@@ -43,13 +44,26 @@ final class AuthorizationRelationshipsListCommand extends Command
             '--relation=' => 'Filtra por relation exacta.',
             '--scope=' => 'Filtra por scope exacto.',
             '--json' => 'Imprime el resultado como JSON en stdout.',
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de listar relaciones.',
         ];
     }
 
     public function handle(Input $input, Output $output): int
     {
         try {
-            $app = $this->bootstrapApplication();
+            $app = $this->bootstrapApplication(requirePublishedConfig: $input->hasOption('require-published-config'));
+        } catch (PublishedConfigurationRequiredException $exception) {
+            throw $exception;
+        } catch (\Throwable $exception) {
+            $output->error(sprintf(
+                'No se pudo resolver la administracion de relaciones: %s',
+                $exception->getMessage(),
+            ));
+
+            return 1;
+        }
+
+        try {
             $admin = $app->make(RelationshipAdministrationInterface::class);
         } catch (\Throwable $exception) {
             $output->error(sprintf(

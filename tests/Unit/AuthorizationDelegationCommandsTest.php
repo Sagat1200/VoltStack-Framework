@@ -311,6 +311,11 @@ final class AuthorizationDelegationCommandsTest extends TestCase
             ): int {
                 return 0;
             }
+
+            public function revokeDelegationsByPolicy(callable $predicate, ?string $reason = null): int
+            {
+                return 0;
+            }
         };
     }
 

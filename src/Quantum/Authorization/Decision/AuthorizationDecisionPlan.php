@@ -14,13 +14,14 @@ namespace Quantum\Authorization\Decision;
 final readonly class AuthorizationDecisionPlan
 {
     /**
-     * @param list<array{name: string, results: list<DecisionResult>}> $stages
+     * @param list<array{name: string, results: list<DecisionResult>, duration_ms?: int|null}> $stages
      */
     public function __construct(
         private ?string $fingerprint,
         private array $stages,
         private DecisionResult $final,
         private int $evaluatedAt,
+        private ?int $totalDurationMs = null,
     ) {}
 
     /**
@@ -43,18 +44,25 @@ final readonly class AuthorizationDecisionPlan
             'fingerprint' => $this->fingerprint,
             'stages'    => array_map(
                 function (array $stage): array {
-                    return [
+                    $entry = [
                         'name'    => $stage['name'],
                         'results' => array_map(
                             fn (DecisionResult $r): array => $this->serializeDecisionResult($r),
                             $stage['results'] ?? [],
                         ),
                     ];
+
+                    if (array_key_exists('duration_ms', $stage)) {
+                        $entry['duration_ms'] = $stage['duration_ms'];
+                    }
+
+                    return $entry;
                 },
                 $this->stages,
             ),
             'final'      => $this->serializeDecisionResult($this->final),
             'evaluated_at' => $this->evaluatedAt,
+            'total_duration_ms' => $this->totalDurationMs,
         ];
     }
 

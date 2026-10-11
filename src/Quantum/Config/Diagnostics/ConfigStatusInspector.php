@@ -72,6 +72,7 @@ final class ConfigStatusInspector
             manifestPath: $artifact?->manifestPath(),
             publishedConfigId: $publishedConfigId,
             publishedMatchesEffective: $publishedMatchesEffective,
+            bootSource: $repository->bootSource(),
             alerts: $alerts,
         );
     }

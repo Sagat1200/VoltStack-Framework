@@ -85,6 +85,9 @@ use Quantum\Auth\Recovery\InMemoryRecoveryTransactionStore;
 use Quantum\Auth\Recovery\NoopRecoveryNotificationChannel;
 use Quantum\Auth\Recovery\RecoveryNotificationChannelRegistry;
 use Quantum\Auth\Recovery\WebhookRecoveryNotificationChannel;
+use Quantum\Auth\Recovery\EmailRecoveryNotificationChannel;
+use Quantum\Auth\Recovery\SmsRecoveryNotificationChannel;
+use Quantum\Auth\Recovery\PushRecoveryNotificationChannel;
 use Quantum\Auth\Recovery\ConfigRecoveryNotificationTemplateRenderer;
 use Quantum\Auth\Recovery\CompositeRecoveryNotificationDispatcher;
 use Quantum\Auth\Recovery\FederatedLinkRecoveryEvidenceVerifier;
@@ -276,6 +279,101 @@ final class AuthenticationServiceProvider extends ServiceProvider
                         ? (int) $webhookConfig['timeout_seconds']
                         : 10;
                     $registry->register(new WebhookRecoveryNotificationChannel($webhookUrl, $webhookHeaders, $webhookTimeout));
+                }
+            }
+
+            // Resolver template renderer (puede no estar enlazado aún).
+            $templateRenderer = null;
+            try {
+                $candidate = $app->make(RecoveryNotificationTemplateRendererInterface::class);
+                if ($candidate instanceof RecoveryNotificationTemplateRendererInterface) {
+                    $templateRenderer = $candidate;
+                }
+            } catch (\Throwable) {
+                $templateRenderer = null;
+            }
+
+            // Canal email si está configurado.
+            $emailConfig = $app->config('auth.recovery.notifications.channels.email');
+            if (is_array($emailConfig)) {
+                $emailFrom = is_string($emailConfig['from'] ?? null) ? trim($emailConfig['from']) : '';
+                $emailTransport = is_string($emailConfig['transport'] ?? null) ? trim($emailConfig['transport']) : 'mail';
+                if ($emailFrom !== '') {
+                    $emailFromName = is_string($emailConfig['from_name'] ?? null) ? trim($emailConfig['from_name']) : '';
+                    $registry->register(new EmailRecoveryNotificationChannel(
+                        templateRenderer: $templateRenderer,
+                        from: $emailFrom,
+                        fromName: $emailFromName,
+                        transport: $emailTransport,
+                    ));
+                }
+            }
+
+            // Canal SMS si está configurado.
+            $smsConfig = $app->config('auth.recovery.notifications.channels.sms');
+            if (is_array($smsConfig)) {
+                $smsUrl = is_string($smsConfig['gateway_url'] ?? null) ? trim($smsConfig['gateway_url']) : '';
+                if ($smsUrl !== '') {
+                    $smsMethod = is_string($smsConfig['method'] ?? null) ? trim($smsConfig['method']) : 'POST';
+                    $smsHeaders = is_array($smsConfig['headers'] ?? null) ? $smsConfig['headers'] : [];
+                    $smsApiKey = is_string($smsConfig['api_key'] ?? null) ? trim($smsConfig['api_key']) : '';
+                    $smsFrom = is_string($smsConfig['from'] ?? null) ? trim($smsConfig['from']) : '';
+                    $smsTimeout = isset($smsConfig['timeout_seconds']) && is_numeric($smsConfig['timeout_seconds'])
+                        ? (int) $smsConfig['timeout_seconds']
+                        : 10;
+                    $smsToParam = is_string($smsConfig['to_param'] ?? null) && trim($smsConfig['to_param']) !== ''
+                        ? trim($smsConfig['to_param'])
+                        : 'to';
+                    $smsBodyParam = is_string($smsConfig['body_param'] ?? null) && trim($smsConfig['body_param']) !== ''
+                        ? trim($smsConfig['body_param'])
+                        : 'body';
+                    $smsFromParam = isset($smsConfig['from_param'])
+                        ? (is_string($smsConfig['from_param']) && trim($smsConfig['from_param']) !== '' ? trim($smsConfig['from_param']) : null)
+                        : 'from';
+                    $registry->register(new SmsRecoveryNotificationChannel(
+                        templateRenderer: $templateRenderer,
+                        gatewayUrl: $smsUrl,
+                        method: $smsMethod,
+                        headers: $smsHeaders,
+                        apiKey: $smsApiKey,
+                        from: $smsFrom,
+                        timeoutSeconds: $smsTimeout,
+                        toParam: $smsToParam,
+                        bodyParam: $smsBodyParam,
+                        fromParam: $smsFromParam,
+                    ));
+                }
+            }
+
+            // Canal push si está configurado.
+            $pushConfig = $app->config('auth.recovery.notifications.channels.push');
+            if (is_array($pushConfig)) {
+                $pushUrl = is_string($pushConfig['gateway_url'] ?? null) ? trim($pushConfig['gateway_url']) : '';
+                if ($pushUrl !== '') {
+                    $pushHeaders = is_array($pushConfig['headers'] ?? null) ? $pushConfig['headers'] : [];
+                    $pushApiKey = is_string($pushConfig['api_key'] ?? null) ? trim($pushConfig['api_key']) : '';
+                    $pushTimeout = isset($pushConfig['timeout_seconds']) && is_numeric($pushConfig['timeout_seconds'])
+                        ? (int) $pushConfig['timeout_seconds']
+                        : 10;
+                    $pushTokenParam = is_string($pushConfig['token_param'] ?? null) && trim($pushConfig['token_param']) !== ''
+                        ? trim($pushConfig['token_param'])
+                        : 'token';
+                    $pushTitleParam = is_string($pushConfig['title_param'] ?? null) && trim($pushConfig['title_param']) !== ''
+                        ? trim($pushConfig['title_param'])
+                        : 'title';
+                    $pushBodyParam = is_string($pushConfig['body_param'] ?? null) && trim($pushConfig['body_param']) !== ''
+                        ? trim($pushConfig['body_param'])
+                        : 'body';
+                    $registry->register(new PushRecoveryNotificationChannel(
+                        templateRenderer: $templateRenderer,
+                        gatewayUrl: $pushUrl,
+                        headers: $pushHeaders,
+                        apiKey: $pushApiKey,
+                        timeoutSeconds: $pushTimeout,
+                        tokenParam: $pushTokenParam,
+                        titleParam: $pushTitleParam,
+                        bodyParam: $pushBodyParam,
+                    ));
                 }
             }
 

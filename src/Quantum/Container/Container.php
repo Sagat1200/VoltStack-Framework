@@ -44,30 +44,30 @@ class Container implements ContainerInterface
 
     protected ?ScopeFrame $sharedRootScopeFrame = null;
 
-    public function bind(string $abstract, mixed $concrete = null, bool $shared = false): void
+    public function bind(string $abstract, mixed $concrete = null, bool $shared = false, ?string $origin = null): void
     {
         $abstract = $this->normalize($abstract);
         $concrete ??= $abstract;
 
         $this->bindings[$abstract] = $shared
-            ? Binding::singleton($abstract, $concrete)
-            : Binding::transient($abstract, $concrete);
+            ? Binding::singleton($abstract, $concrete, origin: $origin)
+            : Binding::transient($abstract, $concrete, origin: $origin);
     }
 
-    public function singleton(string $abstract, mixed $concrete = null): void
+    public function singleton(string $abstract, mixed $concrete = null, ?string $origin = null): void
     {
-        $this->bind($abstract, $concrete, true);
+        $this->bind($abstract, $concrete, true, $origin);
     }
 
-    public function scoped(string $abstract, mixed $concrete = null): void
+    public function scoped(string $abstract, mixed $concrete = null, ?string $origin = null): void
     {
         $abstract = $this->normalize($abstract);
         $concrete ??= $abstract;
 
-        $this->bindings[$abstract] = Binding::scoped($abstract, $concrete);
+        $this->bindings[$abstract] = Binding::scoped($abstract, $concrete, origin: $origin);
     }
 
-    public function scopedFor(string $abstract, mixed $concrete = null, ScopeKind|string $scopeKind = ScopeKind::Request): void
+    public function scopedFor(string $abstract, mixed $concrete = null, ScopeKind|string $scopeKind = ScopeKind::Request, ?string $origin = null): void
     {
         $abstract = $this->normalize($abstract);
         $concrete ??= $abstract;
@@ -76,7 +76,7 @@ class Container implements ContainerInterface
             $scopeKind = ScopeKind::fromName($scopeKind);
         }
 
-        $this->bindings[$abstract] = Binding::scoped($abstract, $concrete, $scopeKind);
+        $this->bindings[$abstract] = Binding::scoped($abstract, $concrete, $scopeKind, origin: $origin);
     }
 
     public function instance(string $abstract, mixed $instance): void

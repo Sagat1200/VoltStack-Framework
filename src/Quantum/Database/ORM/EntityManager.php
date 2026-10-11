@@ -8,6 +8,7 @@ use Quantum\Database\Contracts\TransactionManagerInterface;
 use Quantum\Database\ORM\Contracts\Cascade;
 use Quantum\Database\ORM\Contracts\EntityManagerInterface;
 use Quantum\Database\ORM\Contracts\EntityRepositoryInterface;
+use Quantum\Database\ORM\Cache\SecondLevelCache;
 use Quantum\Database\ORM\Metadata\EntityAssociationMetadata;
 use Quantum\Database\ORM\Metadata\EntityMetadata;
 use Quantum\Database\ORM\Metadata\EntityMetadataRegistry;
@@ -34,29 +35,24 @@ final class EntityManager implements EntityManagerInterface
     private array $partialEntities = [];
 
     /**
-     * Second-Level Cache (SLC) V1 — per-EntityManager deterministic hydration
+     * Second-Level Cache (SLC) V2 — shared, scoped hydration + query-result
      * cache.
      *
-     * Keyed by `"$entityClass::$identifier"` (stringified) and stores the raw
-     * database row (`array<string, mixed>`) as returned by the query layer.
-     * The cache lives strictly within this EntityManager's scope (no shared
-     * state across EntityManagers / requests) and is invalidated on every
-     * write path (flushUpdate evicts, flushDelete evicts, clear wipes) and
-     * refreshed on every explicit refresh().
+     * Acts as the L2 layer above the identity map (L1). Stores full hydration
+     * rows keyed by `entityClass::identifier` and, optionally, query result
+     * sets keyed by a deterministic query signature.
      *
-     * Purpose: cross-call-site reuse of already-loaded rows so that a
-     * `find()`, `initializeProxy()` or association batch that runs *after*
-     * the same identifier was loaded by a different code path (or after an
-     * identity-map eviction via `clear()`) can be served without a redundant
-     * SELECT. The identity map (L1) still wins for managed entities that are
-     * currently tracked; the SLC only kicks in when the L1 misses.
+     * The cache instance is shared (injected) so that multiple EntityManagers
+     * within the same request scope reuse the same loaded rows. It supports
+     * optional TTL (per-entry and a default from configuration) and
+     * collection-level invalidation (evictAll / evictQueryResults).
      *
-     * Only FULL rows are cached (never partial rows), so a SLC hit is always
-     * safe to hydrate a complete entity.
-     *
-     * @var array<string, array<string, mixed>>
+     * The SLC deliberately SURVIVES clear() — clear() only wipes the L1
+     * (identity map + UnitOfWork). Writes (flushUpdate / flushDelete) and
+     * refresh() keep the SLC consistent; raw out-of-band DB mutations are
+     * the caller's responsibility (standard L2-cache semantics).
      */
-    private array $hydrationCache = [];
+    private readonly SecondLevelCache $secondLevelCache;
 
     /**
      * Per-EntityManager cache for compiled ORM plans.
@@ -80,23 +76,22 @@ final class EntityManager implements EntityManagerInterface
         private readonly IdentityMap $identityMap,
         private readonly UnitOfWork $unitOfWork,
         private readonly TransactionManagerInterface $transactions,
+        SecondLevelCache $secondLevelCache,
     ) {
+        $this->secondLevelCache = $secondLevelCache;
         $this->planCache = new CompiledHydrationPlanCache();
         $this->proxyInstantiator = new ReflectionAnonymousProxyInstantiator();
     }
 
     /**
-     * Build the deterministic SLC key for an entity class + identifier.
+     * Expose the shared Second-Level Cache instance.
      *
-     * The identifier is stringified and the class FQCN is used as the
-     * namespace so two entities of different classes sharing the same
-     * numeric id never collide.
-     *
-     * @param class-string $entityClass
+     * Used by tests and by integration code that needs to inspect or
+     * invalidate the SLC directly (e.g. after out-of-band bulk writes).
      */
-    private function hydrationCacheKey(string $entityClass, int|string $identifier): string
+    public function secondLevelCache(): SecondLevelCache
     {
-        return $entityClass . '::' . (string) $identifier;
+        return $this->secondLevelCache;
     }
 
     /**
@@ -111,29 +106,32 @@ final class EntityManager implements EntityManagerInterface
      */
     private function rememberHydrationRow(string $entityClass, int|string $identifier, array $row): void
     {
-        $this->hydrationCache[$this->hydrationCacheKey($entityClass, $identifier)] = $row;
+        $this->secondLevelCache->rememberRow($entityClass, $identifier, $row);
     }
 
     /**
      * Recall a cached hydration row, or null when the identifier is absent
-     * from the SLC.
+     * from the SLC (or expired).
      *
      * @param class-string $entityClass
      * @return array<string, mixed>|null
      */
     private function recallHydrationRow(string $entityClass, int|string $identifier): ?array
     {
-        return $this->hydrationCache[$this->hydrationCacheKey($entityClass, $identifier)] ?? null;
+        return $this->secondLevelCache->recallRow($entityClass, $identifier);
     }
 
     /**
-     * Remove a single SLC entry (used by write paths: update / delete).
+     * Remove a single SLC row entry (used by write paths: update / delete).
+     *
+     * Also invalidates any cached query results for the same entity class,
+     * since a row change may have affected a previously cached result set.
      *
      * @param class-string $entityClass
      */
     private function evictHydrationRow(string $entityClass, int|string $identifier): void
     {
-        unset($this->hydrationCache[$this->hydrationCacheKey($entityClass, $identifier)]);
+        $this->secondLevelCache->evictRow($entityClass, $identifier);
     }
 
     public function find(string $entityClass, mixed $identifier): ?object
@@ -1368,13 +1366,19 @@ final class EntityManager implements EntityManagerInterface
         $this->identityMap->register($key, $entity);
         $this->unitOfWork->synchronize($entity, $key);
 
-        // SLC V1: cache the just-inserted row so a subsequent find() after an
+        // SLC V2: cache the just-inserted row so a subsequent find() after an
         // identity-map eviction (clear()) can serve it without a SELECT. The
         // inserted values use DB column names; ensure the identifier column is
         // present (it may be auto-generated and absent from $values).
         $cachedRow = $values;
         $cachedRow[$metadata->identifier->column] = $key->identifier;
         $this->rememberHydrationRow($metadata->className, $key->identifier, $cachedRow);
+
+        // SLC V2: a newly inserted row may match a previously cached query
+        // result set for this entity class, so invalidate all cached query
+        // results for the class. Row cache is intentionally kept (the new
+        // row is correct and was just stored above).
+        $this->secondLevelCache->evictQueryResults($metadata->className);
 
         $this->dispatchLifecycle('postPersist', $entity);
     }
@@ -2277,10 +2281,28 @@ final class EntityManager implements EntityManagerInterface
             return [];
         }
 
-        $rows = $this->queries->table($metadata->table)
-            ->whereIn($metadata->identifier->column, array_values($identifiers))
-            ->get()
-            ->rows();
+        // SLC V2: batch-by-identifier result sets are cached so repeated
+        // association preloads for the same set of identifiers (e.g. the
+        // same to-one FK accessed on multiple sibling entities) can be
+        // served without a redundant SELECT. The key is the sorted,
+        // stringified identifier list to be deterministic regardless of
+        // input order.
+        $sortedIds = array_values(array_unique(array_map('strval', $identifiers)));
+        sort($sortedIds, SORT_STRING);
+        $queryKey = 'ids::' . implode(',', $sortedIds);
+
+        $cachedRows = $this->secondLevelCache->recallQueryResult($metadata->className, $queryKey);
+
+        if ($cachedRows === null) {
+            $rows = $this->queries->table($metadata->table)
+                ->whereIn($metadata->identifier->column, array_values($identifiers))
+                ->get()
+                ->rows();
+
+            $this->secondLevelCache->rememberQueryResult($metadata->className, $queryKey, $rows);
+        } else {
+            $rows = $cachedRows;
+        }
 
         $entities = [];
         foreach ($rows as $row) {

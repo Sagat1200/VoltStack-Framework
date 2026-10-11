@@ -25,7 +25,7 @@ final class AuthorizationConsistencyDoctorCommand extends Command
 
     public function usage(): string
     {
-        return 'authz:consistency:doctor [--json] [--verbose] [--require-published-config]';
+        return 'authz:consistency:doctor [--json] [--verbose] [--with-timings] [--require-published-config]';
     }
 
     public function category(): string
@@ -43,6 +43,7 @@ final class AuthorizationConsistencyDoctorCommand extends Command
         return [
             '--json' => 'Emite el diagnostico como JSON.',
             '--verbose' => 'Incluye desglose de segmentos y razones observadas en el proceso actual.',
+            '--with-timings' => 'Ejecuta una evaluacion sintetica (authz.doctor.probe) y reporta duration_ms por stage y total_duration_ms.',
             '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de generar el diagnostico.',
         ];
     }
@@ -115,6 +116,14 @@ final class AuthorizationConsistencyDoctorCommand extends Command
             ],
             'inspect' => $inspect,
         ];
+
+        if ($input->hasOption('with-timings')) {
+            $payload['stage_timings'] = $this->collectStageTimings($app);
+        }
+
+        if ($input->hasOption('verbose')) {
+            $payload['tenant_overrides'] = $this->collectTenantOverrides($app);
+        }
 
         if ($input->hasOption('json')) {
             $output->writeln((string) json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
@@ -200,6 +209,35 @@ final class AuthorizationConsistencyDoctorCommand extends Command
             }
         }
 
+        if ($input->hasOption('with-timings') && isset($payload['stage_timings'])) {
+            $output->writeln('  stage_timings:');
+            if (isset($payload['stage_timings']['note'])) {
+                $output->writeln(sprintf('    note: %s', $payload['stage_timings']['note']));
+            } else {
+                foreach ($payload['stage_timings']['stages'] ?? [] as $stage) {
+                    $output->writeln(sprintf('    - %s => %d ms', $stage['name'] ?? 'unknown', $stage['duration_ms'] ?? 0));
+                }
+                $total = $payload['stage_timings']['total_duration_ms'] ?? null;
+                $output->writeln(sprintf('    total_duration_ms => %s', $total === null ? 'null' : (string) $total));
+            }
+        }
+
+        if ($input->hasOption('verbose') && isset($payload['tenant_overrides']) && $payload['tenant_overrides'] !== []) {
+            $output->writeln('  tenant_overrides:');
+            foreach ($payload['tenant_overrides'] as $dimension => $entries) {
+                $output->writeln(sprintf('    %s:', $dimension));
+                foreach ($entries as $entry) {
+                    $thresholds = $entry['thresholds'] ?? [];
+                    $parts = [];
+                    foreach (['step_up_threshold', 'deny_threshold', 'allow_threshold'] as $field) {
+                        $value = $thresholds[$field] ?? null;
+                        $parts[] = sprintf('%s=%s', $field, $value === null ? 'null' : (string) $value);
+                    }
+                    $output->writeln(sprintf('      - %s => %s', $entry['key'] ?? '?', implode(', ', $parts)));
+                }
+            }
+        }
+
         return 0;
     }
 
@@ -241,5 +279,86 @@ final class AuthorizationConsistencyDoctorCommand extends Command
         }
 
         return $count;
+    }
+
+    /**
+     * Ejecuta una evaluacion sintetica (authz.doctor.probe) y recolecta
+     * duration_ms por stage y total_duration_ms.
+     *
+     * @return array{stages: list<array{name:string,duration_ms:int}>, total_duration_ms:int|null}|array{note:string}
+     */
+    private function collectStageTimings(object $app): array
+    {
+        try {
+            $manager = $app->make(\Quantum\Authorization\Core\AuthorizationManager::class);
+            $plan = $manager->explainPlan('authz.doctor.probe');
+            $explained = $plan->explain();
+
+            $stages = [];
+            foreach ($explained['stages'] ?? [] as $stage) {
+                if (! is_array($stage)) {
+                    continue;
+                }
+                $name = is_string($stage['name'] ?? null) ? (string) $stage['name'] : 'unknown';
+                $duration = isset($stage['duration_ms']) && is_int($stage['duration_ms']) ? $stage['duration_ms'] : 0;
+                $stages[] = ['name' => $name, 'duration_ms' => $duration];
+            }
+
+            $total = isset($explained['total_duration_ms']) && is_int($explained['total_duration_ms'])
+                ? $explained['total_duration_ms']
+                : null;
+
+            return ['stages' => $stages, 'total_duration_ms' => $total];
+        } catch (\Throwable $exception) {
+            return ['note' => sprintf('stage_timings no disponible: %s', $exception->getMessage())];
+        }
+    }
+
+    /**
+     * Lee authorization.adaptive_access.policies y las agrupa por dimension
+     * (tenant, canal, operation) con sus umbrales.
+     *
+     * @return array<string, list<array{key:string, thresholds: array<string, int|null>}>>
+     */
+    private function collectTenantOverrides(object $app): array
+    {
+        $policies = $app->config('authorization.adaptive_access.policies');
+        if (! is_array($policies) || $policies === []) {
+            return [];
+        }
+
+        $grouped = [
+            'tenant' => [],
+            'canal' => [],
+            'operation' => [],
+            'other' => [],
+        ];
+
+        foreach ($policies as $key => $policy) {
+            if (! is_string($key) || ! is_array($policy)) {
+                continue;
+            }
+
+            $thresholds = [
+                'step_up_threshold' => isset($policy['step_up_threshold']) ? (int) $policy['step_up_threshold'] : null,
+                'deny_threshold' => isset($policy['deny_threshold']) ? (int) $policy['deny_threshold'] : null,
+                'allow_threshold' => isset($policy['allow_threshold']) ? (int) $policy['allow_threshold'] : null,
+            ];
+
+            $entry = ['key' => $key, 'thresholds' => $thresholds];
+
+            if (str_starts_with($key, 'tenant:')) {
+                $grouped['tenant'][] = $entry;
+            } elseif (str_starts_with($key, 'canal:')) {
+                $grouped['canal'][] = $entry;
+            } elseif (str_starts_with($key, 'operation:')) {
+                $grouped['operation'][] = $entry;
+            } else {
+                $grouped['other'][] = $entry;
+            }
+        }
+
+        // Remueve dimensiones vacias.
+        return array_filter($grouped, static fn (array $entries): bool => $entries !== []);
     }
 }

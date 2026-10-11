@@ -79,6 +79,7 @@ final class ConfigStatusCommand extends Command
                     '  Published matches effective: %s',
                     $report->publishedMatchesEffective() ? 'yes' : 'no',
                 ));
+                $output->writeln(sprintf('  Boot source: %s', $report->bootSource()));
 
             if ($report->tenantContext() !== null) {
                 $tenantContext = $report->tenantContext();

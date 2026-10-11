@@ -346,12 +346,17 @@ final class InMemoryAuthorityRepository implements AuthorityAdministrationInterf
         $typeFilter = strtolower(trim((string) ($filters['type'] ?? 'all')));
         $valueFilter = $this->normalizeOptionalString($filters['value'] ?? null);
         $includeExpired = (bool) ($filters['include_expired'] ?? false);
+        $includeRevoked = (bool) ($filters['include_revoked'] ?? false);
 
         $rows = array_values($this->delegationGrants);
 
         $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
 
-        $rows = array_values(array_filter($rows, static function (array $row) use ($trusteeFilter, $grantorFilter, $scopeFilter, $typeFilter, $valueFilter, $includeExpired, $now): bool {
+        $rows = array_values(array_filter($rows, static function (array $row) use ($trusteeFilter, $grantorFilter, $scopeFilter, $typeFilter, $valueFilter, $includeExpired, $includeRevoked, $now): bool {
+            if (! $includeRevoked && isset($row['revoked_at']) && $row['revoked_at'] !== null) {
+                return false;
+            }
+
             if ($trusteeFilter !== null && $row['trustee_id'] !== $trusteeFilter) {
                 return false;
             }
@@ -423,6 +428,19 @@ final class InMemoryAuthorityRepository implements AuthorityAdministrationInterf
         $key = implode('#', [$trusteeId, $grantorId, $scopeName, $type, $value]);
 
         if (isset($this->delegationGrants[$key])) {
+            $existing = $this->delegationGrants[$key];
+            // Reactivacion: si el grant existente esta revocado, lo reactivamos.
+            if (isset($existing['revoked_at']) && $existing['revoked_at'] !== null) {
+                $now = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format(\DateTimeInterface::ATOM);
+                $this->delegationGrants[$key]['revoked_at'] = null;
+                $this->delegationGrants[$key]['granted_at'] = $now;
+                $this->delegationGrants[$key]['expires_at'] = $this->normalizeExpiresAt($expiresAt);
+
+                $this->consistency?->invalidateAuthority($trusteeId, $scopeName, 'delegation.reactivate');
+
+                return true;
+            }
+
             return false;
         }
 
@@ -436,6 +454,7 @@ final class InMemoryAuthorityRepository implements AuthorityAdministrationInterf
             'value' => $value,
             'granted_at' => (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format(\DateTimeInterface::ATOM),
             'expires_at' => $normalizedExpiresAt,
+            'revoked_at' => null,
         ];
 
         $this->consistency?->invalidateAuthority($trusteeId, $scopeName, 'delegation.grant');
@@ -472,7 +491,14 @@ final class InMemoryAuthorityRepository implements AuthorityAdministrationInterf
             return false;
         }
 
-        unset($this->delegationGrants[$key]);
+        $row = $this->delegationGrants[$key];
+
+        // Si ya esta revocado, no hacemos nada (fail-safe: sin bump).
+        if (isset($row['revoked_at']) && $row['revoked_at'] !== null) {
+            return false;
+        }
+
+        $this->delegationGrants[$key]['revoked_at'] = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format(\DateTimeInterface::ATOM);
 
         $this->consistency?->invalidateAuthority($trusteeId, $scopeName, 'delegation.revoke');
 
@@ -494,6 +520,7 @@ final class InMemoryAuthorityRepository implements AuthorityAdministrationInterf
         $scopeName = $scope === null ? null : (string) ($scope instanceof Scope ? $scope : new Scope($scope));
 
         $removed = 0;
+        $revokedAt = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format(\DateTimeInterface::ATOM);
 
         foreach ($this->delegationGrants as $key => $row) {
             if ($trusteeId !== null && $trusteeId !== '' && $row['trustee_id'] !== $trusteeId) {
@@ -508,13 +535,44 @@ final class InMemoryAuthorityRepository implements AuthorityAdministrationInterf
                 continue;
             }
 
-            unset($this->delegationGrants[$key]);
+            // Solo revocamos grants activos (no ya revocados).
+            if (isset($row['revoked_at']) && $row['revoked_at'] !== null) {
+                continue;
+            }
+
+            $this->delegationGrants[$key]['revoked_at'] = $revokedAt;
             $removed++;
         }
 
         if ($removed > 0) {
             $bumpPrincipal = $trusteeId ?? $grantorId;
             $this->consistency?->invalidateAuthority($bumpPrincipal, $scopeName ?? Scope::GLOBAL, 'delegation.revoke_all');
+        }
+
+        return $removed;
+    }
+
+    public function revokeDelegationsByPolicy(callable $predicate, ?string $reason = null): int
+    {
+        $revokedAt = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format(\DateTimeInterface::ATOM);
+        $removed = 0;
+
+        foreach ($this->delegationGrants as $key => $row) {
+            // Solo evaluamos grants activos.
+            if (isset($row['revoked_at']) && $row['revoked_at'] !== null) {
+                continue;
+            }
+
+            if ($predicate($row) !== true) {
+                continue;
+            }
+
+            $this->delegationGrants[$key]['revoked_at'] = $revokedAt;
+            $removed++;
+        }
+
+        if ($removed > 0) {
+            $this->consistency?->invalidateAuthority(null, null, $reason ?? 'delegation.revoke_policy');
         }
 
         return $removed;

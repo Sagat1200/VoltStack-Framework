@@ -32,6 +32,7 @@ use Quantum\Database\Migration\MigrationRepository;
 use Quantum\Database\Migration\MigrationRunner;
 use Quantum\Database\ORM\Contracts\EntityManagerInterface;
 use Quantum\Database\ORM\Contracts\RepositoryFactoryInterface;
+use Quantum\Database\ORM\Cache\SecondLevelCache;
 use Quantum\Database\ORM\CustomRepositoryRegistry;
 use Quantum\Database\ORM\EntityRepositoryFactory;
 use Quantum\Database\ORM\EntityManager;
@@ -194,12 +195,23 @@ final class DatabaseServiceProvider extends ServiceProvider
         $this->app->scoped(TransactionManagerInterface::class, fn(Application $app): TransactionManagerInterface => $app->make(TransactionManager::class));
         $this->app->scoped(IdentityMap::class);
         $this->app->scoped(UnitOfWork::class);
+        $this->app->scoped(SecondLevelCache::class, function (Application $app): SecondLevelCache {
+            // SLC V2: default TTL comes from database.runtime.slc_ttl_seconds.
+            // null (default) means entries live for the whole request scope.
+            // The cache is scoped so multiple EntityManagers in the same
+            // request share the same L2 instance (cross-EM row reuse).
+            $ttl = $app->make(DatabaseConfiguration::class)->runtimeOption('slc_ttl_seconds');
+            $ttl = is_int($ttl) && $ttl > 0 ? $ttl : null;
+
+            return new SecondLevelCache($ttl);
+        });
         $this->app->scoped(EntityManager::class, fn(Application $app): EntityManager => new EntityManager(
             $app->make(EntityMetadataRegistry::class),
             $app->make(DatabaseQueryManager::class),
             $app->make(IdentityMap::class),
             $app->make(UnitOfWork::class),
             $app->make(TransactionManagerInterface::class),
+            $app->make(SecondLevelCache::class),
         ));
         $this->app->scoped(EntityManagerInterface::class, fn(Application $app): EntityManagerInterface => $app->make(EntityManager::class));
         $this->app->scoped(EntityRepositoryFactory::class, fn(Application $app): EntityRepositoryFactory => new EntityRepositoryFactory(

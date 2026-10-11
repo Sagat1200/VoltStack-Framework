@@ -7,6 +7,7 @@ namespace Quantum\Authorization\Core;
 use Quantum\Authorization\Contracts\AuthorizationEvaluationStageInterface;
 use Quantum\Authorization\Contracts\AuthorizationPlannerInterface;
 use Quantum\Authorization\Contracts\AuthorizationRequestEnricherInterface;
+use Quantum\Authorization\Core\AuthorizationBudget;
 use Quantum\Authorization\Decision\AuthorizationDecisionPlan;
 use Quantum\Authorization\Decision\DecisionManager;
 use Quantum\Authorization\Decision\DecisionResult;
@@ -22,6 +23,7 @@ final class AuthorizationPlanner implements AuthorizationPlannerInterface
         private readonly array $stages,
         private readonly DecisionManager $decisions,
         private readonly bool $failClosed = true,
+        private readonly ?AuthorizationBudget $budget = null,
     ) {}
 
     public function plan(AuthorizationRequest $request): array
@@ -43,7 +45,7 @@ final class AuthorizationPlanner implements AuthorizationPlannerInterface
      */
     public function planAsDecisionPlan(AuthorizationRequest $request): AuthorizationDecisionPlan
     {
-        [$results, $stagesTrace, $fingerprint] = $this->collectStages($request);
+        [$results, $stagesTrace, $fingerprint, $totalDurationMs] = $this->collectStages($request);
         $final = $this->decisions->finalize($results);
 
         return new AuthorizationDecisionPlan(
@@ -51,6 +53,7 @@ final class AuthorizationPlanner implements AuthorizationPlannerInterface
             stages: $stagesTrace,
             final: $final,
             evaluatedAt: time(),
+            totalDurationMs: $totalDurationMs,
         );
     }
 
@@ -59,7 +62,9 @@ final class AuthorizationPlanner implements AuthorizationPlannerInterface
      * a cada DecisionResult y recolectar tanto la lista plana de resultados como
      * la estructura agrupada por stage para el explain plan.
      *
-     * @return array{0: list<DecisionResult>, 1: list<array{name: string, results: list<DecisionResult>}>, 2: string|null}
+     * Si hay un AuthorizationBudget configurado, se evalua antes de cada stage.
+     *
+     * @return array{0: list<DecisionResult>, 1: list<array{name: string, results: list<DecisionResult>, duration_ms?: int|null}>, 2: string|null, 3: int|null}
      */
     private function collectStages(AuthorizationRequest $request): array
     {
@@ -69,9 +74,44 @@ final class AuthorizationPlanner implements AuthorizationPlannerInterface
         $contextFingerprint = $request->context()->attribute('authorization.metadata.fingerprint');
         $contextFingerprint = is_string($contextFingerprint) && trim($contextFingerprint) !== '' ? $contextFingerprint : null;
 
+        $pipelineStart = microtime(true);
+        $stagesExecuted = 0;
+
         foreach ($this->stages as $stage) {
             $stageName = $stage->name();
+
+            // Evaluación del presupuesto antes de cada stage.
+            if ($this->budget !== null) {
+                $elapsedMs = (int) round((microtime(true) - $pipelineStart) * 1000);
+                // stagesExecuted + 1 = cantidad de stages que se ejecutarian si se procede.
+                $budgetField = $this->budget->exceeded($elapsedMs, $stagesExecuted + 1, count($results));
+                if ($budgetField !== null) {
+                    $budgetDecision = $this->applyFingerprint(
+                        DecisionResult::deny(
+                            source: 'authorization.planner',
+                            reasonCode: 'auth.budget_exceeded',
+                            metadata: [
+                                'budget_exceeded' => true,
+                                'budget_field' => $budgetField,
+                                'stages_executed' => $stagesExecuted,
+                                'elapsed_ms' => $elapsedMs,
+                            ],
+                        ),
+                        $contextFingerprint,
+                    );
+                    $results[] = $budgetDecision;
+                    $stagesTrace[] = [
+                        'name' => $stageName,
+                        'results' => [$budgetDecision],
+                        'duration_ms' => 0,
+                    ];
+
+                    break;
+                }
+            }
+
             $stageResults = [];
+            $stageStart = microtime(true);
 
             try {
                 foreach ($stage->evaluate($request) as $result) {
@@ -88,10 +128,14 @@ final class AuthorizationPlanner implements AuthorizationPlannerInterface
                 $stageResults[] = $fingerprinted;
             }
 
-            $stagesTrace[] = ['name' => $stageName, 'results' => $stageResults];
+            $stageDurationMs = (int) round((microtime(true) - $stageStart) * 1000);
+            $stagesExecuted++;
+            $stagesTrace[] = ['name' => $stageName, 'results' => $stageResults, 'duration_ms' => $stageDurationMs];
         }
 
-        return [$results, $stagesTrace, $contextFingerprint];
+        $totalDurationMs = (int) round((microtime(true) - $pipelineStart) * 1000);
+
+        return [$results, $stagesTrace, $contextFingerprint, $totalDurationMs];
     }
 
     private function enrich(AuthorizationRequest $request): AuthorizationRequest

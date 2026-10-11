@@ -22,10 +22,11 @@ final readonly class DelegationGrant implements \JsonSerializable
         public string $value,
         public ?string $grantedAt = null,
         public ?string $expiresAt = null,
+        public ?string $revokedAt = null,
     ) {}
 
     /**
-     * @return array{trustee_id:string,grantor_id:string,scope:string,type:string,value:string,granted_at:string|null,expires_at:string|null}
+     * @return array{trustee_id:string,grantor_id:string,scope:string,type:string,value:string,granted_at:string|null,expires_at:string|null,revoked_at:string|null}
      */
     public function toArray(): array
     {
@@ -37,7 +38,17 @@ final readonly class DelegationGrant implements \JsonSerializable
             'value' => $this->value,
             'granted_at' => $this->grantedAt,
             'expires_at' => $this->expiresAt,
+            'revoked_at' => $this->revokedAt,
         ];
+    }
+
+    /**
+     * Un grant revocado es un shadow grant: retenido para auditoria pero
+     * sin efecto en la evaluacion.
+     */
+    public function isRevoked(?\DateTimeInterface $now = null): bool
+    {
+        return $this->revokedAt !== null;
     }
 
     public function isExpired(?\DateTimeInterface $now = null): bool

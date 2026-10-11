@@ -2466,6 +2466,145 @@ final class DatabaseOrmFeatureTest extends TestCase
         }
     }
 
+    public function test_second_level_cache_query_result_served_after_identity_map_eviction(): void
+    {
+        // DV-DB-041: the query-result cache (fetchEntitiesByIdentifiers) must
+        // serve a previously-loaded result set after the identity map has been
+        // cleared, avoiding a redundant SELECT. We prove the cache hit by
+        // mutating the target DB row directly (bypassing the EM) between the
+        // first and second eager-preload; the second preload must return the
+        // OLD cached value, not the freshly-written DB value.
+        $app = $this->makeApp();
+        $scope = $app->make(ScopeManager::class);
+        $scope->begin(Request::create('/database/orm/slc-query-result', 'GET'));
+
+        try {
+            $database = $app->make(DatabaseInterface::class);
+            $database->schema()->create('orm_fetch_authors', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+            }, true);
+            $database->schema()->create('orm_fetch_publishers', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+            }, true);
+            $database->schema()->create('orm_fetch_books', function (TableBlueprint $table): void {
+                $table->id();
+                $table->integer('author_id');
+                $table->integer('publisher_id');
+                $table->string('title');
+            }, true);
+
+            $em = $database->entityManager();
+
+            $author = new OrmFetchAuthor();
+            $author->name = 'Original Author';
+            $em->persist($author);
+
+            $publisher = new OrmFetchPublisher();
+            $publisher->name = 'Original Publisher';
+            $em->persist($publisher);
+
+            $book = new OrmFetchBook();
+            $book->title = 'Some Book';
+            $book->author = $author;
+            $book->publisher = $publisher;
+            $em->persist($book);
+            $em->flush();
+            $bookId = $book->id;
+            $authorId = $author->id;
+
+            // First find() loads the book and eagerly preloads the author via
+            // fetchEntitiesByIdentifiers, caching the query result set.
+            $loadedBook = $em->find(OrmFetchBook::class, $bookId);
+            self::assertSame('Original Author', $loadedBook->author->name);
+
+            // Mutate the author row directly in the DB, bypassing the EM so the
+            // cached query result is NOT invalidated.
+            $database->table('orm_fetch_authors')->where('id', $authorId)->update(['name' => 'DB Mutated']);
+
+            // clear() wipes the identity map (L1) but MUST preserve the SLC
+            // including its query-result store.
+            $em->clear();
+
+            // Second find() must hit the query-result cache for the author
+            // preload and return the cached value, NOT re-query the database.
+            $cachedBook = $em->find(OrmFetchBook::class, $bookId);
+            self::assertNotNull($cachedBook);
+            self::assertSame('Original Author', $cachedBook->author->name, 'Query-result cache must serve the cached row after identity-map eviction.');
+        } finally {
+            $scope->end();
+        }
+    }
+
+    public function test_second_level_cache_query_results_invalidated_after_flush_insert(): void
+    {
+        // DV-DB-041: inserting a new entity must evict all cached query results
+        // for that entity class (a new row may match a previously-cached query
+        // that should no longer be served stale). We prove invalidation by
+        // caching a query result, inserting a new row directly + via the EM,
+        // and asserting the next load re-queries the DB (returning the new row).
+        $app = $this->makeApp();
+        $scope = $app->make(ScopeManager::class);
+        $scope->begin(Request::create('/database/orm/slc-query-invalidate-insert', 'GET'));
+
+        try {
+            $database = $app->make(DatabaseInterface::class);
+            $database->schema()->create('orm_fetch_authors', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+            }, true);
+            $database->schema()->create('orm_fetch_publishers', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+            }, true);
+            $database->schema()->create('orm_fetch_books', function (TableBlueprint $table): void {
+                $table->id();
+                $table->integer('author_id');
+                $table->integer('publisher_id');
+                $table->string('title');
+            }, true);
+
+            $em = $database->entityManager();
+
+            $author = new OrmFetchAuthor();
+            $author->name = 'First Author';
+            $em->persist($author);
+            $em->flush();
+
+            // Eagerly load the author's books (none yet) to cache the empty
+            // query result for OrmFetchBook.
+            $loadedAuthor = $em->find(OrmFetchAuthor::class, $author->id);
+            self::assertCount(0, $loadedAuthor->books);
+
+            $em->clear();
+
+            // Insert a new book directly into the DB (bypassing the EM's SLC
+            // invalidation) AND persist a second book through the EM. The EM
+            // flush must evict cached query results for OrmFetchBook.
+            $publisher = new OrmFetchPublisher();
+            $publisher->name = 'Pub';
+            $em->persist($publisher);
+
+            $newBook = new OrmFetchBook();
+            $newBook->title = 'New Book';
+            $newBook->author = $author;
+            $newBook->publisher = $publisher;
+            $em->persist($newBook);
+            $em->flush();
+
+            $em->clear();
+
+            // The cached (empty) query result must have been evicted by the
+            // flushInsert, so this load re-queries and sees the new book.
+            $refreshedAuthor = $em->find(OrmFetchAuthor::class, $author->id);
+            self::assertCount(1, $refreshedAuthor->books, 'flushInsert must evict cached query results so new rows are visible.');
+            self::assertSame('New Book', $refreshedAuthor->books[0]->title);
+        } finally {
+            $scope->end();
+        }
+    }
+
     private function makeApp(): Application
     {
         $app = new Application($this->basePath);

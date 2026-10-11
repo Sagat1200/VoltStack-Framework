@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Quantum\Authorization\Core\Stages;
 
 use Quantum\Authorization\Contracts\AuthorizationEvaluationStageInterface;
+use Quantum\Authorization\Contracts\RateLimitStoreInterface;
 use Quantum\Authorization\Core\AuthorizationRequest;
 use Quantum\Authorization\Decision\DecisionResult;
 
@@ -15,6 +16,7 @@ final readonly class AdaptiveAccessStage implements AuthorizationEvaluationStage
      * @param list<string> $levelAttributeKeys
      * @param list<string> $availableMethods
      * @param array<string, array{step_up_threshold?:int|null,deny_threshold?:int|null,allow_threshold?:int|null,step_up_reason_code?:string,deny_reason_code?:string}>|null $policies
+     * @param array{enabled?:bool,max_requests?:int,window_seconds?:int,by?:string}|null $rateLimitConfig
      */
     public function __construct(
         private bool $enabled = false,
@@ -32,6 +34,8 @@ final readonly class AdaptiveAccessStage implements AuthorizationEvaluationStage
         private ?array $policies = null,
         private ?int $allowThreshold = null,
         private ?AdaptiveAccessRuntimeConfig $runtimeConfig = null,
+        private ?RateLimitStoreInterface $rateLimitStore = null,
+        private ?array $rateLimitConfig = null,
     ) {}
 
     public function name(): string
@@ -45,8 +49,19 @@ final readonly class AdaptiveAccessStage implements AuthorizationEvaluationStage
             return [];
         }
 
+        $rateLimitDecision = $this->evaluateRateLimit($request);
+        if ($rateLimitDecision !== null) {
+            return [$rateLimitDecision];
+        }
+
         $context = $request->context();
         $attributes = $context->attributes();
+
+        $multiFactorDecision = $this->evaluateMultiFactor($attributes);
+        if ($multiFactorDecision !== null) {
+            return [$multiFactorDecision];
+        }
+
         $riskScore = $this->extractInt($attributes, $this->scoreAttributeKeys);
 
         if ($riskScore === null) {
@@ -127,6 +142,99 @@ final readonly class AdaptiveAccessStage implements AuthorizationEvaluationStage
         }
 
         return [];
+    }
+
+    /**
+     * Evalua rate-limit por principal. Retorna un DecisionResult de denegacion
+     * si el contador excede el maximo; null si no aplica.
+     */
+    private function evaluateRateLimit(AuthorizationRequest $request): ?DecisionResult
+    {
+        $config = is_array($this->rateLimitConfig) ? $this->rateLimitConfig : [];
+
+        if (! ($config['enabled'] ?? false) || $this->rateLimitStore === null) {
+            return null;
+        }
+
+        $maxRequests = (int) ($config['max_requests'] ?? 60);
+        $windowSeconds = (int) ($config['window_seconds'] ?? 60);
+
+        try {
+            $principalId = $request->principal()->id();
+        } catch (\Throwable) {
+            return null;
+        }
+
+        if ($principalId === '') {
+            return null;
+        }
+
+        $key = 'rl:' . $principalId;
+        $count = $this->rateLimitStore->increment($key, $windowSeconds);
+
+        if ($count > $maxRequests) {
+            return DecisionResult::deny(
+                source: 'authorization.stage:adaptive_access',
+                reasonCode: 'auth.rate_limit_exceeded',
+                metadata: [
+                    'adaptive_access_action' => 'rate_limit',
+                    'rate_limit_count' => $count,
+                    'rate_limit_window' => $windowSeconds,
+                    'rate_limit_max' => $maxRequests,
+                ],
+            );
+        }
+
+        return null;
+    }
+
+    /**
+     * Evalua step-up multi-factor. Si el contexto define required_factors y
+     * no todos estan completados, retorna un challenge indicando el siguiente
+     * factor requerido. Null si no aplica multi-factor o todos completados.
+     *
+     * @param array<string, mixed> $attributes
+     */
+    private function evaluateMultiFactor(array $attributes): ?DecisionResult
+    {
+        $required = $attributes['authorization.step_up.required_factors'] ?? $attributes['step_up_required_factors'] ?? null;
+
+        if (! is_array($required) || $required === []) {
+            return null;
+        }
+
+        $completed = $attributes['authorization.step_up.completed_factors'] ?? $attributes['step_up_completed_factors'] ?? [];
+        if (! is_array($completed)) {
+            $completed = [];
+        }
+
+        $completedSet = array_map('strval', $completed);
+
+        $nextFactor = null;
+        foreach ($required as $factor) {
+            $factorStr = (string) $factor;
+            if (! in_array($factorStr, $completedSet, true)) {
+                $nextFactor = $factorStr;
+                break;
+            }
+        }
+
+        if ($nextFactor === null) {
+            // Todos los factores completados: no hay step-up multi-factor.
+            return null;
+        }
+
+        return DecisionResult::challenge(
+            source: 'authorization.stage:adaptive_access',
+            reasonCode: 'auth.step_up_required',
+            metadata: [
+                'adaptive_access_action' => 'step_up',
+                'next_factor' => $nextFactor,
+                'completed_factors' => $completedSet,
+                'required_factors' => array_map('strval', $required),
+                'current_strength' => count($completedSet),
+            ],
+        );
     }
 
     /**

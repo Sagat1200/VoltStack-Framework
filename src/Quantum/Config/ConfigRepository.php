@@ -34,6 +34,8 @@ final class ConfigRepository
      */
     private array $mutationListeners = [];
 
+    private string $bootSource = 'unknown';
+
     /**
      * @param array<string, mixed> $items
      */
@@ -64,6 +66,11 @@ final class ConfigRepository
     public function documents(): array
     {
         return $this->documents;
+    }
+
+    public function bootSource(): string
+    {
+        return $this->bootSource;
     }
 
     /**
@@ -129,6 +136,7 @@ final class ConfigRepository
         $this->items = $snapshot->all();
         $this->documents = [];
         $this->provenance = $snapshot->provenance();
+        $this->bootSource = 'published';
         $this->notifyMutationListeners();
     }
 
@@ -265,6 +273,7 @@ final class ConfigRepository
         }
 
         $this->documents = $loaded->documents();
+        $this->bootSource = 'filesystem';
         $this->notifyMutationListeners();
     }
 

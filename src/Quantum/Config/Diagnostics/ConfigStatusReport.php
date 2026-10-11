@@ -37,6 +37,7 @@ final readonly class ConfigStatusReport
         private ?string $manifestPath,
         private ?string $publishedConfigId,
         private bool $publishedMatchesEffective,
+        private string $bootSource = 'unknown',
         private array $alerts = [],
     ) {
     }
@@ -164,6 +165,11 @@ final readonly class ConfigStatusReport
         return $this->publishedMatchesEffective;
     }
 
+    public function bootSource(): string
+    {
+        return $this->bootSource;
+    }
+
     /**
      * @return list<string>
      */
@@ -205,6 +211,7 @@ final readonly class ConfigStatusReport
             'manifest_path' => $this->manifestPath,
             'published_config_id' => $this->publishedConfigId,
             'published_matches_effective' => $this->publishedMatchesEffective,
+            'boot_source' => $this->bootSource,
             'alerts' => $this->alerts,
         ];
     }

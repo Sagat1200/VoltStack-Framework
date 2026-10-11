@@ -15,6 +15,7 @@ use Quantum\Authorization\Authority\RequestScopedAuthorityMemoizationCache;
 use Quantum\Authorization\Bridges\ControllerSecurityPlannerBridge;
 use Quantum\Authorization\Consistency\VersionedAuthorizationConsistency;
 use Quantum\Authorization\Console\Commands\AuthorizationConsistencyDoctorCommand;
+use Quantum\Authorization\Console\Commands\AuthorizationConsistencyFlushCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationConsistencyInvalidateCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationConsistencyReportCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationAuthorityGrantCommand;
@@ -40,6 +41,7 @@ use Quantum\Authorization\Contracts\AuthorizationPlannerInterface;
 use Quantum\Authorization\Contracts\AuthorizationRequestEnricherInterface;
 use Quantum\Authorization\Contracts\DelegationAdministrationInterface;
 use Quantum\Authorization\Contracts\PrincipalResolverInterface;
+use Quantum\Authorization\Contracts\RateLimitStoreInterface;
 use Quantum\Authorization\Contracts\RelationshipAdministrationInterface;
 use Quantum\Authorization\Contracts\RelationshipRepositoryInterface;
 use Quantum\Authorization\Contracts\ServicePrincipalResolverInterface;
@@ -48,6 +50,7 @@ use Quantum\Authorization\Contracts\TenantScopeResolverInterface;
 use Quantum\Authorization\Context\AuthorizationContextFactory;
 use Quantum\Authorization\Context\TenantScopeResolver;
 use Quantum\Authorization\Core\AuthorizationManager;
+use Quantum\Authorization\Core\AuthorizationBudget;
 use Quantum\Authorization\Core\AuthorizationPlanner;
 use Quantum\Authorization\Core\AuthorizationRequestFactory;
 use Quantum\Authorization\Core\Stages\AdaptiveAccessStage;
@@ -66,6 +69,7 @@ use Quantum\Authorization\Metadata\MetadataAuthorizationContextEnricher;
 use Quantum\Authorization\Policy\PolicyDispatcher;
 use Quantum\Authorization\Policy\PolicyRegistry;
 use Quantum\Authorization\Principal\PrincipalResolver;
+use Quantum\Authorization\RateLimit\InMemoryRateLimitStore;
 use Quantum\Authorization\Relationship\InMemoryRelationshipRepository;
 use Quantum\Authorization\Relationship\DatabaseRelationshipRepository;
 use Quantum\Authorization\Relationship\RelationshipEvaluator;
@@ -169,12 +173,14 @@ final class AuthorizationServiceProvider extends ServiceProvider
             return new RelationshipEvaluator($app->make(RelationshipRepositoryInterface::class));
         });
         $this->app->scoped(AdaptiveAccessRuntimeConfig::class);
+        $this->app->scoped(RateLimitStoreInterface::class, InMemoryRateLimitStore::class);
 
         $this->app->scoped(AdaptiveAccessStage::class, function (Application $app): AdaptiveAccessStage {
             $config = $app->config('authorization.adaptive_access', []);
             $config = is_array($config) ? $config : [];
             $challenge = is_array($config['challenge'] ?? null) ? $config['challenge'] : [];
             $deny = is_array($config['deny'] ?? null) ? $config['deny'] : [];
+            $rateLimitConfig = is_array($config['rate_limit'] ?? null) ? $config['rate_limit'] : [];
             $scoreKeys = is_array($config['score_attribute_keys'] ?? null) ? $config['score_attribute_keys'] : ['auth_risk_score', 'risk_score', 'risk.score'];
             $levelKeys = is_array($config['level_attribute_keys'] ?? null) ? $config['level_attribute_keys'] : ['auth_risk_level', 'risk_level', 'risk.level'];
             $methods = is_array($challenge['available_methods'] ?? null) ? $challenge['available_methods'] : [];
@@ -185,6 +191,13 @@ final class AuthorizationServiceProvider extends ServiceProvider
                 $runtimeConfig = $app->make(AdaptiveAccessRuntimeConfig::class);
             } catch (\Throwable) {
                 $runtimeConfig = null;
+            }
+
+            $rateLimitStore = null;
+            try {
+                $rateLimitStore = $app->make(RateLimitStoreInterface::class);
+            } catch (\Throwable) {
+                $rateLimitStore = null;
             }
 
             return new AdaptiveAccessStage(
@@ -203,6 +216,8 @@ final class AuthorizationServiceProvider extends ServiceProvider
                 policies: $policies,
                 allowThreshold: $this->nullableInt($config['allow_threshold'] ?? null),
                 runtimeConfig: $runtimeConfig,
+                rateLimitStore: $rateLimitStore,
+                rateLimitConfig: $rateLimitConfig,
             );
         });
         $this->app->scoped(ManifestRequirementsEnforcementStage::class, function (Application $app): ManifestRequirementsEnforcementStage {
@@ -245,6 +260,18 @@ final class AuthorizationServiceProvider extends ServiceProvider
         });
         $this->app->scoped(AuthorizationPlanner::class, function (Application $app): AuthorizationPlanner {
             $failClosed = $app->config('authorization.fail_closed', true);
+            $budgetConfig = $app->config('authorization.pipeline.budget', []);
+            $budgetConfig = is_array($budgetConfig) ? $budgetConfig : [];
+
+            $budget = null;
+            if ($this->booleanOf($budgetConfig['enabled'] ?? false)) {
+                $budget = new AuthorizationBudget(
+                    maxDurationMs: $this->nullableInt($budgetConfig['max_duration_ms'] ?? null),
+                    maxStages: $this->nullableInt($budgetConfig['max_stages'] ?? null),
+                    maxDecisionCost: $this->nullableInt($budgetConfig['max_decision_cost'] ?? null),
+                );
+            }
+
             $enrichers = [
                 $app->make(AuthorizationRequestEnricherInterface::class),
             ];
@@ -267,6 +294,7 @@ final class AuthorizationServiceProvider extends ServiceProvider
                 ],
                 $app->make(DecisionManager::class),
                 is_bool($failClosed) ? $failClosed : (bool) $failClosed,
+                $budget,
             );
         });
         $this->app->scoped(
@@ -772,6 +800,7 @@ final class AuthorizationServiceProvider extends ServiceProvider
             AuthorizationAuthorityGrantCommand::class,
             AuthorizationAuthorityRevokeCommand::class,
             AuthorizationConsistencyDoctorCommand::class,
+            AuthorizationConsistencyFlushCommand::class,
             AuthorizationConsistencyInvalidateCommand::class,
             AuthorizationConsistencyReportCommand::class,
             AuthorizationManifestCompileCommand::class,
@@ -823,14 +852,31 @@ final class AuthorizationServiceProvider extends ServiceProvider
                     'continuation_endpoint' => null,
                     'required_strength_name' => null,
                     'required_strength_value' => null,
+                    'multi_factor' => [
+                        'enabled' => false,
+                    ],
                 ],
                 'deny' => [
                     'reason_code' => 'auth.risk_denied',
+                ],
+                'rate_limit' => [
+                    'enabled' => false,
+                    'max_requests' => 60,
+                    'window_seconds' => 60,
+                    'by' => 'principal',
                 ],
             ],
             'adaptive' => [
                 'tune' => [
                     'enabled' => false,
+                ],
+            ],
+            'pipeline' => [
+                'budget' => [
+                    'enabled' => false,
+                    'max_duration_ms' => null,
+                    'max_stages' => null,
+                    'max_decision_cost' => null,
                 ],
             ],
             'delegation' => [

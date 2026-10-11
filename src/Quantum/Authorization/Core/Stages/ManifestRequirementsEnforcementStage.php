@@ -188,6 +188,11 @@ final class ManifestRequirementsEnforcementStage implements AuthorizationEvaluat
         $permissionNames = [];
         $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
         foreach ($grants as $grant) {
+            // Defense in depth: skip revoked grants even if the repo did not filter them.
+            if (isset($grant['revoked_at']) && $grant['revoked_at'] !== null) {
+                continue;
+            }
+
             // Defense in depth: skip expired grants even if the repo did not filter them.
             if (isset($grant['expires_at']) && $grant['expires_at'] !== null) {
                 try {
@@ -216,6 +221,10 @@ final class ManifestRequirementsEnforcementStage implements AuthorizationEvaluat
         // la delegación endosa ese authority al trustee.
         if ($this->authorityRepository !== null) {
             foreach ($grants as $grant) {
+                if (isset($grant['revoked_at']) && $grant['revoked_at'] !== null) {
+                    continue;
+                }
+
                 if (isset($grant['expires_at']) && $grant['expires_at'] !== null) {
                     try {
                         $expires = new \DateTimeImmutable((string) $grant['expires_at'], new \DateTimeZone('UTC'));

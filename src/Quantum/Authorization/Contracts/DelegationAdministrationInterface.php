@@ -11,9 +11,9 @@ use Quantum\Authorization\Authority\Scope;
 interface DelegationAdministrationInterface
 {
     /**
-     * @param array{trustee_id?:string,grantor_id?:string,scope?:string|Scope|null,type?:string,value?:string,include_expired?:bool} $filters
+     * @param array{trustee_id?:string,grantor_id?:string,scope?:string|Scope|null,type?:string,value?:string,include_expired?:bool,include_revoked?:bool} $filters
      *
-     * @return list<array{trustee_id:string,grantor_id:string,scope:string,type:string,value:string,granted_at:string|null,expires_at:string|null}>
+     * @return list<array{trustee_id:string,grantor_id:string,scope:string,type:string,value:string,granted_at:string|null,expires_at:string|null,revoked_at:string|null}>
      */
     public function listDelegations(array $filters = []): array;
 
@@ -45,4 +45,17 @@ interface DelegationAdministrationInterface
         ?string $grantorId = null,
         Scope|string|null $scope = null,
     ): int;
+
+    /**
+     * Revoca grants de delegacion que cumplen un predicado.
+     *
+     * El predicado recibe el grant como array (shape de toArray) y debe
+     * retornar bool. Los grants que cumplen el predicado son revocados
+     * (soft-delete: revoked_at = now). Un solo bump de consistencia con
+     * reason delegation.revoke_policy se emite si count > 0.
+     *
+     * @param callable(array{trustee_id:string,grantor_id:string,scope:string,type:string,value:string,granted_at:string|null,expires_at:string|null,revoked_at:string|null}): bool $predicate
+     * @return int Cantidad de grants revocados.
+     */
+    public function revokeDelegationsByPolicy(callable $predicate, ?string $reason = null): int;
 }

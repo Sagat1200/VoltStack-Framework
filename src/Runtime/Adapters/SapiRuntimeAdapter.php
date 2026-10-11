@@ -65,16 +65,21 @@ final class SapiRuntimeAdapter implements RuntimeAdapterInterface
         $request = Request::capture();
         $result = $session->handle($request);
 
-        if ($result->workerDisposition() === WorkerDisposition::Terminate) {
-            return 1;
+        try {
+            if ($result->workerDisposition() === WorkerDisposition::Terminate) {
+                return 1;
+            }
+
+            if (! $emitter->emit($session->context(), $session->handledRequests(), $result->response(), $request)) {
+                $session->lifecycle()->request(WorkerDisposition::Terminate);
+
+                return 1;
+            }
+
+            return 0;
+        } finally {
+            // Cerrar el scope y ejecutar reset DESPUÉS de emitir.
+            $result->finalizeScope();
         }
-
-        if (! $emitter->emit($session->context(), $session->handledRequests(), $result->response(), $request)) {
-            $session->lifecycle()->request(WorkerDisposition::Terminate);
-
-            return 1;
-        }
-
-        return 0;
     }
 }

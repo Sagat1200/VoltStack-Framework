@@ -6,6 +6,6 @@ namespace Quantum\Database\Transaction;
 
 use RuntimeException;
 
-final class TransactionException extends RuntimeException
+class TransactionException extends RuntimeException
 {
 }

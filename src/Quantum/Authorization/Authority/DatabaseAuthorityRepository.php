@@ -578,6 +578,19 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
                 $expiresAt = null;
             }
 
+            $revokedAt = $row['revoked_at'] ?? null;
+            if ($revokedAt instanceof \DateTimeInterface) {
+                $revokedAt = $revokedAt->format(\DateTimeInterface::ATOM);
+            } elseif (is_string($revokedAt) && trim($revokedAt) !== '') {
+                try {
+                    $revokedAt = (new \DateTimeImmutable($revokedAt))->format(\DateTimeInterface::ATOM);
+                } catch (\Throwable) {
+                    $revokedAt = null;
+                }
+            } else {
+                $revokedAt = null;
+            }
+
             return [
                 'trustee_id' => (string) ($row['trustee_id'] ?? ''),
                 'grantor_id' => (string) ($row['grantor_id'] ?? ''),
@@ -586,6 +599,7 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
                 'value' => (string) ($row['value'] ?? ''),
                 'granted_at' => $grantedAt,
                 'expires_at' => $expiresAt,
+                'revoked_at' => $revokedAt,
             ];
         }, $rows);
     }
@@ -608,11 +622,23 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
         $grantType = $grant instanceof Role ? 'role' : 'permission';
         $grantValue = $grant->name;
 
-        $existingRevoked = $this->findDelegationRow($trusteeId, $grantorId, $scopeName, $grantType, $grantValue);
+        $existingRow = $this->findDelegationRow($trusteeId, $grantorId, $scopeName, $grantType, $grantValue);
 
-        if ($existingRevoked !== null) {
-            if ($existingRevoked['revoked_at'] !== null) {
-                // Reactivacion de un grant revocado.
+        if ($existingRow !== null) {
+            $isRevoked = $existingRow['revoked_at'] !== null;
+            $isExpired = false;
+
+            if ($existingRow['expires_at'] !== null) {
+                try {
+                    $expires = new \DateTimeImmutable((string) $existingRow['expires_at'], new \DateTimeZone('UTC'));
+                    $isExpired = $expires <= new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+                } catch (\Throwable) {
+                    $isExpired = false;
+                }
+            }
+
+            if ($isRevoked || $isExpired) {
+                // Reactivacion de un grant revocado o expirado.
                 $normalizedExpiresAt = $this->normalizeExpiresAt($expiresAt);
                 $now = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s.u');
 
@@ -634,11 +660,12 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
                     return false;
                 }
 
-                $this->consistency?->invalidateAuthority($trusteeId, $scopeName, 'delegation.reactivate');
+                $this->consistency?->invalidateAuthority($trusteeId, $scopeName, $isRevoked ? 'delegation.reactivate' : 'delegation.grant');
 
                 return true;
             }
 
+            // Grant activo (no revocado ni expirado): no-op.
             return false;
         }
 
@@ -724,17 +751,21 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
 
         $scopeName = $scope === null ? null : $this->normalizeScopeName($scope);
 
-        $conditions = [];
+        // Normalizamos los ids: un string vacio se trata como no provisto.
+        $effectiveTrustee = ($trusteeId !== null && $trusteeId !== '') ? $trusteeId : null;
+        $effectiveGrantor = ($grantorId !== null && $grantorId !== '') ? $grantorId : null;
+
+        $conditions = ['revoked_at IS NULL'];
         $params = [];
 
-        if ($trusteeId !== null && $trusteeId !== '') {
+        if ($effectiveTrustee !== null) {
             $conditions[] = 'trustee_id = :trustee_id';
-            $params[':trustee_id'] = $trusteeId;
+            $params[':trustee_id'] = $effectiveTrustee;
         }
 
-        if ($grantorId !== null && $grantorId !== '') {
+        if ($effectiveGrantor !== null) {
             $conditions[] = 'grantor_id = :grantor_id';
-            $params[':grantor_id'] = $grantorId;
+            $params[':grantor_id'] = $effectiveGrantor;
         }
 
         if ($scopeName !== null) {
@@ -742,15 +773,14 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
             $params[':scope'] = $scopeName;
         }
 
-        $conditions[] = 'revoked_at IS NULL';
+        $params[':revoked_at'] = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s.u');
 
         try {
             $statement = $this->pdo()->prepare(sprintf(
-                'UPDATE %s SET revoked_at = :revoked_at%s',
+                'UPDATE %s SET revoked_at = :revoked_at WHERE %s',
                 $this->tables['delegation_grants'],
-                $conditions === [] ? '' : ' WHERE ' . implode(' AND ', $conditions),
+                implode(' AND ', $conditions),
             ));
-            $params[':revoked_at'] = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s.u');
             $statement->execute($params);
         } catch (\Throwable) {
             return 0;
@@ -759,7 +789,7 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
         $removed = $statement->rowCount();
 
         if ($removed > 0) {
-            $bumpPrincipal = $trusteeId ?? $grantorId;
+            $bumpPrincipal = $effectiveTrustee ?? $effectiveGrantor;
             $this->consistency?->invalidateAuthority($bumpPrincipal, $scopeName ?? Scope::GLOBAL, 'delegation.revoke_all');
         }
 
@@ -769,7 +799,7 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
     public function revokeDelegationsByPolicy(callable $predicate, ?string $reason = null): int
     {
         $statement = $this->pdo()->prepare(sprintf(
-            'SELECT trustee_id, grantor_id, scope, grant_type AS type, grant_value AS value, granted_at, expires_at, revoked_at FROM %s WHERE revoked_at IS NULL',
+            'SELECT trustee_id, grantor_id, scope, grant_type AS type, grant_value AS value, granted_at, expires_at, revoked_at FROM %s ORDER BY trustee_id ASC, grantor_id ASC, scope ASC, type ASC, value ASC',
             $this->tables['delegation_grants'],
         ));
         $statement->execute();
@@ -779,6 +809,7 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
 
         $now = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s.u');
         $revoked = 0;
+        $bumpedPrincipals = [];
 
         foreach ($rows as $row) {
             $grant = [
@@ -812,6 +843,7 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
 
                 if ($update->rowCount() > 0) {
                     $revoked++;
+                    $bumpedPrincipals[$grant['trustee_id']] = true;
                 }
             } catch (\Throwable) {
                 // Ignore individual row failures; continue revoking the rest.
@@ -820,7 +852,9 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
 
         if ($revoked > 0) {
             $bumpReason = $reason !== null && trim($reason) !== '' ? trim($reason) : 'delegation.revoke_policy';
-            $this->consistency?->invalidateAuthority(null, null, $bumpReason);
+            foreach (array_keys($bumpedPrincipals) as $principalId) {
+                $this->consistency?->invalidateAuthority($principalId, Scope::GLOBAL, $bumpReason);
+            }
         }
 
         return $revoked;
@@ -872,7 +906,7 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
         string $grantValue,
     ): ?array {
         $statement = $this->pdo()->prepare(sprintf(
-            'SELECT revoked_at FROM %s WHERE trustee_id = :trustee_id AND grantor_id = :grantor_id AND scope = :scope AND grant_type = :grant_type AND grant_value = :grant_value LIMIT 1',
+            'SELECT revoked_at, expires_at FROM %s WHERE trustee_id = :trustee_id AND grantor_id = :grantor_id AND scope = :scope AND grant_type = :grant_type AND grant_value = :grant_value LIMIT 1',
             $this->tables['delegation_grants'],
         ));
         $statement->execute([

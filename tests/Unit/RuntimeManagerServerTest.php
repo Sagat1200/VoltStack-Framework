@@ -391,7 +391,7 @@ PHP
         $manager = $app->make(RuntimeManagerServer::class);
 
         $this->expectException(RuntimeAdapterException::class);
-        $this->expectExceptionMessage('RoadRunner runtime adapter requires an in-memory request source');
+        $this->expectExceptionMessage('RoadRunner runtime adapter requires either an in-memory request source or an injected RoadRunnerNativeWorkerInterface.');
 
         $manager->run($plan, RuntimeConfiguration::roadrunner(
             maxRequests: 2,
@@ -447,7 +447,7 @@ PHP
         $manager = $app->make(RuntimeManagerServer::class);
 
         $this->expectException(RuntimeAdapterException::class);
-        $this->expectExceptionMessage('OpenSwoole runtime adapter requires an in-memory request source');
+        $this->expectExceptionMessage('OpenSwoole runtime adapter requires either an in-memory request source or an injected OpenSwooleNativeServerInterface.');
 
         $manager->run($plan, RuntimeConfiguration::openswoole(
             maxRequests: 2,

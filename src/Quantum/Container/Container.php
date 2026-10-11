@@ -44,30 +44,30 @@ class Container implements ContainerInterface
 
     protected ?ScopeFrame $sharedRootScopeFrame = null;
 
-    public function bind(string $abstract, mixed $concrete = null, bool $shared = false, ?string $origin = null): void
+    public function bind(string $abstract, mixed $concrete = null, bool $shared = false): void
     {
         $abstract = $this->normalize($abstract);
         $concrete ??= $abstract;
 
         $this->bindings[$abstract] = $shared
-            ? Binding::singleton($abstract, $concrete, origin: $origin)
-            : Binding::transient($abstract, $concrete, origin: $origin);
+            ? Binding::singleton($abstract, $concrete)
+            : Binding::transient($abstract, $concrete);
     }
 
-    public function singleton(string $abstract, mixed $concrete = null, ?string $origin = null): void
+    public function singleton(string $abstract, mixed $concrete = null): void
     {
-        $this->bind($abstract, $concrete, true, $origin);
+        $this->bind($abstract, $concrete, true);
     }
 
-    public function scoped(string $abstract, mixed $concrete = null, ?string $origin = null): void
+    public function scoped(string $abstract, mixed $concrete = null): void
     {
         $abstract = $this->normalize($abstract);
         $concrete ??= $abstract;
 
-        $this->bindings[$abstract] = Binding::scoped($abstract, $concrete, origin: $origin);
+        $this->bindings[$abstract] = Binding::scoped($abstract, $concrete);
     }
 
-    public function scopedFor(string $abstract, mixed $concrete = null, ScopeKind|string $scopeKind = ScopeKind::Request, ?string $origin = null): void
+    public function scopedFor(string $abstract, mixed $concrete = null, ScopeKind|string $scopeKind = ScopeKind::Request): void
     {
         $abstract = $this->normalize($abstract);
         $concrete ??= $abstract;
@@ -76,7 +76,7 @@ class Container implements ContainerInterface
             $scopeKind = ScopeKind::fromName($scopeKind);
         }
 
-        $this->bindings[$abstract] = Binding::scoped($abstract, $concrete, $scopeKind, origin: $origin);
+        $this->bindings[$abstract] = Binding::scoped($abstract, $concrete, $scopeKind);
     }
 
     public function instance(string $abstract, mixed $instance): void
@@ -296,6 +296,50 @@ class Container implements ContainerInterface
     public function currentScopeStack(): array
     {
         return $this->scopeStack()->describe();
+    }
+
+    /**
+     * Abre un scope de unidad o tenant y retorna un `ScopeHandle` de un solo uso.
+     *
+     * A diferencia de `enterScope*`, el handle permite inyectar seeds antes de la
+     * primera resolucion, ejecutar una operacion con `run()` y cerrar de forma
+     * segura con `close()` que retorna un `CleanupReport`.
+     *
+     * @param null|callable(CleanupReport): void $onClose Callback opcional invocado tras cerrar el scope.
+     */
+    public function openScope(ScopeKind $kind, ?callable $onClose = null): ScopeHandle
+    {
+        if ($kind === ScopeKind::Tenant) {
+            $this->assertCanEnterTenantScope();
+        } else {
+            $this->assertCanEnterUnitScope($kind);
+        }
+
+        $stack = $this->scopeStack();
+        $frame = $stack->enterWithKind($kind);
+
+        return new ScopeHandle($stack, $frame, $onClose);
+    }
+
+    /**
+     * Abre un worker scope y retorna un `WorkerHandle`.
+     *
+     * Desde el worker se pueden abrir scopes de unidad (Request, Job, Command)
+     * mediante `WorkerHandle::enter()`.
+     *
+     * @param null|callable(CleanupReport): void $onWorkerClose Callback opcional invocado tras cerrar el worker.
+     * @param null|callable(CleanupReport): void $onChildClose Callback opcional aplicado a cada scope hijo abierto por el worker.
+     * @param null|callable(ScopeHandle): void $onChildEnter Callback opcional invocado tras abrir cada scope hijo.
+     */
+    public function openWorkerScope(?callable $onWorkerClose = null, ?callable $onChildClose = null, ?callable $onChildEnter = null): WorkerHandle
+    {
+        $this->assertCanEnterUnitScope(ScopeKind::Worker);
+
+        $stack = $this->scopeStack();
+        $frame = $stack->enterWithKind(ScopeKind::Worker);
+        $worker = new ScopeHandle($stack, $frame, $onWorkerClose);
+
+        return new WorkerHandle($stack, $worker, $onChildClose, $onChildEnter);
     }
 
     /**

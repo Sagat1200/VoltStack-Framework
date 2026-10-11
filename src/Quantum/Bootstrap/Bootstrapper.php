@@ -13,8 +13,8 @@ use Quantum\Config\ConfigRepository;
 use Quantum\Bootstrap\Graph\ProviderDependencySorter;
 use Quantum\Bootstrap\Manifest\BootstrapBuildArtifact;
 use Quantum\Bootstrap\Manifest\BootstrapManifestStore;
+use Quantum\Bootstrap\Phase\BootstrapLifecycleManager;
 use Quantum\Bootstrap\Phase\BootstrapState;
-use Quantum\Bootstrap\Phase\BootstrapStateMachine;
 use Quantum\Config\Publication\PublishedConfigurationRequiredException;
 use Quantum\Bootstrap\Telemetry\BootstrapPhaseProfile;
 use Quantum\Bootstrap\Telemetry\BootstrapPhaseTelemetryEmitter;
@@ -26,8 +26,29 @@ use VoltStack\Framework\ServiceProvider;
 
 final class Bootstrapper implements BootstrapperInterface
 {
+    private ?BootstrapLifecycleManager $lifecycleManager = null;
+
     public function __construct(private readonly Application $app)
     {
+    }
+
+    /**
+     * Inyecta el BootstrapLifecycleManager que actuará como fuente de verdad
+     * del estado del ciclo de vida. Se invoca automáticamente por
+     * BootstrapLifecycleManager::boot() antes de delegar en bootPlan().
+     */
+    public function setLifecycleManager(BootstrapLifecycleManager $manager): void
+    {
+        $this->lifecycleManager = $manager;
+    }
+
+    /**
+     * Devuelve el lifecycle manager activo, creando uno nuevo si no hay uno
+     * inyectado (caso de bootPlan invocado directamente sin pasar por el manager).
+     */
+    private function lifecycleManager(): BootstrapLifecycleManager
+    {
+        return $this->lifecycleManager ??= new BootstrapLifecycleManager();
     }
 
     /**
@@ -36,7 +57,7 @@ final class Bootstrapper implements BootstrapperInterface
     public function bootstrap(array $providers = []): Application
     {
         $this->app->registerBaseBindings();
-        $this->loadConfiguration();
+        $this->loadConfiguration(null, false, $this->resolveFallbackMode());
 
         foreach ($providers as $provider) {
             $this->app->register($provider);
@@ -54,12 +75,12 @@ final class Bootstrapper implements BootstrapperInterface
 
     public function bootPlan(ApplicationPlan $plan, ?BootstrapContext $context = null): BootstrapResult
     {
-        $stateMachine = new BootstrapStateMachine();
+        $manager = $this->lifecycleManager();
         $phaseProfiles = [];
         $traceId = bin2hex(random_bytes(8));
 
         $this->measurePhase(
-            stateMachine: $stateMachine,
+            manager: $manager,
             phase: BootstrapState::Discovering,
             plan: $plan,
             context: $context,
@@ -77,6 +98,7 @@ final class Bootstrapper implements BootstrapperInterface
                 $this->loadConfiguration(
                     $plan->configDirectory(),
                     $this->requiresPublishedConfiguration($plan),
+                    $this->resolveFallbackMode($plan),
                 );
             },
         );
@@ -86,7 +108,7 @@ final class Bootstrapper implements BootstrapperInterface
         $environment = $context?->environment() ?? $plan->environment();
 
         $orderedProviders = $this->measurePhase(
-            stateMachine: $stateMachine,
+            manager: $manager,
             phase: BootstrapState::Registering,
             plan: $plan,
             context: $context,
@@ -108,7 +130,7 @@ final class Bootstrapper implements BootstrapperInterface
         );
 
         $this->measurePhase(
-            stateMachine: $stateMachine,
+            manager: $manager,
             phase: BootstrapState::Configuring,
             plan: $plan,
             context: $context,
@@ -124,7 +146,7 @@ final class Bootstrapper implements BootstrapperInterface
         );
 
         $artifact = $this->measurePhase(
-            stateMachine: $stateMachine,
+            manager: $manager,
             phase: BootstrapState::Compiling,
             plan: $plan,
             context: $context,
@@ -134,7 +156,7 @@ final class Bootstrapper implements BootstrapperInterface
         );
 
         $this->measurePhase(
-            stateMachine: $stateMachine,
+            manager: $manager,
             phase: BootstrapState::Booting,
             plan: $plan,
             context: $context,
@@ -146,7 +168,7 @@ final class Bootstrapper implements BootstrapperInterface
         );
 
         $warmedBy = $this->measurePhase(
-            stateMachine: $stateMachine,
+            manager: $manager,
             phase: BootstrapState::Warming,
             plan: $plan,
             context: $context,
@@ -155,7 +177,7 @@ final class Bootstrapper implements BootstrapperInterface
             operation: fn(): array => $this->runWarmers($plan, $context),
         );
 
-        $stateMachine->transitionTo(BootstrapState::Ready);
+        $manager->transitionTo(BootstrapState::Ready);
         $this->recordPhaseProfile(
             phaseProfiles: $phaseProfiles,
             phase: BootstrapState::Ready,
@@ -178,7 +200,7 @@ final class Bootstrapper implements BootstrapperInterface
             app: $this->app,
             plan: $plan,
             context: $context,
-            state: $stateMachine->current(),
+            state: $manager->currentState(),
             warmed: true,
             ready: true,
             warmedBy: $warmedBy,
@@ -187,7 +209,16 @@ final class Bootstrapper implements BootstrapperInterface
         );
     }
 
-    public function loadConfiguration(?string $configPath = null, bool $requirePublished = false): void
+    /**
+     * Carga la configuración desde el artifact publicado si existe; en caso
+     * contrario aplica el modo de fallback indicado:
+     *  - silent: carga desde config/*.php sin avisar (comportamiento histórico).
+     *  - warn:   carga desde config/*.php emitiendo una advertencia en STDERR.
+     *  - deny:   lanza PublishedConfigurationRequiredException.
+     *
+     * @param string $fallbackMode 'silent' | 'warn' | 'deny'
+     */
+    public function loadConfiguration(?string $configPath = null, bool $requirePublished = false, string $fallbackMode = 'silent'): void
     {
         /** @var ConfigRepository $config */
         $config = $this->app->make(ConfigRepository::class);
@@ -200,11 +231,15 @@ final class Bootstrapper implements BootstrapperInterface
             return;
         }
 
-        if ($requirePublished) {
+        if ($requirePublished || $fallbackMode === 'deny') {
             throw new PublishedConfigurationRequiredException(sprintf(
                 'Published configuration is required for bootstrap, but no active configuration generation exists at [%s].',
                 $this->app->configManifestStore()->rootPath(),
             ));
+        }
+
+        if ($fallbackMode === 'warn') {
+            $this->warnFilesystemFallback($configPath);
         }
 
         $config->loadPath($configPath ?? $this->app->configPath());
@@ -213,6 +248,50 @@ final class Bootstrapper implements BootstrapperInterface
     public function loadPublishedConfiguration(?string $configPath = null): void
     {
         $this->loadConfiguration($configPath, true);
+    }
+
+    /**
+     * Resuelve el modo de fallback de configuración desde el plan operacional
+     * o, en su defecto, desde la variable de entorno VOLT_CONFIG_BOOT_FALLBACK.
+     * Valores admitidos: 'silent' (default), 'warn', 'deny'.
+     */
+    private function resolveFallbackMode(?ApplicationPlan $plan = null): string
+    {
+        $candidates = [];
+
+        if ($plan !== null) {
+            $operational = $plan->bootstrapConfiguration()->operational();
+            $candidates[] = $operational['config_boot_fallback'] ?? null;
+        }
+
+        $env = getenv('VOLT_CONFIG_BOOT_FALLBACK');
+        if ($env !== false && $env !== '') {
+            $candidates[] = $env;
+        }
+
+        foreach ($candidates as $candidate) {
+            if (is_string($candidate) && in_array($candidate, ['silent', 'warn', 'deny'], true)) {
+                return $candidate;
+            }
+        }
+
+        return 'silent';
+    }
+
+    private function warnFilesystemFallback(?string $configPath): void
+    {
+        $target = $configPath ?? $this->app->configPath();
+        $message = sprintf(
+            '[voltstack] Published configuration snapshot not found; falling back to filesystem config at [%s]. '
+            . 'Set VOLT_CONFIG_BOOT_FALLBACK=deny to require published configuration, or =silent to suppress this warning.',
+            $target,
+        );
+
+        if (defined('STDERR') && STDERR !== null) {
+            fwrite(STDERR, $message . PHP_EOL);
+        } else {
+            error_log($message);
+        }
     }
 
     public function loadRoutes(string|callable $routes): void
@@ -336,7 +415,7 @@ final class Bootstrapper implements BootstrapperInterface
      * @return T
      */
     private function measurePhase(
-        BootstrapStateMachine $stateMachine,
+        BootstrapLifecycleManager $manager,
         BootstrapState $phase,
         ApplicationPlan $plan,
         ?BootstrapContext $context,
@@ -344,7 +423,7 @@ final class Bootstrapper implements BootstrapperInterface
         string $traceId,
         callable $operation,
     ): mixed {
-        $stateMachine->transitionTo($phase);
+        $manager->transitionTo($phase);
         $startedAt = microtime(true);
         $successful = false;
 

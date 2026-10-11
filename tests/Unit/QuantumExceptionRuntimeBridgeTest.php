@@ -32,6 +32,7 @@ final class QuantumExceptionRuntimeBridgeTest extends TestCase
 
     protected function tearDown(): void
     {
+        RuntimeContext::setCurrent(null);
         $this->deleteDirectory($this->basePath);
 
         parent::tearDown();
@@ -87,6 +88,12 @@ final class QuantumExceptionRuntimeBridgeTest extends TestCase
         $runner = $app->make(RequestRunner::class);
         $result = $runner->run(Request::create('/ok'));
 
+        // El scope permanece activo hasta que el adapter invoca finalizeScope()
+        // después de emitir la respuesta (necesario para streaming).
+        self::assertTrue($result->hasScopeFinalizer());
+
+        $result->finalizeScope();
+
         self::assertTrue($result->successful());
         self::assertSame('ok', $result->response()?->content());
         self::assertSame(
@@ -117,12 +124,33 @@ final class QuantumExceptionRuntimeBridgeTest extends TestCase
         $runner = $app->make(RequestRunner::class);
         $result = $runner->run(Request::create('/boom'));
 
+        $result->finalizeScope();
+
         self::assertFalse($result->successful());
         self::assertNull($result->response());
         self::assertInstanceOf(RuntimeException::class, $result->exception());
         self::assertTrue($app->make(WorkerLifecycle::class)->shouldTerminate());
         self::assertSame('failed', $events[0]['outcome']);
         self::assertNotEmpty($events[0]['exception_scope_id']);
+        self::assertNull(RuntimeContext::current());
+    }
+
+    public function test_request_runner_keeps_scope_active_until_finalize_scope_is_called(): void
+    {
+        $app = new Application($this->basePath);
+        $app->instance(KernelContract::class, new RuntimeBridgeSuccessKernel());
+
+        $runner = $app->make(RequestRunner::class);
+        $result = $runner->run(Request::create('/ok'));
+
+        // El scope permanece activo después de run(): el adapter debe emitir la
+        // respuesta (streaming) antes de invocar finalizeScope().
+        self::assertNotNull(RuntimeContext::current());
+        self::assertTrue($result->hasScopeFinalizer());
+
+        $result->finalizeScope();
+
+        // Después de finalizeScope(), el scope se cierra y el contexto es null.
         self::assertNull(RuntimeContext::current());
     }
 

@@ -8,10 +8,11 @@ use DateInterval;
 use DateTimeInterface;
 use Quantum\Cache\Concerns\InteractsWithTime;
 use Quantum\Cache\Contracts\AtomicIncrementableStoreInterface;
+use Quantum\Cache\Contracts\CasStoreInterface;
 use Quantum\Cache\Contracts\ClockInterface;
 use Quantum\Cache\Contracts\InspectableStoreInterface;
 
-final class FileStore implements InspectableStoreInterface, AtomicIncrementableStoreInterface
+final class FileStore implements InspectableStoreInterface, AtomicIncrementableStoreInterface, CasStoreInterface
 {
     use InteractsWithTime;
 
@@ -21,6 +22,51 @@ final class FileStore implements InspectableStoreInterface, AtomicIncrementableS
         ?ClockInterface $clock = null,
     ) {
         $this->clock = $clock ?? new SystemClock();
+    }
+
+    public function getPath(): string
+    {
+        return $this->path;
+    }
+
+    /**
+     * Returns a strictly increasing incarnation number backed by a shared
+     * sequence file. This defeats ABA: a delete+recreate of the same value
+     * still produces a different token.
+     */
+    private function nextIncarnation(): int
+    {
+        $sequenceFile = $this->path . DIRECTORY_SEPARATOR . '.cache_sequence';
+        $directory = dirname($sequenceFile);
+
+        if (! is_dir($directory) && ! mkdir($directory, 0777, true) && ! is_dir($directory)) {
+            return 1;
+        }
+
+        $handle = @fopen($sequenceFile, 'c+');
+
+        if ($handle === false) {
+            return 1;
+        }
+
+        try {
+            if (! @flock($handle, LOCK_EX)) {
+                return 1;
+            }
+
+            $current = (int) trim((string) stream_get_contents($handle));
+            $next = $current + 1;
+
+            @ftruncate($handle, 0);
+            @rewind($handle);
+            @fwrite($handle, (string) $next);
+            @fflush($handle);
+
+            return $next;
+        } finally {
+            @flock($handle, LOCK_UN);
+            @fclose($handle);
+        }
     }
 
     public function get(string $key, mixed $default = null): mixed
@@ -46,6 +92,7 @@ final class FileStore implements InspectableStoreInterface, AtomicIncrementableS
             'expires_at' => $expiresAt,
             'value' => $value,
             'created_at_ms' => $this->nowUnixMilliseconds(),
+            'incarnation' => $this->nextIncarnation(),
         ]);
     }
 
@@ -55,6 +102,7 @@ final class FileStore implements InspectableStoreInterface, AtomicIncrementableS
             'expires_at' => null,
             'value' => $value,
             'created_at_ms' => $this->nowUnixMilliseconds(),
+            'incarnation' => $this->nextIncarnation(),
         ]);
     }
 
@@ -142,6 +190,7 @@ final class FileStore implements InspectableStoreInterface, AtomicIncrementableS
                     'expires_at' => $expiresAt,
                     'value' => $next,
                     'created_at_ms' => $this->nowUnixMilliseconds(),
+                    'incarnation' => $this->nextIncarnation(),
                 ]);
 
                 return $next;
@@ -168,6 +217,7 @@ final class FileStore implements InspectableStoreInterface, AtomicIncrementableS
                 'expires_at' => $expiresAt,
                 'value' => $next,
                 'created_at_ms' => $payload['created_at_ms'],
+                'incarnation' => $this->nextIncarnation(),
             ]);
 
             return $next;
@@ -178,15 +228,156 @@ final class FileStore implements InspectableStoreInterface, AtomicIncrementableS
     }
 
     /**
-     * @return array{expires_at: int|null, value: mixed}|null
+     * @return array{expires_at: int|null, value: mixed, created_at_ms: int, incarnation: int}|null
      */
     public function payload(string $key): ?array
     {
         return $this->read($key);
     }
 
+    public function snapshot(string $key, mixed $default = null): ?CasSnapshot
+    {
+        $payload = $this->read($key);
+
+        if ($payload === null) {
+            return null;
+        }
+
+        $incarnation = (int) ($payload['incarnation'] ?? 0);
+
+        return new CasSnapshot(
+            key: $key,
+            value: $payload['value'],
+            token: $this->tokenFor($payload['value'], $incarnation, (int) $payload['created_at_ms']),
+            expiresAt: $payload['expires_at'],
+            incarnation: $incarnation,
+        );
+    }
+
+    public function compareAndSwap(
+        string $key,
+        string $expectedToken,
+        mixed $value,
+        DateInterval|DateTimeInterface|int|null $ttl = null,
+    ): CasResult {
+        $expiresAt = $this->expirationTimestamp($ttl);
+
+        if ($expiresAt !== null && $expiresAt <= $this->nowUnixSeconds()) {
+            return new CasResult(
+                state: CasResult::REJECTED,
+                key: $key,
+                value: $value,
+                token: '',
+                reason: 'ttl_in_the_past',
+            );
+        }
+
+        $path = $this->pathFor($key);
+        $lockPath = $path . '.lock';
+        $directory = dirname($path);
+
+        if (! is_dir($directory) && ! mkdir($directory, 0777, true) && ! is_dir($directory)) {
+            return new CasResult(
+                state: CasResult::UNKNOWN,
+                key: $key,
+                value: $value,
+                token: '',
+                reason: 'unable_to_create_directory',
+            );
+        }
+
+        $lock = @fopen($lockPath, 'c+');
+
+        if ($lock === false) {
+            return new CasResult(
+                state: CasResult::UNKNOWN,
+                key: $key,
+                value: $value,
+                token: '',
+                reason: 'unable_to_open_lock',
+            );
+        }
+
+        if (! @flock($lock, LOCK_EX)) {
+            @fclose($lock);
+
+            return new CasResult(
+                state: CasResult::UNKNOWN,
+                key: $key,
+                value: $value,
+                token: '',
+                reason: 'unable_to_acquire_lock',
+            );
+        }
+
+        try {
+            $current = $this->read($key);
+
+            if ($current === null) {
+                return new CasResult(
+                    state: CasResult::REJECTED,
+                    key: $key,
+                    value: $value,
+                    token: '',
+                    reason: 'key_absent',
+                );
+            }
+
+            $incarnation = (int) ($current['incarnation'] ?? 0);
+            $currentToken = $this->tokenFor($current['value'], $incarnation, (int) $current['created_at_ms']);
+
+            if (! hash_equals($currentToken, $expectedToken)) {
+                return new CasResult(
+                    state: CasResult::REJECTED,
+                    key: $key,
+                    value: $current['value'],
+                    token: $currentToken,
+                    reason: 'token_mismatch',
+                    incarnation: $incarnation,
+                );
+            }
+
+            $nextIncarnation = $this->nextIncarnation();
+            $newToken = $this->tokenFor($value, $nextIncarnation, (int) $current['created_at_ms']);
+
+            $written = $this->write($key, [
+                'expires_at' => $expiresAt,
+                'value' => $value,
+                'created_at_ms' => (int) $current['created_at_ms'],
+                'incarnation' => $nextIncarnation,
+            ]);
+
+            if (! $written) {
+                return new CasResult(
+                    state: CasResult::UNKNOWN,
+                    key: $key,
+                    value: $value,
+                    token: $expectedToken,
+                    reason: 'write_failed',
+                    incarnation: $incarnation,
+                );
+            }
+
+            return new CasResult(
+                state: CasResult::APPLIED,
+                key: $key,
+                value: $value,
+                token: $newToken,
+                incarnation: $nextIncarnation,
+            );
+        } finally {
+            @flock($lock, LOCK_UN);
+            @fclose($lock);
+        }
+    }
+
+    private function tokenFor(mixed $value, int $incarnation, int $createdAtMs): string
+    {
+        return sha1($incarnation . ':' . $createdAtMs . ':' . sha1(serialize($value)));
+    }
+
     /**
-     * @return array{expires_at: int|null, value: mixed, created_at_ms: int}|null
+     * @return array{expires_at: int|null, value: mixed, created_at_ms: int, incarnation: int}|null
      */
     private function read(string $key): ?array
     {
@@ -222,11 +413,14 @@ final class FileStore implements InspectableStoreInterface, AtomicIncrementableS
             'created_at_ms' => is_int($payload['created_at_ms'] ?? null)
                 ? $payload['created_at_ms']
                 : $this->nowUnixMilliseconds(),
+            'incarnation' => is_int($payload['incarnation'] ?? null)
+                ? $payload['incarnation']
+                : 1,
         ];
     }
 
     /**
-     * @param array{expires_at: int|null, value: mixed, created_at_ms: int} $payload
+     * @param array{expires_at: int|null, value: mixed, created_at_ms: int, incarnation: int} $payload
      */
     private function write(string $key, array $payload): bool
     {

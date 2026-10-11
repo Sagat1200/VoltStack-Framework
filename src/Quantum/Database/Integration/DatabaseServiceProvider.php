@@ -55,7 +55,9 @@ use Quantum\Database\Schema\SchemaManager;
 use Quantum\Database\Seeders\SeederDiscovery;
 use Quantum\Database\Seeders\SeederRunner;
 use Quantum\Database\Telemetry\DatabaseTelemetryEmitter;
+use Quantum\Database\Transaction\FailureClassifier;
 use Quantum\Database\Transaction\TransactionManager;
+use Quantum\Database\Transaction\TransactionRetryCoordinator;
 use RuntimeException;
 use VoltStack\Framework\Application;
 use VoltStack\Framework\ServiceProvider;
@@ -187,10 +189,17 @@ final class DatabaseServiceProvider extends ServiceProvider
             $app->make(ConnectionManagerInterface::class),
             $app->make(DatabaseTelemetryEmitter::class),
         ));
+        $this->app->singleton(FailureClassifier::class);
+        $this->app->scoped(TransactionRetryCoordinator::class, fn(Application $app): TransactionRetryCoordinator => new TransactionRetryCoordinator(
+            static fn() => $app->make(TransactionManagerInterface::class),
+            $app->make(FailureClassifier::class),
+        ));
         $this->app->scoped(TransactionManager::class, fn(Application $app): TransactionManager => new TransactionManager(
             $app->make(ConnectionManagerInterface::class),
             $app->make(DatabaseTelemetryEmitter::class),
             RuntimeContext::current() !== null ? $app->make(DatabaseExecutionScope::class) : null,
+            $app->make(FailureClassifier::class),
+            $app->make(TransactionRetryCoordinator::class),
         ));
         $this->app->scoped(TransactionManagerInterface::class, fn(Application $app): TransactionManagerInterface => $app->make(TransactionManager::class));
         $this->app->scoped(IdentityMap::class);

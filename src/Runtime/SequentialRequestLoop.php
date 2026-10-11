@@ -54,21 +54,26 @@ final class SequentialRequestLoop
             $request = $requests->current();
             $result = $session->handle($request);
 
-            if ($result->workerDisposition() === WorkerDisposition::Terminate) {
-                return 1;
+            try {
+                if ($result->workerDisposition() === WorkerDisposition::Terminate) {
+                    return 1;
+                }
+
+                if (! $emitter->emit($session->context(), $session->handledRequests(), $result->response(), $request)) {
+                    $session->lifecycle()->request(WorkerDisposition::Terminate);
+
+                    return 1;
+                }
+
+                if (! $session->canAcceptMoreRequests()) {
+                    break;
+                }
+
+                $requests->next();
+            } finally {
+                // Cerrar el scope y ejecutar reset DESPUÉS de emitir cada response.
+                $result->finalizeScope();
             }
-
-            if (! $emitter->emit($session->context(), $session->handledRequests(), $result->response(), $request)) {
-                $session->lifecycle()->request(WorkerDisposition::Terminate);
-
-                return 1;
-            }
-
-            if (! $session->canAcceptMoreRequests()) {
-                break;
-            }
-
-            $requests->next();
         }
 
         return 0;

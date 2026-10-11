@@ -18,6 +18,7 @@ use Quantum\Transport\Testing\InMemoryTransportEmitter;
 use RuntimeException;
 use VoltStack\Framework\Application;
 use VoltStack\Framework\Contracts\Kernel as KernelContract;
+use VoltStack\Runtime\Context\RuntimeContext;
 use VoltStack\Runtime\Context\WorkerContext;
 use VoltStack\Runtime\Contracts\WorkerFactoryInterface;
 use VoltStack\Runtime\Exceptions\RuntimeAdapterException;
@@ -56,6 +57,7 @@ PHP
 
     protected function tearDown(): void
     {
+        RuntimeContext::setCurrent(null);
         $this->deleteDirectory($this->basePath);
 
         parent::tearDown();

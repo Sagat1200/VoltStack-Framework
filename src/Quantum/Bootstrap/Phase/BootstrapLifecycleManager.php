@@ -6,6 +6,7 @@ namespace Quantum\Bootstrap\Phase;
 
 use LogicException;
 use Quantum\Bootstrap\ApplicationPlan;
+use Quantum\Bootstrap\Bootstrapper;
 use Quantum\Bootstrap\BootstrapResult;
 use Quantum\Bootstrap\Context\BootstrapContext;
 use Quantum\Bootstrap\Contracts\BootstrapperInterface;
@@ -35,6 +36,18 @@ final class BootstrapLifecycleManager
     private BootstrapStateMachine $stateMachine;
 
     private ?BootstrapResult $result = null;
+
+    /**
+     * Reporte del resultado de la operación de drain, si la hubo.
+     *
+     * Se mantiene tipado como `object` para no acoplar la capa de bootstrap
+     * (`Quantum\Bootstrap\Phase`) a la capa de runtime evidence
+     * (`VoltStack\Runtime\Evidence\RuntimeDrainReport`). La capa de runtime
+     * puede pasar un `RuntimeDrainReport` (o cualquier objeto de reporte)
+     * devolviéndolo desde `$drainOperation` y recuperarlo luego vía
+     * `drainReport()`.
+     */
+    private ?object $drainReport = null;
 
     /** @var list<BootstrapState> */
     private array $happyPath = [
@@ -95,6 +108,36 @@ final class BootstrapLifecycleManager
     }
 
     /**
+     * Devuelve el reporte de drain almacenado (si la operación de drenaje
+     * devolvió uno). Típicamente un `VoltStack\Runtime\Evidence\RuntimeDrainReport`.
+     */
+    public function drainReport(): ?object
+    {
+        return $this->drainReport;
+    }
+
+    /**
+     * Transiciona la máquina de estados interna al estado objetivo.
+     *
+     * Usado por el Bootstrapper durante las fases de boot para que el manager
+     * sea la fuente de verdad del estado en todo momento.
+     *
+     * @throws LogicException si la transición no es válida.
+     */
+    public function transitionTo(BootstrapState $next): void
+    {
+        $this->stateMachine->transitionTo($next);
+    }
+
+    /**
+     * Devuelve true si la transición al estado objetivo es válida desde el estado actual.
+     */
+    public function canTransitionTo(BootstrapState $next): bool
+    {
+        return $this->stateMachine->canTransitionTo($next);
+    }
+
+    /**
      * Ejecuta el ciclo de boot a través del bootstrapper.
      *
      * En caso de éxito sincroniza el estado interno con el estado final del
@@ -116,6 +159,13 @@ final class BootstrapLifecycleManager
             ));
         }
 
+        // Inyecta este manager como fuente de verdad del estado dentro del
+        // bootstrapper concreto, de forma que las transiciones de fases ocurran
+        // sobre la misma máquina de estados que el manager orquesta.
+        if ($bootstrapper instanceof Bootstrapper) {
+            $bootstrapper->setLifecycleManager($this);
+        }
+
         try {
             $result = $bootstrapper->bootPlan($plan, $context);
             $this->result = $result;
@@ -132,8 +182,10 @@ final class BootstrapLifecycleManager
     /**
      * Orquesta el drenaje y apagado: Ready -> Draining -> Stopping -> Stopped.
      *
-     * @param callable():void|null $drainOperation operación de drenaje opcional
+     * @param callable():mixed|null $drainOperation operación de drenaje opcional
      *        (ej. terminar workers, cerrar conexiones). Se ejecuta en estado Draining.
+     *        Si devuelve un objeto, se almacena como reporte de drain y es
+     *        recuperable vía `drainReport()` (típicamente un `RuntimeDrainReport`).
      * @param callable():void|null $shutdownOperation operación de apagado opcional.
      *        Se ejecuta en estado Stopping.
      *
@@ -153,7 +205,11 @@ final class BootstrapLifecycleManager
         $this->stateMachine->transitionTo(BootstrapState::Draining);
 
         if ($drainOperation !== null) {
-            $drainOperation();
+            $drainResult = $drainOperation();
+
+            if (is_object($drainResult)) {
+                $this->drainReport = $drainResult;
+            }
         }
 
         $this->stateMachine->transitionTo(BootstrapState::Stopping);

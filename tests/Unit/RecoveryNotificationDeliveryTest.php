@@ -172,6 +172,109 @@ final class RecoveryNotificationDeliveryTest extends TestCase
         self::assertSame(RecoveryNotificationTemplate::FORMAT_HTML, $template->format);
     }
 
+    public function test_template_renderer_email_builtin_is_html_and_contains_reset_link(): void
+    {
+        $renderer = new ConfigRecoveryNotificationTemplateRenderer();
+
+        $template = $renderer->render(
+            RecoveryNotificationType::PasswordResetRequested,
+            'email',
+            ['reset_url' => 'https://example.com/reset/abc', 'expires_at' => '2026-12-31'],
+        );
+
+        self::assertSame(RecoveryNotificationTemplate::FORMAT_HTML, $template->format);
+        self::assertStringContainsString('Restablece tu contraseña', $template->subject);
+        self::assertStringContainsString('https://example.com/reset/abc', $template->body);
+        self::assertStringContainsString('<html', $template->body);
+        self::assertStringContainsString('2026-12-31', $template->body);
+    }
+
+    public function test_template_renderer_sms_builtin_is_short_text(): void
+    {
+        $renderer = new ConfigRecoveryNotificationTemplateRenderer();
+
+        $template = $renderer->render(
+            RecoveryNotificationType::PasswordResetRequested,
+            'sms',
+            ['reset_url' => 'https://example.com/reset/abc', 'expires_at' => '2026-12-31'],
+        );
+
+        self::assertSame(RecoveryNotificationTemplate::FORMAT_TEXT, $template->format);
+        self::assertStringContainsString('https://example.com/reset/abc', $template->body);
+        self::assertLessThan(200, strlen($template->body));
+    }
+
+    public function test_template_renderer_push_builtin_is_short_text(): void
+    {
+        $renderer = new ConfigRecoveryNotificationTemplateRenderer();
+
+        $template = $renderer->render(
+            RecoveryNotificationType::PasswordResetRequested,
+            'push',
+            ['expires_at' => '2026-12-31'],
+        );
+
+        self::assertSame(RecoveryNotificationTemplate::FORMAT_TEXT, $template->format);
+        self::assertStringContainsString('Restablece tu contraseña', $template->subject);
+        self::assertStringContainsString('2026-12-31', $template->body);
+        self::assertLessThan(160, strlen($template->body));
+    }
+
+    public function test_template_renderer_password_reset_completed_has_channel_variants(): void
+    {
+        $renderer = new ConfigRecoveryNotificationTemplateRenderer();
+
+        $email = $renderer->render(RecoveryNotificationType::PasswordResetCompleted, 'email');
+        self::assertSame(RecoveryNotificationTemplate::FORMAT_HTML, $email->format);
+        self::assertStringContainsString('<html', $email->body);
+
+        $sms = $renderer->render(RecoveryNotificationType::PasswordResetCompleted, 'sms');
+        self::assertSame(RecoveryNotificationTemplate::FORMAT_TEXT, $sms->format);
+        self::assertLessThan(140, strlen($sms->body));
+
+        $push = $renderer->render(RecoveryNotificationType::PasswordResetCompleted, 'push');
+        self::assertSame(RecoveryNotificationTemplate::FORMAT_TEXT, $push->format);
+        self::assertStringContainsString('restablecido', $push->body);
+    }
+
+    public function test_template_renderer_config_override_takes_precedence_over_builtin_channel(): void
+    {
+        $configTemplates = [
+            RecoveryNotificationType::PasswordResetRequested->value => [
+                'email' => [
+                    'subject' => 'Custom email {{reset_url}}',
+                    'body' => 'Body {{reset_url}}',
+                    'format' => RecoveryNotificationTemplate::FORMAT_TEXT,
+                ],
+            ],
+        ];
+
+        $renderer = new ConfigRecoveryNotificationTemplateRenderer($configTemplates);
+        $template = $renderer->render(
+            RecoveryNotificationType::PasswordResetRequested,
+            'email',
+            ['reset_url' => 'https://example.com/reset/xyz'],
+        );
+
+        self::assertSame('Custom email https://example.com/reset/xyz', $template->subject);
+        self::assertSame(RecoveryNotificationTemplate::FORMAT_TEXT, $template->format);
+    }
+
+    public function test_template_renderer_unknown_channel_falls_back_to_default_builtin(): void
+    {
+        $renderer = new ConfigRecoveryNotificationTemplateRenderer();
+
+        $template = $renderer->render(
+            RecoveryNotificationType::PasswordResetRequested,
+            'unknown-channel',
+            ['reset_url' => 'https://example.com/reset/xyz'],
+        );
+
+        self::assertSame(RecoveryNotificationTemplate::FORMAT_TEXT, $template->format);
+        self::assertStringContainsString('Solicitud de restablecimiento', $template->subject);
+        self::assertStringContainsString('https://example.com/reset/xyz', $template->body);
+    }
+
     public function test_composite_dispatcher_dispatches_successfully(): void
     {
         $registry = new RecoveryNotificationChannelRegistry();

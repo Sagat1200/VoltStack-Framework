@@ -37,11 +37,16 @@ final class ScopeStack
 
     public function enter(string $name = 'scope'): ScopeFrame
     {
+        return $this->enterWithKind(ScopeKind::fromName($name), $name);
+    }
+
+    public function enterWithKind(ScopeKind $kind, ?string $name = null): ScopeFrame
+    {
         $current = $this->current();
         $frame = new ScopeFrame(
             id: $this->newId(),
-            name: $name,
-            kind: ScopeKind::fromName($name),
+            name: $name ?? $kind->value,
+            kind: $kind,
             parentId: $current->id(),
             depth: $current->depth() + 1,
         );

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quantum\Exceptions\Diagnostics;
 
+use Quantum\Config\Diagnostics\ConfigRedactor;
 use Quantum\Exceptions\Compilation\ExceptionCompilationPlan;
 use Quantum\Exceptions\Model\FailureSnapshot;
 use Quantum\Exceptions\Model\PublicError;
@@ -67,7 +68,8 @@ final readonly class ExceptionExplainReport
     public function toArray(): array
     {
         $semantic = $this->publicError->code;
-        $limits = $this->plan->config()['limits'] ?? [];
+        $rawLimits = $this->plan->config()['limits'] ?? [];
+        $limits = (new ConfigRedactor())->redact($rawLimits, 'exceptions.limits');
         $result = [
             'effective' => [
                 'environment' => $this->plan->environment(),

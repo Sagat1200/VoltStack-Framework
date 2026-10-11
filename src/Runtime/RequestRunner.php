@@ -33,10 +33,18 @@ final class RequestRunner
         $startedAt = microtime(true);
         $response = null;
         $exception = null;
-        $resetReport = new ResetReport(0, true);
         $scope = null;
-        $scopeEnded = false;
         $outcome = FinalizationOutcome::completed();
+
+        // Holder mutable para estado post-finalización. El finalizador (que se
+        // ejecuta después de emitir la respuesta) actualiza resetReport y
+        // disposition. RequestRunResult lee de este holder.
+        $scopeState = new class {
+            public ResetReport $resetReport;
+            public WorkerDisposition $disposition;
+        };
+        $scopeState->resetReport = new ResetReport(0, true);
+        $scopeState->disposition = WorkerDisposition::Reuse;
 
         try {
             $runtimeContext = $this->scopeManager->begin($request);
@@ -57,6 +65,9 @@ final class RequestRunner
             ]);
             $this->workerLifecycle->request(WorkerDisposition::Terminate);
         } finally {
+            // finalize() sólo marca el outcome del scope de excepciones; no
+            // cierra el RuntimeContext ni ejecuta reset. Es seguro invocarlo
+            // antes de emitir la respuesta.
             if ($scope !== null) {
                 try {
                     $this->exceptionRuntimeBridge->finalize($scope, $outcome);
@@ -71,55 +82,61 @@ final class RequestRunner
                     }
                 }
             }
+        }
+
+        // Disposición previa a la emisión: basada en la presencia de excepción
+        // (workerLifecycle), no en el resultado del reset (que aún no corre).
+        $scopeState->disposition = $this->resolveRequestedDisposition();
+
+        $scopeFinalizer = function () use ($scope, $scopeState, &$exception): void {
+            if ($scope === null) {
+                $scopeState->resetReport = new ResetReport(0, false, [
+                    new \RuntimeException('Runtime request scope was not initialized.'),
+                ]);
+                $scopeState->disposition = WorkerDisposition::Terminate;
+
+                return;
+            }
 
             try {
                 $this->scopeManager->end();
-                $scopeEnded = true;
             } catch (Throwable $secondary) {
                 if ($exception === null) {
                     $exception = $secondary;
-                    $this->workerLifecycle->request(WorkerDisposition::Terminate);
                 }
-            }
 
-            if ($scope !== null) {
-                try {
-                    $resetReport = $this->exceptionRuntimeBridge->close($scope);
-                } catch (Throwable $secondary) {
-                    $resetReport = new ResetReport(0, false, [$secondary]);
-
-                    if ($exception === null) {
-                        $exception = $secondary;
-                    }
-
-                    $this->workerLifecycle->request(WorkerDisposition::Terminate);
-                }
-            } elseif (! $scopeEnded) {
-                $resetReport = new ResetReport(0, false, [
-                    new \RuntimeException('Runtime request scope was not initialized.'),
-                ]);
                 $this->workerLifecycle->request(WorkerDisposition::Terminate);
             }
-        }
 
-        $requestedDisposition = $this->resolveRequestedDisposition();
+            try {
+                $scopeState->resetReport = $this->exceptionRuntimeBridge->close($scope);
+            } catch (Throwable $secondary) {
+                $scopeState->resetReport = new ResetReport(0, false, [$secondary]);
 
-        if (! $resetReport->successful()) {
-            $this->workerLifecycle->request(WorkerDisposition::Terminate);
-            $requestedDisposition = WorkerDisposition::Terminate;
-        }
+                if ($exception === null) {
+                    $exception = $secondary;
+                }
 
-        if ($requestedDisposition === WorkerDisposition::Reset && $resetReport->successful()) {
-            $this->workerLifecycle->clearResetRequest();
-        }
+                $this->workerLifecycle->request(WorkerDisposition::Terminate);
+            }
+
+            // Disposición post-reset: si el reset falló, terminar el worker.
+            if (! $scopeState->resetReport->successful()) {
+                $scopeState->disposition = WorkerDisposition::Terminate;
+            } elseif ($scopeState->disposition === WorkerDisposition::Reset) {
+                $this->workerLifecycle->clearResetRequest();
+            }
+        };
 
         return new RequestRunResult(
             request: $request,
             response: $this->normalizeResponse($response),
-            workerDisposition: $requestedDisposition,
-            resetReport: $resetReport,
+            workerDisposition: $scopeState->disposition,
+            resetReport: $scopeState->resetReport,
             durationMs: (microtime(true) - $startedAt) * 1000,
             exception: $exception,
+            scopeFinalizer: $scopeFinalizer,
+            scopeState: $scopeState,
         );
     }
 

@@ -67,6 +67,9 @@ use Quantum\Controllers\Runtime\ControllerRuntimeResolver;
 use Quantum\Controllers\Runtime\ControllerRuntimeResolverInterface;
 use Quantum\Container\Container;
 use Quantum\Container\Contracts\ContainerInterface;
+use Quantum\Container\ScopeHandle;
+use Quantum\Container\ScopeKind;
+use Quantum\Container\WorkerHandle;
 use Quantum\Exceptions\Contracts\ExceptionHandlerInterface as QuantumExceptionHandlerInterface;
 use Quantum\Exceptions\ExceptionHandler as QuantumExceptionHandler;
 use Quantum\Http\HtmlDocumentBootstrapper;
@@ -1611,6 +1614,84 @@ class Application extends Container
         }
 
         $this->make(ConfigurationScopeRegistry::class)->endScope($scopeId);
+    }
+
+    /**
+     * Abre un scope de unidad o tenant integrado con el lifecycle de Application.
+     *
+     * Dispara `fireScopeStart` al abrir y, al cerrar el handle, dispara
+     * `fireScopeEnd` y notifica a `ConfigurationScopeRegistry::endScope()`,
+     * manteniendo la misma semantica que `leaveScope()`.
+     */
+    public function openScope(ScopeKind $kind, ?callable $onClose = null): ScopeHandle
+    {
+        $handle = parent::openScope($kind, $this->scopeCloseCallback($onClose));
+
+        $context = RuntimeContext::current();
+        if ($context !== null) {
+            $this->fireScopeStart($context);
+        }
+
+        return $handle;
+    }
+
+    /**
+     * Abre un worker scope integrado con el lifecycle de Application.
+     *
+     * Cada scope hijo abierto por el worker dispara `fireScopeStart` al abrir
+     * y, al cerrar, `fireScopeEnd` + `ConfigurationScopeRegistry::endScope()`.
+     */
+    public function openWorkerScope(?callable $onWorkerClose = null, ?callable $onChildClose = null, ?callable $onChildEnter = null): WorkerHandle
+    {
+        $workerClose = $this->scopeCloseCallback($onWorkerClose);
+        $childClose = $this->scopeCloseCallback($onChildClose);
+        $app = $this;
+
+        $worker = parent::openWorkerScope(
+            onWorkerClose: static function (\Quantum\Container\CleanupReport $report) use ($workerClose): void {
+                $workerClose($report);
+            },
+            onChildClose: static function (\Quantum\Container\CleanupReport $report) use ($childClose): void {
+                $childClose($report);
+            },
+            onChildEnter: static function (\Quantum\Container\ScopeHandle $handle) use ($app, $onChildEnter): void {
+                $context = RuntimeContext::current();
+                if ($context !== null) {
+                    $app->fireScopeStart($context);
+                }
+
+                if ($onChildEnter !== null) {
+                    $onChildEnter($handle);
+                }
+            },
+        );
+
+        $context = RuntimeContext::current();
+        if ($context !== null) {
+            $this->fireScopeStart($context);
+        }
+
+        return $worker;
+    }
+
+    /**
+     * @return callable(\Quantum\Container\CleanupReport): void
+     */
+    private function scopeCloseCallback(?callable $onClose): callable
+    {
+        $app = $this;
+
+        return static function (\Quantum\Container\CleanupReport $report) use ($app, $onClose): void {
+            $app->fireScopeEnd(RuntimeContext::current());
+
+            if ($app->resolved(ConfigurationScopeRegistry::class)) {
+                $app->make(ConfigurationScopeRegistry::class)->endScope($report->frameId);
+            }
+
+            if ($onClose !== null) {
+                $onClose($report);
+            }
+        };
     }
 
     protected function joinPath(string $basePath, string $path = ''): string

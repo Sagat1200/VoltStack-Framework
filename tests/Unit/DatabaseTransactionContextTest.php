@@ -25,13 +25,13 @@ final class DatabaseTransactionContextTest extends TestCase
         $context->beginNested('sp_1');
 
         self::assertSame(2, $context->depth());
-        self::assertSame('sp_1', $context->releaseNested());
+        self::assertSame('sp_1', $context->releaseNested()->value);
         self::assertSame(1, $context->depth());
 
         $context->markRollbackOnly();
 
         self::assertTrue($context->rollbackOnly());
-        self::assertSame(TransactionState::RollbackOnly, $context->state());
+        self::assertSame(TransactionState::MarkedRollbackOnly, $context->state());
 
         $context->completeRolledBack();
 

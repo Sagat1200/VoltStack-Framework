@@ -30,6 +30,11 @@ final class CacheManager
      */
     private array $resolvedStores = [];
 
+    /**
+     * @var array<string, LockManager>
+     */
+    private array $lockManagers = [];
+
     public function __construct(
         private readonly Application $app,
     ) {}
@@ -48,6 +53,7 @@ final class CacheManager
             $this->resolveStore($name),
             marshaller: $this->app->make(MarshallerInterface::class),
             clock: $clock,
+            lockManager: $this->lockManagerForStore($name),
         );
     }
 
@@ -78,6 +84,7 @@ final class CacheManager
             $this->app->make(VersionAuthorityInterface::class),
             $name,
             clock: $clock,
+            lockManager: $this->lockManagerForStore($storeName),
         );
     }
 
@@ -203,6 +210,24 @@ final class CacheManager
             'null' => new NullStore(),
             default => throw new InvalidArgumentException(sprintf('Cache driver [%s] is not supported.', $driver)),
         };
+    }
+
+    private function lockManagerForStore(string $name): LockManager
+    {
+        if (isset($this->lockManagers[$name])) {
+            return $this->lockManagers[$name];
+        }
+
+        $store = $this->resolveStore($name);
+
+        if ($store instanceof FileStore) {
+            $path = $store->getPath() . DIRECTORY_SEPARATOR . 'locks';
+            $lockStore = new FileLockStore($path);
+        } else {
+            $lockStore = new MemoryLockStore();
+        }
+
+        return $this->lockManagers[$name] = new LockManager($lockStore);
     }
 
     /**

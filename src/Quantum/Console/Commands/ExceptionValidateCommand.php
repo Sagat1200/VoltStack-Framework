@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Quantum\Console\Commands;
 
+use Quantum\Config\Diagnostics\ConfigRedactor;
 use Quantum\Console\Command;
 use Quantum\Console\Input;
 use Quantum\Console\Output;
@@ -49,6 +50,7 @@ final class ExceptionValidateCommand extends Command
 
             try {
                 $plan = $app->make(ExceptionPlanCompiler::class)->compile($config);
+                $redactor = new ConfigRedactor();
                 $report = [
                     'passed' => true,
                     'environment' => $plan->environment(),
@@ -59,7 +61,7 @@ final class ExceptionValidateCommand extends Command
                     'php_runtime_version' => $plan->phpRuntimeVersion(),
                     'reporters' => $plan->reporterIds(),
                     'spa_versions' => $plan->spaVersions(),
-                    'config' => $plan->config(),
+                    'config' => $redactor->redact($plan->config(), 'exceptions'),
                 ];
                 $exitCode = 0;
             } catch (ExceptionCompilationException $exception) {

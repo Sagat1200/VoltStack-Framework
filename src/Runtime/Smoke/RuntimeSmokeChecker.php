@@ -57,7 +57,12 @@ final class RuntimeSmokeChecker
         $reports = [];
 
         foreach ($requests as $request) {
-            $reports[] = RuntimeSmokeRequestReport::fromRunResult($runner->run($request));
+            $result = $runner->run($request);
+            $reports[] = RuntimeSmokeRequestReport::fromRunResult($result);
+
+            // El smoke-checker no hace streaming; cierra el scope inmediatamente
+            // después de procesar cada request para no contaminar el runtime.
+            $result->finalizeScope();
 
             if (! $reports[array_key_last($reports)]->passed()) {
                 break;

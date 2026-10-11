@@ -15,6 +15,7 @@ use Quantum\Console\Commands\BootstrapReleaseCheckCommand;
 use Quantum\Console\Commands\BootstrapStatusCommand;
 use Quantum\Console\Commands\CacheClearCommand;
 use Quantum\Console\Commands\CacheDoctorCommand;
+use Quantum\Console\Commands\CacheInvalidateCommand;
 use Quantum\Console\Commands\CacheListCommand;
 use Quantum\Console\Commands\ConfigReleaseCheckCommand;
 use Quantum\Console\Commands\ConfigStatusCommand;
@@ -104,6 +105,7 @@ final class ConsoleApplication
             $this->add(new CacheClearCommand($basePath));
             $this->add(new CacheListCommand($basePath));
             $this->add(new CacheDoctorCommand($basePath));
+            $this->add(new CacheInvalidateCommand($basePath));
             $this->add(new DatabaseStatusCommand($basePath));
             $this->add(new DatabaseMigrateCommand($basePath));
             $this->add(new DatabaseRollbackCommand($basePath));
@@ -399,7 +401,7 @@ final class ConsoleApplication
         if ($requirePublishedConfig) {
             $bootstrapper->loadPublishedConfiguration();
         } else {
-            $bootstrapper->loadConfiguration();
+            $bootstrapper->loadConfiguration(null, false, $this->resolveConfigFallbackMode());
         }
 
         $configuredProviders = [];
@@ -441,6 +443,22 @@ final class ConsoleApplication
         }
 
         return false;
+    }
+
+    /**
+     * Resuelve el modo de fallback de configuración desde la variable de
+     * entorno VOLT_CONFIG_BOOT_FALLBACK. Valores: 'silent' (default),
+     * 'warn', 'deny'.
+     */
+    private function resolveConfigFallbackMode(): string
+    {
+        $env = getenv('VOLT_CONFIG_BOOT_FALLBACK');
+
+        if (is_string($env) && in_array($env, ['silent', 'warn', 'deny'], true)) {
+            return $env;
+        }
+
+        return 'silent';
     }
 
     /**

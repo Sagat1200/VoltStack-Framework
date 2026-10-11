@@ -7,6 +7,7 @@ namespace Quantum\Cache;
 use DateInterval;
 use DateTimeImmutable;
 use DateTimeInterface;
+use Quantum\Cache\Contracts\CasStoreInterface;
 use Quantum\Cache\Contracts\ClockInterface;
 use Quantum\Cache\Contracts\InspectableStoreInterface;
 use Quantum\Cache\Contracts\MarshallerInterface;
@@ -26,6 +27,7 @@ final class Repository
         private readonly ?string $versionScope = null,
         private readonly array $tagNames = [],
         private readonly ?ClockInterface $clock = null,
+        private readonly ?LockManager $lockManager = null,
     ) {}
 
     public function lookup(string $key): Lookup
@@ -795,5 +797,112 @@ final class Repository
         }
 
         return 'store_flush';
+    }
+
+    // --- Concurrency: CAS (compare-and-swap) ---------------------------------
+
+    /**
+     * Returns whether the underlying store supports compare-and-swap.
+     */
+    public function supportsCas(): bool
+    {
+        return $this->store instanceof CasStoreInterface;
+    }
+
+    /**
+     * Reads the current value together with its opaque version token.
+     *
+     * @return CasSnapshot|null null when the key is absent or the store does not support CAS
+     */
+    public function snapshot(string $key): ?CasSnapshot
+    {
+        if (! $this->store instanceof CasStoreInterface) {
+            return null;
+        }
+
+        $snapshot = $this->store->snapshot($this->normalizeKey($key));
+
+        if ($snapshot === null) {
+            return null;
+        }
+
+        return new CasSnapshot(
+            key: $key,
+            value: $this->decodeStoredValue($snapshot->value),
+            token: $snapshot->token,
+            expiresAt: $snapshot->expiresAt,
+            incarnation: $snapshot->incarnation,
+        );
+    }
+
+    /**
+     * Atomically replaces the value at $key only if the stored token still
+     * matches $expectedToken.
+     *
+     * @param DateInterval|DateTimeInterface|int|null $ttl
+     */
+    public function compareAndSwap(
+        string $key,
+        string $expectedToken,
+        mixed $value,
+        DateInterval|DateTimeInterface|int|null $ttl = null,
+    ): CasResult {
+        if (! $this->store instanceof CasStoreInterface) {
+            return new CasResult(
+                state: CasResult::REJECTED,
+                key: $key,
+                value: $value,
+                token: '',
+                reason: 'cas_not_supported',
+            );
+        }
+
+        $ttl ??= $this->defaultTtl;
+
+        return $this->store->compareAndSwap(
+            $this->normalizeKey($key),
+            $expectedToken,
+            $this->encodeStoredValue($value),
+            $ttl,
+        );
+    }
+
+    // --- Concurrency: distributed locks --------------------------------------
+
+    /**
+     * Returns whether this repository has a lock manager configured.
+     */
+    public function supportsLocks(): bool
+    {
+        return $this->lockManager !== null;
+    }
+
+    /**
+     * Attempts to acquire a distributed lock scoped to this repository.
+     *
+     * @param string $name      lock name (prefixed with the repository scope)
+     * @param positive-int $ttlMs lease TTL in milliseconds
+     * @param positive-int $waitMs  maximum wait time in milliseconds
+     */
+    public function lock(string $name, int $ttlMs = 5000, int $waitMs = 0): ?Lease
+    {
+        if ($this->lockManager === null) {
+            return null;
+        }
+
+        $scopedName = $this->lockManagerName($name);
+
+        return $this->lockManager->acquire($scopedName, $ttlMs, $waitMs);
+    }
+
+    private function lockManagerName(string $name): string
+    {
+        $prefix = trim($this->keyPrefix);
+
+        if ($prefix === '') {
+            return $name;
+        }
+
+        return $prefix . ':' . $name;
     }
 }

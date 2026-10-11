@@ -117,7 +117,7 @@ final class RecoveryManager implements RecoveryManagerInterface
                 purpose: $purpose,
                 occurredAt: time(),
                 identity: new IdentityReference($identity->identifier(), $identity->type()),
-                destination: $this->resolveRecoveryDestination($identity, $identifier),
+                destination: $this->resolveRecoveryDestination($identity, $identifier, $this->deliveryChannel()),
                 transport: $transport,
                 result: 'admin_recovery_invalid_password_baseline',
                 payload: $attributes,
@@ -179,7 +179,7 @@ final class RecoveryManager implements RecoveryManagerInterface
             occurredAt: time(),
             identity: new IdentityReference($identity->identifier(), $identity->type()),
             recoveryTokenId: $tokenId,
-            destination: $this->resolveRecoveryDestination($identity, $identifier),
+            destination: $this->resolveRecoveryDestination($identity, $identifier, $this->deliveryChannel()),
             transport: $transport,
             result: 'admin_issued',
             payload: [
@@ -286,7 +286,7 @@ final class RecoveryManager implements RecoveryManagerInterface
                 purpose: $request->purpose,
                 occurredAt: time(),
                 identity: new IdentityReference($identity->identifier(), $identity->type()),
-                destination: $this->resolveRecoveryDestination($identity, $identifier),
+                destination: $this->resolveRecoveryDestination($identity, $identifier, $this->deliveryChannel()),
                 transport: $request->transport,
                 result: 'accepted_but_invalid_password_baseline',
                 payload: $request->attributes,
@@ -341,7 +341,7 @@ final class RecoveryManager implements RecoveryManagerInterface
             occurredAt: time(),
             identity: new IdentityReference($identity->identifier(), $identity->type()),
             recoveryTokenId: $tokenId,
-            destination: $this->resolveRecoveryDestination($identity, $identifier),
+            destination: $this->resolveRecoveryDestination($identity, $identifier, $this->deliveryChannel()),
             transport: $request->transport,
             result: 'issued',
             payload: [
@@ -874,7 +874,7 @@ final class RecoveryManager implements RecoveryManagerInterface
             $transaction = $transaction->markStepCompleted(RecoveryTransaction::STEP_TOKEN_CONSUMPTION);
         }
 
-        $destination = $this->resolveRecoveryDestination($identity, '');
+        $destination = $this->resolveRecoveryDestination($identity, '', $this->deliveryChannel());
 
         $this->audit(new RecoveryAuditEvent(
             eventId: $this->eventId(),
@@ -1115,7 +1115,7 @@ final class RecoveryManager implements RecoveryManagerInterface
         string $deliveryToken,
         int $expiresAt,
     ): bool {
-        $destination = $this->resolveRecoveryDestination($identity, $request->identifier);
+        $destination = $this->resolveRecoveryDestination($identity, $request->identifier, $this->deliveryChannel());
         if ($destination === '' || ! $this->notificationsEnabled()) {
             return false;
         }
@@ -1146,7 +1146,7 @@ final class RecoveryManager implements RecoveryManagerInterface
         int $trustedDevicesRevoked,
         int $passkeysRevoked,
     ): bool {
-        $destination = $this->resolveRecoveryDestination($identity, '');
+        $destination = $this->resolveRecoveryDestination($identity, '', $this->deliveryChannel());
         if ($destination === '' || ! $this->notificationsEnabled()) {
             return false;
         }
@@ -1175,10 +1175,22 @@ final class RecoveryManager implements RecoveryManagerInterface
         return strtolower(trim((string) $this->config->get('auth.recovery.notifications.driver', 'noop'))) !== 'noop';
     }
 
-    private function resolveRecoveryDestination(IdentityInterface $identity, string $fallbackIdentifier): string
+    /**
+     * Resuelve el destino de la notificación de recovery.
+     *
+     * Para identidades `GenericIdentity`, busca atributos de contacto de
+     * recuperación específicos del canal (p. ej. `recovery_email`,
+     * `recovery_phone`, `recovery_push_token`) y, si no existen, hace fallback
+     * a atributos genéricos (`email`, `identifier`, `username`,
+     * `_provider_identifier_value`). Para otros tipos de identidad, devuelve
+     * el `$fallbackIdentifier`.
+     */
+    private function resolveRecoveryDestination(IdentityInterface $identity, string $fallbackIdentifier, string $channel = ''): string
     {
         if ($identity instanceof \Quantum\Auth\Identity\GenericIdentity) {
-            foreach (['email', 'identifier', 'username', '_provider_identifier_value'] as $key) {
+            $candidateKeys = $this->destinationKeysForChannel($channel);
+
+            foreach ($candidateKeys as $key) {
                 $candidate = $identity->attributes[$key] ?? null;
                 if (is_string($candidate) && trim($candidate) !== '') {
                     return trim($candidate);
@@ -1187,6 +1199,50 @@ final class RecoveryManager implements RecoveryManagerInterface
         }
 
         return trim($fallbackIdentifier);
+    }
+
+    /**
+     * Devuelve la lista ordenada de claves de atributo a buscar como destino
+     * según el canal de entrega.
+     *
+     * @return list<string>
+     */
+    private function destinationKeysForChannel(string $channel): array
+    {
+        return match (strtolower(trim($channel))) {
+            'email' => [
+                'recovery_email',
+                'email',
+                'mail',
+                'identifier',
+                'username',
+                '_provider_identifier_value',
+            ],
+            'sms' => [
+                'recovery_phone',
+                'recovery_sms',
+                'phone',
+                'mobile',
+                'phone_number',
+                'identifier',
+                'username',
+                '_provider_identifier_value',
+            ],
+            'push' => [
+                'recovery_push_token',
+                'push_token',
+                'device_token',
+                'fcm_token',
+                'identifier',
+                '_provider_identifier_value',
+            ],
+            default => [
+                'email',
+                'identifier',
+                'username',
+                '_provider_identifier_value',
+            ],
+        };
     }
 
     /**

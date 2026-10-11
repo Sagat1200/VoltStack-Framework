@@ -303,6 +303,127 @@ final class AccountRecoveryManagerTest extends TestCase
         ));
     }
 
+    public function test_recovery_destination_falls_back_to_recovery_contact_for_email_channel(): void
+    {
+        $basePath = $this->createBasePath();
+        $notificationsPath = $basePath . DIRECTORY_SEPARATOR . 'recovery-notifications-dest.jsonl';
+
+        $app = new Application($basePath);
+        $config = $app->make(ConfigRepository::class);
+        $config->set('auth.recovery.password_reset.expose_token', true);
+        $config->set('auth.recovery.password_reset.delivery', 'email');
+        $config->set('auth.recovery.notifications.driver', 'file');
+        $config->set('auth.recovery.notifications.storage_path', $notificationsPath);
+        $config->set('auth.providers.local.identities', [
+            [
+                'id' => 7201,
+                'identifier' => 'primary-login@example.com',
+                'email' => 'primary-login@example.com',
+                'recovery_email' => 'recovery-contact@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'type' => 'user',
+            ],
+        ]);
+
+        $manager = $app->make(RecoveryManagerInterface::class);
+
+        $start = $manager->begin(new RecoveryRequest(
+            purpose: RecoveryPurpose::PasswordReset,
+            identifier: 'primary-login@example.com',
+            transport: 'unit',
+        ));
+
+        self::assertTrue($start->accepted);
+        self::assertTrue((bool) ($start->metadata['notification_dispatched'] ?? false));
+
+        $records = $this->readJsonl($notificationsPath);
+        self::assertNotEmpty($records);
+
+        $destinations = array_column($records, 'destination');
+        self::assertContains('recovery-contact@example.com', $destinations);
+        self::assertNotContains('primary-login@example.com', $destinations);
+    }
+
+    public function test_recovery_destination_falls_back_to_recovery_phone_for_sms_channel(): void
+    {
+        $basePath = $this->createBasePath();
+        $notificationsPath = $basePath . DIRECTORY_SEPARATOR . 'recovery-notifications-sms.jsonl';
+
+        $app = new Application($basePath);
+        $config = $app->make(ConfigRepository::class);
+        $config->set('auth.recovery.password_reset.expose_token', true);
+        $config->set('auth.recovery.password_reset.delivery', 'sms');
+        $config->set('auth.recovery.notifications.driver', 'file');
+        $config->set('auth.recovery.notifications.storage_path', $notificationsPath);
+        $config->set('auth.providers.local.identities', [
+            [
+                'id' => 7202,
+                'identifier' => 'sms-user@example.com',
+                'email' => 'sms-user@example.com',
+                'phone' => '+1111111111',
+                'recovery_phone' => '+9999999999',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'type' => 'user',
+            ],
+        ]);
+
+        $manager = $app->make(RecoveryManagerInterface::class);
+
+        $start = $manager->begin(new RecoveryRequest(
+            purpose: RecoveryPurpose::PasswordReset,
+            identifier: 'sms-user@example.com',
+            transport: 'unit',
+        ));
+
+        self::assertTrue($start->accepted);
+        self::assertTrue((bool) ($start->metadata['notification_dispatched'] ?? false));
+
+        $records = $this->readJsonl($notificationsPath);
+        self::assertNotEmpty($records);
+
+        $destinations = array_column($records, 'destination');
+        self::assertContains('+9999999999', $destinations);
+        self::assertNotContains('+1111111111', $destinations);
+    }
+
+    public function test_recovery_destination_uses_identifier_when_no_recovery_contact(): void
+    {
+        $basePath = $this->createBasePath();
+        $notificationsPath = $basePath . DIRECTORY_SEPARATOR . 'recovery-notifications-fallback.jsonl';
+
+        $app = new Application($basePath);
+        $config = $app->make(ConfigRepository::class);
+        $config->set('auth.recovery.password_reset.expose_token', true);
+        $config->set('auth.recovery.password_reset.delivery', 'email');
+        $config->set('auth.recovery.notifications.driver', 'file');
+        $config->set('auth.recovery.notifications.storage_path', $notificationsPath);
+        $config->set('auth.providers.local.identities', [
+            [
+                'id' => 7203,
+                'identifier' => 'plain-user@example.com',
+                'password_hash' => password_hash('secret-123', PASSWORD_DEFAULT),
+                'type' => 'user',
+            ],
+        ]);
+
+        $manager = $app->make(RecoveryManagerInterface::class);
+
+        $start = $manager->begin(new RecoveryRequest(
+            purpose: RecoveryPurpose::PasswordReset,
+            identifier: 'plain-user@example.com',
+            transport: 'unit',
+        ));
+
+        self::assertTrue($start->accepted);
+        self::assertTrue((bool) ($start->metadata['notification_dispatched'] ?? false));
+
+        $records = $this->readJsonl($notificationsPath);
+        self::assertNotEmpty($records);
+
+        $destinations = array_column($records, 'destination');
+        self::assertContains('plain-user@example.com', $destinations);
+    }
+
     private function createBasePath(): string
     {
         $path = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'voltstack-account-recovery-unit-' . uniqid('', true);

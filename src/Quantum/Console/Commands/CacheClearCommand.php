@@ -149,7 +149,7 @@ final class CacheClearCommand extends Command
         $count = 0;
 
         foreach ($iterator as $item) {
-            if ($item->isFile()) {
+            if ($item->isFile() && ! str_starts_with($item->getFilename(), '.')) {
                 $count++;
             }
         }
@@ -172,6 +172,12 @@ final class CacheClearCommand extends Command
 
         foreach ($iterator as $item) {
             $path = $item->getPathname();
+
+            // Skip hidden files (e.g. .cache_sequence, .lock) — they are
+            // internal bookkeeping, not user cache data.
+            if (str_starts_with($item->getFilename(), '.')) {
+                continue;
+            }
 
             if ($item->isDir()) {
                 if (! @rmdir($path) && is_dir($path)) {

@@ -14,6 +14,11 @@ final class ScopeFrame
      */
     private array $instances = [];
 
+    /**
+     * @var array<string, mixed>
+     */
+    private array $seeds = [];
+
     public function __construct(
         private readonly string $id,
         private readonly string $name = 'scope',
@@ -64,6 +69,34 @@ final class ScopeFrame
             'instance' => $instance,
             'owner' => $owner,
         ];
+    }
+
+    public function seed(string $id, mixed $value): void
+    {
+        $this->seeds[$id] = $value;
+    }
+
+    public function hasSeed(string $id): bool
+    {
+        return array_key_exists($id, $this->seeds);
+    }
+
+    public function getSeed(string $id): mixed
+    {
+        return $this->seeds[$id] ?? null;
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function seeds(): array
+    {
+        return $this->seeds;
+    }
+
+    public function resolvedInstanceCount(): int
+    {
+        return count($this->instances);
     }
 
     public function flush(bool $preserveWorkerOwnedEntries = false): void

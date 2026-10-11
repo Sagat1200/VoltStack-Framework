@@ -18,6 +18,7 @@ use Quantum\Telemetry\Engine\InMemoryTelemetryExporter;
 use RuntimeException;
 use VoltStack\Framework\Application;
 use VoltStack\Framework\Contracts\Kernel as KernelContract;
+use VoltStack\Runtime\Context\RuntimeContext;
 use VoltStack\Runtime\Context\WorkerLifecycle;
 use VoltStack\Runtime\RequestRunner;
 use VoltStack\Runtime\Reset\ResetManager;
@@ -51,6 +52,7 @@ PHP
 
     protected function tearDown(): void
     {
+        RuntimeContext::setCurrent(null);
         $this->deleteDirectory($this->basePath);
 
         parent::tearDown();
@@ -124,6 +126,9 @@ PHP
         $runner = $app->make(RequestRunner::class);
         $result = $runner->run(Request::create('/reset'));
 
+        // El reset y el cierre de scope ocurren en finalizeScope(), después de emitir.
+        $result->finalizeScope();
+
         self::assertTrue($result->successful());
         self::assertSame(WorkerDisposition::Reset, $result->workerDisposition());
         self::assertSame('ok', $result->response()?->content());
@@ -143,6 +148,8 @@ PHP
         /** @var RequestRunner $runner */
         $runner = $app->make(RequestRunner::class);
         $result = $runner->run(Request::create('/boom'));
+
+        $result->finalizeScope();
 
         self::assertFalse($result->successful());
         self::assertSame(WorkerDisposition::Terminate, $result->workerDisposition());

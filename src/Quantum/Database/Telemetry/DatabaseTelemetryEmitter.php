@@ -7,6 +7,7 @@ namespace Quantum\Database\Telemetry;
 use Quantum\Database\Config\DatabaseConfiguration;
 use Quantum\Database\Execution\CompiledDatabaseCommand;
 use Quantum\Database\Execution\DatabaseResult;
+use Quantum\Database\Transaction\SavepointId;
 use Quantum\Database\Transaction\TransactionContext;
 use Quantum\Telemetry\Contracts\TelemetryManagerInterface;
 use Quantum\Telemetry\TelemetrySignal;
@@ -116,6 +117,92 @@ final class DatabaseTelemetryEmitter
             [
                 'transaction_id' => $context->id()->value,
                 'depth' => $context->depth(),
+            ],
+        );
+    }
+
+    public function transactionUnknown(TransactionContext $context): void
+    {
+        $this->emit(
+            'database.transaction.unknown',
+            [
+                'connection' => $context->connectionName(),
+                'state' => 'unknown',
+            ],
+            [
+                'transaction_id' => $context->id()->value,
+                'commit_dispatch_state' => $context->commitDispatchState()->value,
+            ],
+        );
+    }
+
+    public function transactionRetryScheduled(TransactionContext $context, int $attempt, int $delayMs): void
+    {
+        $this->emit(
+            'database.transaction.retry_scheduled',
+            [
+                'connection' => $context->connectionName(),
+            ],
+            [
+                'transaction_id' => $context->id()->value,
+                'attempt' => $attempt,
+                'delay_ms' => $delayMs,
+            ],
+        );
+    }
+
+    public function transactionRetryExhausted(TransactionContext $context): void
+    {
+        $this->emit(
+            'database.transaction.retry_exhausted',
+            [
+                'connection' => $context->connectionName(),
+            ],
+            [
+                'transaction_id' => $context->id()->value,
+            ],
+        );
+    }
+
+    public function savepointCreated(TransactionContext $context, SavepointId $savepoint): void
+    {
+        $this->emit(
+            'database.transaction.savepoint.created',
+            [
+                'connection' => $context->connectionName(),
+            ],
+            [
+                'transaction_id' => $context->id()->value,
+                'savepoint' => $savepoint->value,
+                'depth' => $context->depth(),
+            ],
+        );
+    }
+
+    public function savepointReleased(TransactionContext $context, SavepointId $savepoint): void
+    {
+        $this->emit(
+            'database.transaction.savepoint.released',
+            [
+                'connection' => $context->connectionName(),
+            ],
+            [
+                'transaction_id' => $context->id()->value,
+                'savepoint' => $savepoint->value,
+            ],
+        );
+    }
+
+    public function savepointRolledBack(TransactionContext $context, SavepointId $savepoint): void
+    {
+        $this->emit(
+            'database.transaction.savepoint.rolled_back',
+            [
+                'connection' => $context->connectionName(),
+            ],
+            [
+                'transaction_id' => $context->id()->value,
+                'savepoint' => $savepoint->value,
             ],
         );
     }

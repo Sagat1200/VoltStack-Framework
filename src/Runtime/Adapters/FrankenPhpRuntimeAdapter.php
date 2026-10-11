@@ -78,21 +78,25 @@ final class FrankenPhpRuntimeAdapter implements RuntimeAdapterInterface
             $request = $requests->current();
             $result = $session->handle($request);
 
-            if ($result->workerDisposition() === WorkerDisposition::Terminate) {
-                return 1;
+            try {
+                if ($result->workerDisposition() === WorkerDisposition::Terminate) {
+                    return 1;
+                }
+
+                if (! $emitter->emit($session->context(), $session->handledRequests(), $result->response(), $request)) {
+                    $session->lifecycle()->request(WorkerDisposition::Terminate);
+
+                    return 1;
+                }
+
+                if (! $session->canAcceptMoreRequests()) {
+                    break;
+                }
+
+                $requests->next();
+            } finally {
+                $result->finalizeScope();
             }
-
-            if (! $emitter->emit($session->context(), $session->handledRequests(), $result->response(), $request)) {
-                $session->lifecycle()->request(WorkerDisposition::Terminate);
-
-                return 1;
-            }
-
-            if (! $session->canAcceptMoreRequests()) {
-                break;
-            }
-
-            $requests->next();
         }
 
         return 0;
@@ -111,12 +115,16 @@ final class FrankenPhpRuntimeAdapter implements RuntimeAdapterInterface
                 $request = Request::capture();
                 $result = $session->handle($request);
 
-                if ($result->workerDisposition() === WorkerDisposition::Terminate) {
-                    return;
-                }
+                try {
+                    if ($result->workerDisposition() === WorkerDisposition::Terminate) {
+                        return;
+                    }
 
-                if (! $emitter->emit($session->context(), $session->handledRequests(), $result->response(), $request)) {
-                    $session->lifecycle()->request(WorkerDisposition::Terminate);
+                    if (! $emitter->emit($session->context(), $session->handledRequests(), $result->response(), $request)) {
+                        $session->lifecycle()->request(WorkerDisposition::Terminate);
+                    }
+                } finally {
+                    $result->finalizeScope();
                 }
             });
 

@@ -25,7 +25,7 @@ final class ExceptionValidateCommand extends Command
 
     public function usage(): string
     {
-        return 'exceptions:validate [--json]';
+        return 'exceptions:validate [--json] [--require-published-config]';
     }
 
     public function category(): string
@@ -37,6 +37,7 @@ final class ExceptionValidateCommand extends Command
     {
         return [
             '--json' => 'Emite un payload JSON estable con el resultado de validacion.',
+            '--require-published-config' => 'Exige configuracion publicada consistente antes de resolver la aplicacion.',
         ];
     }
 
@@ -93,6 +94,6 @@ final class ExceptionValidateCommand extends Command
             }
 
             return $exitCode;
-        });
+        }, requirePublishedConfig: $input->hasOption('require-published-config'));
     }
 }

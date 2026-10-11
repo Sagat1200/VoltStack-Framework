@@ -20,6 +20,7 @@ final readonly class RecoveryAuditEvent
     public const ACTION_PASSWORD_REUSE = 'recovery_password_reuse_detected';
     public const ACTION_EVIDENCE_REJECTED = 'recovery_evidence_rejected';
     public const ACTION_COMPLETED = 'recovery_completed';
+    public const ACTION_DELIVERY_ATTEMPTED = 'recovery_delivery_attempted';
 
     /**
      * @param array<string, mixed> $payload

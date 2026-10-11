@@ -25,7 +25,7 @@ final class ContainerDoctorCommand extends Command
 
     public function usage(): string
     {
-        return 'container:doctor [--strict] [--json] [--code=<code>] [--severity=error|warning|info] [--apply-hint] [--limit=<limit>]';
+        return 'container:doctor [--strict] [--json] [--code=<code>] [--severity=error|warning|info] [--apply-hint] [--limit=<limit>] [--require-published-config]';
     }
 
     public function category(): string
@@ -42,6 +42,7 @@ final class ContainerDoctorCommand extends Command
             '--severity=error|warning|info' => 'Filtra la revisión por severidad.',
             '--apply-hint' => 'Emite un “parche sugerido” en formato PHP array para cada remediación (informativo, sin tocar archivos).',
             '--limit=<limit>' => 'Número máximo de servicios por remediación a emitir; 0 desactiva el límite (default 100).',
+            '--require-published-config' => 'Exige configuracion publicada consistente antes de resolver la aplicacion.',
         ];
     }
 
@@ -71,7 +72,7 @@ final class ContainerDoctorCommand extends Command
             }
 
             return 0;
-        });
+        }, requirePublishedConfig: $input->hasOption('require-published-config'));
     }
 
     private function resolveOptionalOption(Input $input, string $name): ?string

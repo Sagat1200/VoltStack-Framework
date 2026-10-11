@@ -34,9 +34,27 @@ final class ContainerGraphInspector
             array_push($issues, ...$serviceIssues);
         }
 
+        foreach ($container->registeredInstances() as $abstract => $instance) {
+            if (array_key_exists($abstract, $services)) {
+                continue;
+            }
+
+            $services[$abstract] = new ServiceNode(
+                abstract: $abstract,
+                lifetime: 'singleton',
+                scopeKind: null,
+                concreteKind: 'object',
+                concreteName: is_object($instance) ? $instance::class : get_debug_type($instance),
+                analyzable: false,
+                dependencies: [],
+                parameters: [],
+            );
+        }
+
         array_push($issues, ...$this->validateResolvableDependencies($services, $aliases));
         array_push($issues, ...$this->validateScopeCaptures($services, $aliases));
         array_push($issues, ...$this->detectRegisteredCycles($services, $aliases));
+        array_push($issues, ...$this->analyzeTransitiveConstructors($services, $aliases));
 
         return new ContainerGraph(
             $services,
@@ -217,6 +235,201 @@ final class ContainerGraphInspector
         }
 
         return $issues;
+    }
+
+    /**
+     * Analiza constructores de clases instanciables no registradas alcanzadas
+     * desde los bindings registrados, para detectar parámetros no resolubles
+     * y cadenas de clases faltantes a profundidad.
+     *
+     * @param array<string, ServiceNode> $services
+     * @param array<string, string> $aliases
+     * @return list<ValidationIssue>
+     */
+    private function analyzeTransitiveConstructors(array $services, array $aliases): array
+    {
+        $issues = [];
+        $reported = [];
+
+        foreach ($services as $service) {
+            if (! $service->analyzable) {
+                continue;
+            }
+
+            foreach ($service->dependencies as $dependency) {
+                $target = $this->normalizeAbstract($dependency->abstract, $aliases);
+
+                if (array_key_exists($target, $services)) {
+                    continue;
+                }
+
+                $visited = [];
+
+                $this->walkTransitiveConstructor(
+                    rootService: $service->abstract,
+                    className: $target,
+                    services: $services,
+                    aliases: $aliases,
+                    activePath: [$service->abstract],
+                    visited: $visited,
+                    reported: $reported,
+                    issues: $issues,
+                );
+            }
+        }
+
+        return $issues;
+    }
+
+    /**
+     * @param array<string, ServiceNode> $services
+     * @param array<string, string> $aliases
+     * @param list<string> $activePath
+     * @param array<string, bool> $visited
+     * @param array<string, bool> $reported
+     * @param list<ValidationIssue> $issues
+     */
+    private function walkTransitiveConstructor(
+        string $rootService,
+        string $className,
+        array $services,
+        array $aliases,
+        array $activePath,
+        array &$visited,
+        array &$reported,
+        array &$issues,
+    ): void {
+        $cyclePosition = array_search($className, $activePath, true);
+
+        if ($cyclePosition !== false) {
+            $cycle = array_slice($activePath, $cyclePosition);
+            $cycle[] = $className;
+            $signature = 'cycle|' . $this->cycleSignature($cycle);
+
+            if (($reported[$signature] ?? false) === false) {
+                $reported[$signature] = true;
+                $issues[] = new ValidationIssue(
+                    'dependency_cycle',
+                    sprintf(
+                        'A static dependency cycle was detected through unregistered classes: %s.',
+                        implode(' -> ', $cycle),
+                    ),
+                    $rootService,
+                    implode(' -> ', $cycle),
+                    phase: 'cycle_detection',
+                    consumer: $rootService,
+                    origin: 'constructor',
+                    path: $cycle,
+                    remediation: 'Break the constructor cycle with an orchestrator, provider, or explicit deferred boundary.',
+                );
+            }
+
+            return;
+        }
+
+        if (($visited[$className] ?? false) === true) {
+            return;
+        }
+
+        if (! class_exists($className)) {
+            $signature = $rootService . '|' . $className . '|missing_class';
+
+            if (! ($reported[$signature] ?? false)) {
+                $reported[$signature] = true;
+                $issues[] = new ValidationIssue(
+                    'missing_class',
+                    sprintf(
+                        'Service [%s] transitively depends on [%s], but that class does not exist.',
+                        $rootService,
+                        $className,
+                    ),
+                    $rootService,
+                    $className,
+                    phase: 'autowiring',
+                    consumer: $rootService,
+                    origin: 'constructor',
+                    path: [...$activePath, $className],
+                    remediation: 'Register the missing class or update the constructor type hint to an existing, instantiable target.',
+                );
+            }
+
+            return;
+        }
+
+        $reflector = new ReflectionClass($className);
+
+        if (! $reflector->isInstantiable()) {
+            $visited[$className] = true;
+
+            return;
+        }
+
+        $constructor = $reflector->getConstructor();
+
+        if ($constructor === null) {
+            $visited[$className] = true;
+
+            return;
+        }
+
+        $visited[$className] = true;
+
+        foreach ($constructor->getParameters() as $parameter) {
+            $type = $parameter->getType();
+
+            if ($type instanceof ReflectionNamedType && ! $type->isBuiltin()) {
+                $dependencyName = $type->getName();
+                $normalized = $this->normalizeAbstract($dependencyName, $aliases);
+
+                if (array_key_exists($normalized, $services)) {
+                    continue;
+                }
+
+                $nextPath = [...$activePath, $className];
+
+                $this->walkTransitiveConstructor(
+                    rootService: $rootService,
+                    className: $dependencyName,
+                    services: $services,
+                    aliases: $aliases,
+                    activePath: $nextPath,
+                    visited: $visited,
+                    reported: $reported,
+                    issues: $issues,
+                );
+
+                continue;
+            }
+
+            if ($parameter->isDefaultValueAvailable()) {
+                continue;
+            }
+
+            $signature = $rootService . '|' . $className . '|$' . $parameter->getName();
+
+            if (($reported[$signature] ?? false) === true) {
+                continue;
+            }
+
+            $reported[$signature] = true;
+            $issues[] = new ValidationIssue(
+                'unresolvable_parameter',
+                sprintf(
+                    'Service [%s] transitively reaches [%s], whose constructor parameter [$%s] cannot be resolved statically.',
+                    $rootService,
+                    $className,
+                    $parameter->getName(),
+                ),
+                $rootService,
+                '$' . $parameter->getName(),
+                phase: 'autowiring',
+                consumer: $rootService,
+                parameter: '$' . $parameter->getName(),
+                origin: 'constructor',
+                path: [...$activePath, $className],
+                remediation: 'Provide a default value, contextual parameter, factory, or register the intermediate class as a binding.',
+            );
+        }
     }
 
     /**

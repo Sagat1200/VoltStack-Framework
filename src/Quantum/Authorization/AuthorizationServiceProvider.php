@@ -23,6 +23,7 @@ use Quantum\Authorization\Console\Commands\AuthorizationAuthorityRevokeCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationDelegationGrantCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationDelegationListCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationDelegationRevokeCommand;
+use Quantum\Authorization\Console\Commands\AuthorizationAdaptiveTuneCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationManifestClearCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationManifestCompileCommand;
 use Quantum\Authorization\Console\Commands\AuthorizationRelationshipsListCommand;
@@ -50,6 +51,7 @@ use Quantum\Authorization\Core\AuthorizationManager;
 use Quantum\Authorization\Core\AuthorizationPlanner;
 use Quantum\Authorization\Core\AuthorizationRequestFactory;
 use Quantum\Authorization\Core\Stages\AdaptiveAccessStage;
+use Quantum\Authorization\Core\Stages\AdaptiveAccessRuntimeConfig;
 use Quantum\Authorization\Core\Stages\GateAuthorizationStage;
 use Quantum\Authorization\Core\Stages\ManifestRequirementsEnforcementStage;
 use Quantum\Authorization\Core\Stages\PolicyAuthorizationStage;
@@ -166,6 +168,8 @@ final class AuthorizationServiceProvider extends ServiceProvider
         $this->app->scoped(RelationshipEvaluator::class, function (Application $app): RelationshipEvaluator {
             return new RelationshipEvaluator($app->make(RelationshipRepositoryInterface::class));
         });
+        $this->app->scoped(AdaptiveAccessRuntimeConfig::class);
+
         $this->app->scoped(AdaptiveAccessStage::class, function (Application $app): AdaptiveAccessStage {
             $config = $app->config('authorization.adaptive_access', []);
             $config = is_array($config) ? $config : [];
@@ -174,6 +178,14 @@ final class AuthorizationServiceProvider extends ServiceProvider
             $scoreKeys = is_array($config['score_attribute_keys'] ?? null) ? $config['score_attribute_keys'] : ['auth_risk_score', 'risk_score', 'risk.score'];
             $levelKeys = is_array($config['level_attribute_keys'] ?? null) ? $config['level_attribute_keys'] : ['auth_risk_level', 'risk_level', 'risk.level'];
             $methods = is_array($challenge['available_methods'] ?? null) ? $challenge['available_methods'] : [];
+            $policies = is_array($config['policies'] ?? null) ? $config['policies'] : null;
+
+            $runtimeConfig = null;
+            try {
+                $runtimeConfig = $app->make(AdaptiveAccessRuntimeConfig::class);
+            } catch (\Throwable) {
+                $runtimeConfig = null;
+            }
 
             return new AdaptiveAccessStage(
                 enabled: $this->booleanOf($config['enabled'] ?? false),
@@ -188,6 +200,9 @@ final class AuthorizationServiceProvider extends ServiceProvider
                 continuationEndpoint: is_string($challenge['continuation_endpoint'] ?? null) && trim((string) $challenge['continuation_endpoint']) !== '' ? trim((string) $challenge['continuation_endpoint']) : null,
                 requiredStrengthName: is_string($challenge['required_strength_name'] ?? null) && trim((string) $challenge['required_strength_name']) !== '' ? trim((string) $challenge['required_strength_name']) : null,
                 requiredStrengthValue: $this->nullableInt($challenge['required_strength_value'] ?? null),
+                policies: $policies,
+                allowThreshold: $this->nullableInt($config['allow_threshold'] ?? null),
+                runtimeConfig: $runtimeConfig,
             );
         });
         $this->app->scoped(ManifestRequirementsEnforcementStage::class, function (Application $app): ManifestRequirementsEnforcementStage {
@@ -766,6 +781,7 @@ final class AuthorizationServiceProvider extends ServiceProvider
             AuthorizationDelegationListCommand::class,
             AuthorizationDelegationGrantCommand::class,
             AuthorizationDelegationRevokeCommand::class,
+            AuthorizationAdaptiveTuneCommand::class,
         ];
     }
 
@@ -798,6 +814,8 @@ final class AuthorizationServiceProvider extends ServiceProvider
                 'level_attribute_keys' => ['auth_risk_level', 'risk_level', 'risk.level'],
                 'step_up_threshold' => null,
                 'deny_threshold' => null,
+                'allow_threshold' => null,
+                'policies' => [],
                 'challenge' => [
                     'reason_code' => 'auth.step_up_required',
                     'available_methods' => [],
@@ -809,6 +827,15 @@ final class AuthorizationServiceProvider extends ServiceProvider
                 'deny' => [
                     'reason_code' => 'auth.risk_denied',
                 ],
+            ],
+            'adaptive' => [
+                'tune' => [
+                    'enabled' => false,
+                ],
+            ],
+            'delegation' => [
+                'enabled' => false,
+                'default_ttl_seconds' => null,
             ],
             'consistency' => [
                 'enabled' => true,

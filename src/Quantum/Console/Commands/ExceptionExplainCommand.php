@@ -33,6 +33,7 @@ use Quantum\Exceptions\Bridges\Runtime\RuntimeOperation;
 use Quantum\Exceptions\Diagnostics\ExceptionExplainReport;
 use Quantum\Exceptions\Enums\Effect;
 use Quantum\Exceptions\Enums\ReporterReceiptState;
+use Quantum\Exceptions\Enums\SemanticSeverity;
 use Quantum\Exceptions\Model\ReportBudget;
 use Quantum\Exceptions\Model\ReportRecord;
 use Quantum\Exceptions\Model\ReportReceipt;
@@ -63,7 +64,7 @@ final class ExceptionExplainCommand extends Command
 
     public function usage(): string
     {
-        return 'exceptions:explain [--type=validation] [--transport=json] [--json] [--show-receipts] [--matrix] [--effects]';
+        return 'exceptions:explain [--type=validation] [--transport=json] [--json] [--show-receipts] [--matrix] [--effects] [--export-effects=none] [--require-published-config]';
     }
 
     public function category(): string
@@ -80,6 +81,8 @@ final class ExceptionExplainCommand extends Command
             '--show-receipts' => 'Incluye receipts simulados del pipeline de reporting y bloque recovery en la salida.',
             '--matrix' => 'Expande una matriz cross-bridge (json, html, spa, cli, cli-json) con transport/reporting/recovery por cada superficie.',
             '--effects' => 'Agrupa outcomes por efecto (replay, reconcile, abort), diagnostico del bridge runtime (http/job) con FinalizationOutcome y matriz receipts por scope.',
+            '--export-effects=' => 'Con --effects, exporta un solo grupo de efecto (none, replay, reconcile o abort) con contadores de receipts agregados y scopes filtrados.',
+            '--require-published-config' => 'Exige configuracion publicada consistente antes de resolver la aplicacion.',
         ];
     }
 
@@ -92,6 +95,7 @@ final class ExceptionExplainCommand extends Command
                 $showReceipts = $input->hasOption('show-receipts');
                 $matrix = $input->hasOption('matrix');
                 $effects = $input->hasOption('effects');
+                $exportEffects = $effects ? $this->stringOption($input, 'export-effects') : null;
                 $plan = $app->make(ExceptionCompilationPlan::class);
                 $fixture = $this->fixture($type, $transport, $plan);
                 $context = $fixture['context'];
@@ -127,6 +131,13 @@ final class ExceptionExplainCommand extends Command
                     $reportReceipt,
                     $showReceipts || $input->hasOption('json'),
                 );
+
+                $exportSummary = $this->buildDurableExportSummary(
+                    $inspection['semantic']->severity,
+                    $reportReceipt,
+                    $reportingDecision,
+                    $showReceipts || $input->hasOption('json'),
+                );
                 $bridgeMatrix = $matrix
                     ? $this->buildBridgeMatrix($app, $type, $plan, $showReceipts || $input->hasOption('json'), $effects)
                     : [];
@@ -139,6 +150,15 @@ final class ExceptionExplainCommand extends Command
                 $receiptsMatrixByScope = $effects
                     ? $this->buildReceiptsMatrixByScope($serializedReceipts, $descriptor->occurrenceId, $bridgeMatrix)
                     : [];
+                $effectExport = ($effects && $exportEffects !== null)
+                    ? $this->buildEffectExport(
+                        $exportEffects,
+                        $effectMatrix,
+                        $receiptsMatrixByScope,
+                    )
+                    : null;
+
+                $compatDiagnostic = $this->buildCompatDiagnostic($app);
 
                 $report = new ExceptionExplainReport(
                     plan: $plan,
@@ -169,6 +189,9 @@ final class ExceptionExplainCommand extends Command
                     receiptsMatrixByScope: $receiptsMatrixByScope,
                     runtimeDiagnostic: $runtimeDiagnostic,
                     streamConfirmation: $streamConfirmation,
+                    exportSummary: $exportSummary,
+                    effectExport: $effectExport,
+                    compatDiagnostic: $compatDiagnostic,
                 );
                 $payload = [
                     'command' => $this->name(),
@@ -352,6 +375,69 @@ final class ExceptionExplainCommand extends Command
                     }
                 }
 
+                $export = $report['reporting']['export_summary'] ?? null;
+                if (is_array($export)) {
+                    $output->writeln('  Durable delivery:');
+                    $durable = $export['durable_delivery'] ?? [];
+                    $output->writeln(sprintf(
+                        '    attempted=%d acked=%d pending=%d retryable=%d dead_lettered=%d',
+                        (int) ($durable['attempted'] ?? 0),
+                        (int) ($durable['acked'] ?? 0),
+                        (int) ($durable['pending'] ?? 0),
+                        (int) ($durable['retryable'] ?? 0),
+                        (int) ($durable['dead_lettered'] ?? 0),
+                    ));
+                    $targets = is_array($export['export_targets'] ?? null) ? $export['export_targets'] : [];
+                    $output->writeln(sprintf(
+                        '    Exportable: %s | targets: %s',
+                        ($export['exportable'] ?? false) ? 'yes' : 'no',
+                        $targets !== [] ? implode(', ', array_map('strval', $targets)) : '(none)',
+                    ));
+
+                    $sink = $export['emergency_sink'] ?? [];
+                    $output->writeln('  Emergency sink:');
+                    $output->writeln(sprintf(
+                        '    enabled=%s capacity=%d current=%d headroom=%d would_route=%s',
+                        ($sink['enabled'] ?? false) ? 'yes' : 'no',
+                        (int) ($sink['capacity'] ?? 0),
+                        (int) ($sink['current_count'] ?? 0),
+                        (int) ($sink['headroom'] ?? 0),
+                        ($sink['would_route'] ?? false) ? 'yes' : 'no',
+                    ));
+                    if (is_string($sink['reason'] ?? null) && $sink['reason'] !== '') {
+                        $output->writeln(sprintf('    Reason: %s', $sink['reason']));
+                    }
+                }
+
+                $compat = $report['compat'] ?? null;
+                if (is_array($compat)) {
+                    $output->writeln('  Compat:');
+                    $output->writeln(sprintf(
+                        '    Legacy mapper bound: %s%s',
+                        ($compat['legacy_mapper_bound'] ?? false) ? 'yes' : 'no',
+                        is_string($compat['legacy_mapper_class'] ?? null) && $compat['legacy_mapper_class'] !== ''
+                            ? sprintf(' (%s)', $compat['legacy_mapper_class'])
+                            : '',
+                    ));
+                    $output->writeln(sprintf(
+                        '    Semantic mapper: %s',
+                        is_string($compat['semantic_mapper_class'] ?? null) && $compat['semantic_mapper_class'] !== ''
+                            ? $compat['semantic_mapper_class']
+                            : '-',
+                    ));
+                    $output->writeln(sprintf(
+                        '    Scope connected: %s | registry: %s',
+                        ($compat['scope_connected'] ?? false) ? 'yes' : 'no',
+                        is_string($compat['registry_class'] ?? null) && $compat['registry_class'] !== ''
+                            ? $compat['registry_class']
+                            : '-',
+                    ));
+                    $output->writeln(sprintf(
+                        '    Manager uses semantic mapper: %s',
+                        ($compat['manager_uses_semantic_mapper'] ?? false) ? 'yes' : 'no',
+                    ));
+                }
+
                 $output->writeln('  Recovery:');
                 $recovery = $report['recovery']['decision'] ?? null;
                 if (! is_array($recovery)) {
@@ -498,10 +584,41 @@ final class ExceptionExplainCommand extends Command
                         }
                     }
                 }
+                if (is_array($report['effect_export'] ?? null) && $report['effect_export'] !== []) {
+                    $export = $report['effect_export'];
+                    $output->writeln(sprintf('  Exported effect[%s]:', $export['effect'] ?? '?'));
+                    $output->writeln(sprintf(
+                        '    found=%s rows=%s policy_allow=%s',
+                        ($export['found'] ?? false) ? 'yes' : 'no',
+                        $export['rows'] ?? 0,
+                        $export['policy_allow_rows'] ?? 0,
+                    ));
+                    if (is_array($export['bridges'] ?? null) && $export['bridges'] !== []) {
+                        $output->writeln(sprintf('    bridges: %s', implode(',', $export['bridges'])));
+                    }
+                    if (is_array($export['semantic_codes'] ?? null) && $export['semantic_codes'] !== []) {
+                        $output->writeln(sprintf('    semantic_codes: %s', implode(',', $export['semantic_codes'])));
+                    }
+                    if (is_array($export['receipts'] ?? null)) {
+                        $output->writeln(sprintf(
+                            '    receipts: total=%s accepted=%s skipped=%s failed=%s',
+                            $export['receipts']['total'] ?? 0,
+                            $export['receipts']['accepted'] ?? 0,
+                            $export['receipts']['skipped'] ?? 0,
+                            $export['receipts']['failed'] ?? 0,
+                        ));
+                    }
+                    if (is_array($export['scope_ids'] ?? null) && $export['scope_ids'] !== []) {
+                        $output->writeln(sprintf('    scopes: %s', implode(',', $export['scope_ids'])));
+                    }
+                    if (! ($export['found'] ?? true)) {
+                        $output->writeln(sprintf('    reason: %s', $export['reason'] ?? 'effect_not_present'));
+                    }
+                }
             }
 
             return $exitCode;
-        });
+        }, requirePublishedConfig: $input->hasOption('require-published-config'));
     }
 
     private function stringOption(Input $input, string $name): ?string
@@ -1264,6 +1381,76 @@ final class ExceptionExplainCommand extends Command
     }
 
     /**
+     * @param string $effectName
+     * @param list<array<string, mixed>> $effectMatrix
+     * @param array<string, list<array<string, mixed>>> $receiptsMatrixByScope
+     * @return array<string, mixed>
+     */
+    private function buildEffectExport(string $effectName, array $effectMatrix, array $receiptsMatrixByScope): array
+    {
+        $effectRow = null;
+        foreach ($effectMatrix as $row) {
+            if (is_array($row) && ($row['effect'] ?? null) === $effectName) {
+                $effectRow = $row;
+                break;
+            }
+        }
+
+        if (! is_array($effectRow)) {
+            return [
+                'effect' => $effectName,
+                'found' => false,
+                'reason' => 'effect_not_present',
+                'receipts' => [
+                    'total' => 0,
+                    'accepted' => 0,
+                    'skipped' => 0,
+                    'failed' => 0,
+                ],
+                'scopes' => [],
+                'receipts_by_scope' => [],
+            ];
+        }
+
+        $scopeIds = is_array($effectRow['scope_ids'] ?? null) ? array_values($effectRow['scope_ids']) : [];
+        $filteredReceiptsByScope = [];
+        $totals = ['total' => 0, 'accepted' => 0, 'skipped' => 0, 'failed' => 0];
+        foreach ($scopeIds as $scopeId) {
+            if (! is_string($scopeId) || ! isset($receiptsMatrixByScope[$scopeId]) || ! is_array($receiptsMatrixByScope[$scopeId])) {
+                continue;
+            }
+            $scopeReceipts = $receiptsMatrixByScope[$scopeId];
+            $filteredReceiptsByScope[$scopeId] = $scopeReceipts;
+            foreach ($scopeReceipts as $receipt) {
+                if (! is_array($receipt)) {
+                    continue;
+                }
+                $totals['total']++;
+                $state = $receipt['state'] ?? null;
+                if ($state === 'accepted') {
+                    $totals['accepted']++;
+                } elseif ($state === 'skipped') {
+                    $totals['skipped']++;
+                } elseif ($state === 'failed') {
+                    $totals['failed']++;
+                }
+            }
+        }
+
+        return [
+            'effect' => $effectName,
+            'found' => true,
+            'rows' => (int) ($effectRow['rows'] ?? 0),
+            'policy_allow_rows' => (int) ($effectRow['policy_allow_rows'] ?? 0),
+            'bridges' => is_array($effectRow['bridges'] ?? null) ? array_values($effectRow['bridges']) : [],
+            'semantic_codes' => is_array($effectRow['semantic_codes'] ?? null) ? array_values($effectRow['semantic_codes']) : [],
+            'scope_ids' => $scopeIds,
+            'receipts' => $totals,
+            'receipts_by_scope' => $filteredReceiptsByScope,
+        ];
+    }
+
+    /**
      * @param list<array<string, mixed>> $serializedReceipts
      * @param list<array<string, mixed>> $bridgeMatrix
      * @return array<string, list<array<string, mixed>>>
@@ -1589,6 +1776,161 @@ final class ExceptionExplainCommand extends Command
                 'suppression_reasons' => $suppressionReasons,
             ],
             'deduplication' => $deduplication,
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $reportingDecision
+     * @return array{
+     *   exportable: bool,
+     *   export_targets: list<string>,
+     *   durable_delivery: array{attempted:int,acked:int,pending:int,retryable:int,dead_lettered:int},
+     *   emergency_sink: array{enabled:bool,capacity:int,current_count:int,headroom:int,would_route:bool,reason:string}
+     * }|null
+     */
+    private function buildDurableExportSummary(
+        SemanticSeverity $severity,
+        ReportReceipt $receipt,
+        array $reportingDecision,
+        bool $include,
+    ): ?array {
+        if (! $include) {
+            return null;
+        }
+
+        $aliasMap = [
+            StructuredErrorLogReporter::class => 'exceptions.log',
+            EventDispatcherExceptionReporter::class => 'exceptions.events',
+            TelemetryExceptionReporter::class => 'exceptions.telemetry',
+        ];
+
+        $exportTargets = [];
+        $acked = 0;
+        $pending = 0;
+        $retryable = 0;
+        $deadLettered = 0;
+
+        foreach ($receipt->receipts as $r) {
+            $alias = $aliasMap[$r->reporterId] ?? $r->reporterId;
+            match ($r->state) {
+                ReporterReceiptState::Accepted => $acked++,
+                ReporterReceiptState::Failed => $retryable++,
+                ReporterReceiptState::Skipped => $pending++,
+                ReporterReceiptState::Dropped => $deadLettered++,
+            };
+            if ($r->state === ReporterReceiptState::Accepted && ! in_array($alias, $exportTargets, true)) {
+                $exportTargets[] = $alias;
+            }
+        }
+
+        $attempted = count($receipt->receipts);
+        $shouldReport = (bool) ($reportingDecision['should_report'] ?? false);
+        $isCritical = $severity === SemanticSeverity::Critical;
+        $hasFailures = $retryable > 0;
+        $exportable = ($attempted > 0 && $acked > 0) || ($isCritical && ! $shouldReport) || $hasFailures;
+
+        if ($exportTargets === [] && $exportable) {
+            // Si no hubo ack pero el error es crítico, el sink de emergencia es el target.
+            $exportTargets[] = 'emergency.sink';
+        }
+
+        $capacity = 1000;
+        $currentCount = $acked;
+        $headroom = max(0, $capacity - $currentCount);
+
+        $wouldRoute = false;
+        $reason = 'idle';
+        if ($isCritical && ! $shouldReport) {
+            $wouldRoute = true;
+            $reason = 'critical_semantic_suppressed_by_policy';
+        } elseif ($hasFailures) {
+            $wouldRoute = true;
+            $reason = 'reporter_failure_detected';
+        } elseif ($acked > 0) {
+            $wouldRoute = true;
+            $reason = 'primary_delivery_succeeded';
+        }
+
+        return [
+            'exportable' => $exportable,
+            'export_targets' => $exportTargets,
+            'durable_delivery' => [
+                'attempted' => $attempted,
+                'acked' => $acked,
+                'pending' => $pending,
+                'retryable' => $retryable,
+                'dead_lettered' => $deadLettered,
+            ],
+            'emergency_sink' => [
+                'enabled' => true,
+                'capacity' => $capacity,
+                'current_count' => $currentCount,
+                'headroom' => $headroom,
+                'would_route' => $wouldRoute,
+                'reason' => $reason,
+            ],
+        ];
+    }
+
+    /**
+     * Diagnóstico de compatibilidad entre el pipeline nuevo y el contrato legacy.
+     *
+     * @return array{
+     *   legacy_mapper_bound: bool,
+     *   legacy_mapper_class: string|null,
+     *   semantic_mapper_class: string|null,
+     *   scope_connected: bool,
+     *   registry_class: string|null,
+     *   manager_uses_semantic_mapper: bool
+     * }
+     */
+    private function buildCompatDiagnostic(Application $app): array
+    {
+        $legacyBound = false;
+        $legacyClass = null;
+        try {
+            $legacy = $app->make(\Quantum\Exceptions\Contracts\ExceptionMapperInterface::class);
+            $legacyBound = true;
+            $legacyClass = $legacy::class;
+        } catch (\Throwable) {
+            // El legacy mapper no está bound; se mantiene null.
+        }
+
+        $semanticClass = null;
+        try {
+            $semantic = $app->make(\Quantum\Exceptions\Contracts\SemanticExceptionMapperInterface::class);
+            $semanticClass = $semantic::class;
+        } catch (\Throwable) {
+            // Sin mapper semántico.
+        }
+
+        $scopeConnected = false;
+        $registryClass = null;
+        try {
+            $scopeFactory = $app->make(\Quantum\Exceptions\Runtime\ExceptionScopeFactory::class);
+            $scope = $scopeFactory->create();
+            $scopeConnected = true;
+            $registryClass = $scope->registry()::class;
+        } catch (\Throwable) {
+            // Sin scope factory.
+        }
+
+        $managerUsesSemantic = false;
+        try {
+            $manager = $app->make(\Quantum\Exceptions\Contracts\ExceptionManagerInterface::class);
+            // El manager del nuevo pipeline siempre usa el mapper semántico.
+            $managerUsesSemantic = $manager instanceof \Quantum\Exceptions\Core\ExceptionManager;
+        } catch (\Throwable) {
+            // Sin manager.
+        }
+
+        return [
+            'legacy_mapper_bound' => $legacyBound,
+            'legacy_mapper_class' => $legacyClass,
+            'semantic_mapper_class' => $semanticClass,
+            'scope_connected' => $scopeConnected,
+            'registry_class' => $registryClass,
+            'manager_uses_semantic_mapper' => $managerUsesSemantic,
         ];
     }
 

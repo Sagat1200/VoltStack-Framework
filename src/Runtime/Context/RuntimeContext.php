@@ -8,8 +8,6 @@ use Quantum\Http\Request;
 
 final class RuntimeContext
 {
-    private static ?self $current = null;
-
     /**
      * @var array<string, self>
      */
@@ -33,11 +31,25 @@ final class RuntimeContext
 
     public static function current(): ?self
     {
-        self::synchronizeCurrentFromStack();
+        if (self::$activeContextStack === []) {
+            return null;
+        }
 
-        return self::$current;
+        $slotId = self::$activeContextStack[array_key_last(self::$activeContextStack)];
+
+        return self::$activeContexts[$slotId] ?? null;
     }
 
+    public static function has(): bool
+    {
+        return self::current() !== null;
+    }
+
+    /**
+     * @internal Se mantiene para reseteo de estado en pruebas y puentes de
+     * compatibilidad. En ejecucion productiva el contexto activo debe provenir
+     * de {@see self::activate()} y del stack de slots.
+     */
     public static function setCurrent(?self $context): void
     {
         self::$activeContexts = [];
@@ -47,8 +59,6 @@ final class RuntimeContext
             self::$activeContexts['legacy'] = $context;
             self::$activeContextStack[] = 'legacy';
         }
-
-        self::$current = $context;
     }
 
     public static function activate(self $context): string
@@ -57,7 +67,6 @@ final class RuntimeContext
 
         self::$activeContexts[$slotId] = $context;
         self::$activeContextStack[] = $slotId;
-        self::$current = $context;
 
         return $slotId;
     }
@@ -73,8 +82,6 @@ final class RuntimeContext
             self::$activeContextStack,
             static fn (string $activeSlotId): bool => $activeSlotId !== $slotId,
         ));
-
-        self::synchronizeCurrentFromStack();
     }
 
     public function requestId(): string
@@ -108,22 +115,5 @@ final class RuntimeContext
     public function set(string $key, mixed $value): void
     {
         $this->metadata[$key] = $value;
-    }
-
-    private static function synchronizeCurrentFromStack(): void
-    {
-        while (self::$activeContextStack !== []) {
-            $slotId = self::$activeContextStack[array_key_last(self::$activeContextStack)];
-
-            if (isset(self::$activeContexts[$slotId])) {
-                self::$current = self::$activeContexts[$slotId];
-
-                return;
-            }
-
-            array_pop(self::$activeContextStack);
-        }
-
-        self::$current = null;
     }
 }

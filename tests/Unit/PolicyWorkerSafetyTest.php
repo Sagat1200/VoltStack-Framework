@@ -65,7 +65,7 @@ final class PolicyWorkerSafetyTest extends TestCase
         $engine = new HardenedControllerSecurityDecisionEngine($registry, $sandbox);
         $ctx = $this->createContext();
         $target = $this->createTarget();
-        $request = new SecurityEvaluationRequest($ctx, $target, 'read', 'resource:1', []);
+        $request = new SecurityEvaluationRequest($ctx, $target, 'read', 'resource:1', ['policies' => ['policy.fatal']]);
 
         $decision = $engine->decide($request);
 
@@ -140,7 +140,7 @@ final class PolicyWorkerSafetyTest extends TestCase
         };
         $engine = new HardenedControllerSecurityDecisionEngine($registry, $sandbox);
 
-        $decision = $engine->decide(new SecurityEvaluationRequest($this->createContext(), $this->createTarget(), 'read', 'resource:1', []));
+        $decision = $engine->decide(new SecurityEvaluationRequest($this->createContext(), $this->createTarget(), 'read', 'resource:1', ['policies' => ['policy.recursion.driver']]));
 
         self::assertSame(SecurityDecisionEffect::Deny, $decision->effect);
         $allowed = [
@@ -174,9 +174,9 @@ final class PolicyWorkerSafetyTest extends TestCase
         $engine = new HardenedControllerSecurityDecisionEngine($registry, $sandbox);
         $t = $this->createTarget();
 
-        $firstDecision = $engine->decide(new SecurityEvaluationRequest($this->createContext(), $t, 'read', 'r:1', []));
-        $secondDecision = $engine->decide(new SecurityEvaluationRequest($this->createContext(), $t, 'read', 'r:2', []));
-        $thirdDecision = $engine->decide(new SecurityEvaluationRequest($this->createContext(), $t, 'read', 'r:3', []));
+        $firstDecision = $engine->decide(new SecurityEvaluationRequest($this->createContext(), $t, 'read', 'r:1', ['policies' => ['policy.flaky']]));
+        $secondDecision = $engine->decide(new SecurityEvaluationRequest($this->createContext(), $t, 'read', 'r:2', ['policies' => ['policy.flaky']]));
+        $thirdDecision = $engine->decide(new SecurityEvaluationRequest($this->createContext(), $t, 'read', 'r:3', ['policies' => ['policy.flaky']]));
 
         self::assertSame(SecurityDecisionEffect::Deny, $firstDecision->effect);
         self::assertSame(SecurityDecisionEffect::Deny, $secondDecision->effect);
@@ -210,12 +210,17 @@ final class PolicyWorkerSafetyTest extends TestCase
         }
         $registry->freeze();
 
+        $policyIds = [];
+        for ($i = 0; $i < 1000; $i++) {
+            $policyIds[] = 'policy.p' . $i;
+        }
+
         $budget = new ControllerSecurityBudget(maxPolicyEvaluations: 2000);
         $sandbox = new PolicyEvaluationSandbox(perPolicyTimeoutNs: 500_000_000, circuitBreakerThreshold: 9999);
         $engine = new HardenedControllerSecurityDecisionEngine($registry, $sandbox);
         $ctx = $this->createContext($budget);
 
-        $decision = $engine->decide(new SecurityEvaluationRequest($ctx, $this->createTarget(), 'read', 'r:bulk', []));
+        $decision = $engine->decide(new SecurityEvaluationRequest($ctx, $this->createTarget(), 'read', 'r:bulk', ['policies' => $policyIds]));
 
         self::assertSame(SecurityDecisionEffect::Allow, $decision->effect);
         self::assertSame('at_least_one_policy_allowed', $decision->reasonCode);
@@ -246,7 +251,7 @@ final class PolicyWorkerSafetyTest extends TestCase
         $engine = new HardenedControllerSecurityDecisionEngine($registry, $sandbox);
         $ctx = $this->createContext();
 
-        $decision = $engine->decide(new SecurityEvaluationRequest($ctx, $this->createTarget(), 'read', 'r:1', []));
+        $decision = $engine->decide(new SecurityEvaluationRequest($ctx, $this->createTarget(), 'read', 'r:1', ['policies' => ['policy.slow']]));
 
         self::assertSame(SecurityDecisionEffect::Deny, $decision->effect);
         $reasonCodes = [

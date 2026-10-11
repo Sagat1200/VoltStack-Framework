@@ -138,6 +138,7 @@ final class AuthorizationDelegationCommandsTest extends TestCase
             'scope' => 'tenant:acme',
             'type' => 'role',
             'value' => 'editor',
+            'expires_at' => null,
         ], $admin->grants[0] ?? null);
         self::assertStringContainsString('Grant de delegation otorgado', $output->stdout());
     }
@@ -254,6 +255,7 @@ final class AuthorizationDelegationCommandsTest extends TestCase
                 string $grantorId,
                 Role|Permission $grant,
                 Scope|string $scope = Scope::GLOBAL,
+                ?string $expiresAt = null,
             ): bool {
                 if ($grant instanceof Role) {
                     $value = $grant->name;
@@ -270,6 +272,7 @@ final class AuthorizationDelegationCommandsTest extends TestCase
                     'scope' => $scopeValue,
                     'type' => $type,
                     'value' => $value,
+                    'expires_at' => $expiresAt,
                 ];
 
                 return $this->grantReturn;
@@ -299,6 +302,14 @@ final class AuthorizationDelegationCommandsTest extends TestCase
                 ];
 
                 return $this->revokeReturn;
+            }
+
+            public function revokeAllDelegations(
+                ?string $trusteeId = null,
+                ?string $grantorId = null,
+                Scope|string|null $scope = null,
+            ): int {
+                return 0;
             }
         };
     }

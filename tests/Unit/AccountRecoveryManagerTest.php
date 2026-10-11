@@ -31,6 +31,8 @@ use Quantum\Auth\Recovery\RecoveryEvidenceKind;
 use Quantum\Auth\Recovery\RecoveryManager;
 use Quantum\Auth\Recovery\RecoveryPurpose;
 use Quantum\Auth\Recovery\RecoveryRequest;
+use Quantum\Auth\Recovery\RecoveryStepStatus;
+use Quantum\Auth\Recovery\RecoveryTransaction;
 use Quantum\Auth\Sessions\AuthenticationSession;
 use Quantum\Auth\Sessions\AuthenticationSessionId;
 use Quantum\Auth\Tokens\OpaqueAccessToken;
@@ -859,6 +861,12 @@ final class AccountRecoveryManagerTest extends TestCase
             identifier: 'fl-user@example.com',
             transport: 'unit',
         ));
+        $tokenRecord3 = $app->make(\Quantum\Auth\Contracts\RecoveryTokenRepositoryInterface::class)->find(
+            explode('.', $start3->token, 2)[0],
+        );
+        self::assertNotNull($tokenRecord3);
+        self::assertNotNull($tokenRecord3->nonce());
+
         $result = $manager->continueRecovery(new RecoveryContinuationRequest(
             purpose: RecoveryPurpose::FederatedLinkRecovery,
             token: $start3->token,
@@ -872,6 +880,7 @@ final class AccountRecoveryManagerTest extends TestCase
                         [
                             'rp_id' => 'accounts.google.com',
                             'sub' => 'google|user-fl-12345',
+                            'nonce' => $tokenRecord3->nonce(),
                         ],
                     ),
                 ],
@@ -887,6 +896,141 @@ final class AccountRecoveryManagerTest extends TestCase
                 && ($e['purpose'] ?? null) === RecoveryPurpose::FederatedLinkRecovery->value,
         ));
         self::assertNotEmpty($requestedWithFederatedPurpose);
+    }
+
+    public function test_recovery_transaction_tracks_all_steps_on_success(): void
+    {
+        $basePath = $this->createBasePath();
+
+        $app = new Application($basePath);
+        $config = $app->make(ConfigRepository::class);
+        $config->set('auth.recovery.password_reset.expose_token', true);
+        $config->set('auth.providers.local.identities', [
+            [
+                'id' => 7901,
+                'identifier' => 'txn-user@example.com',
+                'password_hash' => password_hash('old-txn-secret', PASSWORD_DEFAULT),
+                'type' => 'user',
+            ],
+        ]);
+
+        $transactionStore = new \Quantum\Auth\Recovery\InMemoryRecoveryTransactionStore();
+
+        $identities = $app->make(IdentityProviderInterface::class);
+        $manager = new RecoveryManager(
+            identities: $identities,
+            passwordPolicy: $app->make(\Quantum\Auth\Contracts\PasswordPolicyInterface::class),
+            mutableIdentities: $app->make(\Quantum\Auth\Contracts\MutableIdentityProviderInterface::class),
+            passwordRehashing: $app->make(\Quantum\Auth\Contracts\PasswordRehashingIdentityProviderInterface::class),
+            tokens: $app->make(\Quantum\Auth\Contracts\RecoveryTokenRepositoryInterface::class),
+            sessions: $app->make(AuthenticationSessionRepositoryInterface::class),
+            opaqueTokens: $app->make(OpaqueTokenRepositoryInterface::class),
+            config: $config,
+            trustedDevices: $app->make(TrustedDeviceRepositoryInterface::class),
+            notifications: $app->make(\Quantum\Auth\Contracts\RecoveryNotificationDispatcherInterface::class),
+            audit: $app->make(\Quantum\Auth\Contracts\RecoveryAuditLoggerInterface::class),
+            evidenceVerifiers: [],
+            passkeys: $app->make(PasskeyCredentialStoreInterface::class),
+            passwordLifecycle: $app->make(PasswordLifecycleAwareProviderInterface::class),
+            governance: $app->make(\Quantum\Auth\Contracts\DistributedPasswordGovernanceProviderInterface::class),
+            transactions: $transactionStore,
+        );
+
+        $start = $manager->begin(new RecoveryRequest(
+            purpose: RecoveryPurpose::PasswordReset,
+            identifier: 'txn-user@example.com',
+            transport: 'unit',
+        ));
+
+        $result = $manager->continueRecovery(new RecoveryContinuationRequest(
+            purpose: RecoveryPurpose::PasswordReset,
+            token: $start->token,
+            newPassword: 'New-txn-pass-123!',
+            transport: 'unit',
+        ));
+
+        self::assertTrue($result->completed);
+
+        $tokenId = explode('.', $start->token, 2)[0];
+        $transaction = $transactionStore->find($tokenId);
+        self::assertNotNull($transaction, 'La transacción debe persistirse tras el recovery');
+        self::assertTrue($transaction->allCompleted(), 'Todos los pasos deben estar completados');
+    }
+
+    public function test_recovery_transaction_rolls_back_pre_commit_steps_on_evidence_failure(): void
+    {
+        $basePath = $this->createBasePath();
+
+        $app = new Application($basePath);
+        $config = $app->make(ConfigRepository::class);
+        $config->set('auth.recovery.password_reset.expose_token', true);
+        $config->set('auth.recovery.evidence.required_kinds', [RecoveryEvidenceKind::MfaTotpCode]);
+        $config->set('auth.mfa.totp.enabled', true);
+        $config->set('auth.providers.local.identities', [
+            [
+                'id' => 7902,
+                'identifier' => 'txn-mfa@example.com',
+                'password_hash' => password_hash('old-txn-mfa', PASSWORD_DEFAULT),
+                'totp_secret' => 'JBSWY3DPEHPK3PXP',
+                'type' => 'user',
+            ],
+        ]);
+
+        $transactionStore = new \Quantum\Auth\Recovery\InMemoryRecoveryTransactionStore();
+
+        $identities = $app->make(IdentityProviderInterface::class);
+        $verifiers = [new MfaRecoveryEvidenceVerifier($identities)];
+        $manager = new RecoveryManager(
+            identities: $identities,
+            passwordPolicy: $app->make(\Quantum\Auth\Contracts\PasswordPolicyInterface::class),
+            mutableIdentities: $app->make(\Quantum\Auth\Contracts\MutableIdentityProviderInterface::class),
+            passwordRehashing: $app->make(\Quantum\Auth\Contracts\PasswordRehashingIdentityProviderInterface::class),
+            tokens: $app->make(\Quantum\Auth\Contracts\RecoveryTokenRepositoryInterface::class),
+            sessions: $app->make(AuthenticationSessionRepositoryInterface::class),
+            opaqueTokens: $app->make(OpaqueTokenRepositoryInterface::class),
+            config: $config,
+            trustedDevices: $app->make(TrustedDeviceRepositoryInterface::class),
+            notifications: $app->make(\Quantum\Auth\Contracts\RecoveryNotificationDispatcherInterface::class),
+            audit: $app->make(\Quantum\Auth\Contracts\RecoveryAuditLoggerInterface::class),
+            evidenceVerifiers: $verifiers,
+            passkeys: $app->make(PasskeyCredentialStoreInterface::class),
+            passwordLifecycle: $app->make(PasswordLifecycleAwareProviderInterface::class),
+            governance: $app->make(\Quantum\Auth\Contracts\DistributedPasswordGovernanceProviderInterface::class),
+            transactions: $transactionStore,
+        );
+
+        $start = $manager->begin(new RecoveryRequest(
+            purpose: RecoveryPurpose::PasswordReset,
+            identifier: 'txn-mfa@example.com',
+            transport: 'unit',
+        ));
+
+        try {
+            $manager->continueRecovery(new RecoveryContinuationRequest(
+                purpose: RecoveryPurpose::PasswordReset,
+                token: $start->token,
+                newPassword: 'New-txn-mfa-123!',
+                transport: 'unit',
+                // Sin evidencia MFA: debe fallar en evidence_verification.
+            ));
+            self::fail('Se esperaba RecoveryEvidenceRejectedException');
+        } catch (RecoveryEvidenceRejectedException) {
+            // esperado
+        }
+
+        $tokenId = explode('.', $start->token, 2)[0];
+        $transaction = $transactionStore->find($tokenId);
+        self::assertNotNull($transaction);
+
+        // evidence_verification debe estar failed.
+        $evidenceStep = $transaction->findStep(RecoveryTransaction::STEP_EVIDENCE_VERIFICATION);
+        self::assertNotNull($evidenceStep);
+        self::assertSame(RecoveryStepStatus::Failed, $evidenceStep->status);
+
+        // token_validation (pre-commit completado) debe estar rolled back.
+        $tokenStep = $transaction->findStep(RecoveryTransaction::STEP_TOKEN_VALIDATION);
+        self::assertNotNull($tokenStep);
+        self::assertSame(RecoveryStepStatus::RolledBack, $tokenStep->status);
     }
 
     private function generateTotpCode(string $base32Secret, int $period = 30, string $algo = 'sha1', int $digits = 6): string

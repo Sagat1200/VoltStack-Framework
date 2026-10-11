@@ -24,7 +24,7 @@ final class MakeViewCommand extends Command
 
     public function usage(): string
     {
-        return 'make:view <name>';
+        return 'make:view <name> [--require-published-config]';
     }
 
     public function category(): string
@@ -39,6 +39,13 @@ final class MakeViewCommand extends Command
         ];
     }
 
+    public function optionsHelp(): array
+    {
+        return [
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de resolver el directorio de vistas.',
+        ];
+    }
+
     public function handle(Input $input, Output $output): int
     {
         $name = $input->arguments()[0] ?? null;
@@ -49,7 +56,7 @@ final class MakeViewCommand extends Command
             return 1;
         }
 
-        $descriptor = $this->buildDescriptor($name);
+        $descriptor = $this->buildDescriptor($name, $input->hasOption('require-published-config'));
         $viewPath = $descriptor['view_path'];
 
         if (is_file($viewPath)) {
@@ -78,7 +85,7 @@ final class MakeViewCommand extends Command
     /**
      * @return array{view_directory: string, view_path: string, view_name: string, title: string}
      */
-    private function buildDescriptor(string $name): array
+    private function buildDescriptor(string $name, bool $requirePublishedConfig = false): array
     {
         $normalized = trim(str_replace(['\\', '.'], '/', $name), '/ ');
         $segments = array_values(array_filter(explode('/', $normalized)));
@@ -87,7 +94,7 @@ final class MakeViewCommand extends Command
             throw new RuntimeException('El nombre de la vista no es valido.');
         }
 
-        $viewDirectory = $this->viewDirectory();
+        $viewDirectory = $this->viewDirectory($requirePublishedConfig);
         $targetDirectory = $viewDirectory;
 
         if (count($segments) > 1) {
@@ -128,7 +135,7 @@ final class MakeViewCommand extends Command
         return $contents;
     }
 
-    private function viewDirectory(): string
+    private function viewDirectory(bool $requirePublishedConfig = false): string
     {
         $bootstrapPath = $this->basePath . DIRECTORY_SEPARATOR . 'bootstrap' . DIRECTORY_SEPARATOR . 'app.php';
 
@@ -136,7 +143,9 @@ final class MakeViewCommand extends Command
             return $this->basePath . DIRECTORY_SEPARATOR . 'resources' . DIRECTORY_SEPARATOR . 'views';
         }
 
-        $app = require $bootstrapPath;
+        $app = $requirePublishedConfig
+            ? $this->bootstrapApplication(true)
+            : require $bootstrapPath;
 
         if (! $app instanceof Application) {
             return $this->basePath . DIRECTORY_SEPARATOR . 'resources' . DIRECTORY_SEPARATOR . 'views';

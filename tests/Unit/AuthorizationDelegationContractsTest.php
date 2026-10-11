@@ -41,6 +41,7 @@ final class AuthorizationDelegationContractsTest extends TestCase
             'type' => 'permission',
             'value' => 'posts.publish',
             'granted_at' => $grantedAt,
+            'expires_at' => null,
         ], $array);
 
         $json = json_encode($grant, JSON_THROW_ON_ERROR);

@@ -14,6 +14,7 @@ final readonly class AdaptiveAccessStage implements AuthorizationEvaluationStage
      * @param list<string> $scoreAttributeKeys
      * @param list<string> $levelAttributeKeys
      * @param list<string> $availableMethods
+     * @param array<string, array{step_up_threshold?:int|null,deny_threshold?:int|null,allow_threshold?:int|null,step_up_reason_code?:string,deny_reason_code?:string}>|null $policies
      */
     public function __construct(
         private bool $enabled = false,
@@ -28,6 +29,9 @@ final readonly class AdaptiveAccessStage implements AuthorizationEvaluationStage
         private ?string $continuationEndpoint = null,
         private ?string $requiredStrengthName = null,
         private ?int $requiredStrengthValue = null,
+        private ?array $policies = null,
+        private ?int $allowThreshold = null,
+        private ?AdaptiveAccessRuntimeConfig $runtimeConfig = null,
     ) {}
 
     public function name(): string
@@ -42,39 +46,76 @@ final readonly class AdaptiveAccessStage implements AuthorizationEvaluationStage
         }
 
         $context = $request->context();
-        $riskScore = $this->extractInt($context->attributes(), $this->scoreAttributeKeys);
+        $attributes = $context->attributes();
+        $riskScore = $this->extractInt($attributes, $this->scoreAttributeKeys);
 
         if ($riskScore === null) {
             return [];
         }
 
-        $riskLevel = $this->extractString($context->attributes(), $this->levelAttributeKeys);
+        $policy = $this->resolvePolicy($request, $attributes);
+
+        $denyThreshold = $policy['deny_threshold'] ?? $this->denyThreshold;
+        $stepUpThreshold = $policy['step_up_threshold'] ?? $this->stepUpThreshold;
+        $allowThreshold = $policy['allow_threshold'] ?? $this->allowThreshold;
+        $denyReasonCode = $policy['deny_reason_code'] ?? $this->denyReasonCode;
+        $stepUpReasonCode = $policy['step_up_reason_code'] ?? $this->stepUpReasonCode;
+        $matchedDimension = $policy['_dimension'] ?? null;
+
+        // Runtime overrides (via authz:adaptive:tune --apply) take precedence over policy/config.
+        if ($this->runtimeConfig !== null) {
+            if ($this->runtimeConfig->denyThreshold() !== null) {
+                $denyThreshold = $this->runtimeConfig->denyThreshold();
+            }
+            if ($this->runtimeConfig->stepUpThreshold() !== null) {
+                $stepUpThreshold = $this->runtimeConfig->stepUpThreshold();
+            }
+            if ($this->runtimeConfig->allowThreshold() !== null) {
+                $allowThreshold = $this->runtimeConfig->allowThreshold();
+            }
+        }
+
+        $riskLevel = $this->extractString($attributes, $this->levelAttributeKeys);
         $baseMetadata = array_filter([
             'risk_score' => $riskScore,
             'risk_level' => $riskLevel,
+            'adaptive_policy_dimension' => $matchedDimension,
         ], static fn (mixed $value): bool => $value !== null);
 
-        if ($this->denyThreshold !== null && $riskScore >= $this->denyThreshold) {
+        if ($allowThreshold !== null && $riskScore <= $allowThreshold) {
             return [
-                DecisionResult::deny(
+                DecisionResult::allow(
                     source: 'authorization.stage:adaptive_access',
-                    reasonCode: $this->denyReasonCode,
+                    reasonCode: 'auth.risk_allow',
                     metadata: $baseMetadata + [
-                        'adaptive_access_action' => 'deny',
-                        'risk_deny_threshold' => $this->denyThreshold,
+                        'adaptive_access_action' => 'allow',
+                        'risk_allow_threshold' => $allowThreshold,
                     ],
                 ),
             ];
         }
 
-        if ($this->stepUpThreshold !== null && $riskScore >= $this->stepUpThreshold) {
+        if ($denyThreshold !== null && $riskScore >= $denyThreshold) {
+            return [
+                DecisionResult::deny(
+                    source: 'authorization.stage:adaptive_access',
+                    reasonCode: $denyReasonCode,
+                    metadata: $baseMetadata + [
+                        'adaptive_access_action' => 'deny',
+                        'risk_deny_threshold' => $denyThreshold,
+                    ],
+                ),
+            ];
+        }
+
+        if ($stepUpThreshold !== null && $riskScore >= $stepUpThreshold) {
             return [
                 DecisionResult::challenge(
                     source: 'authorization.stage:adaptive_access',
-                    reasonCode: $this->stepUpReasonCode,
+                    reasonCode: $stepUpReasonCode,
                     metadata: array_filter($baseMetadata + [
                         'adaptive_access_action' => 'step_up',
-                        'risk_step_up_threshold' => $this->stepUpThreshold,
+                        'risk_step_up_threshold' => $stepUpThreshold,
                         'step_up_available_methods' => $this->availableMethods,
                         'step_up_challenge_endpoint' => $this->challengeEndpoint,
                         'step_up_continuation_endpoint' => $this->continuationEndpoint,
@@ -86,6 +127,80 @@ final readonly class AdaptiveAccessStage implements AuthorizationEvaluationStage
         }
 
         return [];
+    }
+
+    /**
+     * Resuelve la política aplicable por dimensión (específico → general).
+     *
+     * Orden: operation:<name> → canal:<canal> → tenant:<tenant> → global.
+     * La política global se representa por la configuración del constructor
+     * (no requiere entrada en $this->policies).
+     *
+     * @param array<string, mixed> $attributes
+     * @return array<string, mixed>
+     */
+    private function resolvePolicy(AuthorizationRequest $request, array $attributes): array
+    {
+        $policies = is_array($this->policies) ? $this->policies : [];
+
+        $operation = $this->extractOperation($request, $attributes);
+        if ($operation !== null) {
+            $key = 'operation:' . $operation;
+            if (isset($policies[$key]) && is_array($policies[$key])) {
+                return $policies[$key] + ['_dimension' => $key];
+            }
+        }
+
+        $canal = $this->extractCanal($attributes);
+        if ($canal !== null) {
+            $key = 'canal:' . $canal;
+            if (isset($policies[$key]) && is_array($policies[$key])) {
+                return $policies[$key] + ['_dimension' => $key];
+            }
+        }
+
+        $tenant = $this->extractTenant($attributes);
+        if ($tenant !== null) {
+            $key = 'tenant:' . $tenant;
+            if (isset($policies[$key]) && is_array($policies[$key])) {
+                return $policies[$key] + ['_dimension' => $key];
+            }
+        }
+
+        return ['_dimension' => 'global'];
+    }
+
+    /**
+     * @param array<string, mixed> $attributes
+     */
+    private function extractOperation(AuthorizationRequest $request, array $attributes): ?string
+    {
+        try {
+            $name = $request->ability()->name();
+            if (is_string($name) && trim($name) !== '') {
+                return trim($name);
+            }
+        } catch (\Throwable) {
+            // Fall through to attribute lookup.
+        }
+
+        return $this->extractString($attributes, ['authorization.operation', 'operation', 'ability']);
+    }
+
+    /**
+     * @param array<string, mixed> $attributes
+     */
+    private function extractCanal(array $attributes): ?string
+    {
+        return $this->extractString($attributes, ['authorization.canal', 'canal', 'channel']);
+    }
+
+    /**
+     * @param array<string, mixed> $attributes
+     */
+    private function extractTenant(array $attributes): ?string
+    {
+        return $this->extractString($attributes, ['authorization.tenant', 'tenant.id', 'tenant_id']);
     }
 
     /**

@@ -27,7 +27,7 @@ final class ExceptionCatalogCommand extends Command
 
     public function usage(): string
     {
-        return 'exceptions:catalog [--json]';
+        return 'exceptions:catalog [--json] [--require-published-config]';
     }
 
     public function category(): string
@@ -39,6 +39,7 @@ final class ExceptionCatalogCommand extends Command
     {
         return [
             '--json' => 'Emite un payload JSON estable con el catalogo efectivo.',
+            '--require-published-config' => 'Exige configuracion publicada consistente antes de resolver la aplicacion.',
         ];
     }
 
@@ -107,6 +108,6 @@ final class ExceptionCatalogCommand extends Command
             }
 
             return $report === null ? 1 : 0;
-        });
+        }, requirePublishedConfig: $input->hasOption('require-published-config'));
     }
 }

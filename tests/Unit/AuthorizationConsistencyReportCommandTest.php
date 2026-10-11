@@ -116,6 +116,19 @@ final class AuthorizationConsistencyReportCommandTest extends TestCase
                     ],
                 ];
             }
+
+            public function flushMetrics(): array
+            {
+                return [
+                    'bump_counters_by_segment' => [
+                        'authority.global' => 2,
+                        'relationships.principal' => 1,
+                    ],
+                    'last_bump_reasons_by_segment' => [],
+                    'last_bump_timestamps_by_segment' => [],
+                    'total_bumps' => 3,
+                ];
+            }
         };
 
         $app = new Application(sys_get_temp_dir());

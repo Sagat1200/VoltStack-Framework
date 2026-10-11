@@ -766,6 +766,302 @@ PHP
         self::assertStringContainsString('exceptions.log (', $stdout);
     }
 
+    public function test_exception_explain_command_emits_durable_export_summary_with_emergency_sink_shape(): void
+    {
+        $command = new ExceptionExplainCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'exceptions:explain',
+                '--type=internal',
+                '--transport=json',
+                '--json',
+            ]),
+            $output,
+        );
+
+        self::assertSame(0, $exitCode);
+        $decoded = json_decode(trim($output->stdout()), true);
+        self::assertIsArray($decoded);
+        $export = $decoded['report']['reporting']['export_summary'] ?? null;
+        self::assertIsArray($export);
+        self::assertSame(true, $export['exportable'] ?? null);
+        self::assertContains('exceptions.log', $export['export_targets'] ?? []);
+
+        $durable = $export['durable_delivery'] ?? null;
+        self::assertIsArray($durable);
+        self::assertSame(1, $durable['attempted'] ?? null);
+        self::assertSame(1, $durable['acked'] ?? null);
+        self::assertSame(0, $durable['pending'] ?? null);
+        self::assertSame(0, $durable['retryable'] ?? null);
+        self::assertSame(0, $durable['dead_lettered'] ?? null);
+
+        $sink = $export['emergency_sink'] ?? null;
+        self::assertIsArray($sink);
+        self::assertSame(true, $sink['enabled'] ?? null);
+        self::assertSame(1000, $sink['capacity'] ?? null);
+        self::assertSame(1, $sink['current_count'] ?? null);
+        self::assertSame(999, $sink['headroom'] ?? null);
+        self::assertSame(true, $sink['would_route'] ?? null);
+        self::assertSame('primary_delivery_succeeded', $sink['reason'] ?? null);
+    }
+
+    public function test_exception_explain_command_show_receipts_emits_durable_delivery_and_emergency_sink_text_blocks(): void
+    {
+        $command = new ExceptionExplainCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'exceptions:explain',
+                '--type=db_default',
+                '--transport=spa',
+                '--show-receipts',
+            ]),
+            $output,
+        );
+
+        self::assertSame(0, $exitCode);
+        $stdout = $output->stdout();
+        self::assertStringContainsString('Durable delivery:', $stdout);
+        self::assertStringContainsString('attempted=', $stdout);
+        self::assertStringContainsString('acked=', $stdout);
+        self::assertStringContainsString('dead_lettered=', $stdout);
+        self::assertStringContainsString('Exportable:', $stdout);
+        self::assertStringContainsString('Emergency sink:', $stdout);
+        self::assertStringContainsString('capacity=1000', $stdout);
+        self::assertStringContainsString('would_route=yes', $stdout);
+        self::assertStringContainsString('Reason:', $stdout);
+    }
+
+    public function test_exception_explain_command_default_run_has_no_effect_export_key(): void
+    {
+        $command = new ExceptionExplainCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'exceptions:explain',
+                '--type=validation',
+                '--transport=json',
+                '--json',
+            ]),
+            $output,
+        );
+
+        self::assertSame(0, $exitCode);
+        $decoded = json_decode(trim($output->stdout()), true);
+        self::assertIsArray($decoded);
+        $report = $decoded['report'] ?? null;
+        self::assertIsArray($report);
+        self::assertArrayNotHasKey('effect_export', $report);
+    }
+
+    public function test_exception_explain_command_export_effects_none_emits_filtered_export_with_receipt_counters(): void
+    {
+        $command = new ExceptionExplainCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'exceptions:explain',
+                '--type=validation',
+                '--transport=json',
+                '--matrix',
+                '--show-receipts',
+                '--effects',
+                '--export-effects=none',
+                '--json',
+            ]),
+            $output,
+        );
+
+        self::assertSame(0, $exitCode);
+        $decoded = json_decode(trim($output->stdout()), true);
+        self::assertIsArray($decoded);
+        $report = $decoded['report'] ?? null;
+        self::assertIsArray($report);
+        $export = $report['effect_export'] ?? null;
+        self::assertIsArray($export);
+        self::assertSame('none', $export['effect'] ?? null);
+        self::assertSame(true, $export['found'] ?? null);
+        self::assertGreaterThanOrEqual(5, $export['rows'] ?? 0);
+        self::assertArrayHasKey('receipts', $export);
+        self::assertArrayHasKey('total', $export['receipts']);
+        self::assertArrayHasKey('accepted', $export['receipts']);
+        self::assertArrayHasKey('skipped', $export['receipts']);
+        self::assertArrayHasKey('failed', $export['receipts']);
+        self::assertGreaterThanOrEqual(1, $export['receipts']['skipped'] ?? 0);
+        self::assertIsArray($export['scope_ids'] ?? null);
+        self::assertNotSame([], $export['scope_ids']);
+        self::assertIsArray($export['receipts_by_scope'] ?? null);
+    }
+
+    public function test_exception_explain_command_export_effects_abort_cancelled_emits_abort_export(): void
+    {
+        $command = new ExceptionExplainCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'exceptions:explain',
+                '--type=cancelled',
+                '--transport=json',
+                '--matrix',
+                '--show-receipts',
+                '--effects',
+                '--export-effects=abort',
+                '--json',
+            ]),
+            $output,
+        );
+
+        self::assertSame(0, $exitCode);
+        $decoded = json_decode(trim($output->stdout()), true);
+        self::assertIsArray($decoded);
+        $report = $decoded['report'] ?? null;
+        self::assertIsArray($report);
+        $export = $report['effect_export'] ?? null;
+        self::assertIsArray($export);
+        self::assertSame('abort', $export['effect'] ?? null);
+        self::assertSame(true, $export['found'] ?? null);
+        self::assertGreaterThanOrEqual(2, $export['rows'] ?? 0);
+        self::assertContains('runtime_http', (array) ($export['bridges'] ?? []));
+        self::assertContains('runtime_job', (array) ($export['bridges'] ?? []));
+        self::assertContains('operation.cancelled', (array) ($export['semantic_codes'] ?? []));
+    }
+
+    public function test_exception_explain_command_export_effects_missing_group_returns_found_false(): void
+    {
+        $command = new ExceptionExplainCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'exceptions:explain',
+                '--type=validation',
+                '--transport=json',
+                '--matrix',
+                '--effects',
+                '--export-effects=replay',
+                '--json',
+            ]),
+            $output,
+        );
+
+        self::assertSame(0, $exitCode);
+        $decoded = json_decode(trim($output->stdout()), true);
+        self::assertIsArray($decoded);
+        $report = $decoded['report'] ?? null;
+        self::assertIsArray($report);
+        $export = $report['effect_export'] ?? null;
+        self::assertIsArray($export);
+        self::assertSame('replay', $export['effect'] ?? null);
+        self::assertSame(false, $export['found'] ?? null);
+        self::assertSame('effect_not_present', $export['reason'] ?? null);
+        self::assertSame(0, $export['receipts']['total'] ?? null);
+        self::assertSame([], $export['receipts_by_scope'] ?? null);
+    }
+
+    public function test_exception_explain_command_export_effects_emits_text_block(): void
+    {
+        $command = new ExceptionExplainCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'exceptions:explain',
+                '--type=validation',
+                '--transport=json',
+                '--matrix',
+                '--show-receipts',
+                '--effects',
+                '--export-effects=none',
+            ]),
+            $output,
+        );
+
+        self::assertSame(0, $exitCode);
+        $stdout = $output->stdout();
+        self::assertStringContainsString('Exported effect[none]:', $stdout);
+        self::assertStringContainsString('found=yes', $stdout);
+        self::assertStringContainsString('receipts: total=', $stdout);
+        self::assertStringContainsString('skipped=', $stdout);
+        self::assertStringContainsString('scopes:', $stdout);
+    }
+
+    public function test_exception_explain_command_emits_compat_diagnostic_with_legacy_mapper_bound_and_scope_connected(): void
+    {
+        $command = new ExceptionExplainCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'exceptions:explain',
+                '--type=internal',
+                '--transport=json',
+                '--json',
+            ]),
+            $output,
+        );
+
+        self::assertSame(0, $exitCode);
+        $decoded = json_decode(trim($output->stdout()), true);
+        self::assertIsArray($decoded);
+        $compat = $decoded['report']['compat'] ?? null;
+        self::assertIsArray($compat);
+        self::assertSame(true, $compat['legacy_mapper_bound'] ?? null);
+        self::assertSame(
+            \Quantum\Exceptions\Mapping\SemanticBackedExceptionMapper::class,
+            $compat['legacy_mapper_class'] ?? null,
+        );
+        self::assertSame(
+            \Quantum\Exceptions\Mapping\DeterministicSemanticExceptionMapper::class,
+            $compat['semantic_mapper_class'] ?? null,
+        );
+        self::assertSame(true, $compat['scope_connected'] ?? null);
+        self::assertSame(
+            \Quantum\Exceptions\Runtime\OccurrenceRegistry::class,
+            $compat['registry_class'] ?? null,
+        );
+        self::assertSame(true, $compat['manager_uses_semantic_mapper'] ?? null);
+    }
+
+    public function test_exception_explain_command_show_receipts_emits_compat_text_block(): void
+    {
+        $command = new ExceptionExplainCommand($this->basePath);
+        $output = new Output();
+
+        $exitCode = $command->handle(
+            Input::fromArgv([
+                'volt',
+                'exceptions:explain',
+                '--type=validation',
+                '--transport=json',
+                '--show-receipts',
+            ]),
+            $output,
+        );
+
+        self::assertSame(0, $exitCode);
+        $stdout = $output->stdout();
+        self::assertStringContainsString('Compat:', $stdout);
+        self::assertStringContainsString('Legacy mapper bound: yes', $stdout);
+        self::assertStringContainsString('SemanticBackedExceptionMapper', $stdout);
+        self::assertStringContainsString('Scope connected: yes', $stdout);
+        self::assertStringContainsString('OccurrenceRegistry', $stdout);
+        self::assertStringContainsString('Manager uses semantic mapper: yes', $stdout);
+    }
+
     private function writeBootstrapApp(): void
     {
         $escapedBasePath = var_export($this->basePath, true);

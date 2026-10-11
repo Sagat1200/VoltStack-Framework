@@ -501,6 +501,7 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
         $scopeFilter = $this->normalizeOptionalScopeName($filters['scope'] ?? null);
         $typeFilter = strtolower(trim((string) ($filters['type'] ?? 'all')));
         $valueFilter = $this->normalizeOptionalString($filters['value'] ?? null);
+        $includeExpired = (bool) ($filters['include_expired'] ?? false);
 
         $conditions = [];
         $params = [];
@@ -530,14 +531,19 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
             $params[':grant_value'] = $valueFilter;
         }
 
+        if (! $includeExpired) {
+            $conditions[] = '(expires_at IS NULL OR expires_at > :now)';
+            $params[':now'] = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s.u');
+        }
+
         $statement = $this->pdo()->prepare(sprintf(
-            'SELECT trustee_id, grantor_id, scope, grant_type AS type, grant_value AS value, granted_at FROM %s%s ORDER BY trustee_id ASC, grantor_id ASC, scope ASC, type ASC, value ASC',
+            'SELECT trustee_id, grantor_id, scope, grant_type AS type, grant_value AS value, granted_at, expires_at FROM %s%s ORDER BY trustee_id ASC, grantor_id ASC, scope ASC, type ASC, value ASC',
             $this->tables['delegation_grants'],
             $conditions === [] ? '' : ' WHERE ' . implode(' AND ', $conditions),
         ));
         $statement->execute($params);
 
-        /** @var list<array{trustee_id:mixed,grantor_id:mixed,scope:mixed,type:mixed,value:mixed,granted_at:mixed}> $rows */
+        /** @var list<array{trustee_id:mixed,grantor_id:mixed,scope:mixed,type:mixed,value:mixed,granted_at:mixed,expires_at:mixed}> $rows */
         $rows = $statement->fetchAll(PDO::FETCH_ASSOC) ?: [];
 
         return array_map(static function (array $row): array {
@@ -554,6 +560,19 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
                 $grantedAt = null;
             }
 
+            $expiresAt = $row['expires_at'] ?? null;
+            if ($expiresAt instanceof \DateTimeInterface) {
+                $expiresAt = $expiresAt->format(\DateTimeInterface::ATOM);
+            } elseif (is_string($expiresAt) && trim($expiresAt) !== '') {
+                try {
+                    $expiresAt = (new \DateTimeImmutable($expiresAt))->format(\DateTimeInterface::ATOM);
+                } catch (\Throwable) {
+                    $expiresAt = null;
+                }
+            } else {
+                $expiresAt = null;
+            }
+
             return [
                 'trustee_id' => (string) ($row['trustee_id'] ?? ''),
                 'grantor_id' => (string) ($row['grantor_id'] ?? ''),
@@ -561,6 +580,7 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
                 'type' => (string) ($row['type'] ?? ''),
                 'value' => (string) ($row['value'] ?? ''),
                 'granted_at' => $grantedAt,
+                'expires_at' => $expiresAt,
             ];
         }, $rows);
     }
@@ -570,6 +590,7 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
         string $grantorId,
         Role|Permission $grant,
         Scope|string $scope = Scope::GLOBAL,
+        ?string $expiresAt = null,
     ): bool {
         $trusteeId = trim($trusteeId);
         $grantorId = trim($grantorId);
@@ -586,9 +607,11 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
             return false;
         }
 
+        $normalizedExpiresAt = $this->normalizeExpiresAt($expiresAt);
+
         try {
             $statement = $this->pdo()->prepare(sprintf(
-                'INSERT INTO %s (trustee_id, grantor_id, scope, grant_type, grant_value, granted_at) VALUES (:trustee_id, :grantor_id, :scope, :grant_type, :grant_value, :granted_at)',
+                'INSERT INTO %s (trustee_id, grantor_id, scope, grant_type, grant_value, granted_at, expires_at) VALUES (:trustee_id, :grantor_id, :scope, :grant_type, :grant_value, :granted_at, :expires_at)',
                 $this->tables['delegation_grants'],
             ));
             $statement->execute([
@@ -598,6 +621,7 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
                 ':grant_type' => $grantType,
                 ':grant_value' => $grantValue,
                 ':granted_at' => (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s.u'),
+                ':expires_at' => $normalizedExpiresAt,
             ]);
         } catch (\Throwable) {
             return false;
@@ -648,6 +672,80 @@ final class DatabaseAuthorityRepository implements AuthorityAdministrationInterf
         }
 
         return $deleted;
+    }
+
+    public function revokeAllDelegations(
+        ?string $trusteeId = null,
+        ?string $grantorId = null,
+        Scope|string|null $scope = null,
+    ): int {
+        $trusteeId = is_string($trusteeId) ? trim($trusteeId) : null;
+        $grantorId = is_string($grantorId) ? trim($grantorId) : null;
+
+        if (($trusteeId === null || $trusteeId === '') && ($grantorId === null || $grantorId === '')) {
+            return 0;
+        }
+
+        $scopeName = $scope === null ? null : $this->normalizeScopeName($scope);
+
+        $conditions = [];
+        $params = [];
+
+        if ($trusteeId !== null && $trusteeId !== '') {
+            $conditions[] = 'trustee_id = :trustee_id';
+            $params[':trustee_id'] = $trusteeId;
+        }
+
+        if ($grantorId !== null && $grantorId !== '') {
+            $conditions[] = 'grantor_id = :grantor_id';
+            $params[':grantor_id'] = $grantorId;
+        }
+
+        if ($scopeName !== null) {
+            $conditions[] = 'scope = :scope';
+            $params[':scope'] = $scopeName;
+        }
+
+        try {
+            $statement = $this->pdo()->prepare(sprintf(
+                'DELETE FROM %s%s',
+                $this->tables['delegation_grants'],
+                $conditions === [] ? '' : ' WHERE ' . implode(' AND ', $conditions),
+            ));
+            $statement->execute($params);
+        } catch (\Throwable) {
+            return 0;
+        }
+
+        $removed = $statement->rowCount();
+
+        if ($removed > 0) {
+            $bumpPrincipal = $trusteeId ?? $grantorId;
+            $this->consistency?->invalidateAuthority($bumpPrincipal, $scopeName ?? Scope::GLOBAL, 'delegation.revoke_all');
+        }
+
+        return $removed;
+    }
+
+    private function normalizeExpiresAt(?string $expiresAt): ?string
+    {
+        if ($expiresAt === null || trim($expiresAt) === '') {
+            return null;
+        }
+
+        $trimmed = trim($expiresAt);
+
+        $timestamp = strtotime($trimmed);
+        if ($timestamp !== false) {
+            return (new \DateTimeImmutable('@' . $timestamp, new \DateTimeZone('UTC')))->format('Y-m-d H:i:s.u');
+        }
+
+        try {
+            $dt = new \DateTimeImmutable($trimmed, new \DateTimeZone('UTC'));
+            return $dt->format('Y-m-d H:i:s.u');
+        } catch (\Throwable) {
+            return null;
+        }
     }
 
     private function delegationExists(

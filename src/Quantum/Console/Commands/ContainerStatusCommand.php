@@ -247,8 +247,6 @@ final class ContainerStatusCommand extends Command
 
     private function renderHumanReadable(Output $output, ContainerStatusReport $report): void
     {
-        $lifetimes = $report->lifetime_breakdown;
-
         $output->writeln('Container status:');
         $output->writeln(sprintf('  Format: %s', $report->format));
 
@@ -264,9 +262,9 @@ final class ContainerStatusCommand extends Command
         $output->writeln(sprintf('  Analyzable services: %d', $report->analyzableServiceCount));
         $output->writeln(sprintf(
             '  Lifetimes: singleton=%d, scoped=%d, transient=%d',
-            $lifetimes['singleton'],
-            $lifetimes['scoped'],
-            $lifetimes['transient'],
+            $report->singletonCount,
+            $report->scopedCount,
+            $report->transientCount,
         ));
         $output->writeln(sprintf(
             '  Closure bindings: %d',

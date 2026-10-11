@@ -112,6 +112,16 @@ final class AuthorizationConsistencyInvalidateCommandTest extends TestCase
                     'bump_counters_by_segment' => [],
                 ];
             }
+
+            public function flushMetrics(): array
+            {
+                return [
+                    'bump_counters_by_segment' => [],
+                    'last_bump_reasons_by_segment' => [],
+                    'last_bump_timestamps_by_segment' => [],
+                    'total_bumps' => 0,
+                ];
+            }
         };
 
         $app = new Application(sys_get_temp_dir());
@@ -173,6 +183,16 @@ final class AuthorizationConsistencyInvalidateCommandTest extends TestCase
             public function inspect(): array
             {
                 return [];
+            }
+
+            public function flushMetrics(): array
+            {
+                return [
+                    'bump_counters_by_segment' => [],
+                    'last_bump_reasons_by_segment' => [],
+                    'last_bump_timestamps_by_segment' => [],
+                    'total_bumps' => 0,
+                ];
             }
         };
 

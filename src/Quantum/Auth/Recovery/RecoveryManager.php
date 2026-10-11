@@ -19,6 +19,7 @@ use Quantum\Auth\Contracts\RecoveryEvidenceVerifierInterface;
 use Quantum\Auth\Contracts\RecoveryManagerInterface;
 use Quantum\Auth\Contracts\RecoveryNotificationDispatcherInterface;
 use Quantum\Auth\Contracts\RecoveryTokenRepositoryInterface;
+use Quantum\Auth\Contracts\RecoveryTransactionStoreInterface;
 use Quantum\Auth\Contracts\TrustedDeviceRepositoryInterface;
 use Quantum\Auth\Exceptions\RecoveryEvidenceRejectedException;
 use Quantum\Auth\Exceptions\RecoveryPasswordRejectedException;
@@ -51,6 +52,7 @@ final class RecoveryManager implements RecoveryManagerInterface
         private readonly ?PasswordLifecycleAwareProviderInterface $passwordLifecycle = null,
         private readonly ?DistributedPasswordGovernanceProviderInterface $governance = null,
         private readonly ?RecoveryCodeStoreInterface $recoveryCodes = null,
+        private readonly ?RecoveryTransactionStoreInterface $transactions = null,
     ) {}
 
     /**
@@ -135,6 +137,11 @@ final class RecoveryManager implements RecoveryManagerInterface
         $expiresAt = $issuedAt + $this->passwordResetTtlSeconds();
         $deliveryToken = $tokenId . '.' . $secret;
 
+        // Nonce de FederatedLink para replay protection del JWT de evidencia.
+        if (! isset($attributes['nonce']) || ! is_string($attributes['nonce']) || trim($attributes['nonce']) === '') {
+            $attributes['nonce'] = bin2hex(random_bytes(16));
+        }
+
         $this->tokens->save(new PasswordResetTokenRecord(
             id: $tokenId,
             secretHash: $secretHash,
@@ -145,6 +152,10 @@ final class RecoveryManager implements RecoveryManagerInterface
             expiresAt: $expiresAt,
             attributes: $attributes,
         ));
+
+        // Crear transacción multi-step ligada al token para roll-forward
+        // y rollback parcial explicable (solo si hay store configurado).
+        $this->createTransactionForToken($tokenId);
 
         $deliveryDispatched = false;
         if ($purpose === RecoveryPurpose::PasswordReset) {
@@ -296,6 +307,12 @@ final class RecoveryManager implements RecoveryManagerInterface
 
         $deliveryToken = $tokenId . '.' . $secret;
 
+        // Nonce de FederatedLink para replay protection del JWT de evidencia.
+        $attributes = $request->attributes;
+        if (! isset($attributes['nonce']) || ! is_string($attributes['nonce']) || trim($attributes['nonce']) === '') {
+            $attributes['nonce'] = bin2hex(random_bytes(16));
+        }
+
         $this->tokens->save(new PasswordResetTokenRecord(
             id: $tokenId,
             secretHash: $secretHash,
@@ -304,8 +321,11 @@ final class RecoveryManager implements RecoveryManagerInterface
             purpose: $request->purpose,
             issuedAt: $issuedAt,
             expiresAt: $expiresAt,
-            attributes: $request->attributes,
+            attributes: $attributes,
         ));
+
+        // Transacción multi-step ligada al token (roll-forward / rollback).
+        $this->createTransactionForToken($tokenId);
 
         $deliveryDispatched = $this->dispatchPasswordResetRequestedNotification(
             $identity,
@@ -376,6 +396,8 @@ final class RecoveryManager implements RecoveryManagerInterface
         $identity = null;
         $tokenId = null;
         $destination = null;
+        $transaction = null;
+        $currentStep = null;
 
         try {
             [$tokenId, $secret] = $this->parseToken($request->token);
@@ -522,86 +544,92 @@ final class RecoveryManager implements RecoveryManagerInterface
                 throw $exception;
             }
 
-            $evidenceResults = $this->verifyRecoveryEvidences($request, $record, new IdentityReference($identity->identifier(), $identity->type()));
-            $evidenceRejection = array_values(array_filter(
-                $evidenceResults,
-                static fn (array $result): bool => ! ($result['skip'] ?? false) && ! ($result['passed'] ?? false),
-            ));
-
-            if ($evidenceRejection !== []) {
-                $exception = RecoveryEvidenceRejectedException::forResults(
-                    evidenceResults: $evidenceResults,
-                    metadata: [
-                        'recovery_token_id' => $record->id,
-                        'identity_type' => $record->reference->type,
-                        'identity_identifier' => $record->reference->identifier->value,
-                    ],
-                );
-
-                $this->audit(new RecoveryAuditEvent(
-                    eventId: $this->eventId(),
-                    action: RecoveryAuditEvent::ACTION_EVIDENCE_REJECTED,
-                    purpose: $request->purpose,
-                    occurredAt: time(),
-                    identity: new IdentityReference($identity->identifier(), $identity->type()),
-                    recoveryTokenId: $record->id,
-                    transport: $request->transport,
-                    result: 'recovery_evidence_rejected',
-                    payload: [
-                        'evidence_results' => $evidenceResults,
-                    ] + $request->attributes,
-                    correlationId: $request->attributes['correlation_id'] ?? null,
-                ));
-
-                throw $exception;
+            // Cargar transacción multi-step y marcar token_validation como
+            // completado (token, identidad y password baseline verificados).
+            $transaction = $this->loadTransaction($record->id);
+            if ($transaction instanceof RecoveryTransaction) {
+                if (! $transaction->isStepCompleted(RecoveryTransaction::STEP_TOKEN_VALIDATION)) {
+                    $transaction = $transaction->markStepCompleted(RecoveryTransaction::STEP_TOKEN_VALIDATION);
+                    $this->persistTransaction($transaction);
+                }
             }
 
-            $newPassword = trim($request->newPassword);
-            if ($newPassword === '' || ! $this->passwordPolicy->accepts($newPassword)) {
-                $exception = new RecoveryPasswordRejectedException();
+            // Paso evidence_verification: roll-forward si ya completó.
+            $currentStep = RecoveryTransaction::STEP_EVIDENCE_VERIFICATION;
+            $evidenceStepCompleted = $transaction instanceof RecoveryTransaction
+                && $transaction->isStepCompleted(RecoveryTransaction::STEP_EVIDENCE_VERIFICATION);
 
-                $this->audit(new RecoveryAuditEvent(
-                    eventId: $this->eventId(),
-                    action: RecoveryAuditEvent::ACTION_PASSWORD_REJECTED,
-                    purpose: $request->purpose,
-                    occurredAt: time(),
-                    identity: new IdentityReference($identity->identifier(), $identity->type()),
-                    recoveryTokenId: $record->id,
-                    transport: $request->transport,
-                    result: 'password_did_not_meet_policy',
-                    payload: $request->attributes,
-                    correlationId: $request->attributes['correlation_id'] ?? null,
+            if (! $evidenceStepCompleted) {
+                $evidenceResults = $this->verifyRecoveryEvidences($request, $record, new IdentityReference($identity->identifier(), $identity->type()));
+                $evidenceRejection = array_values(array_filter(
+                    $evidenceResults,
+                    static fn (array $result): bool => ! ($result['skip'] ?? false) && ! ($result['passed'] ?? false),
                 ));
 
-                throw $exception;
+                if ($evidenceRejection !== []) {
+                    $exception = RecoveryEvidenceRejectedException::forResults(
+                        evidenceResults: $evidenceResults,
+                        metadata: [
+                            'recovery_token_id' => $record->id,
+                            'identity_type' => $record->reference->type,
+                            'identity_identifier' => $record->reference->identifier->value,
+                        ],
+                    );
+
+                    $this->audit(new RecoveryAuditEvent(
+                        eventId: $this->eventId(),
+                        action: RecoveryAuditEvent::ACTION_EVIDENCE_REJECTED,
+                        purpose: $request->purpose,
+                        occurredAt: time(),
+                        identity: new IdentityReference($identity->identifier(), $identity->type()),
+                        recoveryTokenId: $record->id,
+                        transport: $request->transport,
+                        result: 'recovery_evidence_rejected',
+                        payload: [
+                            'evidence_results' => $evidenceResults,
+                        ] + $request->attributes,
+                        correlationId: $request->attributes['correlation_id'] ?? null,
+                    ));
+
+                    throw $exception;
+                }
+
+                if ($transaction instanceof RecoveryTransaction) {
+                    $transaction = $transaction->markStepCompleted(
+                        RecoveryTransaction::STEP_EVIDENCE_VERIFICATION,
+                        ['evidence_kinds' => array_column($evidenceResults, 'kind')],
+                    );
+                    $this->persistTransaction($transaction);
+                }
             }
 
-            if ($this->passwordPolicy->verify($newPassword, $currentHash)) {
-                $exception = new RecoveryPasswordReuseException();
+            // Paso password_policy: roll-forward si ya completó.
+            $currentStep = RecoveryTransaction::STEP_PASSWORD_POLICY;
+            $passwordPolicyCompleted = $transaction instanceof RecoveryTransaction
+                && $transaction->isStepCompleted(RecoveryTransaction::STEP_PASSWORD_POLICY);
 
-                $this->audit(new RecoveryAuditEvent(
-                    eventId: $this->eventId(),
-                    action: RecoveryAuditEvent::ACTION_PASSWORD_REUSE,
-                    purpose: $request->purpose,
-                    occurredAt: time(),
-                    identity: new IdentityReference($identity->identifier(), $identity->type()),
-                    recoveryTokenId: $record->id,
-                    transport: $request->transport,
-                    result: 'password_matches_current_hash',
-                    payload: $request->attributes,
-                    correlationId: $request->attributes['correlation_id'] ?? null,
-                ));
+            if (! $passwordPolicyCompleted) {
+                $newPassword = trim($request->newPassword);
+                if ($newPassword === '' || ! $this->passwordPolicy->accepts($newPassword)) {
+                    $exception = new RecoveryPasswordRejectedException();
 
-                throw $exception;
-            }
+                    $this->audit(new RecoveryAuditEvent(
+                        eventId: $this->eventId(),
+                        action: RecoveryAuditEvent::ACTION_PASSWORD_REJECTED,
+                        purpose: $request->purpose,
+                        occurredAt: time(),
+                        identity: new IdentityReference($identity->identifier(), $identity->type()),
+                        recoveryTokenId: $record->id,
+                        transport: $request->transport,
+                        result: 'password_did_not_meet_policy',
+                        payload: $request->attributes,
+                        correlationId: $request->attributes['correlation_id'] ?? null,
+                    ));
 
-            if ($this->passwordLifecycle instanceof PasswordLifecycleAwareProviderInterface) {
-                $metadata = $this->passwordLifecycle->passwordLifecycleMetadataFor($identity);
-                $history = is_array($metadata['password_rotation_history'] ?? null)
-                    ? $metadata['password_rotation_history']
-                    : [];
+                    throw $exception;
+                }
 
-                if (! $this->passwordPolicy->checkAgainstHistory($newPassword, $history)) {
+                if ($this->passwordPolicy->verify($newPassword, $currentHash)) {
                     $exception = new RecoveryPasswordReuseException();
 
                     $this->audit(new RecoveryAuditEvent(
@@ -612,15 +640,51 @@ final class RecoveryManager implements RecoveryManagerInterface
                         identity: new IdentityReference($identity->identifier(), $identity->type()),
                         recoveryTokenId: $record->id,
                         transport: $request->transport,
-                        result: 'password_matches_rotation_history',
-                        payload: [
-                            'history_size' => count($history),
-                        ] + $request->attributes,
+                        result: 'password_matches_current_hash',
+                        payload: $request->attributes,
                         correlationId: $request->attributes['correlation_id'] ?? null,
                     ));
 
                     throw $exception;
                 }
+
+                if ($this->passwordLifecycle instanceof PasswordLifecycleAwareProviderInterface) {
+                    $metadata = $this->passwordLifecycle->passwordLifecycleMetadataFor($identity);
+                    $history = is_array($metadata['password_rotation_history'] ?? null)
+                        ? $metadata['password_rotation_history']
+                        : [];
+
+                    if (! $this->passwordPolicy->checkAgainstHistory($newPassword, $history)) {
+                        $exception = new RecoveryPasswordReuseException();
+
+                        $this->audit(new RecoveryAuditEvent(
+                            eventId: $this->eventId(),
+                            action: RecoveryAuditEvent::ACTION_PASSWORD_REUSE,
+                            purpose: $request->purpose,
+                            occurredAt: time(),
+                            identity: new IdentityReference($identity->identifier(), $identity->type()),
+                            recoveryTokenId: $record->id,
+                            transport: $request->transport,
+                            result: 'password_matches_rotation_history',
+                            payload: [
+                                'history_size' => count($history),
+                            ] + $request->attributes,
+                            correlationId: $request->attributes['correlation_id'] ?? null,
+                        ));
+
+                        throw $exception;
+                    }
+                }
+
+                if ($transaction instanceof RecoveryTransaction) {
+                    $transaction = $transaction->markStepCompleted(RecoveryTransaction::STEP_PASSWORD_POLICY);
+                    $this->persistTransaction($transaction);
+                }
+            } else {
+                // Roll-forward: la contraseña ya fue validada en un intento
+                // anterior; recuperamos el valor del request para los pasos
+                // posteriores (credential_persistence la re-usará).
+                $newPassword = trim($request->newPassword);
             }
         } catch (
             RecoveryTokenInvalidException
@@ -629,56 +693,187 @@ final class RecoveryManager implements RecoveryManagerInterface
             | RecoveryPasswordReuseException
             | RecoveryEvidenceRejectedException $exception
         ) {
+            // Rollback parcial de pasos pre-commit completados y marcado
+            // del paso fallido para explicabilidad audit/step-level.
+            if ($transaction instanceof RecoveryTransaction && is_string($currentStep)) {
+                $transaction = $transaction
+                    ->markStepFailed($currentStep, $exception->getMessage())
+                    ->rollbackReversible();
+                $this->persistTransaction($transaction);
+            }
+
             throw $exception;
         }
 
-        $newHash = $this->passwordPolicy->hash($newPassword);
-        if (! $this->passwordRehashing->upgradePasswordHash($identity, $newHash)) {
-            $persistException = new RecoveryPasswordRejectedException('The recovery flow could not persist the new password hash.');
+        // Paso credential_persistence (commit point): roll-forward si ya
+        // completó en un intento anterior (la credencial ya cambió).
+        $credentialPersisted = $transaction instanceof RecoveryTransaction
+            && $transaction->isStepCompleted(RecoveryTransaction::STEP_CREDENTIAL_PERSISTENCE);
+        $newHash = '';
 
-            $this->audit(new RecoveryAuditEvent(
-                eventId: $this->eventId(),
-                action: RecoveryAuditEvent::ACTION_PASSWORD_REJECTED,
-                purpose: $request->purpose,
-                occurredAt: time(),
-                identity: new IdentityReference($identity->identifier(), $identity->type()),
-                recoveryTokenId: $tokenId,
-                transport: $request->transport,
-                result: 'password_hash_persistence_failed',
-                payload: $request->attributes,
-                correlationId: $request->attributes['correlation_id'] ?? null,
-            ));
+        if (! $credentialPersisted) {
+            $newHash = $this->passwordPolicy->hash($newPassword);
+            if (! $this->passwordRehashing->upgradePasswordHash($identity, $newHash)) {
+                $persistException = new RecoveryPasswordRejectedException('The recovery flow could not persist the new password hash.');
 
-            throw $persistException;
+                $this->audit(new RecoveryAuditEvent(
+                    eventId: $this->eventId(),
+                    action: RecoveryAuditEvent::ACTION_PASSWORD_REJECTED,
+                    purpose: $request->purpose,
+                    occurredAt: time(),
+                    identity: new IdentityReference($identity->identifier(), $identity->type()),
+                    recoveryTokenId: $tokenId,
+                    transport: $request->transport,
+                    result: 'password_hash_persistence_failed',
+                    payload: $request->attributes,
+                    correlationId: $request->attributes['correlation_id'] ?? null,
+                ));
+
+                if ($transaction instanceof RecoveryTransaction) {
+                    $transaction = $transaction->markStepFailed(
+                        RecoveryTransaction::STEP_CREDENTIAL_PERSISTENCE,
+                        'password_hash_persistence_failed',
+                    );
+                    $this->persistTransaction($transaction);
+                }
+
+                throw $persistException;
+            }
+
+            if ($transaction instanceof RecoveryTransaction) {
+                $transaction = $transaction->markStepCompleted(RecoveryTransaction::STEP_CREDENTIAL_PERSISTENCE);
+                $this->persistTransaction($transaction);
+            }
         }
 
-        $this->mutableIdentities->clearFailedAuthentication($identity);
-        $this->mutableIdentities->unlock($identity);
+        // Paso state_cleanup (post-commit, best-effort): limpiar estado de
+        // autenticación fallida, desbloquear y guardar recibo de governance.
+        $currentStep = RecoveryTransaction::STEP_STATE_CLEANUP;
+        try {
+            $this->mutableIdentities->clearFailedAuthentication($identity);
+            $this->mutableIdentities->unlock($identity);
+
+            if ($newHash !== '') {
+                $this->governance?->saveRotationReceipt(
+                    identity: $identity,
+                    previousHash: $currentHash,
+                    newHash: $newHash,
+                    rotatedAt: time(),
+                    rotatedByActorSessionPublicId: 'recovery-reset:' . ($tokenId ?? ''),
+                    reason: 'password_reset_recovery',
+                );
+            }
+
+            if ($transaction instanceof RecoveryTransaction) {
+                $transaction = $transaction->markStepCompleted(RecoveryTransaction::STEP_STATE_CLEANUP);
+            }
+        } catch (\Throwable $e) {
+            if ($transaction instanceof RecoveryTransaction) {
+                $transaction = $transaction->markStepFailed(
+                    RecoveryTransaction::STEP_STATE_CLEANUP,
+                    $e->getMessage(),
+                );
+            }
+        }
+        $this->persistTransaction($transaction);
+
+        // Paso session_revocation (post-commit, best-effort, idempotente).
+        $revokedSessions = 0;
+        $tokensRevoked = 0;
+        $trustedDevicesRevoked = 0;
+        $passkeysRevoked = 0;
+        $currentStep = RecoveryTransaction::STEP_SESSION_REVOCATION;
+        try {
+            $revokedSessions = count($this->sessions->listForIdentity($identity));
+            $this->sessions->deleteForIdentity($identity);
+            $tokensRevoked = $this->opaqueTokens->revokeAllForIdentity($identity->type(), (string) $identity->identifier());
+            $trustedDevicesRevoked = $this->revokeTrustedDevicesForIdentity($identity);
+            $passkeysRevoked = $this->revokePasskeysForIdentity($identity, $record->identifier ?? '');
+
+            if ($transaction instanceof RecoveryTransaction) {
+                $transaction = $transaction->markStepCompleted(RecoveryTransaction::STEP_SESSION_REVOCATION, [
+                    'sessions_revoked' => $revokedSessions,
+                    'tokens_revoked' => $tokensRevoked,
+                    'trusted_devices_revoked' => $trustedDevicesRevoked,
+                    'passkeys_revoked' => $passkeysRevoked,
+                ]);
+            }
+        } catch (\Throwable $e) {
+            if ($transaction instanceof RecoveryTransaction) {
+                $transaction = $transaction->markStepFailed(
+                    RecoveryTransaction::STEP_SESSION_REVOCATION,
+                    $e->getMessage(),
+                );
+            }
+        }
+        $this->persistTransaction($transaction);
+
+        // Paso recovery_code_rotation (post-commit, best-effort, idempotente).
+        $recoveryCodesRotated = 0;
+        $currentStep = RecoveryTransaction::STEP_RECOVERY_CODE_ROTATION;
+        try {
+            $recoveryCodesRotated = $this->rotateRecoveryCodesForIdentity($identity);
+
+            if ($transaction instanceof RecoveryTransaction) {
+                $transaction = $transaction->markStepCompleted(
+                    RecoveryTransaction::STEP_RECOVERY_CODE_ROTATION,
+                    ['recovery_codes_rotated' => $recoveryCodesRotated],
+                );
+            }
+        } catch (\Throwable $e) {
+            if ($transaction instanceof RecoveryTransaction) {
+                $transaction = $transaction->markStepFailed(
+                    RecoveryTransaction::STEP_RECOVERY_CODE_ROTATION,
+                    $e->getMessage(),
+                );
+            }
+        }
+        $this->persistTransaction($transaction);
+
+        // Paso notification (post-commit, roll-forward para no duplicar envíos).
+        $notificationDispatched = false;
+        $notificationAlreadyDone = $transaction instanceof RecoveryTransaction
+            && $transaction->isStepCompleted(RecoveryTransaction::STEP_NOTIFICATION);
+        $currentStep = RecoveryTransaction::STEP_NOTIFICATION;
+
+        if ($notificationAlreadyDone) {
+            $notificationDispatched = true;
+        } else {
+            try {
+                $notificationDispatched = $this->dispatchPasswordResetCompletedNotification(
+                    $identity,
+                    $request,
+                    $revokedSessions,
+                    $tokensRevoked,
+                    $trustedDevicesRevoked,
+                    $passkeysRevoked,
+                );
+
+                if ($transaction instanceof RecoveryTransaction) {
+                    $transaction = $transaction->markStepCompleted(
+                        RecoveryTransaction::STEP_NOTIFICATION,
+                        ['notification_dispatched' => $notificationDispatched],
+                    );
+                }
+            } catch (\Throwable $e) {
+                if ($transaction instanceof RecoveryTransaction) {
+                    $transaction = $transaction->markStepFailed(
+                        RecoveryTransaction::STEP_NOTIFICATION,
+                        $e->getMessage(),
+                    );
+                }
+            }
+        }
+        $this->persistTransaction($transaction);
+
+        // Paso token_consumption (final): marca el token como consumido para
+        // evitar reutilización. Se ejecuta siempre (idempotente).
+        $currentStep = RecoveryTransaction::STEP_TOKEN_CONSUMPTION;
         $this->tokens->markConsumed($tokenId ?? '');
+        if ($transaction instanceof RecoveryTransaction) {
+            $transaction = $transaction->markStepCompleted(RecoveryTransaction::STEP_TOKEN_CONSUMPTION);
+        }
 
-        $this->governance?->saveRotationReceipt(
-            identity: $identity,
-            previousHash: $currentHash,
-            newHash: $newHash,
-            rotatedAt: time(),
-            rotatedByActorSessionPublicId: 'recovery-reset:' . ($tokenId ?? ''),
-            reason: 'password_reset_recovery',
-        );
-
-        $revokedSessions = count($this->sessions->listForIdentity($identity));
-        $this->sessions->deleteForIdentity($identity);
-        $tokensRevoked = $this->opaqueTokens->revokeAllForIdentity($identity->type(), (string) $identity->identifier());
-        $trustedDevicesRevoked = $this->revokeTrustedDevicesForIdentity($identity);
-        $passkeysRevoked = $this->revokePasskeysForIdentity($identity, $record->identifier ?? '');
-        $recoveryCodesRotated = $this->rotateRecoveryCodesForIdentity($identity);
-        $notificationDispatched = $this->dispatchPasswordResetCompletedNotification(
-            $identity,
-            $request,
-            $revokedSessions,
-            $tokensRevoked,
-            $trustedDevicesRevoked,
-            $passkeysRevoked,
-        );
         $destination = $this->resolveRecoveryDestination($identity, '');
 
         $this->audit(new RecoveryAuditEvent(
@@ -699,9 +894,16 @@ final class RecoveryManager implements RecoveryManagerInterface
                 'trusted_devices_revoked' => $trustedDevicesRevoked,
                 'passkeys_revoked' => $passkeysRevoked,
                 'recovery_codes_rotated' => $recoveryCodesRotated,
+                'transaction_steps' => $transaction instanceof RecoveryTransaction
+                    ? $transaction->stepsToArray()
+                    : null,
             ] + $request->attributes,
             correlationId: $request->attributes['correlation_id'] ?? null,
         ));
+
+        if ($transaction instanceof RecoveryTransaction) {
+            $this->persistTransaction($transaction);
+        }
 
         return new RecoveryResult(
             completed: true,
@@ -718,6 +920,9 @@ final class RecoveryManager implements RecoveryManagerInterface
                 'recovery_token_id' => $tokenId,
                 'notification_dispatched' => $notificationDispatched,
                 'recovery_codes_rotated' => $recoveryCodesRotated,
+                'transaction_all_completed' => $transaction instanceof RecoveryTransaction
+                    ? $transaction->allCompleted()
+                    : null,
             ],
         );
     }
@@ -836,6 +1041,62 @@ final class RecoveryManager implements RecoveryManagerInterface
         $reference = new IdentityReference($identity->identifier(), $identity->type());
 
         return $this->recoveryCodes->rotateForIdentity($reference);
+    }
+
+    /**
+     * Crea y persiste una transacción multi-step nueva para un token.
+     * No-op si no hay store configurado.
+     */
+    private function createTransactionForToken(string $tokenId): void
+    {
+        if (! $this->transactions instanceof RecoveryTransactionStoreInterface) {
+            return;
+        }
+
+        try {
+            $this->transactions->save(RecoveryTransaction::create($tokenId));
+        } catch (\Throwable) {
+            // Fallos de persistencia de transacción no deben romper el flujo
+            // principal de recuperación; el store es best-effort.
+        }
+    }
+
+    /**
+     * Carga la transacción ligada al token o crea una nueva si no existe
+     * (backward compat con tokens emitidos antes del modelo de transacción).
+     */
+    private function loadTransaction(string $tokenId): ?RecoveryTransaction
+    {
+        if (! $this->transactions instanceof RecoveryTransactionStoreInterface) {
+            return null;
+        }
+
+        $transaction = $this->transactions->find($tokenId);
+        if ($transaction instanceof RecoveryTransaction) {
+            return $transaction;
+        }
+
+        $transaction = RecoveryTransaction::create($tokenId);
+        $this->transactions->save($transaction);
+
+        return $transaction;
+    }
+
+    private function persistTransaction(?RecoveryTransaction $transaction): void
+    {
+        if (! $transaction instanceof RecoveryTransaction) {
+            return;
+        }
+
+        if (! $this->transactions instanceof RecoveryTransactionStoreInterface) {
+            return;
+        }
+
+        try {
+            $this->transactions->save($transaction);
+        } catch (\Throwable) {
+            // Best-effort: no romper el flujo principal.
+        }
     }
 
     private function invalidateTrustedDevices(): bool

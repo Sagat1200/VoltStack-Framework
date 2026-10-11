@@ -302,6 +302,132 @@ final class ContainerGraphInspectorTest extends TestCase
         self::assertArrayHasKey(GraphSingletonRetainsRequest::class, $byService);
         self::assertArrayNotHasKey(GraphSingletonParentOfSingleton::class, $byService);
     }
+
+    public function test_it_reports_transitive_unresolvable_parameters_through_unregistered_concrete_classes(): void
+    {
+        $container = new Container();
+        $container->singleton(GraphTransitiveRoot::class, GraphTransitiveRoot::class);
+
+        $graph = (new ContainerGraphInspector())->inspect($container);
+
+        $issues = array_values(array_filter(
+            $graph->issues(),
+            static fn(object $issue): bool => $issue->code === 'unresolvable_parameter'
+        ));
+
+        $bySubject = [];
+
+        foreach ($issues as $issue) {
+            $bySubject[$issue->subject] = $issue;
+        }
+
+        self::assertArrayHasKey('$token', $bySubject);
+        self::assertSame(GraphTransitiveRoot::class, $bySubject['$token']->service);
+        self::assertSame('autowiring', $bySubject['$token']->phase);
+        self::assertSame(
+            [GraphTransitiveRoot::class, GraphTransitiveIntermediate::class],
+            $bySubject['$token']->path,
+        );
+        self::assertStringContainsString('transitively reaches', $bySubject['$token']->message);
+    }
+
+    public function test_it_reports_transitive_missing_classes_at_depth_two(): void
+    {
+        $container = new Container();
+        $container->singleton(GraphTransitiveToMissing::class, GraphTransitiveToMissing::class);
+
+        $graph = (new ContainerGraphInspector())->inspect($container);
+
+        $issues = array_values(array_filter(
+            $graph->issues(),
+            static fn(object $issue): bool => $issue->code === 'missing_class'
+                && str_contains((string) $issue->message, 'transitively')
+        ));
+
+        self::assertCount(1, $issues);
+        self::assertSame(GraphTransitiveToMissing::class, $issues[0]->service);
+        self::assertSame('Vendor\Missing\Transitive\Service', $issues[0]->subject);
+        self::assertSame(
+            [
+                GraphTransitiveToMissing::class,
+                GraphTransitiveMissingBridge::class,
+                'Vendor\Missing\Transitive\Service',
+            ],
+            $issues[0]->path,
+        );
+        self::assertSame('autowiring', $issues[0]->phase);
+    }
+
+    public function test_it_does_not_duplicate_unresolvable_parameters_for_the_root_service_constructor(): void
+    {
+        $container = new Container();
+        $container->singleton(GraphNeedsScalar::class, GraphNeedsScalar::class);
+
+        $graph = (new ContainerGraphInspector())->inspect($container);
+
+        $issues = array_values(array_filter(
+            $graph->issues(),
+            static fn(object $issue): bool => $issue->code === 'unresolvable_parameter'
+                && $issue->service === GraphNeedsScalar::class
+                && $issue->subject === '$token'
+        ));
+
+        self::assertCount(1, $issues);
+        self::assertStringContainsString('Binding [', $issues[0]->message);
+        self::assertStringNotContainsString('transitively', $issues[0]->message);
+    }
+
+    public function test_it_detects_transitive_dependency_cycles_between_unregistered_classes(): void
+    {
+        $container = new Container();
+        $container->singleton(GraphTransitiveCycleRoot::class, GraphTransitiveCycleRoot::class);
+
+        $graph = (new ContainerGraphInspector())->inspect($container);
+
+        $issues = array_values(array_filter(
+            $graph->issues(),
+            static fn(object $issue): bool => $issue->code === 'dependency_cycle'
+                && $issue->service === GraphTransitiveCycleRoot::class
+        ));
+
+        self::assertCount(1, $issues);
+        self::assertSame('cycle_detection', $issues[0]->phase);
+        self::assertSame(
+            [
+                GraphTransitiveCycleA::class,
+                GraphTransitiveCycleB::class,
+                GraphTransitiveCycleA::class,
+            ],
+            $issues[0]->path,
+        );
+        self::assertStringContainsString('unregistered classes', $issues[0]->message);
+    }
+
+    public function test_it_detects_transitive_three_node_cycles_between_unregistered_classes(): void
+    {
+        $container = new Container();
+        $container->singleton(GraphTransitiveThreeCycleRoot::class, GraphTransitiveThreeCycleRoot::class);
+
+        $graph = (new ContainerGraphInspector())->inspect($container);
+
+        $issues = array_values(array_filter(
+            $graph->issues(),
+            static fn(object $issue): bool => $issue->code === 'dependency_cycle'
+                && $issue->service === GraphTransitiveThreeCycleRoot::class
+        ));
+
+        self::assertCount(1, $issues);
+        self::assertSame('cycle_detection', $issues[0]->phase);
+        self::assertSame(
+            [
+                GraphTransitiveThreeCycleA::class,
+                GraphTransitiveThreeCycleB::class,
+                GraphTransitiveThreeCycleC::class,
+                GraphTransitiveThreeCycleA::class,
+            ],
+            $issues[0]->path,
+        );
+    }
 }
 
 final class GraphDependency
@@ -419,4 +545,81 @@ final class GraphSingletonParentOfSingleton
 
 abstract class GraphAbstractTarget
 {
+}
+
+final class GraphTransitiveIntermediate
+{
+    public function __construct(public readonly string $token)
+    {
+    }
+}
+
+final class GraphTransitiveMissingBridge
+{
+    public function __construct(public readonly \Vendor\Missing\Transitive\Service $missing)
+    {
+    }
+}
+
+final class GraphTransitiveRoot
+{
+    public function __construct(public readonly GraphTransitiveIntermediate $intermediate)
+    {
+    }
+}
+
+final class GraphTransitiveToMissing
+{
+    public function __construct(public readonly GraphTransitiveMissingBridge $bridge)
+    {
+    }
+}
+
+final class GraphTransitiveCycleA
+{
+    public function __construct(public readonly GraphTransitiveCycleB $b)
+    {
+    }
+}
+
+final class GraphTransitiveCycleB
+{
+    public function __construct(public readonly GraphTransitiveCycleA $a)
+    {
+    }
+}
+
+final class GraphTransitiveCycleRoot
+{
+    public function __construct(public readonly GraphTransitiveCycleA $a)
+    {
+    }
+}
+
+final class GraphTransitiveThreeCycleA
+{
+    public function __construct(public readonly GraphTransitiveThreeCycleB $b)
+    {
+    }
+}
+
+final class GraphTransitiveThreeCycleB
+{
+    public function __construct(public readonly GraphTransitiveThreeCycleC $c)
+    {
+    }
+}
+
+final class GraphTransitiveThreeCycleC
+{
+    public function __construct(public readonly GraphTransitiveThreeCycleA $a)
+    {
+    }
+}
+
+final class GraphTransitiveThreeCycleRoot
+{
+    public function __construct(public readonly GraphTransitiveThreeCycleA $a)
+    {
+    }
 }

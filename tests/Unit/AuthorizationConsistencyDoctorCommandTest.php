@@ -131,6 +131,23 @@ final class AuthorizationConsistencyDoctorCommandTest extends TestCase
                     ],
                 ];
             }
+
+            public function flushMetrics(): array
+            {
+                return [
+                    'bump_counters_by_segment' => [
+                        'authority.global' => 4,
+                        'relationships.scope' => 2,
+                    ],
+                    'last_bump_reasons_by_segment' => [
+                        'authority.global' => 'secret rotation',
+                    ],
+                    'last_bump_timestamps_by_segment' => [
+                        'authority.global' => '2026-01-02T03:04:05+00:00',
+                    ],
+                    'total_bumps' => 6,
+                ];
+            }
         };
 
         $app = new Application($this->tempBasePath);

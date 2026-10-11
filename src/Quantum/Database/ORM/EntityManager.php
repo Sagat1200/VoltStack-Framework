@@ -34,6 +34,31 @@ final class EntityManager implements EntityManagerInterface
     private array $partialEntities = [];
 
     /**
+     * Second-Level Cache (SLC) V1 — per-EntityManager deterministic hydration
+     * cache.
+     *
+     * Keyed by `"$entityClass::$identifier"` (stringified) and stores the raw
+     * database row (`array<string, mixed>`) as returned by the query layer.
+     * The cache lives strictly within this EntityManager's scope (no shared
+     * state across EntityManagers / requests) and is invalidated on every
+     * write path (flushUpdate evicts, flushDelete evicts, clear wipes) and
+     * refreshed on every explicit refresh().
+     *
+     * Purpose: cross-call-site reuse of already-loaded rows so that a
+     * `find()`, `initializeProxy()` or association batch that runs *after*
+     * the same identifier was loaded by a different code path (or after an
+     * identity-map eviction via `clear()`) can be served without a redundant
+     * SELECT. The identity map (L1) still wins for managed entities that are
+     * currently tracked; the SLC only kicks in when the L1 misses.
+     *
+     * Only FULL rows are cached (never partial rows), so a SLC hit is always
+     * safe to hydrate a complete entity.
+     *
+     * @var array<string, array<string, mixed>>
+     */
+    private array $hydrationCache = [];
+
+    /**
      * Per-EntityManager cache for compiled ORM plans.
      *
      * Readonly on the property level so the reference cannot be swapped; the
@@ -60,6 +85,57 @@ final class EntityManager implements EntityManagerInterface
         $this->proxyInstantiator = new ReflectionAnonymousProxyInstantiator();
     }
 
+    /**
+     * Build the deterministic SLC key for an entity class + identifier.
+     *
+     * The identifier is stringified and the class FQCN is used as the
+     * namespace so two entities of different classes sharing the same
+     * numeric id never collide.
+     *
+     * @param class-string $entityClass
+     */
+    private function hydrationCacheKey(string $entityClass, int|string $identifier): string
+    {
+        return $entityClass . '::' . (string) $identifier;
+    }
+
+    /**
+     * Store a full hydration row in the SLC for later cross-call-site reuse.
+     *
+     * MUST only be called with FULL rows (all mapped columns present). Never
+     * cache partial rows — a SLC hit is hydrated verbatim and a partial row
+     * would leave fields in their default/uninitialized state.
+     *
+     * @param class-string $entityClass
+     * @param array<string, mixed> $row
+     */
+    private function rememberHydrationRow(string $entityClass, int|string $identifier, array $row): void
+    {
+        $this->hydrationCache[$this->hydrationCacheKey($entityClass, $identifier)] = $row;
+    }
+
+    /**
+     * Recall a cached hydration row, or null when the identifier is absent
+     * from the SLC.
+     *
+     * @param class-string $entityClass
+     * @return array<string, mixed>|null
+     */
+    private function recallHydrationRow(string $entityClass, int|string $identifier): ?array
+    {
+        return $this->hydrationCache[$this->hydrationCacheKey($entityClass, $identifier)] ?? null;
+    }
+
+    /**
+     * Remove a single SLC entry (used by write paths: update / delete).
+     *
+     * @param class-string $entityClass
+     */
+    private function evictHydrationRow(string $entityClass, int|string $identifier): void
+    {
+        unset($this->hydrationCache[$this->hydrationCacheKey($entityClass, $identifier)]);
+    }
+
     public function find(string $entityClass, mixed $identifier): ?object
     {
         $metadata = $this->metadata->for($entityClass);
@@ -76,6 +152,19 @@ final class EntityManager implements EntityManagerInterface
             return $managed;
         }
 
+        // SLC V1: if the same row was previously loaded in this EntityManager
+        // scope (by any call site), serve it without a redundant SELECT. The
+        // cached row is always a full row (see rememberHydrationRow contract),
+        // so hydrateManaged is safe.
+        $cachedRow = $this->recallHydrationRow($metadata->className, $key->identifier);
+
+        if ($cachedRow !== null) {
+            $entity = $this->hydrateManaged($metadata, $cachedRow);
+            $this->preloadConfiguredEagerAssociations([$entity], $metadata);
+
+            return $entity;
+        }
+
         $row = $this->queries->table($metadata->table)
             ->where($metadata->identifier->column, $key->identifier)
             ->first();
@@ -83,6 +172,8 @@ final class EntityManager implements EntityManagerInterface
         if ($row === null) {
             return null;
         }
+
+        $this->rememberHydrationRow($metadata->className, $key->identifier, $row);
 
         $entity = $this->hydrateManaged($metadata, $row);
         $this->preloadConfiguredEagerAssociations([$entity], $metadata);
@@ -146,16 +237,27 @@ final class EntityManager implements EntityManagerInterface
         $this->unitOfWork->markProxyStatus($placeholder, ProxyInitializationStatus::Initializing);
 
         try {
-            $row = $this->queries->table($metadata->table)
-                ->where($metadata->identifier->column, $key->identifier)
-                ->first();
+            // SLC V1: if the row was already loaded by another call site in
+            // this scope (e.g. an association batch that hit hydrateManaged
+            // and returned this same placeholder from the identity map
+            // without hydrating it), populate the placeholder from the
+            // cached row instead of issuing a redundant SELECT.
+            $row = $this->recallHydrationRow($metadata->className, $key->identifier);
 
             if ($row === null) {
-                throw new RuntimeException(sprintf(
-                    'Lazy proxy placeholder for entity [%s] with identifier [%s] points to a row that no longer exists.',
-                    $metadata->className,
-                    (string) $key->identifier,
-                ));
+                $row = $this->queries->table($metadata->table)
+                    ->where($metadata->identifier->column, $key->identifier)
+                    ->first();
+
+                if ($row === null) {
+                    throw new RuntimeException(sprintf(
+                        'Lazy proxy placeholder for entity [%s] with identifier [%s] points to a row that no longer exists.',
+                        $metadata->className,
+                        (string) $key->identifier,
+                    ));
+                }
+
+                $this->rememberHydrationRow($metadata->className, $key->identifier, $row);
             }
 
             $metadata->hydrate($row, $placeholder);
@@ -188,6 +290,14 @@ final class EntityManager implements EntityManagerInterface
 
         $key = $metadata->keyFor($row[$metadata->identifier->column]);
         $managed = $this->identityMap->get($key);
+
+        // SLC V1: cache the full row for cross-call-site reuse even when the
+        // identity map already holds an entry. This is the key enabler: a
+        // batch preload that calls hydrateManaged and gets back an existing
+        // Uninitialized placeholder (returned without hydration) still
+        // populates the SLC, so a later initializeProxy() on that same
+        // placeholder can hydrate from the cached row without a query.
+        $this->rememberHydrationRow($metadata->className, $key->identifier, $row);
 
         if ($managed !== null) {
             return $managed;
@@ -360,6 +470,11 @@ final class EntityManager implements EntityManagerInterface
             ));
         }
 
+        // SLC V1: refresh() ALWAYS goes to the database (semantics = reload
+        // fresh state) and then refreshes the SLC entry with the latest row,
+        // so subsequent finds / proxy initializations see the fresh data.
+        $this->rememberHydrationRow($metadata->className, $key->identifier, $row);
+
         $metadata->hydrate($row, $entity);
         $this->identityMap->register($key, $entity);
         $this->unitOfWork->registerManaged($entity, $metadata, $key);
@@ -413,6 +528,12 @@ final class EntityManager implements EntityManagerInterface
     {
         $this->repositories = [];
         $this->partialEntities = [];
+        // SLC V1: the Second-Level Cache deliberately SURVIVES clear(). clear()
+        // only evicts the L1 (identity map + UnitOfWork); the SLC is the
+        // layer that provides cross-call-site reuse exactly when the L1 has been
+        // cleared. Writes (flushUpdate/flushDelete) and refresh() keep the SLC
+        // consistent; raw out-of-band DB mutations are the caller's
+        // responsibility (standard L2-cache semantics).
         $this->identityMap->clear();
         $this->unitOfWork->clear();
     }
@@ -832,8 +953,6 @@ final class EntityManager implements EntityManagerInterface
 
     public function loadToOne(object $entity, string $associationName): ?object
     {
-        $this->assertNoUninitializedProxyAccess($entity, 'loadToOne');
-
         $metadata = $this->metadata->for($entity::class);
         $association = $metadata->association($associationName);
 
@@ -845,45 +964,18 @@ final class EntityManager implements EntityManagerInterface
             ));
         }
 
-        if ($association->isOwningSide()) {
-            $fkValue = $this->associationSourceValue($entity, $association);
-            if ($fkValue === null) {
-                $this->assignAssociationValue($entity, $association, null);
+        // Batch-rescue V1 (DV-DB-039): when the user lazily accesses a to-one
+        // association on this entity, scan every other *managed entity of the
+        // same class* whose association property is still unset (i.e. it went
+        // through `linkLazyLoadableTraitIfUsed` and was therefore flagged as
+        // not-yet-materialized) and load ALL of them in a single batched query
+        // via the already-tested `preloadAssociationBatch` path. This turns
+        // the classic N+1 lazy-access anti-pattern into a 1-query rescue
+        // whenever siblings are present in the same scope.
+        $group = $this->rescueBatchGroup($entity, $metadata, $association);
+        $this->preloadAssociationBatch($group, $metadata, $association);
 
-                return null;
-            }
-
-            $target = $this->find($association->targetEntity, $fkValue);
-            $this->assignAssociationValue($entity, $association, $target);
-
-            return $target;
-        }
-
-        $identifier = $metadata->identifierValue($entity);
-        if ($identifier === null) {
-            throw new RuntimeException(sprintf(
-                'Cannot load inverse to-one association [%s::$%s] on an entity without an identifier.',
-                $metadata->className,
-                $associationName,
-            ));
-        }
-
-        $targetMetadata = $this->metadata->for($association->targetEntity);
-        if ($association->targetColumn === null) {
-            throw new RuntimeException(sprintf(
-                'Association [%s::$%s] has no resolved target column for inverse to-one loading.',
-                $metadata->className,
-                $associationName,
-            ));
-        }
-
-        $row = $this->queries->table($targetMetadata->table)
-            ->where($association->targetColumn, $identifier)
-            ->first();
-        $target = $row !== null ? $this->hydrateManaged($targetMetadata, $row) : null;
-        $this->assignAssociationValue($entity, $association, $target);
-
-        return $target;
+        return $entity->{$associationName};
     }
 
     /**
@@ -891,8 +983,6 @@ final class EntityManager implements EntityManagerInterface
      */
     public function loadToMany(object $entity, string $associationName): array
     {
-        $this->assertNoUninitializedProxyAccess($entity, 'loadToMany');
-
         $metadata = $this->metadata->for($entity::class);
         $association = $metadata->association($associationName);
 
@@ -904,25 +994,73 @@ final class EntityManager implements EntityManagerInterface
             ));
         }
 
-        $identifier = $metadata->identifierValue($entity);
-        if ($identifier === null) {
-            throw new RuntimeException(sprintf(
-                'Cannot load inverse association [%s::$%s] on an entity without an identifier.',
-                $metadata->className,
-                $associationName,
-            ));
+        // Same batch-rescue strategy as loadToOne (see comment above). For a
+        // to-many association the rescue is especially valuable because each
+        // lazy collection load used to cost its own SELECT; now the first
+        // access on any one of the sibling entities hydrates every sibling's
+        // collection in a single batched SELECT.
+        $group = $this->rescueBatchGroup($entity, $metadata, $association);
+        $this->preloadAssociationBatch($group, $metadata, $association);
+
+        return $entity->{$associationName};
+    }
+
+    /**
+     * Build the rescue group for a lazy association access.
+     *
+     * Always includes the triggering entity. Additionally includes every other
+     * managed entity of the *same class* that:
+     *   - is in Initialized proxy state (Uninitialized placeholders are
+     *     excluded: `preloadAssociationBatch` would throw the uninitialized
+     *     guardrail on them, and they cannot contribute an FK/identifier yet),
+     *   - and whose association property is NOT present in the object's
+     *     property table (`unset()` by `linkLazyLoadableTraitIfUsed`), which
+     *     is the canonical signal that the lazy association has not been
+     *     materialized yet. Entities without the trait (or whose association
+     *     was already loaded / explicitly sideloaded) keep their value as-is
+     *     and are NOT touched — preserving 100% backward compatibility.
+     *
+     * @return list<object>
+     */
+    private function rescueBatchGroup(
+        object $entity,
+        EntityMetadata $metadata,
+        EntityAssociationMetadata $association,
+    ): array {
+        $group = [$entity];
+        $seen = [spl_object_id($entity) => true];
+
+        foreach ($this->unitOfWork->managedEntities() as $sibling) {
+            $oid = spl_object_id($sibling);
+            if (isset($seen[$oid])) {
+                continue;
+            }
+
+            if ($sibling::class !== $metadata->className) {
+                continue;
+            }
+
+            // Only rescue fully-initialized siblings. Uninitialized
+            // placeholders cannot participate in a batched FK/identifier
+            // load and would trip the uninitialized guardrail inside
+            // `preloadAssociationBatch`.
+            if ($this->proxyStatusOf($sibling) !== ProxyInitializationStatus::Initialized) {
+                continue;
+            }
+
+            // Canonical "not yet materialized" signal: the association
+            // property was unset by the trait wiring. If the property is
+            // present (no trait, or already loaded/sideloaded) we leave it
+            // untouched — no overwrite, no surprise.
+            if (array_key_exists($association->name, get_object_vars($sibling))) {
+                continue;
+            }
+
+            $group[] = $sibling;
+            $seen[$oid] = true;
         }
 
-        $results = $association->isManyToMany()
-            ? $this->loadManyToManyCollection($association, $identifier)
-            : $this->loadOneToManyCollection($association, $identifier);
-
-        $this->assignAssociationValue($entity, $association, $results);
-        if ($this->contains($entity)) {
-            $this->unitOfWork->snapshotOneToManyCollections($entity, $metadata);
-        }
-
-        return $results;
+        return $group;
     }
 
     /**
@@ -1230,6 +1368,14 @@ final class EntityManager implements EntityManagerInterface
         $this->identityMap->register($key, $entity);
         $this->unitOfWork->synchronize($entity, $key);
 
+        // SLC V1: cache the just-inserted row so a subsequent find() after an
+        // identity-map eviction (clear()) can serve it without a SELECT. The
+        // inserted values use DB column names; ensure the identifier column is
+        // present (it may be auto-generated and absent from $values).
+        $cachedRow = $values;
+        $cachedRow[$metadata->identifier->column] = $key->identifier;
+        $this->rememberHydrationRow($metadata->className, $key->identifier, $cachedRow);
+
         $this->dispatchLifecycle('postPersist', $entity);
     }
 
@@ -1322,6 +1468,13 @@ final class EntityManager implements EntityManagerInterface
             ->where($metadata->identifier->column, $key->identifier)
             ->update($changes);
 
+        // SLC V1: the persisted row in the cache is now stale. Evict it so
+        // any future lookup that misses the identity map (e.g. after clear())
+        // re-queries the database for the freshly persisted state. The
+        // identity map still holds the managed entity, so find() within this
+        // scope keeps returning it without a query.
+        $this->evictHydrationRow($metadata->className, $key->identifier);
+
         $this->synchronizeTrackingState($entity, $key);
 
         $this->dispatchLifecycle('postUpdate', $entity, [
@@ -1341,6 +1494,11 @@ final class EntityManager implements EntityManagerInterface
         $this->queries->table($metadata->table)
             ->where($metadata->identifier->column, $key->identifier)
             ->delete();
+
+        // SLC V1: the row no longer exists in the database; drop the cached
+        // entry so a subsequent find() correctly returns null instead of
+        // serving a ghost row.
+        $this->evictHydrationRow($metadata->className, $key->identifier);
 
         $this->dispatchLifecycle('postRemove', $entity);
 

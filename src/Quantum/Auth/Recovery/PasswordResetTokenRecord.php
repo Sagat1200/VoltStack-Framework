@@ -42,6 +42,24 @@ final readonly class PasswordResetTokenRecord
     }
 
     /**
+     * Nonce de FederatedLink asociado al token, si existe.
+     *
+     * Se almacena en attributes['nonce'] al emitirse el token.
+     * Los tokens emitidos antes de esta funcionalidad devuelven null
+     * (backward compat: sin verificación de nonce).
+     */
+    public function nonce(): ?string
+    {
+        $nonce = $this->attributes['nonce'] ?? null;
+
+        if (! is_string($nonce) || trim($nonce) === '') {
+            return null;
+        }
+
+        return $nonce;
+    }
+
+    /**
      * @return array<string, mixed>
      */
     public function toArray(): array

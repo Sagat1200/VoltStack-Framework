@@ -384,7 +384,10 @@ final class DatabaseOrmFeatureTest extends TestCase
             self::assertSame($loadedComments[1], $sameComments[1]);
 
             $commentBackRef = $loadedComments[0]->post;
-            self::assertNull($commentBackRef);
+            // Batch-rescue V1 (DV-DB-039): the to-many batch loader wires the
+            // inverse `mappedBy` back-reference onto each target comment, so
+            // the bidirectional graph is already consistent after loadToMany.
+            self::assertSame($clearedPost, $commentBackRef);
             $manager->loadToOne($loadedComments[0], 'post');
             self::assertSame($clearedPost, $loadedComments[0]->post);
         } finally {
@@ -2239,6 +2242,225 @@ final class DatabaseOrmFeatureTest extends TestCase
             self::assertInstanceOf(OrmFetchAuthor::class, $queriedAuthor);
             self::assertCount(2, $queriedAuthor->books);
             self::assertInstanceOf(OrmFetchPublisher::class, $queriedAuthor->books[0]->publisher);
+        } finally {
+            $scope->end();
+        }
+    }
+
+    public function test_second_level_cache_serves_cached_row_after_identity_map_eviction(): void
+    {
+        // DV-DB-040: SLC V1 must serve a previously-loaded row from the
+        // per-EntityManager cache after the identity map has been cleared,
+        // avoiding a redundant SELECT. We prove the cache hit by mutating the
+        // underlying DB row directly (bypassing the EM) between the first and
+        // second find(); the second find() must return the OLD cached value,
+        // not the freshly-written DB value.
+        $app = $this->makeApp();
+        $scope = $app->make(ScopeManager::class);
+        $scope->begin(Request::create('/database/orm/slc-hit', 'GET'));
+
+        try {
+            $database = $app->make(DatabaseInterface::class);
+            $database->schema()->create('orm_users', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+                $table->boolean('active');
+            }, true);
+
+            $em = $database->entityManager();
+
+            $user = new OrmUser();
+            $user->name = 'Original Name';
+            $user->active = true;
+            $em->persist($user);
+            $em->flush();
+            $userId = $user->id;
+
+            // First find() loads the row and populates both L1 (identity map)
+            // and SLC.
+            $loaded = $em->find(OrmUser::class, $userId);
+            self::assertSame('Original Name', $loaded->name);
+
+            // Mutate the row directly in the database, bypassing the EM so the
+            // SLC entry is NOT invalidated.
+            $database->table('orm_users')->where('id', $userId)->update(['name' => 'DB Mutated']);
+
+            // clear() wipes the identity map (L1) but MUST preserve the SLC.
+            $em->clear();
+
+            // Second find() must hit the SLC and return the cached value, NOT
+            // re-query the database (which would return 'DB Mutated').
+            $cached = $em->find(OrmUser::class, $userId);
+            self::assertNotNull($cached);
+            self::assertSame('Original Name', $cached->name, 'SLC must serve the cached row after identity-map eviction.');
+        } finally {
+            $scope->end();
+        }
+    }
+
+    public function test_second_level_cache_evicted_after_flush_update_so_fresh_data_is_loaded(): void
+    {
+        // DV-DB-040: a successful flushUpdate must evict the stale SLC entry
+        // so a subsequent find() (after clear()) re-queries the database for
+        // the freshly persisted state. We prove eviction by writing a third
+        // value directly to the DB after flush() and asserting find() returns
+        // that direct value (fresh query), not the value that was in the SLC.
+        $app = $this->makeApp();
+        $scope = $app->make(ScopeManager::class);
+        $scope->begin(Request::create('/database/orm/slc-evict-update', 'GET'));
+
+        try {
+            $database = $app->make(DatabaseInterface::class);
+            $database->schema()->create('orm_users', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+                $table->boolean('active');
+            }, true);
+
+            $em = $database->entityManager();
+
+            $user = new OrmUser();
+            $user->name = 'Original';
+            $user->active = true;
+            $em->persist($user);
+            $em->flush();
+            $userId = $user->id;
+
+            // find() populates SLC with name='Original'.
+            $em->find(OrmUser::class, $userId);
+
+            // Mutate the managed entity and flush -> flushUpdate evicts SLC.
+            $managed = $em->find(OrmUser::class, $userId);
+            $managed->name = 'Persisted Via EM';
+            $em->flush();
+
+            // Directly overwrite the DB row with a third value. If the SLC had
+            // NOT been evicted, find() after clear() would still serve the old
+            // cached value; with eviction it must query and return this value.
+            $database->table('orm_users')->where('id', $userId)->update(['name' => 'Direct After Flush']);
+
+            $em->clear();
+
+            $refreshed = $em->find(OrmUser::class, $userId);
+            self::assertNotNull($refreshed);
+            self::assertSame('Direct After Flush', $refreshed->name, 'flushUpdate must evict the SLC entry so fresh data is loaded.');
+        } finally {
+            $scope->end();
+        }
+    }
+
+    public function test_second_level_cache_evicted_after_flush_delete(): void
+    {
+        // DV-DB-040: a successful flushDelete must evict the SLC entry so a
+        // subsequent find() returns null instead of serving a ghost cached row.
+        $app = $this->makeApp();
+        $scope = $app->make(ScopeManager::class);
+        $scope->begin(Request::create('/database/orm/slc-evict-delete', 'GET'));
+
+        try {
+            $database = $app->make(DatabaseInterface::class);
+            $database->schema()->create('orm_users', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+                $table->boolean('active');
+            }, true);
+
+            $em = $database->entityManager();
+
+            $user = new OrmUser();
+            $user->name = 'To Delete';
+            $user->active = true;
+            $em->persist($user);
+            $em->flush();
+            $userId = $user->id;
+
+            // find() populates SLC.
+            self::assertNotNull($em->find(OrmUser::class, $userId));
+
+            // remove + flush -> flushDelete evicts SLC and removes the row.
+            $em->remove($user);
+            $em->flush();
+
+            // find() must return null (no ghost from SLC).
+            self::assertNull($em->find(OrmUser::class, $userId), 'flushDelete must evict the SLC entry.');
+        } finally {
+            $scope->end();
+        }
+    }
+
+    public function test_second_level_cache_populates_proxy_without_database_query(): void
+    {
+        // DV-DB-040: when a batch preload calls hydrateManaged() for an
+        // identifier whose identity-map entry is still an Uninitialized
+        // placeholder, hydrateManaged() returns the placeholder WITHOUT
+        // hydrating it but DOES cache the row in the SLC. A subsequent
+        // initializeProxy() on that placeholder must hydrate from the cached
+        // row, NOT issue a SELECT. We prove "no query" by mutating the DB row
+        // directly after the batch load but before initializeProxy(); the
+        // proxy must end up with the OLD cached value.
+        $app = $this->makeApp();
+        $scope = $app->make(ScopeManager::class);
+        $scope->begin(Request::create('/database/orm/slc-proxy', 'GET'));
+
+        try {
+            $database = $app->make(DatabaseInterface::class);
+            $database->schema()->create('orm_fetch_authors', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+            }, true);
+            $database->schema()->create('orm_fetch_books', function (TableBlueprint $table): void {
+                $table->id();
+                $table->integer('author_id');
+                $table->integer('publisher_id');
+                $table->string('title');
+            }, true);
+            $database->schema()->create('orm_fetch_publishers', function (TableBlueprint $table): void {
+                $table->id();
+                $table->string('name');
+            }, true);
+
+            $em = $database->entityManager();
+
+            $author = new OrmFetchAuthor();
+            $author->name = 'Cached Author';
+            $em->persist($author);
+
+            $publisher = new OrmFetchPublisher();
+            $publisher->name = 'Pub';
+            $em->persist($publisher);
+
+            $book = new OrmFetchBook();
+            $book->title = 'Some Book';
+            $book->author = $author;
+            $book->publisher = $publisher;
+            $em->persist($book);
+            $em->flush();
+            $authorId = $author->id;
+            $bookId = $book->id;
+            $em->clear();
+
+            // Step 1: obtain an Uninitialized placeholder for the author.
+            $placeholder = $em->getReference(OrmFetchAuthor::class, $authorId);
+            self::assertSame(ProxyInitializationStatus::Uninitialized, $em->proxyStatusOf($placeholder));
+
+            // Step 2: load the book. The book's author association is
+            // fetch=eager, so find() triggers an owning-to-one batch preload
+            // that calls fetchEntitiesByIdentifiers -> hydrateManaged for the
+            // author row. Because the placeholder already occupies the
+            // identity map, hydrateManaged returns the placeholder without
+            // hydrating it, but the row is now cached in the SLC.
+            $em->find(OrmFetchBook::class, $bookId);
+            self::assertSame(ProxyInitializationStatus::Uninitialized, $em->proxyStatusOf($placeholder), 'Placeholder must remain uninitialized after the batch preload.');
+
+            // Step 3: mutate the author row directly in the DB. If
+            // initializeProxy() issued a query it would read this new value.
+            $database->table('orm_fetch_authors')->where('id', $authorId)->update(['name' => 'DB Mutated Author']);
+
+            // Step 4: initialize the proxy. It must hydrate from the SLC row
+            // (old value), not from the database.
+            $em->initializeProxy($placeholder);
+            self::assertSame(ProxyInitializationStatus::Initialized, $em->proxyStatusOf($placeholder));
+            self::assertSame('Cached Author', $placeholder->name, 'initializeProxy must hydrate from the SLC-cached row, not re-query.');
         } finally {
             $scope->end();
         }

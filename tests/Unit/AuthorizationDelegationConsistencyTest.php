@@ -116,6 +116,11 @@ final class AuthorizationDelegationConsistencyTest extends TestCase
             {
                 return $this->inner->inspect();
             }
+
+            public function flushMetrics(): array
+            {
+                return $this->inner->flushMetrics();
+            }
         };
 
         $inspect = $spy->inspect();

@@ -305,6 +305,8 @@ final class ConsoleApplicationTest extends TestCase
         self::assertStringContainsString('--json', $output->stdout());
         self::assertStringContainsString('--show-receipts', $output->stdout());
         self::assertStringContainsString('--matrix', $output->stdout());
+        self::assertStringContainsString('--effects', $output->stdout());
+        self::assertStringContainsString('--export-effects=', $output->stdout());
     }
 
     public function test_it_renders_help_for_exception_release_check_command(): void

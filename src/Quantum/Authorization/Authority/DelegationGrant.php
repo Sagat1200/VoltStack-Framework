@@ -21,10 +21,11 @@ final readonly class DelegationGrant implements \JsonSerializable
         public string $type,
         public string $value,
         public ?string $grantedAt = null,
+        public ?string $expiresAt = null,
     ) {}
 
     /**
-     * @return array{trustee_id:string,grantor_id:string,scope:string,type:string,value:string,granted_at:string|null}
+     * @return array{trustee_id:string,grantor_id:string,scope:string,type:string,value:string,granted_at:string|null,expires_at:string|null}
      */
     public function toArray(): array
     {
@@ -35,7 +36,25 @@ final readonly class DelegationGrant implements \JsonSerializable
             'type' => $this->type,
             'value' => $this->value,
             'granted_at' => $this->grantedAt,
+            'expires_at' => $this->expiresAt,
         ];
+    }
+
+    public function isExpired(?\DateTimeInterface $now = null): bool
+    {
+        if ($this->expiresAt === null) {
+            return false;
+        }
+
+        $now = $now ?? new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+
+        try {
+            $expires = new \DateTimeImmutable($this->expiresAt, new \DateTimeZone('UTC'));
+        } catch (\Throwable) {
+            return false;
+        }
+
+        return $expires <= $now;
     }
 
     public function jsonSerialize(): array

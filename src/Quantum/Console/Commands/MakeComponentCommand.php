@@ -24,7 +24,7 @@ final class MakeComponentCommand extends Command
 
     public function usage(): string
     {
-        return 'make:component <name>';
+        return 'make:component <name> [--require-published-config]';
     }
 
     public function category(): string
@@ -39,6 +39,13 @@ final class MakeComponentCommand extends Command
         ];
     }
 
+    public function optionsHelp(): array
+    {
+        return [
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de resolver los directorios de componentes.',
+        ];
+    }
+
     public function handle(Input $input, Output $output): int
     {
         $name = $input->arguments()[0] ?? null;
@@ -49,7 +56,7 @@ final class MakeComponentCommand extends Command
             return 1;
         }
 
-        $descriptor = $this->buildDescriptor($name);
+        $descriptor = $this->buildDescriptor($name, $input->hasOption('require-published-config'));
         $classPath = $descriptor['class_path'];
         $viewPath = $descriptor['view_path'];
 
@@ -104,7 +111,7 @@ final class MakeComponentCommand extends Command
      *   title: string
      * }
      */
-    private function buildDescriptor(string $name): array
+    private function buildDescriptor(string $name, bool $requirePublishedConfig = false): array
     {
         $normalized = trim(str_replace('/', '\\', $name), '\\ ');
         $segments = array_values(array_filter(explode('\\', $normalized)));
@@ -116,7 +123,7 @@ final class MakeComponentCommand extends Command
         $class = array_pop($segments);
         $class = preg_replace('/\.php$/i', '', (string) $class) ?? (string) $class;
 
-        [$classDirectory, $viewDirectory] = $this->componentDirectories();
+        [$classDirectory, $viewDirectory] = $this->componentDirectories($requirePublishedConfig);
         $namespace = $this->namespaceFromDirectory($classDirectory, 'App\\View\\Components');
         $classTargetDirectory = $classDirectory;
         $viewTargetDirectory = $viewDirectory;
@@ -179,7 +186,7 @@ final class MakeComponentCommand extends Command
     /**
      * @return array{0: string, 1: string}
      */
-    private function componentDirectories(): array
+    private function componentDirectories(bool $requirePublishedConfig = false): array
     {
         $bootstrapPath = $this->basePath . DIRECTORY_SEPARATOR . 'bootstrap' . DIRECTORY_SEPARATOR . 'app.php';
 
@@ -190,7 +197,9 @@ final class MakeComponentCommand extends Command
             ];
         }
 
-        $app = require $bootstrapPath;
+        $app = $requirePublishedConfig
+            ? $this->bootstrapApplication(true)
+            : require $bootstrapPath;
 
         if (! $app instanceof Application) {
             return [

@@ -378,6 +378,88 @@ final class LazyLoadableEntityTraitTest extends TestCase
         }
     }
 
+    public function test_lazy_access_on_one_entity_batch_rescues_other_managed_entities_of_same_class(): void
+    {
+        $app = $this->makeApp();
+        $scope = $app->make(ScopeManager::class);
+        $scope->begin(Request::create('/database/orm/lazy-trait/batch-rescue-nplusone', 'GET'));
+
+        try {
+            $database = $app->make(DatabaseInterface::class);
+            $database->schema()->create('lz_t8_libraries', function (TableBlueprint $t): void {
+                $t->id();
+                $t->string('name');
+            }, true);
+            $database->schema()->create('lz_t8_books', function (TableBlueprint $t): void {
+                $t->id();
+                $t->string('title');
+                $t->integer('library_id');
+            }, true);
+
+            $manager = $database->entityManager();
+            $registry = $app->make(EntityMetadataRegistry::class);
+            $registry->for(LzT8BookWithTrait::class);
+            $registry->for(LzT8Library::class);
+
+            $library = new LzT8Library();
+            $library->name = 'Central Library';
+            $manager->persist($library);
+            $manager->flush();
+
+            $bookIds = [];
+            for ($i = 1; $i <= 3; $i++) {
+                $book = new LzT8BookWithTrait();
+                $book->title = "Book {$i}";
+                $book->library = $library;
+                $manager->persist($book);
+                $manager->flush();
+                $bookIds[] = $book->id;
+            }
+            $manager->clear();
+
+            // Load all 3 books as managed entities. Because they use the trait
+            // and `library` is `fetch: lazy`, the wiring unsets the `library`
+            // property on every managed instance (canonical "not materialized").
+            $books = $manager->query(LzT8BookWithTrait::class)
+                ->orderBy('id')
+                ->get();
+            self::assertCount(3, $books);
+
+            foreach ($books as $book) {
+                self::assertArrayNotHasKey(
+                    'library',
+                    get_object_vars($book),
+                    'Lazy association property must be unset (not materialized) before first access',
+                );
+            }
+
+            // Trigger lazy load on the FIRST book only. The batch-rescue must
+            // detect the other two managed siblings of the same class with the
+            // same unset association and hydrate ALL THREE in a single batched
+            // query.
+            $firstLibrary = $books[0]->library;
+            self::assertNotNull($firstLibrary);
+            self::assertSame($library->id, $firstLibrary->id);
+
+            // The other two books must now have their `library` property
+            // materialized too — without ever being explicitly accessed. This
+            // is the core N+1 rescue contract.
+            foreach ([$books[1], $books[2]] as $sibling) {
+                self::assertArrayHasKey(
+                    'library',
+                    get_object_vars($sibling),
+                    'Sibling managed entity must be batch-rescued: its lazy association is now materialized',
+                );
+                self::assertNotNull($sibling->library, 'Rescued sibling must have a non-null target');
+                self::assertSame($library->id, $sibling->library->id);
+                // Identity map reuse: same library instance across all books.
+                self::assertSame($firstLibrary, $sibling->library);
+            }
+        } finally {
+            $scope->end();
+        }
+    }
+
     public function test_entity_without_trait_preserves_backward_compatibility_no_autoload_explicit_loader_required(): void
     {
         $app = $this->makeApp();
@@ -593,6 +675,43 @@ final class LzT6FinalArticleWithTrait
 
     #[ManyToOne(targetEntity: LzT6TagEntity::class, fetch: 'lazy')]
     public ?LzT6TagEntity $primaryTag = null;
+}
+
+// -- Scenario 8: Batch-Rescue N+1 — many Books (ManyToOne lazy) -> 1 Library --
+#[Entity]
+#[Table(name: 'lz_t8_libraries')]
+class LzT8Library
+{
+    use LazyLoadableEntityTrait;
+
+    #[Id]
+    #[Column(name: 'id', type: 'int')]
+    public ?int $id = null;
+
+    #[Column(name: 'name', type: 'string')]
+    public ?string $name = null;
+}
+
+#[Entity]
+#[Table(name: 'lz_t8_books')]
+class LzT8BookWithTrait
+{
+    use LazyLoadableEntityTrait;
+
+    #[Id]
+    #[Column(name: 'id', type: 'int')]
+    public ?int $id = null;
+
+    #[Column(name: 'title', type: 'string')]
+    public ?string $title = null;
+
+    // FK raw int stored here
+    #[Column(name: 'library_id', type: 'int')]
+    public ?int $libraryId = null;
+
+    // Entity reference: NO #[Column]. ManyToOne OWNING, fetch lazy.
+    #[ManyToOne(targetEntity: LzT8Library::class, fetch: 'lazy')]
+    public ?LzT8Library $library = null;
 }
 
 // -- Scenario 7: BC test POPOs (no trait) bidirectional OneToMany --

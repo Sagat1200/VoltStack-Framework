@@ -469,7 +469,7 @@ final class ControllerSecurityModelTest extends TestCase
         $dispatcher = $app->make(ControllerDispatcher::class);
         $request = Request::create('/allowed', 'GET');
         $match = new RouteMatch(
-            new Route(RouteDefinition::make(['GET'], '/allowed', SecurityOpenStubController::class . '@ping')),
+            new Route(RouteDefinition::make(['GET'], '/allowed', PolicyAllowedStubController::class . '@ping')),
             [],
             'GET',
         );
@@ -900,6 +900,15 @@ final class LazyWithAttributeStub extends ControllerSecurityPolicy
 
 final class SecurityOpenStubController
 {
+    public function ping(): string
+    {
+        return 'pong';
+    }
+}
+
+final class PolicyAllowedStubController
+{
+    #[Policies(['test.everyone.allowed'])]
     public function ping(): string
     {
         return 'pong';

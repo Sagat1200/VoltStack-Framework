@@ -345,10 +345,13 @@ final class InMemoryAuthorityRepository implements AuthorityAdministrationInterf
         $scopeFilter = $this->normalizeOptionalScope($filters['scope'] ?? null);
         $typeFilter = strtolower(trim((string) ($filters['type'] ?? 'all')));
         $valueFilter = $this->normalizeOptionalString($filters['value'] ?? null);
+        $includeExpired = (bool) ($filters['include_expired'] ?? false);
 
         $rows = array_values($this->delegationGrants);
 
-        $rows = array_values(array_filter($rows, static function (array $row) use ($trusteeFilter, $grantorFilter, $scopeFilter, $typeFilter, $valueFilter): bool {
+        $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
+
+        $rows = array_values(array_filter($rows, static function (array $row) use ($trusteeFilter, $grantorFilter, $scopeFilter, $typeFilter, $valueFilter, $includeExpired, $now): bool {
             if ($trusteeFilter !== null && $row['trustee_id'] !== $trusteeFilter) {
                 return false;
             }
@@ -369,6 +372,17 @@ final class InMemoryAuthorityRepository implements AuthorityAdministrationInterf
                 return false;
             }
 
+            if (! $includeExpired && isset($row['expires_at']) && $row['expires_at'] !== null) {
+                try {
+                    $expires = new \DateTimeImmutable($row['expires_at'], new \DateTimeZone('UTC'));
+                    if ($expires <= $now) {
+                        return false;
+                    }
+                } catch (\Throwable) {
+                    // Invalid expiry string: keep the grant (fail-open on parse error is acceptable for listing).
+                }
+            }
+
             return true;
         }));
 
@@ -387,6 +401,7 @@ final class InMemoryAuthorityRepository implements AuthorityAdministrationInterf
         string $grantorId,
         Role|Permission $grant,
         Scope|string $scope = Scope::GLOBAL,
+        ?string $expiresAt = null,
     ): bool {
         $trusteeId = trim($trusteeId);
         $grantorId = trim($grantorId);
@@ -411,6 +426,8 @@ final class InMemoryAuthorityRepository implements AuthorityAdministrationInterf
             return false;
         }
 
+        $normalizedExpiresAt = $this->normalizeExpiresAt($expiresAt);
+
         $this->delegationGrants[$key] = [
             'trustee_id' => $trusteeId,
             'grantor_id' => $grantorId,
@@ -418,6 +435,7 @@ final class InMemoryAuthorityRepository implements AuthorityAdministrationInterf
             'type' => $type,
             'value' => $value,
             'granted_at' => (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format(\DateTimeInterface::ATOM),
+            'expires_at' => $normalizedExpiresAt,
         ];
 
         $this->consistency?->invalidateAuthority($trusteeId, $scopeName, 'delegation.grant');
@@ -459,5 +477,69 @@ final class InMemoryAuthorityRepository implements AuthorityAdministrationInterf
         $this->consistency?->invalidateAuthority($trusteeId, $scopeName, 'delegation.revoke');
 
         return true;
+    }
+
+    public function revokeAllDelegations(
+        ?string $trusteeId = null,
+        ?string $grantorId = null,
+        Scope|string|null $scope = null,
+    ): int {
+        $trusteeId = is_string($trusteeId) ? trim($trusteeId) : null;
+        $grantorId = is_string($grantorId) ? trim($grantorId) : null;
+
+        if (($trusteeId === null || $trusteeId === '') && ($grantorId === null || $grantorId === '')) {
+            return 0;
+        }
+
+        $scopeName = $scope === null ? null : (string) ($scope instanceof Scope ? $scope : new Scope($scope));
+
+        $removed = 0;
+
+        foreach ($this->delegationGrants as $key => $row) {
+            if ($trusteeId !== null && $trusteeId !== '' && $row['trustee_id'] !== $trusteeId) {
+                continue;
+            }
+
+            if ($grantorId !== null && $grantorId !== '' && $row['grantor_id'] !== $grantorId) {
+                continue;
+            }
+
+            if ($scopeName !== null && $row['scope'] !== $scopeName) {
+                continue;
+            }
+
+            unset($this->delegationGrants[$key]);
+            $removed++;
+        }
+
+        if ($removed > 0) {
+            $bumpPrincipal = $trusteeId ?? $grantorId;
+            $this->consistency?->invalidateAuthority($bumpPrincipal, $scopeName ?? Scope::GLOBAL, 'delegation.revoke_all');
+        }
+
+        return $removed;
+    }
+
+    private function normalizeExpiresAt(?string $expiresAt): ?string
+    {
+        if ($expiresAt === null || trim($expiresAt) === '') {
+            return null;
+        }
+
+        $trimmed = trim($expiresAt);
+
+        // Try relative formats like "+1 hour", "+1 day", "next monday".
+        $timestamp = strtotime($trimmed);
+        if ($timestamp !== false) {
+            return (new \DateTimeImmutable('@' . $timestamp, new \DateTimeZone('UTC')))->format(\DateTimeInterface::ATOM);
+        }
+
+        // Try absolute ISO format.
+        try {
+            $dt = new \DateTimeImmutable($trimmed, new \DateTimeZone('UTC'));
+            return $dt->format(\DateTimeInterface::ATOM);
+        } catch (\Throwable) {
+            return null;
+        }
     }
 }

@@ -24,7 +24,7 @@ final class MakePageCommand extends Command
 
     public function usage(): string
     {
-        return 'make:page <name>';
+        return 'make:page <name> [--require-published-config]';
     }
 
     public function category(): string
@@ -39,6 +39,13 @@ final class MakePageCommand extends Command
         ];
     }
 
+    public function optionsHelp(): array
+    {
+        return [
+            '--require-published-config' => 'Exige una generacion de configuracion publicada activa y sin drift antes de resolver el directorio de paginas.',
+        ];
+    }
+
     public function handle(Input $input, Output $output): int
     {
         $name = $input->arguments()[0] ?? null;
@@ -49,7 +56,7 @@ final class MakePageCommand extends Command
             return 1;
         }
 
-        $descriptor = $this->buildDescriptor($name);
+        $descriptor = $this->buildDescriptor($name, $input->hasOption('require-published-config'));
         $targetPath = $descriptor['path'];
 
         if (is_file($targetPath)) {
@@ -80,7 +87,7 @@ final class MakePageCommand extends Command
     /**
      * @return array{class: string, namespace: string, directory: string, path: string, title: string}
      */
-    private function buildDescriptor(string $name): array
+    private function buildDescriptor(string $name, bool $requirePublishedConfig = false): array
     {
         $normalized = trim(str_replace('/', '\\', $name), '\\ ');
         $segments = array_values(array_filter(explode('\\', $normalized)));
@@ -96,7 +103,7 @@ final class MakePageCommand extends Command
             $class .= 'Page';
         }
 
-        $directory = $this->pageDirectory();
+        $directory = $this->pageDirectory($requirePublishedConfig);
         $namespace = $this->namespaceFromDirectory($directory);
 
         if ($segments !== []) {
@@ -130,7 +137,7 @@ final class MakePageCommand extends Command
         return $contents;
     }
 
-    private function pageDirectory(): string
+    private function pageDirectory(bool $requirePublishedConfig = false): string
     {
         $bootstrapPath = $this->basePath . DIRECTORY_SEPARATOR . 'bootstrap' . DIRECTORY_SEPARATOR . 'app.php';
 
@@ -138,7 +145,9 @@ final class MakePageCommand extends Command
             return $this->basePath . DIRECTORY_SEPARATOR . 'app' . DIRECTORY_SEPARATOR . 'Pages';
         }
 
-        $app = require $bootstrapPath;
+        $app = $requirePublishedConfig
+            ? $this->bootstrapApplication(true)
+            : require $bootstrapPath;
 
         if (! $app instanceof Application) {
             return $this->basePath . DIRECTORY_SEPARATOR . 'app' . DIRECTORY_SEPARATOR . 'Pages';

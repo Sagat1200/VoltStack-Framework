@@ -314,6 +314,14 @@ class Container implements ContainerInterface
         return $this->aliases;
     }
 
+    /**
+     * @return array<string, mixed>
+     */
+    public function registeredInstances(): array
+    {
+        return $this->instances;
+    }
+
     protected function resolve(mixed $concrete, array $parameters = []): mixed
     {
         return $this->concreteResolver()->resolve(

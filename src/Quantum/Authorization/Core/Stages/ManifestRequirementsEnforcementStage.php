@@ -186,7 +186,20 @@ final class ManifestRequirementsEnforcementStage implements AuthorizationEvaluat
 
         $roleNames = [];
         $permissionNames = [];
+        $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
         foreach ($grants as $grant) {
+            // Defense in depth: skip expired grants even if the repo did not filter them.
+            if (isset($grant['expires_at']) && $grant['expires_at'] !== null) {
+                try {
+                    $expires = new \DateTimeImmutable((string) $grant['expires_at'], new \DateTimeZone('UTC'));
+                    if ($expires <= $now) {
+                        continue;
+                    }
+                } catch (\Throwable) {
+                    // Invalid expiry string: keep the grant (fail-open on parse error is acceptable).
+                }
+            }
+
             if (($grant['type'] ?? '') === 'role') {
                 $roleNames[] = (string) ($grant['value'] ?? '');
             } elseif (($grant['type'] ?? '') === 'permission') {
@@ -203,6 +216,17 @@ final class ManifestRequirementsEnforcementStage implements AuthorizationEvaluat
         // la delegación endosa ese authority al trustee.
         if ($this->authorityRepository !== null) {
             foreach ($grants as $grant) {
+                if (isset($grant['expires_at']) && $grant['expires_at'] !== null) {
+                    try {
+                        $expires = new \DateTimeImmutable((string) $grant['expires_at'], new \DateTimeZone('UTC'));
+                        if ($expires <= $now) {
+                            continue;
+                        }
+                    } catch (\Throwable) {
+                        // keep
+                    }
+                }
+
                 $type = (string) ($grant['type'] ?? '');
                 if ($type === 'role' || $type === 'permission') {
                     if ($this->authorityRepository->hasPermission($grantorId, $permission, $scope)) {

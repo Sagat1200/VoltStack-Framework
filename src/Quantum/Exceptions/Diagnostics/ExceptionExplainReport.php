@@ -28,6 +28,9 @@ final readonly class ExceptionExplainReport
      * @param array<string, list<array<string, mixed>>> $receiptsMatrixByScope
      * @param array<string, mixed>|null $runtimeDiagnostic
      * @param array<string, mixed>|null $streamConfirmation
+     * @param array<string, mixed>|null $exportSummary
+     * @param array<string, mixed>|null $effectExport
+     * @param array<string, mixed>|null $compatDiagnostic
      */
     public function __construct(
         private ExceptionCompilationPlan $plan,
@@ -52,6 +55,9 @@ final readonly class ExceptionExplainReport
         private array $receiptsMatrixByScope = [],
         private ?array $runtimeDiagnostic = null,
         private ?array $streamConfirmation = null,
+        private ?array $exportSummary = null,
+        private ?array $effectExport = null,
+        private ?array $compatDiagnostic = null,
     ) {
     }
 
@@ -121,6 +127,7 @@ final readonly class ExceptionExplainReport
                 'receipts' => $this->reporterReceipts,
                 'receipts_matrix' => $this->reporterReceiptsMatrix,
                 'stream_confirmation' => $this->streamConfirmation,
+                'export_summary' => $this->exportSummary,
             ],
             'recovery' => [
                 'simulated' => true,
@@ -147,6 +154,12 @@ final readonly class ExceptionExplainReport
         }
         if ($this->runtimeDiagnostic !== null) {
             $result['runtime'] = $this->runtimeDiagnostic;
+        }
+        if ($this->effectExport !== null) {
+            $result['effect_export'] = $this->effectExport;
+        }
+        if ($this->compatDiagnostic !== null) {
+            $result['compat'] = $this->compatDiagnostic;
         }
 
         return $result;

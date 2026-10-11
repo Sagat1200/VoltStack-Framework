@@ -146,6 +146,7 @@ use Quantum\Exceptions\Compilation\ExceptionPlanStore;
 use Quantum\Exceptions\Bridges\Runtime\ExceptionRuntimeBridge;
 use Quantum\Exceptions\Bridges\Runtime\ManagedExceptionRuntimeBridge;
 use Quantum\Exceptions\Contracts\ExceptionManagerInterface;
+use Quantum\Exceptions\Contracts\ExceptionMapperInterface;
 use Quantum\Exceptions\Contracts\ExceptionNormalizerInterface;
 use Quantum\Exceptions\Contracts\ExceptionRendererInterface;
 use Quantum\Exceptions\Contracts\RecoveryPolicyInterface;
@@ -153,6 +154,7 @@ use Quantum\Exceptions\Contracts\SemanticExceptionMapperInterface;
 use Quantum\Exceptions\Contracts\TransportMapperInterface;
 use Quantum\Exceptions\Core\ExceptionManager;
 use Quantum\Exceptions\Mapping\DeterministicSemanticExceptionMapper;
+use Quantum\Exceptions\Mapping\SemanticBackedExceptionMapper;
 use Quantum\Exceptions\Normalization\ThrowableNormalizer;
 use Quantum\Exceptions\Recovery\DeterministicRecoveryPolicy;
 use Quantum\Exceptions\Reporting\EventDispatcherExceptionReporter;
@@ -1035,6 +1037,15 @@ class Application extends Container
             $this->singleton(
                 SemanticExceptionMapperInterface::class,
                 static fn(): SemanticExceptionMapperInterface => DeterministicSemanticExceptionMapper::standard(),
+            );
+        }
+
+        if (! isset($this->bindings[ExceptionMapperInterface::class])) {
+            $this->singleton(
+                ExceptionMapperInterface::class,
+                static fn (Application $app): ExceptionMapperInterface => new SemanticBackedExceptionMapper(
+                    $app->make(SemanticExceptionMapperInterface::class),
+                ),
             );
         }
 

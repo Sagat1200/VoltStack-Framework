@@ -36,10 +36,14 @@ use Quantum\Auth\Contracts\RefreshTokenRotationStoreInterface;
 use Quantum\Auth\Contracts\RecoveryAuditLoggerInterface;
 use Quantum\Auth\Contracts\RecoveryCodeStoreInterface;
 use Quantum\Auth\Contracts\RecoveryEvidenceVerifierInterface;
+use Quantum\Auth\Contracts\RecoveryNotificationChannelInterface;
+use Quantum\Auth\Contracts\RecoveryNotificationTemplateRendererInterface;
 use Quantum\Auth\Contracts\FederatedIdentityLinkProviderInterface;
+use Quantum\Auth\Contracts\FederatedLinkNonceStoreInterface;
 use Quantum\Auth\Contracts\RecoveryManagerInterface;
 use Quantum\Auth\Contracts\RecoveryNotificationDispatcherInterface;
 use Quantum\Auth\Contracts\RecoveryTokenRepositoryInterface;
+use Quantum\Auth\Contracts\RecoveryTransactionStoreInterface;
 use Quantum\Auth\Contracts\RiskAdaptivePolicyInterface;
 use Quantum\Auth\Contracts\SessionRepositoryDriverFactoryInterface;
 use Quantum\Auth\Contracts\ThrottleDistributedStorageInterface;
@@ -74,8 +78,18 @@ use Quantum\Auth\Recovery\NoopRecoveryNotificationDispatcher;
 use Quantum\Auth\Recovery\RecoveryManager;
 use Quantum\Auth\Recovery\FileRecoveryAuditLogger;
 use Quantum\Auth\Recovery\FileRecoveryCodeStore;
+use Quantum\Auth\Recovery\FileRecoveryNotificationChannel;
+use Quantum\Auth\Recovery\FileRecoveryTransactionStore;
 use Quantum\Auth\Recovery\InMemoryRecoveryCodeStore;
+use Quantum\Auth\Recovery\InMemoryRecoveryTransactionStore;
+use Quantum\Auth\Recovery\NoopRecoveryNotificationChannel;
+use Quantum\Auth\Recovery\RecoveryNotificationChannelRegistry;
+use Quantum\Auth\Recovery\WebhookRecoveryNotificationChannel;
+use Quantum\Auth\Recovery\ConfigRecoveryNotificationTemplateRenderer;
+use Quantum\Auth\Recovery\CompositeRecoveryNotificationDispatcher;
 use Quantum\Auth\Recovery\FederatedLinkRecoveryEvidenceVerifier;
+use Quantum\Auth\Recovery\FileFederatedLinkNonceStore;
+use Quantum\Auth\Recovery\InMemoryFederatedLinkNonceStore;
 use Quantum\Auth\Runtime\AuthenticationOrchestrator;
 use Quantum\Auth\Runtime\AuthenticationPolicyEngine;
 use Quantum\Auth\Runtime\AuthenticationPolicyRuleInterface;
@@ -229,8 +243,95 @@ final class AuthenticationServiceProvider extends ServiceProvider
             return new InMemoryRecoveryTokenRepository();
         });
 
+        $this->app->singleton(RecoveryNotificationChannelRegistry::class, function (Application $app): RecoveryNotificationChannelRegistry {
+            $registry = new RecoveryNotificationChannelRegistry();
+
+            // Canal file por defecto.
+            $configuredPath = $app->config('auth.recovery.notifications.storage_path');
+            $storagePath = is_string($configuredPath) && trim($configuredPath) !== ''
+                ? trim($configuredPath)
+                : null;
+
+            if ($storagePath === null) {
+                try {
+                    $storagePath = $app->storagePath('framework/auth/recovery/notifications/recovery-notifications.jsonl');
+                } catch (\Throwable) {
+                    $storagePath = null;
+                }
+            }
+
+            $filePath = is_string($storagePath) && trim($storagePath) !== ''
+                ? $storagePath
+                : (sys_get_temp_dir() . '/voltstack-auth-recovery-notifications.jsonl');
+
+            $registry->register(new FileRecoveryNotificationChannel($filePath));
+
+            // Canal webhook si está configurado.
+            $webhookConfig = $app->config('auth.recovery.notifications.channels.webhook');
+            if (is_array($webhookConfig)) {
+                $webhookUrl = is_string($webhookConfig['url'] ?? null) ? trim($webhookConfig['url']) : '';
+                if ($webhookUrl !== '') {
+                    $webhookHeaders = is_array($webhookConfig['headers'] ?? null) ? $webhookConfig['headers'] : [];
+                    $webhookTimeout = isset($webhookConfig['timeout_seconds']) && is_numeric($webhookConfig['timeout_seconds'])
+                        ? (int) $webhookConfig['timeout_seconds']
+                        : 10;
+                    $registry->register(new WebhookRecoveryNotificationChannel($webhookUrl, $webhookHeaders, $webhookTimeout));
+                }
+            }
+
+            // Canal noop siempre disponible como respaldo.
+            $registry->register(new NoopRecoveryNotificationChannel());
+
+            return $registry;
+        });
+
+        $this->app->singleton(RecoveryNotificationTemplateRendererInterface::class, function (Application $app): RecoveryNotificationTemplateRendererInterface {
+            $templates = $app->config('auth.recovery.notifications.templates');
+
+            return new ConfigRecoveryNotificationTemplateRenderer(
+                is_array($templates) ? $templates : [],
+            );
+        });
+
         $this->app->singleton(RecoveryNotificationDispatcherInterface::class, function (Application $app): RecoveryNotificationDispatcherInterface {
             $driver = strtolower(trim((string) $app->config('auth.recovery.notifications.driver', 'noop')));
+
+            if ($driver === 'composite') {
+                $registry = $app->make(RecoveryNotificationChannelRegistry::class);
+                $templateRenderer = null;
+                try {
+                    $candidate = $app->make(RecoveryNotificationTemplateRendererInterface::class);
+                    if ($candidate instanceof RecoveryNotificationTemplateRendererInterface) {
+                        $templateRenderer = $candidate;
+                    }
+                } catch (\Throwable) {
+                    $templateRenderer = null;
+                }
+
+                $audit = null;
+                try {
+                    $auditCandidate = $app->make(RecoveryAuditLoggerInterface::class);
+                    if ($auditCandidate instanceof RecoveryAuditLoggerInterface) {
+                        $audit = $auditCandidate;
+                    }
+                } catch (\Throwable) {
+                    $audit = null;
+                }
+
+                $config = [
+                    'default_channel' => $app->config('auth.recovery.notifications.default_channel', 'file'),
+                    'fallback_channel' => $app->config('auth.recovery.notifications.fallback_channel'),
+                    'retry' => $app->config('auth.recovery.notifications.retry', []),
+                    'rate_limit' => $app->config('auth.recovery.notifications.rate_limit', []),
+                ];
+
+                return new CompositeRecoveryNotificationDispatcher(
+                    registry: $registry,
+                    templateRenderer: $templateRenderer,
+                    audit: $audit,
+                    config: $config,
+                );
+            }
 
             if ($driver === 'file') {
                 $configuredPath = $app->config('auth.recovery.notifications.storage_path');
@@ -314,6 +415,60 @@ final class AuthenticationServiceProvider extends ServiceProvider
             return new LocalFederatedIdentityLinkProvider($app->make(LocalIdentityProvider::class));
         });
 
+        $this->app->singleton(FederatedLinkNonceStoreInterface::class, function (Application $app): FederatedLinkNonceStoreInterface {
+            $driver = strtolower(trim((string) $app->config('auth.recovery.federated_link.nonce.driver', 'memory')));
+
+            if ($driver === 'file') {
+                $configuredPath = $app->config('auth.recovery.federated_link.nonce.storage_path');
+                $storagePath = is_string($configuredPath) && trim($configuredPath) !== ''
+                    ? trim($configuredPath)
+                    : null;
+
+                if ($storagePath === null) {
+                    try {
+                        $storagePath = $app->storagePath('framework/auth/recovery/federated-link-nonces.jsonl');
+                    } catch (\Throwable) {
+                        $storagePath = null;
+                    }
+                }
+
+                $path = is_string($storagePath) && trim($storagePath) !== ''
+                    ? $storagePath
+                    : (sys_get_temp_dir() . '/voltstack-auth-federated-link-nonces.jsonl');
+
+                return new FileFederatedLinkNonceStore($path);
+            }
+
+            return new InMemoryFederatedLinkNonceStore();
+        });
+
+        $this->app->singleton(RecoveryTransactionStoreInterface::class, function (Application $app): RecoveryTransactionStoreInterface {
+            $driver = strtolower(trim((string) $app->config('auth.recovery.transaction.driver', 'noop')));
+
+            if ($driver === 'file') {
+                $configuredPath = $app->config('auth.recovery.transaction.storage_path');
+                $storagePath = is_string($configuredPath) && trim($configuredPath) !== ''
+                    ? trim($configuredPath)
+                    : null;
+
+                if ($storagePath === null) {
+                    try {
+                        $storagePath = $app->storagePath('framework/auth/recovery/recovery-transactions.jsonl');
+                    } catch (\Throwable) {
+                        $storagePath = null;
+                    }
+                }
+
+                $path = is_string($storagePath) && trim($storagePath) !== ''
+                    ? $storagePath
+                    : (sys_get_temp_dir() . '/voltstack-auth-recovery-transactions.jsonl');
+
+                return new FileRecoveryTransactionStore($path);
+            }
+
+            return new InMemoryRecoveryTransactionStore();
+        });
+
         $this->app->scoped(RecoveryManagerInterface::class, static function (Application $app): RecoveryManagerInterface {
             $passkeyStore = null;
             try {
@@ -369,6 +524,16 @@ final class AuthenticationServiceProvider extends ServiceProvider
                 $linkProvider = null;
             }
 
+            $nonceStore = null;
+            try {
+                $nonceCandidate = $app->make(FederatedLinkNonceStoreInterface::class);
+                if ($nonceCandidate instanceof FederatedLinkNonceStoreInterface) {
+                    $nonceStore = $nonceCandidate;
+                }
+            } catch (\Throwable) {
+                $nonceStore = null;
+            }
+
             $evidenceVerifiers = [
                 new MfaRecoveryEvidenceVerifier($app->make(IdentityProviderInterface::class), $recoveryCodeStore),
                 new PasskeyRecoveryEvidenceVerifier($passkeyStore, $assertionCeremony, $rpConfig),
@@ -376,8 +541,18 @@ final class AuthenticationServiceProvider extends ServiceProvider
                     is_array($adminPlainWhitelist) ? $adminPlainWhitelist : [],
                     $adminHmacSecret,
                 ),
-                new FederatedLinkRecoveryEvidenceVerifier($linkProvider),
+                new FederatedLinkRecoveryEvidenceVerifier($linkProvider, $nonceStore),
             ];
+
+            $transactionStore = null;
+            try {
+                $transactionCandidate = $app->make(RecoveryTransactionStoreInterface::class);
+                if ($transactionCandidate instanceof RecoveryTransactionStoreInterface) {
+                    $transactionStore = $transactionCandidate;
+                }
+            } catch (\Throwable) {
+                $transactionStore = null;
+            }
 
             return new RecoveryManager(
                 $app->make(IdentityProviderInterface::class),
@@ -396,6 +571,7 @@ final class AuthenticationServiceProvider extends ServiceProvider
                 $app->make(PasswordLifecycleAwareProviderInterface::class),
                 $app->make(DistributedPasswordGovernanceProviderInterface::class),
                 $recoveryCodeStore,
+                $transactionStore,
             );
         });
 

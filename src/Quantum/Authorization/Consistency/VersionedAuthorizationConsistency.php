@@ -145,6 +145,24 @@ final class VersionedAuthorizationConsistency implements AuthorizationConsistenc
     }
 
     /**
+     * @return array{bump_counters_by_segment:array<string,int>,last_bump_reasons_by_segment:array<string,string>,last_bump_timestamps_by_segment:array<string,string>,total_bumps:int}
+     */
+    public function flushMetrics(): array
+    {
+        $totalBumps = 0;
+        foreach ($this->bumpCounters as $count) {
+            $totalBumps += (int) $count;
+        }
+
+        return [
+            'bump_counters_by_segment' => $this->bumpCounters,
+            'last_bump_reasons_by_segment' => $this->bumpReasons,
+            'last_bump_timestamps_by_segment' => $this->bumpTimestamps,
+            'total_bumps' => $totalBumps,
+        ];
+    }
+
+    /**
      * @return array<string, string>
      */
     public function describeVersionAuthority(): array

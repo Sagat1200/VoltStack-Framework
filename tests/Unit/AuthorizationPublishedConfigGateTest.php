@@ -204,6 +204,16 @@ PHP
                 public function invalidateRelationships(?string $principalId = null, Scope|string|null $scope = null, ?string $reason = null): array { return []; }
 
                 public function inspect(): array { return []; }
+
+                public function flushMetrics(): array
+                {
+                    return [
+                        'bump_counters_by_segment' => [],
+                        'last_bump_reasons_by_segment' => [],
+                        'last_bump_timestamps_by_segment' => [],
+                        'total_bumps' => 0,
+                    ];
+                }
             },
         );
     }

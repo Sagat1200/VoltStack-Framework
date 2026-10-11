@@ -547,6 +547,14 @@ final class RuntimeCapabilityCheckCatalog
     }
 
     /**
+     * Devuelve la descripción canónica de un check id, o null si no existe.
+     */
+    public static function descriptionFor(string $checkId): ?string
+    {
+        return self::definitions()[$checkId]['description'] ?? null;
+    }
+
+    /**
      * @param list<string> $checkIds
      * @return list<string> ids que NO existen en el catálogo cerrado.
      */

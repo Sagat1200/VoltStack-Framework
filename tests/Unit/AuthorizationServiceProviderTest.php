@@ -270,6 +270,16 @@ final class AuthorizationServiceProviderTest extends TestCase
                     'version_authority_info' => ['kind' => 'custom-external'],
                 ];
             }
+
+            public function flushMetrics(): array
+            {
+                return [
+                    'bump_counters_by_segment' => [],
+                    'last_bump_reasons_by_segment' => [],
+                    'last_bump_timestamps_by_segment' => [],
+                    'total_bumps' => 0,
+                ];
+            }
         };
 
         $app->make(AuthorizationDriverRegistry::class)->extendConsistency('external', fn (Application $_app): AuthorizationConsistencyInterface => $driver);

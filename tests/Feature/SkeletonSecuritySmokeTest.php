@@ -146,7 +146,7 @@ final class SkeletonSecuritySmokeTest extends TestCase
         $router = $this->app->make(Router::class);
 
         $reg = $this->app->make(ControllerSecurityPolicyRegistryInterface::class);
-        self::assertSame(0, $reg->count(), 'Precondition: registry should be empty at test setup (before register())');
+        self::assertSame(1, $reg->count(), 'Precondition: registry should contain only the framework default policy at test setup (before register())');
 
         $publicAllow = new class implements ControllerSecurityPolicyInterface {
             public function id(): string { return 'always.allow.public.smoke'; }
@@ -158,17 +158,17 @@ final class SkeletonSecuritySmokeTest extends TestCase
             }
         };
         $reg->register($publicAllow);
-        self::assertSame(1, $reg->count(), 'After publicAllow registered, count=1');
+        self::assertSame(2, $reg->count(), 'After publicAllow registered, count=2 (framework default + publicAllow)');
 
         $reg->registerExpression('role:user || permission:dashboard:read');
-        self::assertSame(2, $reg->count(), sprintf('After auth-token expression count=%d', $reg->count()));
+        self::assertSame(3, $reg->count(), sprintf('After auth-token expression count=%d', $reg->count()));
 
         $reg->registerExpression('role:admin && permission:admin.panel');
         $reg->registerExpression('auth_management_authority:session_owner && auth_management_scopes:identity_device_management');
         $reg->registerExpression('auth_management_authority:administrative_actor && auth_management_scopes:security_center_export && auth_management_claims_source:identity_attributes');
         $reg->registerExpression('role:admin || (role:officer && permission:gdpr.export)');
         $reg->registerExpression('role:user && tenant:acme-corp');
-        self::assertSame(7, $reg->count(), sprintf('All 7 demo policies registered (actual count=%d)', $reg->count()));
+        self::assertSame(8, $reg->count(), sprintf('All 7 demo policies + 1 framework default registered (actual count=%d)', $reg->count()));
 
         $found = false;
         foreach ($reg->all() as $p) {

@@ -34,4 +34,11 @@ interface AuthorizationConsistencyInterface
      * @return array<string, mixed>
      */
     public function inspect(): array;
+
+    /**
+     * Proyeccion agregada de metricas de flush (bumps) por segmento.
+     *
+     * @return array{bump_counters_by_segment:array<string,int>,last_bump_reasons_by_segment:array<string,string>,last_bump_timestamps_by_segment:array<string,string>,total_bumps:int}
+     */
+    public function flushMetrics(): array;
 }
